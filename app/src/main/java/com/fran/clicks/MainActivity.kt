@@ -19,6 +19,7 @@ import com.fran.clicks.glide.KeyInfo
 import com.fran.clicks.glide.StatisticalGlideTypingClassifier
 import android.net.Uri
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -120,6 +121,36 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         super.onDestroy()
         spellChecker?.close()
         handler.removeCallbacksAndMessages(null)
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == VOICE_REQUEST_CODE && resultCode == RESULT_OK) {
+            val spoken = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.firstOrNull() ?: return
+            val pane = openPane
+            if (pane?.kind == PaneKind.CHAT) {
+                if (composeText.isNotBlank() && !composeText.endsWith(' ')) composeText += " "
+                composeText += spoken
+                updateAutoCapState(); updateKeyLabels()
+                renderPaneContent(pane)
+            } else {
+                if (query.isNotBlank() && !query.endsWith(' ')) query += " "
+                query += spoken
+            }
+            renderRibbon()
+        }
+    }
+
+    private fun startVoiceInput() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        @Suppress("DEPRECATION")
+        runCatching { startActivityForResult(intent, VOICE_REQUEST_CODE) }
+            .onFailure { Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show() }
     }
 
     override fun onBackPressed() {
@@ -482,7 +513,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             addKeyRow("qwertyuiop".map { it.toString() })
             addKeyRow("asdfghjkl".map { it.toString() }, dp(22))
             addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"))
-            addKeyRow(listOf("123", "clicks", "space", "period", "enter"))
+            addKeyRow(listOf("mic", "clicks", "space", "period", "enter"))
         }
     }
 
@@ -604,6 +635,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         "enter" -> "GO"
         "period" -> "."
         "shift" -> "⬆"
+        "mic" -> "🎤"
         else -> if (label.length == 1) {
             if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label.lowercase(Locale.US)
         } else label
@@ -904,7 +936,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             "period" -> { query += "."; suggestions = emptyList(); updateSuggestionBar() }
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; query = ""; render(); return }
             "enter" -> filteredApps().firstOrNull()?.let { openExternal(it.toPaneTarget()) }
-            "123" -> Unit
+            "mic" -> { startVoiceInput(); return }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 query += char
@@ -941,7 +973,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             }
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; render(); return }
             "enter" -> postComposeBubble(pane)
-            "123" -> Unit
+            "mic" -> { startVoiceInput(); return }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 composeText += char
@@ -1202,12 +1234,43 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         ribbonView.removeAllViews()
         filteredApps().take(8).forEachIndexed { index, app -> ribbonView.addView(ribbonButton(app, index == 0)) }
         val pane = openPane
-        searchHintView.text = when {
-            libraryOpen -> "APP LIBRARY  .  TAP TOP BUTTON FOR CATEGORY / GRID"
-            keyboardSettingsOpen -> "KEYBOARD SETTINGS OPEN"
-            pane?.kind == PaneKind.CHAT -> "TYPING NOW GOES TO ${pane.name.uppercase(Locale.US)}"
-            query.isBlank() -> "SEARCHING APPS:    TAP KEYS  .  CLICKS FOR SETTINGS"
-            else -> "SEARCHING APPS:  ${query.uppercase(Locale.US)}  .  DEL TO CLEAR"
+        when {
+            libraryOpen -> {
+                searchHintView.textSize = 8.5f
+                searchHintView.typeface = Typeface.MONOSPACE
+                searchHintView.setTextColor(0xFF55585F.toInt())
+                searchHintView.text = "APP LIBRARY  ·  TAP TOP BUTTON FOR CATEGORY / GRID"
+            }
+            keyboardSettingsOpen -> {
+                searchHintView.textSize = 8.5f
+                searchHintView.typeface = Typeface.MONOSPACE
+                searchHintView.setTextColor(0xFF55585F.toInt())
+                searchHintView.text = "KEYBOARD SETTINGS"
+            }
+            pane?.kind == PaneKind.CHAT && composeText.isNotBlank() -> {
+                searchHintView.textSize = 15f
+                searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                searchHintView.setTextColor(Ink)
+                searchHintView.text = composeText + "│"
+            }
+            pane?.kind == PaneKind.CHAT -> {
+                searchHintView.textSize = 8.5f
+                searchHintView.typeface = Typeface.MONOSPACE
+                searchHintView.setTextColor(0xFF55585F.toInt())
+                searchHintView.text = "→ ${pane.name.uppercase(Locale.US)}  ·  TYPE OR SWIPE"
+            }
+            query.isNotBlank() -> {
+                searchHintView.textSize = 15f
+                searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                searchHintView.setTextColor(Ink)
+                searchHintView.text = query + "│"
+            }
+            else -> {
+                searchHintView.textSize = 8.5f
+                searchHintView.typeface = Typeface.MONOSPACE
+                searchHintView.setTextColor(0xFF55585F.toInt())
+                searchHintView.text = "SEARCHING APPS  ·  CLICKS FOR SETTINGS"
+            }
         }
     }
 
@@ -1638,6 +1701,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         private const val ACTIVE_ICON_PACK_PREF = "active_icon_pack"
         private const val ICON_OVERRIDE_PREFIX = "icon_override_"
         private const val PANE_BODY_TAG = "pane"
+        private const val VOICE_REQUEST_CODE = 9001
 
         private val GO_COLORS = listOf(
             ColorOption("ORANGE", Accent), ColorOption("AMBER", Accent2),
