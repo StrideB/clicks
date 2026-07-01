@@ -54,9 +54,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import com.fran.clicks.keyboard.CustomHapticEngine
+import com.fran.clicks.keyboard.DynamicFlickKeyView
 import com.fran.clicks.keyboard.FlickDetector
 import com.fran.clicks.keyboard.FlickDirection
 import com.fran.clicks.keyboard.KeyPreviewManager
+import com.fran.clicks.keyboard.LivePredictionRouter
 import com.fran.clicks.keyboard.PredictionEngine
 import com.fran.clicks.keyboard.PredictionOverlayManager
 import com.fran.clicks.keyboard.SpatialScorer
@@ -125,6 +127,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var ngramRepo: NgramRepository
     private lateinit var flickDetector: FlickDetector
     private lateinit var predictionOverlay: PredictionOverlayManager
+    private lateinit var liveRouter: LivePredictionRouter
     private lateinit var clockView: TextView
     private lateinit var dateView: TextView
     private lateinit var hubView: LinearLayout
@@ -153,6 +156,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         predictionEngine = PredictionEngine(emptyMap())
         flickDetector = FlickDetector()
         predictionOverlay = PredictionOverlayManager(this)
+        liveRouter = LivePredictionRouter(
+            scope = mediaUiScope,
+            getKeyView = { label -> keyViews[label] as? DynamicFlickKeyView },
+            getSuggestions = { word -> predictionEngine.getSuggestions(word, maxCount = 8) }
+        )
+        liveRouter.start()
         loadGlideWords()
         render()
         mediaSessionSource.start()
@@ -1085,7 +1094,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun key(label: String): TextView {
-        return TextView(this).apply {
+        val isLetter = label.length == 1 && label[0].isLetter()
+        return (if (isLetter) DynamicFlickKeyView(this) else TextView(this)).apply {
             text = keyLabel(label)
             gravity = Gravity.CENTER
             textSize = keyTextSize(label)
@@ -1116,7 +1126,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         }
                         val flick = flickDetector.classify(touchDownX, touchDownY, event.x, event.y)
                         if (flick == FlickDirection.UP) {
-                            val prediction = predictionOverlay.predictionFor(label)
+                            val prediction = (keyViews[label] as? DynamicFlickKeyView)?.upWordHint
+                                ?: predictionOverlay.predictionFor(label)
                             if (prediction != null) {
                                 keyHaptic("space")
                                 acceptSuggestion(prediction)
@@ -1194,8 +1205,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val word = currentWordInCompose()
         if (word.length < 2) {
             if (suggestions.isNotEmpty()) { suggestions = emptyList(); updateSuggestionBar() }
+            liveRouter.onTextChanged("")
             return
         }
+        liveRouter.onTextChanged(word)
         val r = Runnable {
             lastSuggestWord = word
             val localSuggs = predictionEngine.getSuggestions(word, 3)
