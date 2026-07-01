@@ -976,7 +976,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         val swipeLayout = SwipeKeyboardLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.BOTTOM
             setBackgroundColor(0xFF000000.toInt())
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
@@ -2503,7 +2502,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
     private fun keyboardHeight() = dp(272 + keyboardSize * 80 / 100)
     private fun keyboardTopPadding() = dp(4)
-    private fun keyboardBottomPadding() = dp(12)
+    private fun keyboardBottomPadding() = dp(20)
 
     private fun keyTextSize(label: String): Float {
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
