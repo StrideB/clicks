@@ -3031,13 +3031,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         marginEnd = dp(4)
                     })
                 } else {
+                    // Key fills full row height for a larger invisible touch target.
+                    // Visual inset is applied via InsetDrawable inside key() instead.
                     addView(key(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight).apply {
-                        val vInset = keyVerticalInset()
-                        val hInset = keyHorizontalInset()
-                        topMargin = vInset
-                        bottomMargin = vInset
-                        marginStart = hInset
-                        marginEnd = hInset
+                        marginStart = keyHorizontalInset()
+                        marginEnd = keyHorizontalInset()
                     })
                 }
             }
@@ -3057,25 +3055,53 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(0, 0, 0, 0)
             setTextColor(keyTextColor(label))
             isClickable = true
-            background = keyIdleBackground(label)
+            val vInset = keyVerticalInset()
+            fun idleBg() = android.graphics.drawable.InsetDrawable(keyIdleBackground(label), 0, vInset, 0, vInset)
+            fun pressedBg() = android.graphics.drawable.InsetDrawable(keyPressedBackground(label), 0, vInset, 0, vInset)
+            background = idleBg()
             if (keyboardTheme != KEYBOARD_THEME_DEFAULT) {
                 elevation = dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 5 else 3).toFloat()
                 stateListAnimator = null
             }
 
             var touchDownX = 0f; var touchDownY = 0f
+            var deleteRepeating = false
+            var deleteRunnable: Runnable? = null
+            val deleteHandler = if (label == "back") android.os.Handler(android.os.Looper.getMainLooper()) else null
+
+            fun cancelRepeat() {
+                deleteRunnable?.let { deleteHandler?.removeCallbacks(it) }
+                deleteRunnable = null
+            }
+
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         touchDownX = event.x; touchDownY = event.y
-                        v.background = keyPressedBackground(label)
+                        v.background = pressedBg()
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = dp(2).toFloat()
                         keyHaptic(label)
                         keyPreviewManager.show(v, label)
+                        if (label == "back") {
+                            deleteRepeating = false
+                            deleteRunnable = object : Runnable {
+                                override fun run() {
+                                    deleteRepeating = true
+                                    handleKey("back")
+                                    keyHaptic("back")
+                                    deleteHandler?.postDelayed(this, 45L)
+                                }
+                            }
+                            deleteHandler?.postDelayed(deleteRunnable!!, 380L)
+                        }
                     }
                     MotionEvent.ACTION_UP -> {
-                        v.background = keyIdleBackground(label)
+                        v.background = idleBg()
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = 0f
+                        if (label == "back") {
+                            cancelRepeat()
+                            if (deleteRepeating) { deleteRepeating = false; return@setOnTouchListener true }
+                        }
                         val flick = flickDetector.classify(touchDownX, touchDownY, event.x, event.y)
                         if (flick == FlickDirection.UP) {
                             val prediction = (keyViews[label] as? DynamicFlickKeyView)?.upWordHint
@@ -3087,8 +3113,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         }
                     }
                     MotionEvent.ACTION_CANCEL -> {
-                        v.background = keyIdleBackground(label)
+                        v.background = idleBg()
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = 0f
+                        cancelRepeat(); deleteRepeating = false
                     }
                 }
                 false
@@ -3097,7 +3124,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (label == "shift") handleShiftTap() else handleKey(label)
             }
             if (label == "enter") setOnLongClickListener { haptic(this); startVoiceInput(); true }
-            if (label == "back") setOnLongClickListener { haptic(this); deleteWord(); true }
             if (isLetter) setOnLongClickListener { haptic(this); handleLetterLongPress(label.lowercase(Locale.US)); true }
         }.also { keyViews[label] = it }
     }
