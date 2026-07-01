@@ -603,12 +603,19 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     }
 
     private fun acceptSuggestion(word: String) {
-        val text = composeText.trimEnd()
-        val lastSpace = text.lastIndexOf(' ')
-        composeText = (if (lastSpace < 0) "" else text.substring(0, lastSpace + 1)) + word + " "
+        val pane = openPane
+        if (pane?.kind == PaneKind.CHAT) {
+            val text = composeText.trimEnd()
+            val lastSpace = text.lastIndexOf(' ')
+            composeText = (if (lastSpace < 0) "" else text.substring(0, lastSpace + 1)) + word + " "
+            updateAutoCapState(); updateKeyLabels()
+            renderPaneContent(pane)
+        } else {
+            val text = query.trimEnd()
+            val lastSpace = text.lastIndexOf(' ')
+            query = (if (lastSpace < 0) "" else text.substring(0, lastSpace + 1)) + word + " "
+        }
         suggestions = emptyList(); updateSuggestionBar()
-        updateAutoCapState(); updateKeyLabels()
-        openPane?.let { renderPaneContent(it) }
         renderRibbon()
     }
 
@@ -625,7 +632,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     }
 
     private fun currentWordInCompose(): String {
-        val text = composeText.trimEnd()
+        val text = (if (openPane?.kind == PaneKind.CHAT) composeText else query).trimEnd()
         val lastSpace = text.lastIndexOf(' ')
         return if (lastSpace < 0) text else text.substring(lastSpace + 1)
     }
@@ -681,13 +688,17 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     }
 
     private fun handleSwipe(keys: List<String>) {
-        val pane = openPane ?: return
-        if (pane.kind != PaneKind.CHAT) return
         haptic(contentFrame)
         val rawWord = keys.joinToString("")
-        composeText += rawWord
-        scheduleSpellCheck()
-        renderPaneContent(pane)
+        val pane = openPane
+        if (pane?.kind == PaneKind.CHAT) {
+            composeText += rawWord
+            scheduleSpellCheck()
+            renderPaneContent(pane)
+        } else {
+            query += rawWord
+            scheduleSpellCheck()
+        }
         renderRibbon()
     }
 
@@ -739,13 +750,31 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         if (pane?.kind == PaneKind.CHAT) { handleChatKey(label, pane); return }
 
         when (label) {
-            "back" -> query = query.dropLast(1)
-            "space" -> query += " "
-            "period" -> query += "."
+            "back" -> {
+                query = query.dropLast(1)
+                scheduleSpellCheck()
+            }
+            "space" -> {
+                val now = System.currentTimeMillis()
+                if (now - lastSpaceMs < 500 && query.isNotEmpty() && query.last() == ' ') {
+                    query = query.dropLast(1) + ". "
+                    suggestions = emptyList(); updateSuggestionBar()
+                } else {
+                    query += " "
+                    suggestions = emptyList(); updateSuggestionBar()
+                }
+                lastSpaceMs = now
+            }
+            "period" -> { query += "."; suggestions = emptyList(); updateSuggestionBar() }
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; query = ""; render(); return }
             "enter" -> filteredApps().firstOrNull()?.let { openExternal(it.toPaneTarget()) }
             "123" -> Unit
-            else -> query += label
+            else -> {
+                val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
+                query += char
+                if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
+                scheduleSpellCheck()
+            }
         }
         renderRibbon()
     }
@@ -799,7 +828,11 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             renderPaneContent(pane); renderRibbon()
             return
         }
-        query = ""; renderRibbon()
+        val trimmed = query.trimEnd()
+        val lastSpace = trimmed.lastIndexOf(' ')
+        query = if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)
+        suggestions = emptyList(); updateSuggestionBar()
+        renderRibbon()
     }
 
     // ── Pane / navigation ────────────────────────────────────────────────────
