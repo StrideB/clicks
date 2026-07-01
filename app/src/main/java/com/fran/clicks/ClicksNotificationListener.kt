@@ -17,6 +17,13 @@ class ClicksNotificationListener : NotificationListenerService() {
         activeNotifications.orEmpty().forEach { onNotificationPosted(it) }
     }
 
+    override fun onListenerDisconnected() {
+        super.onListenerDisconnected()
+        notificationAvatars.values.forEach { runCatching { it.recycle() } }
+        notificationAvatars.clear()
+        notificationIntents.clear()
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!sbn.isHubCandidate()) return
 
@@ -29,7 +36,13 @@ class ClicksNotificationListener : NotificationListenerService() {
         if (kind in DIRECT_OPEN_KINDS && sbn.notification.contentIntent == null) return
 
         sbn.notification.contentIntent?.let { notificationIntents[sbn.key] = it }
-        notificationAvatar(sbn.notification)?.let { notificationAvatars[sbn.key] = it }
+        notificationAvatar(sbn.notification)?.let { newBitmap ->
+            if (notificationAvatars.size >= MAX_AVATARS) {
+                val evict = notificationAvatars.keys.firstOrNull()
+                if (evict != null) notificationAvatars.remove(evict)?.let { runCatching { it.recycle() } }
+            }
+            notificationAvatars[sbn.key] = newBitmap
+        }
 
         val item = JSONObject()
             .put("key", sbn.key)
@@ -48,7 +61,7 @@ class ClicksNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         notificationIntents.remove(sbn.key)
-        notificationAvatars.remove(sbn.key)
+        notificationAvatars.remove(sbn.key)?.let { runCatching { it.recycle() } }
         val next = JSONArray()
         readMessages()
             .filterNot { it.optString("key") == sbn.key }
@@ -152,6 +165,7 @@ class ClicksNotificationListener : NotificationListenerService() {
         private const val HUB_KIND_NEWS = "news"
         private const val HUB_KIND_MAPS = "maps"
         private const val MAX_MESSAGES = 12
+        private const val MAX_AVATARS = 20
         private val DIRECT_OPEN_KINDS = setOf(HUB_KIND_EMAIL, HUB_KIND_NEWS, HUB_KIND_MAPS)
         val notificationIntents = mutableMapOf<String, PendingIntent>()
         val notificationAvatars = mutableMapOf<String, Bitmap>()

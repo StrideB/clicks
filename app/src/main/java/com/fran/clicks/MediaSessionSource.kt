@@ -3,6 +3,8 @@ package com.fran.clicks
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
@@ -20,6 +22,7 @@ data class NowPlayingInfo(
     val sourcePackage: String,
     val sourceApp: String,
     val appIconColor: Int,
+    val appIcon: Bitmap?,
     val albumArt: Bitmap?,
     val isPlaying: Boolean,
     val positionMs: Long,
@@ -70,22 +73,18 @@ class MediaSessionSource(private val context: Context) {
         val current = controller ?: return
         if (_nowPlaying.value?.isPlaying == true) current.transportControls.pause()
         else current.transportControls.play()
-        mainHandler.postDelayed({ refreshActiveSessions() }, 120)
     }
 
     fun skipToPrevious() {
         controller?.transportControls?.skipToPrevious()
-        mainHandler.postDelayed({ refreshActiveSessions() }, 180)
     }
 
     fun skipToNext() {
         controller?.transportControls?.skipToNext()
-        mainHandler.postDelayed({ refreshActiveSessions() }, 180)
     }
 
     fun seekTo(positionMs: Long) {
         controller?.transportControls?.seekTo(positionMs)
-        mainHandler.postDelayed({ refreshActiveSessions() }, 100)
     }
 
     fun openSourceApp() {
@@ -129,6 +128,7 @@ class MediaSessionSource(private val context: Context) {
             sourcePackage = packageName,
             sourceApp = appLabel(packageName),
             appIconColor = appColor(packageName),
+            appIcon = appIconBitmap(packageName),
             albumArt = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
                 ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART),
             isPlaying = state?.state == PlaybackState.STATE_PLAYING,
@@ -150,6 +150,20 @@ class MediaSessionSource(private val context: Context) {
         packageName.contains("apple", ignoreCase = true) -> 0xFFFA586A.toInt()
         packageName.contains("youtube", ignoreCase = true) -> 0xFFFF0033.toInt()
         else -> 0xFF57C98A.toInt()
+    }
+
+    private fun appIconBitmap(packageName: String): Bitmap? {
+        return runCatching {
+            val drawable = context.packageManager.getApplicationIcon(packageName)
+            if (drawable is BitmapDrawable) return@runCatching drawable.bitmap
+            val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: 96
+            val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: 96
+            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
+                val canvas = Canvas(bitmap)
+                drawable.setBounds(0, 0, canvas.width, canvas.height)
+                drawable.draw(canvas)
+            }
+        }.getOrNull()
     }
 
     private companion object {

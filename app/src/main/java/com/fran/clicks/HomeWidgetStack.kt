@@ -117,7 +117,11 @@ fun HomeWidgetStack(
     }
     val pageCount = pages.size
     val pagerState = rememberPagerState(pageCount = { pageCount })
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(24.dp))
+    ) {
         VerticalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize()
@@ -176,7 +180,7 @@ fun HomeWidgetStack(
         }
         if (pageCount > 1) {
             Column(
-                Modifier.align(Alignment.CenterEnd).padding(end = 8.dp),
+                Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 repeat(pageCount) { index ->
