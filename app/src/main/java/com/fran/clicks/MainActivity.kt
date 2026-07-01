@@ -268,6 +268,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(home(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        // Typing display — lives between content and keyboard so gravity=BOTTOM on keyboard
+        // rows never clips it. Shows typed text + blinking cursor; hint text when idle.
+        searchHintView = TextView(this).apply {
+            textSize = 17f
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            setTextColor(Ink)
+            gravity = Gravity.CENTER_VERTICAL
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.START
+            setPadding(dp(16), 0, dp(16), 0)
+            setBackgroundColor(0xFF0A0B0E.toInt())
+        }
+        root.addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, dp(44))
+
         root.addView(keyboard(), LinearLayout.LayoutParams.MATCH_PARENT, keyboardHeight())
         setContentView(root)
         updateClock()
@@ -956,17 +971,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             gravity = Gravity.BOTTOM
             setBackgroundColor(0xFF000000.toInt())
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
-
-            searchHintView = TextView(context).apply {
-                textSize = 16f
-                typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-                setTextColor(Ink)
-                gravity = Gravity.CENTER_VERTICAL
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.START
-                setPadding(dp(12), 0, dp(12), 0)
-            }
-            addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, dp(44))
 
             suggestionBarView = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
