@@ -262,22 +262,6 @@ fun MusicPlayer(
                 onNext = onNext
             )
         }
-        MusicGlassHeader(
-            theme = playerTheme,
-            sourceApp = current.sourceApp,
-            sourceIcon = current.appIcon,
-            appColor = appColor,
-            albumArt = current.albumArt,
-            isPlaying = current.isPlaying,
-            onThemeClick = {
-                playerTheme = playerTheme.next()
-                onThemeChanged(playerTheme.id)
-            },
-            onSourceClick = onOpenSource,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 8.dp, start = 12.dp, end = 12.dp)
-        )
     }
 }
 
@@ -685,85 +669,6 @@ private fun FullPaneAlbumArt(title: String, albumArt: Bitmap?, appColor: Color) 
 }
 
 @Composable
-private fun MusicGlassHeader(
-    theme: NowPlayingTheme,
-    sourceApp: String,
-    sourceIcon: Bitmap?,
-    appColor: Color,
-    albumArt: Bitmap?,
-    isPlaying: Boolean,
-    onThemeClick: () -> Unit,
-    onSourceClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier
-            .fillMaxWidth()
-            .height(58.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .drawBehind {
-                drawRoundRect(
-                    color = Color.Black.copy(alpha = 0.26f),
-                    topLeft = Offset(0f, 4.dp.toPx()),
-                    size = size,
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(24.dp.toPx())
-                )
-            }
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(24.dp))
-    ) {
-        if (albumArt != null) {
-            Image(
-                albumArt.asImageBitmap(),
-                null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .blur(18.dp)
-                    .graphicsLayer(alpha = 0.42f),
-                contentScale = ContentScale.Crop
-            )
-        } else {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .blur(18.dp)
-                    .background(Brush.radialGradient(listOf(appColor.copy(alpha = 0.34f), Color.Transparent)))
-            )
-        }
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color(0x6616181D),
-                            Color(0x4416181D),
-                            Color(0x7A08090B)
-                        )
-                    )
-                )
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ThemeIconButton(theme, appColor, onThemeClick)
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                LabelText("NOW PLAYING", Ink.copy(alpha = 0.82f))
-            }
-            SourceIconButton(
-                appName = sourceApp,
-                appIconColor = appColor,
-                appIcon = sourceIcon,
-                isPlaying = isPlaying,
-                onClick = onSourceClick
-            )
-        }
-    }
-}
-
-@Composable
 private fun VinylDisc(title: String, albumArt: Bitmap?, isPlaying: Boolean) {
     val transition = rememberInfiniteTransition(label = "vinyl-spin")
     val rotation by if (isPlaying) {
@@ -1023,40 +928,6 @@ private fun MiniAlbumArt(albumArt: Bitmap?, isPlaying: Boolean, sourceColor: Col
             Image(albumArt.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         }
         VinylDot(isPlaying)
-    }
-}
-
-@Composable
-private fun SourceIconButton(
-    appName: String,
-    appIconColor: Color,
-    appIcon: Bitmap?,
-    isPlaying: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .size(42.dp)
-            .clip(CircleShape)
-            .background(Color(0xFF111318))
-            .border(1.dp, appIconColor.copy(alpha = 0.42f), CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(Modifier.size(28.dp).clip(CircleShape).background(appIconColor), contentAlignment = Alignment.Center) {
-            if (appIcon != null) {
-                Image(appIcon.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-            } else {
-                BasicText(
-                    text = appName.take(1).uppercase().ifBlank { "M" },
-                    style = TextStyle(color = Color(0xFF071009), fontSize = 14.sp, fontWeight = FontWeight.Black)
-                )
-            }
-        }
-        Box(Modifier.align(Alignment.BottomEnd).padding(2.dp)) {
-            Equalizer(isPlaying, appIconColor, height = 12.dp)
-        }
     }
 }
 

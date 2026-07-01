@@ -49,9 +49,11 @@ import android.util.Xml
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
+import android.widget.Scroller
 import android.view.textservice.SentenceSuggestionsInfo
 import android.view.textservice.SpellCheckerSession
 import android.view.textservice.SuggestionsInfo
@@ -138,6 +140,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var stripSwipeStartX = 0f
     private var stripSwipeStartY = 0f
     private var stripSwipeTriggered = false
+    private var paneSwipeStartX = 0f
+    private var paneSwipeStartY = 0f
+    private var paneSwipeTriggered = false
     private var iconPacksCache: List<IconPack>? = null
     private val iconPackMatchCache = mutableMapOf<String, IconPackIcon?>()
     private var composeText = ""
@@ -158,6 +163,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var numberPadOpen = false
     private lateinit var mediaSessionSource: MediaSessionSource
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    lateinit var spotifyAuth: SpotifyAuth
+    lateinit var spotifyApi: SpotifyWebApi
     private val fallbackIconCache = android.util.LruCache<String, Drawable>(64)
     private var lastAppsLoadMs = 0L
     private var lastHubLoadMs = 0L
@@ -242,6 +249,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         calendarEvents = loadCalendarEvents()
         prefs().registerOnSharedPreferenceChangeListener(prefsListener)
         mediaSessionSource = MediaSessionSource(this)
+        spotifyAuth = SpotifyAuth(this)
+        spotifyApi = SpotifyWebApi(spotifyAuth)
         initSpellChecker()
         hapticEngine = CustomHapticEngine(this)
         spatialScorer = SpatialScorer()
@@ -266,6 +275,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 syncNowPlayingCardVisibility()
                 refreshNowPlayingCard()
                 if (openPane?.kind == PaneKind.MUSIC) refreshKeyboardDock()
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val uri = intent.data ?: return
+        if (uri.scheme == "com.fran.clicks" && uri.host == "spotify-callback") {
+            mediaUiScope.launch {
+                val ok = spotifyAuth.handleCallback(uri)
+                if (ok) {
+                    prefs().edit().putString(SPOTIFY_INTEGRATION_PREF, INTEGRATION_API).apply()
+                    renderPaneContent(clicksSettingsTarget())
+                    Toast.makeText(this@MainActivity, "Spotify connected!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Spotify connection failed. Try again.", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -356,6 +382,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (handlePaneSwipe(event)) return true
         handleLibrarySwipe(event)
         return super.dispatchTouchEvent(event)
     }
@@ -1183,6 +1210,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             librarySwipeTriggered = true
                             closeLibrary()
                         }
+                        dx < 0 && libraryOpen -> {
+                            librarySwipeTriggered = true
+                            closeLibrary(slideLeft = true)
+                        }
                         dx > 0 && openPane == null -> {
                             librarySwipeTriggered = true
                             performHomeGesture(gestureAction(GESTURE_RIGHT_PREF, GESTURE_NONE))
@@ -1202,6 +1233,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 librarySwipeBlockedByWidget = false
             }
         }
+    }
+
+    private fun handlePaneSwipe(event: MotionEvent): Boolean {
+        if (!::contentFrame.isInitialized || openPane?.kind != PaneKind.MUSIC || libraryOpen || widgetBoardView != null) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                paneSwipeStartX = event.rawX
+                paneSwipeStartY = event.rawY
+                paneSwipeTriggered = false
+            }
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+                if (paneSwipeTriggered) return true
+                val dx = event.rawX - paneSwipeStartX
+                val dy = event.rawY - paneSwipeStartY
+                if (dy > dp(72) && dy > abs(dx) * 1.2f) {
+                    paneSwipeTriggered = true
+                    haptic(contentFrame)
+                    closePane()
+                    return true
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> paneSwipeTriggered = false
+        }
+        return false
     }
 
     private fun isInsideHomeWidget(rawX: Float, rawY: Float): Boolean {
@@ -1264,7 +1319,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshNowPlayingCard()
     }
 
-    private fun closeLibrary() {
+    private fun closeLibrary(slideLeft: Boolean = false) {
         if (!libraryOpen) return
         libraryOpen = false
         query = ""
@@ -1273,7 +1328,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
         val closing = libraryView ?: return
-        closing.animate().translationX(closing.width.toFloat()).setDuration(240)
+        val targetX = if (slideLeft) -closing.width.toFloat() else closing.width.toFloat()
+        closing.animate().translationX(targetX).setDuration(240)
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
                 contentFrame.removeView(closing)
@@ -1814,18 +1870,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun appLibrary(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
+    private fun appLibrary(): View = FrameLayout(this).apply {
         setPadding(dp(14), dp(14), dp(14), dp(10))
         background = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(0xFF22242B.toInt(), 0xFF131419.toInt(), Screen)
         )
-        addView(libraryHeader(), LinearLayout.LayoutParams.MATCH_PARENT, dp(42))
         val contentArea = FrameLayout(context)
         libraryContentArea = contentArea
         fillLibraryContent(contentArea)
-        addView(contentArea, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        addView(contentArea, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply {
+            topMargin = dp(38)
+        })
+        addView(libraryHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
     }
 
     private fun fillLibraryContent(area: FrameLayout) {
@@ -1843,7 +1900,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun libraryHeader(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        background = frostedHeaderBg()
+        setPadding(dp(12), 0, dp(10), 0)
+        background = libraryHeaderGlassBg()
+        elevation = dp(10).toFloat()
         addView(TextView(context).apply {
             text = "App Library"; textSize = 17f
             typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
@@ -1865,11 +1924,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 showLibrary(animate = false)
             }
         }, LinearLayout.LayoutParams(dp(94), dp(30)).apply { marginEnd = dp(8) })
-        addView(TextView(context).apply {
-            text = "X"; gravity = Gravity.CENTER; textSize = 14f; setTextColor(InkDim)
-            background = roundedPanel(Panel2, dp(15), Line); isClickable = true
-            setOnClickListener { haptic(this); closeLibrary() }
-        }, LinearLayout.LayoutParams(dp(30), dp(30)))
     }
 
     private fun searchResultsGrid(): View = ScrollView(this).apply {
@@ -2290,7 +2344,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun dockedInputView(): View {
         return when (openPane?.kind) {
-            PaneKind.MUSIC -> if (musicTheme() == MUSIC_THEME_BLACK) musicBlackDock() else clickWheelDock()
+            PaneKind.MUSIC -> if (musicTheme() == MUSIC_THEME_BLACK) musicBlackDock() else musicDockView()
             PaneKind.PHOTOS -> photoAlbumsDock()
             else -> keyboard()
         }
@@ -2332,7 +2386,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setStroke(dp(1), 0xFF20232A.toInt())
             }
             val wheelSize = clickWheelSize()
-            addView(WheelWellView(context), FrameLayout.LayoutParams(wheelSize + dp(54), wheelSize + dp(54), Gravity.CENTER))
+            addView(WheelWellView(context), FrameLayout.LayoutParams(wheelSize + dp(18), wheelSize + dp(18), Gravity.CENTER))
             addView(ClickWheelView(context).apply {
                 onCenter = {
                     haptic(this)
@@ -2354,6 +2408,250 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     haptic(this)
                     mediaSessionSource.openSourceApp()
                 }
+            }, FrameLayout.LayoutParams(wheelSize, wheelSize, Gravity.CENTER))
+        }
+    }
+
+    // ── Music dock: library pager + click wheel ──────────────────────────────
+
+    private fun musicDockView(): View {
+        if (!spotifyAuth.isConnected) return clickWheelDock()
+        val pager = DockPageSwiper(this)
+        pager.addPage(spotifyLibraryPage(onSwipeToWheel = { pager.goToPage(1) }))
+        pager.addPage(clickWheelDockPage(onLibraryTapped = { pager.goToPage(0) }))
+        pager.goToPage(0, animate = false)
+        return pager
+    }
+
+    // Two-page swipe container: smooth paging with velocity snapping.
+    inner class DockPageSwiper(context: Context) : ViewGroup(context) {
+        private val scroller = Scroller(context, DecelerateInterpolator())
+        private val velocity = VelocityTracker.obtain()
+        private var downX = 0f
+        private var downY = 0f
+        private var dragging = false
+        private var currentPage = 0
+
+        fun addPage(v: View) { addView(v) }
+
+        fun goToPage(page: Int, animate: Boolean = true) {
+            currentPage = page.coerceIn(0, childCount - 1)
+            val target = currentPage * width
+            if (animate) {
+                scroller.startScroll(scrollX, 0, target - scrollX, 0, 260)
+                invalidate()
+            } else {
+                scroller.abortAnimation()
+                scrollTo(target, 0)
+            }
+        }
+
+        override fun computeScroll() {
+            if (scroller.computeScrollOffset()) {
+                scrollTo(scroller.currX, 0)
+                invalidate()
+            }
+        }
+
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            setMeasuredDimension(widthSpec, heightSpec)
+            val pw = MeasureSpec.getSize(widthSpec)
+            val ph = MeasureSpec.getSize(heightSpec)
+            for (i in 0 until childCount) {
+                getChildAt(i).measure(
+                    MeasureSpec.makeMeasureSpec(pw, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(ph, MeasureSpec.EXACTLY)
+                )
+            }
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            val pw = r - l
+            for (i in 0 until childCount) {
+                getChildAt(i).layout(i * pw, 0, (i + 1) * pw, b - t)
+            }
+        }
+
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y; dragging = false }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = kotlin.math.abs(ev.x - downX)
+                    val dy = kotlin.math.abs(ev.y - downY)
+                    if (!dragging && dx > dp(8) && dx > dy * 1.3f) {
+                        dragging = true
+                        if (!scroller.isFinished) scroller.abortAnimation()
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+
+        override fun onTouchEvent(ev: MotionEvent): Boolean {
+            velocity.addMovement(ev)
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (!scroller.isFinished) scroller.abortAnimation()
+                    downX = ev.x
+                    dragging = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val raw = (downX - ev.x + currentPage * width).toInt()
+                    scrollTo(raw.coerceIn(0, (childCount - 1) * width), 0)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    velocity.computeCurrentVelocity(1000)
+                    val vx = velocity.xVelocity
+                    val page = when {
+                        vx < -600 -> currentPage + 1
+                        vx > 600 -> currentPage - 1
+                        scrollX > currentPage * width + width / 2 -> currentPage + 1
+                        scrollX < currentPage * width - width / 2 -> currentPage - 1
+                        else -> currentPage
+                    }
+                    goToPage(page)
+                    velocity.clear()
+                    dragging = false
+                }
+            }
+            return true
+        }
+    }
+
+    // Spotify library page: header + horizontal scrolling track cards.
+    private fun spotifyLibraryPage(onSwipeToWheel: () -> Unit): View {
+        val dockBg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0xFF0D0F12.toInt(), 0xFF07080A.toInt(), 0xFF030304.toInt()
+        )).apply { setStroke(dp(1), 0xFF1A1D22.toInt()) }
+
+        val container = FrameLayout(this).apply { background = dockBg }
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+
+        // Header row
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        headerRow.addView(mono("RECENTLY PLAYED", 9f, 0xFF1ED760.toInt()).apply {
+            letterSpacing = 0.14f
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        headerRow.addView(mono("WHEEL ›", 9f, InkDim).apply {
+            letterSpacing = 0.08f
+            setPadding(dp(12), dp(4), 0, dp(4))
+            isClickable = true
+            setOnClickListener { onSwipeToWheel() }
+        })
+        content.addView(headerRow, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        content.addView(View(this).apply { setBackgroundColor(0x18FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+
+        // Track cards scroll
+        val trackScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val trackRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        trackScroll.addView(trackRow)
+        content.addView(trackScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        container.addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+        // Load tracks asynchronously
+        mediaUiScope.launch(Dispatchers.IO) {
+            val tracks = spotifyApi.getRecentlyPlayed(limit = 12)
+            val artBitmaps = tracks.map { track ->
+                track.albumArtUrl?.let { url ->
+                    runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull()
+                }
+            }
+            launch(Dispatchers.Main) {
+                if (tracks.isEmpty()) {
+                    trackRow.addView(mono("Play something in Spotify to see it here", 10f, InkDim).apply {
+                        setPadding(dp(4), dp(8), 0, 0)
+                    })
+                } else {
+                    tracks.forEachIndexed { i, track ->
+                        trackRow.addView(spotifyTrackCard(track, artBitmaps[i]), LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
+                    }
+                }
+            }
+        }
+
+        return container
+    }
+
+    private fun spotifyTrackCard(track: SpotifyTrack, art: android.graphics.Bitmap?): View {
+        val cardW = dp(96)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, dp(12), 0)
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                mediaUiScope.launch { spotifyApi.play() }
+            }
+
+            val artView = ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = GradientDrawable().apply {
+                    setColor(0xFF1A1D22.toInt())
+                    cornerRadius = dp(8).toFloat()
+                }
+                if (art != null) setImageBitmap(art)
+                else setImageDrawable(GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF232830.toInt(), 0xFF141720.toInt())).apply {
+                    cornerRadius = dp(8).toFloat()
+                })
+                clipToOutline = true
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(v: View, outline: android.graphics.Outline) {
+                        outline.setRoundRect(0, 0, v.width, v.height, dp(8).toFloat())
+                    }
+                }
+            }
+            addView(artView, LinearLayout.LayoutParams(cardW, cardW))
+
+            addView(TextView(context).apply {
+                text = track.name
+                textSize = 10f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Ink)
+                setPadding(0, dp(5), 0, 0)
+            }, LinearLayout.LayoutParams(cardW, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+            addView(TextView(context).apply {
+                text = track.artist
+                textSize = 9f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(InkDim)
+            }, LinearLayout.LayoutParams(cardW, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    // Click wheel page inside pager — SOURCE button navigates back to library.
+    private fun clickWheelDockPage(onLibraryTapped: () -> Unit): View {
+        return FrameLayout(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                0xFF101216.toInt(), 0xFF050506.toInt(), 0xFF000000.toInt()
+            )).apply { setStroke(dp(1), 0xFF20232A.toInt()) }
+            val wheelSize = clickWheelSize()
+            addView(WheelWellView(context), FrameLayout.LayoutParams(wheelSize + dp(18), wheelSize + dp(18), Gravity.CENTER))
+            addView(ClickWheelView(context).apply {
+                sourceLabel = "LIBRARY"
+                onLibrary = { haptic(this); onLibraryTapped() }
+                onCenter = { haptic(this); mediaSessionSource.togglePlayPause() }
+                onLeft = { haptic(this); mediaSessionSource.skipToPrevious() }
+                onRight = { haptic(this); mediaSessionSource.skipToNext() }
+                onBottom = { haptic(this); mediaSessionSource.togglePlayPause() }
             }, FrameLayout.LayoutParams(wheelSize, wheelSize, Gravity.CENTER))
         }
     }
@@ -3128,6 +3426,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         var onRight: (() -> Unit)? = null
         var onTop: (() -> Unit)? = null
         var onBottom: (() -> Unit)? = null
+        var onLibrary: (() -> Unit)? = null
+        var sourceLabel: String = "SOURCE"
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textAlign = Paint.Align.CENTER
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
@@ -3146,27 +3446,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val inner = outer * 0.38f
             outerRadialShader = android.graphics.RadialGradient(
                 cx, cy, outer * 1.1f,
-                intArrayOf(0xFF20242B.toInt(), 0xFF050608.toInt(), 0xFF000000.toInt()),
+                intArrayOf(0xFF171A20.toInt(), 0xFF08090C.toInt(), 0xFF020203.toInt()),
                 floatArrayOf(0f, 0.66f, 1f), Shader.TileMode.CLAMP
             )
             faceLinearShader = android.graphics.LinearGradient(
                 0f, cy - outer, 0f, cy + outer,
-                intArrayOf(0xFF252A32.toInt(), 0xFF171B22.toInt(), 0xFF08090C.toInt(), 0xFF010102.toInt()),
+                intArrayOf(0xFF1B1F25.toInt(), 0xFF12161B.toInt(), 0xFF090A0D.toInt(), 0xFF030304.toInt()),
                 floatArrayOf(0f, 0.28f, 0.72f, 1f), Shader.TileMode.CLAMP
             )
             centerShaderNormal = android.graphics.RadialGradient(
                 cx, cy, inner * 1.14f,
-                intArrayOf(0xFF353B45.toInt(), 0xFF181C23.toInt(), 0xFF07080B.toInt()),
+                intArrayOf(0xFF242931.toInt(), 0xFF14181E.toInt(), 0xFF06070A.toInt()),
                 floatArrayOf(0f, 0.64f, 1f), Shader.TileMode.CLAMP
             )
             centerShaderPressed = android.graphics.RadialGradient(
                 cx, cy + dp(3).toFloat(), inner * 1.14f,
-                intArrayOf(0xFF353B45.toInt(), 0xFF181C23.toInt(), 0xFF07080B.toInt()),
+                intArrayOf(0xFF20242B.toInt(), 0xFF10141A.toInt(), 0xFF050609.toInt()),
                 floatArrayOf(0f, 0.64f, 1f), Shader.TileMode.CLAMP
             )
             glintShader = android.graphics.RadialGradient(
                 cx - outer * 0.28f, cy - outer * 0.32f, outer * 0.95f,
-                0x16FFFFFF, 0x00000000, Shader.TileMode.CLAMP
+                0x08FFFFFF, 0x00000000, Shader.TileMode.CLAMP
             )
         }
 
@@ -3180,21 +3480,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
             paint.shader = null
             paint.style = Paint.Style.FILL
-            paint.color = 0xAA000000.toInt()
-            canvas.drawCircle(cx, cy + dp(8), outer * 1.03f, paint)
+            paint.color = 0x66000000
+            canvas.drawCircle(cx, cy + dp(3), outer * 0.98f, paint)
 
             paint.shader = outerRadialShader
-            canvas.drawCircle(cx, cy, outer * 1.03f, paint)
+            canvas.drawCircle(cx, cy, outer * 1.0f, paint)
             paint.shader = null
 
             paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(3).toFloat()
-            paint.color = 0x55101820
-            canvas.drawCircle(cx, cy, outer * 1.02f, paint)
+            paint.strokeWidth = dp(2).toFloat()
+            paint.color = 0xAA020305.toInt()
+            canvas.drawCircle(cx, cy, outer * 0.99f, paint)
 
             paint.style = Paint.Style.FILL
             paint.shader = faceLinearShader
-            canvas.drawCircle(cx, cy, outer, paint)
+            canvas.drawCircle(cx, cy, outer * 0.965f, paint)
             paint.shader = null
 
             pressedZone?.takeIf { it != WheelZone.CENTER }?.let { zone ->
@@ -3207,16 +3507,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     WheelZone.LEFT -> 135f
                     WheelZone.CENTER -> 0f
                 }
-                canvas.drawArc(cx - outer, cy - outer, cx + outer, cy + outer, start, 90f, true, paint)
+                val pressedR = outer * 0.94f
+                canvas.drawArc(cx - pressedR, cy - pressedR, cx + pressedR, cy + pressedR, start, 90f, true, paint)
             }
 
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(1).toFloat()
-            paint.color = 0x22FFFFFF
-            canvas.drawCircle(cx, cy, outer - dp(3), paint)
-            paint.strokeWidth = dp(3).toFloat()
-            paint.color = 0xDD000000.toInt()
-            canvas.drawCircle(cx, cy, outer, paint)
+            paint.color = 0x12FFFFFF
+            canvas.drawCircle(cx, cy, outer * 0.90f, paint)
+            paint.strokeWidth = dp(2).toFloat()
+            paint.color = 0xEE010203.toInt()
+            canvas.drawCircle(cx, cy, outer * 0.966f, paint)
 
             val centerOffY = cy + dp(if (centerPressed) 3 else 0)
             paint.style = Paint.Style.FILL
@@ -3225,20 +3526,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             paint.shader = null
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(2).toFloat()
-            paint.color = if (centerPressed) 0xFF101318.toInt() else 0xAA000000.toInt()
+            paint.color = if (centerPressed) 0xFF080A0E.toInt() else 0xBB000000.toInt()
             canvas.drawCircle(cx, centerOffY, inner, paint)
             paint.strokeWidth = dp(1).toFloat()
-            paint.color = 0x1CFFFFFF
+            paint.color = 0x12FFFFFF
             canvas.drawCircle(cx, centerOffY, inner - dp(2), paint)
 
             paint.style = Paint.Style.FILL
             paint.shader = glintShader
-            canvas.drawCircle(cx, cy, outer, paint)
+            canvas.drawCircle(cx, cy, outer * 0.94f, paint)
             paint.shader = null
 
             paint.textSize = dp(11).toFloat()
             paint.color = 0xFFE2E5EA.toInt()
-            canvas.drawText("SOURCE", cx, cy - outer * 0.62f, paint)
+            canvas.drawText(sourceLabel, cx, cy - outer * 0.62f, paint)
             paint.textSize = dp(18).toFloat()
             canvas.drawText("‹‹", cx - outer * 0.62f, cy + dp(6), paint)
             canvas.drawText("››", cx + outer * 0.62f, cy + dp(6), paint)
@@ -3302,7 +3603,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 WheelZone.CENTER -> onCenter?.invoke()
                 WheelZone.LEFT -> onLeft?.invoke()
                 WheelZone.RIGHT -> onRight?.invoke()
-                WheelZone.TOP -> onTop?.invoke()
+                WheelZone.TOP -> if (onLibrary != null) onLibrary!!.invoke() else onTop?.invoke()
                 WheelZone.BOTTOM -> onBottom?.invoke()
             }
         }
@@ -3521,6 +3822,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun pane(target: PaneTarget): View {
+        if (target.kind == PaneKind.MUSIC) {
+            return FrameLayout(this).apply {
+                setBackgroundColor(Panel)
+                tag = PANE_BODY_TAG
+                addView(paneBody(target), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                addView(paneBar(target), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(54), Gravity.TOP))
+            }
+        }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Panel); tag = PANE_BODY_TAG
             addView(paneBar(target), LinearLayout.LayoutParams.MATCH_PARENT, dp(48))
@@ -3530,23 +3839,49 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun paneBar(target: PaneTarget): View {
+        val media = if (target.kind == PaneKind.MUSIC && ::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+        val headerTitle = media?.sourceApp?.ifBlank { null } ?: target.name
+        val headerAccent = media?.appIconColor ?: target.accent
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), 0, dp(10), 0); background = frostedHeaderBg()
+            setPadding(dp(14), 0, dp(10), 0)
+            background = if (target.kind == PaneKind.MUSIC) musicHeaderGlassBg() else frostedHeaderBg()
+            if (target.kind == PaneKind.MUSIC) {
+                elevation = dp(10).toFloat()
+                isClickable = true
+                setOnClickListener {
+                    haptic(this)
+                    mediaSessionSource.openSourceApp()
+                }
+            }
+            val iconBitmap = media?.appIcon
+            if (target.kind == PaneKind.MUSIC && iconBitmap != null) {
+                addView(ImageView(context).apply {
+                    setImageBitmap(iconBitmap)
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    background = GradientDrawable().apply { setColor(0x3316181D); cornerRadius = dp(8).toFloat() }
+                    setPadding(dp(2), dp(2), dp(2), dp(2))
+                }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(10) })
+            } else {
+                addView(TextView(context).apply {
+                    text = headerTitle.take(1).uppercase(Locale.US); textSize = 13f; gravity = Gravity.CENTER
+                    typeface = Typeface.DEFAULT_BOLD; setTextColor(0xFF10110F.toInt())
+                    background = GradientDrawable().apply { setColor(headerAccent); cornerRadius = dp(7).toFloat() }
+                }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) })
+            }
             addView(TextView(context).apply {
-                text = target.name.take(1).uppercase(Locale.US); textSize = 13f; gravity = Gravity.CENTER
-                typeface = Typeface.DEFAULT_BOLD; setTextColor(0xFF10110F.toInt())
-                background = GradientDrawable().apply { setColor(target.accent); cornerRadius = dp(7).toFloat() }
-            }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) })
-            addView(TextView(context).apply {
-                text = target.name; textSize = 13f; typeface = Typeface.DEFAULT_BOLD
+                text = headerTitle; textSize = 13f; typeface = Typeface.DEFAULT_BOLD
                 letterSpacing = 0.03f; setTextColor(Ink)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(TextView(context).apply {
-                text = "X"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(InkDim)
-                background = keyBackground(); isClickable = true
-                setOnClickListener { haptic(this); closePane() }
-            }, LinearLayout.LayoutParams(dp(28), dp(28)))
+            if (target.kind != PaneKind.MUSIC) {
+                addView(TextView(context).apply {
+                    text = "X"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(InkDim)
+                    background = keyBackground(); isClickable = true
+                    setOnClickListener { haptic(this); closePane() }
+                }, LinearLayout.LayoutParams(dp(28), dp(28)))
+            } else {
+                addView(View(context), LinearLayout.LayoutParams(dp(28), dp(28)))
+            }
         }
     }
 
@@ -3807,10 +4142,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun integrationRow(name: String, packageName: String, prefKey: String): View {
         val mode = prefs().getString(prefKey, INTEGRATION_OFF) ?: INTEGRATION_OFF
         val installed = isInstalled(packageName)
-        val state = when (mode) {
-            INTEGRATION_MEDIA -> "MEDIA SESSION"
-            INTEGRATION_API -> "API"
-            else -> if (installed) "READY" else "NOT INSTALLED"
+        val spotifyConnected = packageName == "com.spotify.music" && spotifyAuth.isConnected
+        val appleMusicAuto = packageName == "com.apple.android.music"
+        val state = when {
+            spotifyConnected -> "CONNECTED"
+            mode == INTEGRATION_MEDIA -> "MEDIA SESSION"
+            mode == INTEGRATION_API -> "API"
+            appleMusicAuto -> "AUTO"
+            installed -> "READY"
+            else -> "NOT INSTALLED"
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3828,7 +4168,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(Ink)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(mono(state, 10f, if (mode == INTEGRATION_OFF) InkDim else Accent2).apply {
+            val stateColor = when {
+                spotifyConnected -> 0xFF1ED760.toInt()
+                appleMusicAuto -> 0xFFFA586A.toInt()
+                mode == INTEGRATION_OFF -> InkDim
+                else -> Accent2
+            }
+            addView(mono(state, 10f, stateColor).apply {
                 letterSpacing = 0.08f
             })
         }
@@ -3852,18 +4198,42 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             popup.dismiss()
             renderPaneContent(clicksSettingsTarget())
         })
-        menu.addView(menuItem("Connect account", true) {
-            popup.dismiss()
-            Toast.makeText(this, "$name OAuth needs developer credentials before account sync can run", Toast.LENGTH_LONG).show()
-        })
+        when (packageName) {
+            "com.spotify.music" -> {
+                val connected = spotifyAuth.isConnected
+                menu.addView(menuItem(if (connected) "Reconnect Spotify" else "Connect Spotify", true) {
+                    popup.dismiss()
+                    spotifyAuth.startOAuth(this@MainActivity)
+                })
+                menu.addView(menuItem("Disconnect Spotify", connected) {
+                    spotifyAuth.disconnect()
+                    prefs().edit().putString(prefKey, INTEGRATION_OFF).apply()
+                    popup.dismiss()
+                    renderPaneContent(clicksSettingsTarget())
+                })
+            }
+            "com.apple.android.music" -> {
+                menu.addView(menuItem("About Apple Music", true) {
+                    popup.dismiss()
+                    Toast.makeText(this, "Apple Music on Android uses the Media Session API — just play music in the Apple Music app and Clicks picks it up automatically.", Toast.LENGTH_LONG).show()
+                })
+                menu.addView(menuItem("Disconnect", true) {
+                    prefs().edit().putString(prefKey, INTEGRATION_OFF).apply()
+                    popup.dismiss()
+                    renderPaneContent(clicksSettingsTarget())
+                })
+            }
+            else -> {
+                menu.addView(menuItem("Disconnect", true) {
+                    prefs().edit().putString(prefKey, INTEGRATION_OFF).apply()
+                    popup.dismiss()
+                    renderPaneContent(clicksSettingsTarget())
+                })
+            }
+        }
         menu.addView(menuItem("Open $name", isInstalled(packageName)) {
             popup.dismiss()
             packageManager.getLaunchIntentForPackage(packageName)?.let { startActivity(it) }
-        })
-        menu.addView(menuItem("Disconnect", true) {
-            prefs().edit().putString(prefKey, INTEGRATION_OFF).apply()
-            popup.dismiss()
-            renderPaneContent(clicksSettingsTarget())
         })
         popup.showAsDropDown(anchor, -dp(64), -anchor.height)
     }
@@ -5058,6 +5428,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LayerDrawable(arrayOf(base, sheen))
     }
 
+    private fun musicHeaderGlassBg(): Drawable {
+        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x6616181D,
+            0x4A101217,
+            0x6A07080A
+        )).apply {
+            cornerRadius = dp(0).toFloat()
+        }
+        val blurTint = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
+            0x1FFFFFFF,
+            0x08000000,
+            0x22000000
+        ))
+        val lowerEdge = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x00FFFFFF,
+            0x24000000
+        ))
+        return LayerDrawable(arrayOf(base, blurTint, lowerEdge))
+    }
+
+    private fun libraryHeaderGlassBg(): Drawable {
+        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x7A171A20,
+            0x55111318,
+            0x7607080A
+        ))
+        val sheen = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
+            0x22FFFFFF,
+            0x06000000,
+            0x18000000
+        ))
+        val edge = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x14FFFFFF,
+            0x00000000,
+            0x2A000000
+        ))
+        return LayerDrawable(arrayOf(base, sheen, edge))
+    }
+
     private fun roundedPanel(fill: Int, radius: Int, stroke: Int? = null) =
         GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(brighten(fill), fill)).apply {
             cornerRadius = radius.toFloat()
@@ -5626,9 +6035,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun clickWheelSize(): Int {
-        val dockBound = keyboardHeight() - dp(26)
-        val preferred = dp(258 + (keyboardSize * 18 / 100))
-        return preferred.coerceAtMost(dockBound).coerceAtLeast(dp(242))
+        val dockBound = keyboardHeight() - dp(30)
+        val widthBound = resources.displayMetrics.widthPixels - dp(26)
+        val preferred = dp(246 + (keyboardSize * 12 / 100))
+        return preferred.coerceAtMost(dockBound).coerceAtMost(widthBound).coerceAtLeast(dp(228))
     }
 
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
