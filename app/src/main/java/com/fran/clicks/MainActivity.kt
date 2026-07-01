@@ -11,17 +11,25 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import com.fran.clicks.glide.KeyInfo
 import com.fran.clicks.glide.StatisticalGlideTypingClassifier
 import android.net.Uri
+import android.os.Build
+import android.provider.ContactsContract
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.util.Xml
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -43,6 +51,8 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
@@ -72,7 +82,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var paneView: View? = null
     private var libraryOpen = false
     private var libraryGridMode = true
+    private var librarySearchQuery = ""
     private var libraryView: View? = null
+    private var categoryFolderView: View? = null
     private var librarySwipeStartX = 0f
     private var librarySwipeStartY = 0f
     private var librarySwipeTriggered = false
@@ -92,9 +104,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
+    private var numberPadOpen = false
     private lateinit var mediaSessionSource: MediaSessionSource
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    private lateinit var contactsLauncher: ActivityResultLauncher<String>
     private lateinit var clockView: TextView
     private lateinit var dateView: TextView
     private lateinit var hubView: LinearLayout
@@ -107,8 +121,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        contactsLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { renderRibbon() }
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
+        libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
         apps = loadLaunchableApps()
         messages = loadHubMessages()
@@ -214,8 +230,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Screen)
+            setPadding(0, systemStatusBarHeight(), 0, 0)
         }
-        root.addView(statusBar(), LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         contentFrame = FrameLayout(this).apply {
             addView(home(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
@@ -228,20 +244,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         openPane?.let { showPane(it, animate = false) }
         if (libraryOpen) showLibrary(animate = false)
         root.post { captureKeyBounds() }
-    }
-
-    private fun statusBar(): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(7), dp(18), 0)
-            addView(mono("CLICKS", 11f, InkDim).apply { letterSpacing = 0.05f },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(mono("5G  .  82%", 11f, InkDim).apply {
-                letterSpacing = 0.05f
-                setTextColor(Accent2)
-            })
-        }
     }
 
     private fun home(): View {
@@ -365,7 +367,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openLibrary() {
         if (libraryOpen || openPane != null) return
         libraryOpen = true
-        libraryGridMode = true
+        librarySearchQuery = ""
         keyboardSettingsOpen = false
         showLibrary(animate = true)
         renderRibbon()
@@ -376,6 +378,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun closeLibrary() {
         if (!libraryOpen) return
         libraryOpen = false
+        librarySearchQuery = ""
+        closeCategoryFolder()
         renderRibbon()
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
@@ -390,6 +394,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun showLibrary(animate: Boolean) {
         libraryView?.let { contentFrame.removeView(it) }
+        categoryFolderView = null
         val overlay = appLibrary()
         libraryView = overlay
         // Overlay contentFrame only; the keyboard is a sibling below and stays docked.
@@ -408,7 +413,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             intArrayOf(0xFF22242B.toInt(), 0xFF131419.toInt(), Screen)
         )
         addView(libraryHeader(), LinearLayout.LayoutParams.MATCH_PARENT, dp(42))
-        addView(if (libraryGridMode) libraryGrid() else bentoGrid(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        if (librarySearchQuery.isNotBlank()) {
+            addView(librarySearchBar(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
+            addView(searchResultsGrid(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        } else {
+            addView(if (libraryGridMode) libraryGrid() else bentoGrid(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
         addView(libraryFooter(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
     }
 
@@ -432,6 +442,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setOnClickListener {
                 haptic(this)
                 libraryGridMode = !libraryGridMode
+                prefs().edit().putBoolean(LIBRARY_GRID_MODE_PREF, libraryGridMode).apply()
                 showLibrary(animate = false)
             }
         }, LinearLayout.LayoutParams(dp(94), dp(30)).apply { marginEnd = dp(8) })
@@ -442,17 +453,334 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, LinearLayout.LayoutParams(dp(30), dp(30)))
     }
 
+    private fun librarySearchBar(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(12), 0, dp(6), 0)
+        background = roundedPanel(Panel2, dp(14), KeyEdge)
+        alpha = 0f
+        translationY = -dp(6).toFloat()
+        post { animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start() }
+        addView(TextView(context).apply {
+            text = "S"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(Accent)
+            includeFontPadding = false
+        }, LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginEnd = dp(6) })
+        addView(TextView(context).apply {
+            text = "${librarySearchQuery}|"
+            textSize = 15f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(Ink)
+            includeFontPadding = false
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(TextView(context).apply {
+            text = "X"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(InkDim)
+            includeFontPadding = false
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                librarySearchQuery = ""
+                closeCategoryFolder()
+                showLibrary(animate = false)
+                renderRibbon()
+            }
+        }, LinearLayout.LayoutParams(dp(34), dp(34)))
+    }
+
+    private fun searchResultsGrid(): View = ScrollView(this).apply {
+        val results = librarySearchResults()
+        if (results.isEmpty()) {
+            addView(TextView(context).apply {
+                text = "No apps match \"$librarySearchQuery\""
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setTextColor(InkDim)
+                includeFontPadding = false
+            }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(260)))
+            return@apply
+        }
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(12), 0, dp(8))
+            results.map { it.toLibraryApp() }.chunked(4).forEachIndexed { rowIndex, rowItems ->
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    rowItems.forEachIndexed { columnIndex, app ->
+                        val index = rowIndex * 4 + columnIndex
+                        addView(resultTile(app, index == 0, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                    }
+                    repeat(4 - rowItems.size) { addView(View(context), LinearLayout.LayoutParams(0, 1, 1f)) }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(92)).apply { bottomMargin = dp(10) })
+            }
+        })
+    }
+
+    private fun resultTile(app: LibraryApp, isBest: Boolean, index: Int): View {
+        val target = app.target
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isClickable = true
+            alpha = 0f
+            scaleX = 0.9f
+            scaleY = 0.9f
+            translationY = dp(8).toFloat()
+            setPadding(dp(3), dp(4), dp(3), dp(2))
+            postDelayed({
+                animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .translationY(0f)
+                    .setDuration(260)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            }, (index * 35L).coerceAtMost(280L))
+            addView(FrameLayout(context).apply {
+                elevation = dp(if (isBest) 8 else 3).toFloat()
+                background = roundedPanel(Panel2, dp(15), if (isBest) Accent else Line)
+                addView(ImageView(context).apply {
+                    setImageDrawable(iconFor(app))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    adjustViewBounds = true
+                    setPadding(dp(5), dp(5), dp(5), dp(5))
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(dp(52), dp(52)))
+            addView(TextView(context).apply {
+                text = highlightedLabel(app.name, librarySearchQuery)
+                textSize = 12.5f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(0xFFDFE2E7.toInt())
+                includeFontPadding = false
+                setPadding(0, dp(7), 0, 0)
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setOnClickListener {
+                haptic(this)
+                openLibraryResult(target)
+            }
+        }
+    }
+
     private fun bentoGrid(): View = ScrollView(this).apply {
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, dp(8))
-            libraryCategories().forEach { category ->
-                val rows = (category.apps.size + 3) / 4
-                addView(categoryCard(category), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48 + rows * 86)).apply {
-                    bottomMargin = dp(10)
+            libraryCategories().chunked(3).forEachIndexed { rowIndex, group ->
+                addView(categoryBentoRow(group, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(184)).apply {
+                    bottomMargin = dp(12)
                 })
             }
         })
+    }
+
+    private fun categoryBentoRow(group: List<LibraryCategory>, rowIndex: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        group.getOrNull(0)?.let { category ->
+            addView(categoryBentoCard(category, prominent = true, rowIndex * 3), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.28f).apply {
+                marginEnd = dp(8)
+            })
+        }
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            group.drop(1).take(2).forEachIndexed { index, category ->
+                addView(categoryBentoCard(category, prominent = false, rowIndex * 3 + index + 1), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                    if (index == 0) bottomMargin = dp(8)
+                })
+            }
+            repeat(2 - group.drop(1).take(2).size) {
+                addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+    }
+
+    private fun categoryBentoCard(category: LibraryCategory, prominent: Boolean, index: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_VERTICAL
+        isClickable = true
+        elevation = dp(if (prominent) 7 else 4).toFloat()
+        alpha = 0f
+        translationY = dp(8).toFloat()
+        setPadding(dp(if (prominent) 14 else 11), dp(10), dp(if (prominent) 14 else 11), dp(10))
+        background = roundedPanel(if (prominent) 0xFF202329.toInt() else 0xFF1A1D23.toInt(), dp(if (prominent) 24 else 18), Line)
+        postDelayed({
+            animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+        }, (index * 40L).coerceAtMost(260L))
+        setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.985f).scaleY(0.985f).setDuration(70).start()
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                    haptic(this)
+                    showCategoryFolder(category)
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                    true
+                }
+                else -> true
+            }
+        }
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(View(context).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(category.accent)
+                }
+            }, LinearLayout.LayoutParams(dp(9), dp(9)).apply { marginEnd = dp(8) })
+            addView(TextView(context).apply {
+                text = category.name
+                textSize = if (prominent) 16f else 12.5f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(Ink)
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        if (prominent) {
+            addView(TextView(context).apply {
+                text = category.apps.take(4).joinToString("  ") { it.name }
+                textSize = 11.5f
+                setTextColor(InkDim)
+                includeFontPadding = false
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, dp(8), 0, 0)
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        addView(categoryMiniGrid(category.apps.take(if (prominent) 8 else 2), if (prominent) 4 else 2), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+            topMargin = dp(if (prominent) 8 else 7)
+        })
+    }
+
+    private fun categoryMiniGrid(items: List<LibraryApp>, columns: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        items.chunked(columns).forEachIndexed { rowIndex, rowItems ->
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                rowItems.forEach { app ->
+                    addView(FrameLayout(context).apply {
+                        elevation = dp(2).toFloat()
+                        background = roundedPanel(Panel2, dp(9), Line)
+                        addView(ImageView(context).apply {
+                            setImageDrawable(iconFor(app))
+                            scaleType = ImageView.ScaleType.FIT_CENTER
+                            adjustViewBounds = true
+                            setPadding(dp(4), dp(4), dp(4), dp(4))
+                        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    }, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(8) })
+                }
+                repeat(columns - rowItems.size) {
+                    addView(View(context), LinearLayout.LayoutParams(dp(38), 1).apply { marginEnd = dp(8) })
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                if (rowIndex > 0) topMargin = dp(5)
+            })
+        }
+    }
+
+    private fun showCategoryFolder(category: LibraryCategory) {
+        closeCategoryFolder()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            libraryView?.setRenderEffect(RenderEffect.createBlurEffect(10f, 10f, Shader.TileMode.CLAMP))
+        }
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(0xAA000000.toInt())
+            isClickable = true
+            alpha = 0f
+            setOnClickListener {
+                haptic(this)
+                closeCategoryFolder()
+            }
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                isClickable = true
+                elevation = dp(12).toFloat()
+                setPadding(dp(16), dp(14), dp(16), dp(12))
+                background = roundedPanel(0xFF181B21.toInt(), dp(24), brighten(Line))
+                setOnClickListener { }
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(View(context).apply {
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(category.accent)
+                        }
+                    }, LinearLayout.LayoutParams(dp(9), dp(9)).apply { marginEnd = dp(8) })
+                    addView(TextView(context).apply {
+                        text = category.name
+                        textSize = 18f
+                        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                        setTextColor(Ink)
+                        includeFontPadding = false
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    addView(TextView(context).apply {
+                        text = "X"
+                        textSize = 15f
+                        gravity = Gravity.CENTER
+                        setTextColor(InkDim)
+                        includeFontPadding = false
+                        isClickable = true
+                        background = roundedPanel(Panel2, dp(16), Line)
+                        setOnClickListener {
+                            haptic(this)
+                            closeCategoryFolder()
+                        }
+                    }, LinearLayout.LayoutParams(dp(34), dp(34)))
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
+                addView(ScrollView(context).apply {
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(0, dp(12), 0, 0)
+                        addView(tileGrid(category.apps, 4))
+                    })
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
+                leftMargin = dp(18)
+                rightMargin = dp(18)
+            })
+        }
+        categoryFolderView = overlay
+        contentFrame.addView(overlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        overlay.post {
+            overlay.animate().alpha(1f).setDuration(170).setInterpolator(DecelerateInterpolator()).start()
+            overlay.getChildAt(0)?.apply {
+                scaleX = 0.96f
+                scaleY = 0.96f
+                translationY = dp(10).toFloat()
+                animate().scaleX(1f).scaleY(1f).translationY(0f).setDuration(210).setInterpolator(DecelerateInterpolator()).start()
+            }
+        }
+    }
+
+    private fun closeCategoryFolder() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            libraryView?.setRenderEffect(null)
+        }
+        val closing = categoryFolderView ?: return
+        contentFrame.removeView(closing)
+        categoryFolderView = null
     }
 
     private fun categoryCard(category: LibraryCategory): View = LinearLayout(this).apply {
@@ -585,12 +913,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setBackgroundColor(0xFF000000.toInt())
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
-            searchHintView = mono("", 8.5f, 0xFF55585F.toInt()).apply {
-                gravity = Gravity.CENTER
-                letterSpacing = 0.16f
-                setPadding(0, 0, 0, hintBottomGap())
+            searchHintView = TextView(context).apply {
+                textSize = 16f
+                typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                setTextColor(Ink)
+                gravity = Gravity.CENTER_VERTICAL
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.START
+                setPadding(dp(12), 0, dp(12), 0)
             }
-            addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, dp(44))
 
             suggestionBarView = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -600,10 +932,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(suggestionBarView, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            addKeyRow("qwertyuiop".map { it.toString() })
-            addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
-            addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
-            addKeyRow(listOf("123", "clicks", "space", "period", "enter"), dp(15))
+            if (numberPadOpen) {
+                addKeyRow(listOf("1", "2", "3"))
+                addKeyRow(listOf("4", "5", "6"))
+                addKeyRow(listOf("7", "8", "9"))
+                addKeyRow(listOf("abc", "0", "back", "enter"))
+            } else {
+                addKeyRow("qwertyuiop".map { it.toString() })
+                addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
+                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
+                addKeyRow(listOf("123", "mic", "clicks", "space", "period", "enter"), dp(15))
+            }
         }
     }
 
@@ -684,11 +1023,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             labels.forEach { label ->
                 val weight = when (label) {
                     "space" -> 3.65f
-                    "enter" -> 0.82f
+                    "enter" -> if (numberPadOpen) 1f else 0.82f
                     "period" -> 0.86f
                     "clicks" -> 1.55f
-                    "123" -> 1.02f
-                    "back", "shift" -> 1.02f
+                    "123", "mic" -> 1.02f
+                    "back", "shift", "abc" -> 1.02f
                     else -> 1f
                 }
                 if (label == "enter") {
@@ -745,8 +1084,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         "period" -> "."
         "shift" -> "↑"
         "mic" -> "🎤"
+        "abc" -> "ABC"
+        "123" -> "123"
         else -> if (label.length == 1) {
-            if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label.lowercase(Locale.US)
+            if (numberPadOpen || shiftState == ShiftState.OFF) label else label.uppercase(Locale.US)
         } else label
     }
 
@@ -1024,6 +1365,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Key handling ─────────────────────────────────────────────────────────
 
     private fun handleKey(label: String) {
+        if (libraryOpen && openPane == null) {
+            handleLibrarySearchKey(label)
+            return
+        }
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) { handleChatKey(label, pane); return }
 
@@ -1044,8 +1389,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lastSpaceMs = now
             }
             "period" -> { query += "."; suggestions = emptyList(); updateSuggestionBar() }
+            "123" -> { numberPadOpen = true; query = ""; ensureContactsPermission(); render(); return }
+            "abc" -> { numberPadOpen = false; query = ""; render(); return }
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; query = ""; render(); return }
-            "enter" -> filteredRibbonEntries().firstOrNull()?.let { if (it.target.kind == PaneKind.MUSIC || it.target.packageName == null) openHere(it.target) else openExternal(it.target) }
+            "enter" -> {
+                if (numberPadOpen) {
+                    val dialUri = searchContacts(query).firstOrNull()?.target?.deepLinkUri ?: if (query.isNotBlank()) "tel:$query" else null
+                    dialUri?.let { startActivity(Intent(Intent.ACTION_DIAL, Uri.parse(it))) }
+                } else {
+                    filteredRibbonEntries().firstOrNull()?.let { if (it.target.kind == PaneKind.MUSIC || it.target.packageName == null) openHere(it.target) else openExternal(it.target) }
+                }
+            }
             "mic" -> { startVoiceInput(); return }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
@@ -1054,6 +1408,44 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 scheduleSpellCheck()
             }
         }
+        renderRibbon()
+    }
+
+    private fun handleLibrarySearchKey(label: String) {
+        if (categoryFolderView != null) {
+            if (label == "clicks" || label == "back") closeCategoryFolder()
+            return
+        }
+        when (label) {
+            "back" -> librarySearchQuery = librarySearchQuery.dropLast(1)
+            "space" -> if (librarySearchQuery.isNotBlank()) librarySearchQuery += " "
+            "period" -> if (librarySearchQuery.isNotBlank()) librarySearchQuery += "."
+            "enter" -> {
+                librarySearchResults().firstOrNull()?.let { openLibraryResult(it.toPaneTarget()) }
+                return
+            }
+            "clicks" -> {
+                if (librarySearchQuery.isNotBlank()) {
+                    librarySearchQuery = ""
+                    showLibrary(animate = false)
+                    renderRibbon()
+                } else {
+                    closeLibrary()
+                }
+                return
+            }
+            "mic" -> return
+            else -> {
+                if (label.length != 1) return
+                val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label.lowercase(Locale.US)
+                librarySearchQuery += char
+                if (shiftState == ShiftState.ONCE) {
+                    shiftState = ShiftState.OFF
+                    updateKeyLabels()
+                }
+            }
+        }
+        showLibrary(animate = false)
         renderRibbon()
     }
 
@@ -1081,6 +1473,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 shiftState = ShiftState.ONCE; updateKeyLabels()
                 suggestions = emptyList(); updateSuggestionBar()
             }
+            "123" -> { numberPadOpen = true; ensureContactsPermission(); render(); return }
+            "abc" -> { numberPadOpen = false; render(); return }
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; render(); return }
             "enter" -> postComposeBubble(pane)
             "mic" -> { startVoiceInput(); return }
@@ -1116,7 +1510,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Pane / navigation ────────────────────────────────────────────────────
 
     private fun openHere(target: PaneTarget) {
+        closeCategoryFolder()
         libraryOpen = false
+        librarySearchQuery = ""
         libraryView?.let { contentFrame.removeView(it) }
         libraryView = null
         keyboardSettingsOpen = false; query = ""; composeText = ""
@@ -1125,6 +1521,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         openPane = target; showPane(target, animate = true); renderRibbon()
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
+    }
+
+    private fun openLibraryResult(target: PaneTarget) {
+        closeCategoryFolder()
+        libraryOpen = false
+        librarySearchQuery = ""
+        libraryView?.let { contentFrame.removeView(it) }
+        libraryView = null
+        renderRibbon()
+        syncNowPlayingCardVisibility()
+        refreshNowPlayingCard()
+        if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target)
     }
 
     private fun showPane(target: PaneTarget, animate: Boolean) {
@@ -1433,43 +1841,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         ribbonView.removeAllViews()
         filteredRibbonEntries().forEachIndexed { index, app -> ribbonView.addView(ribbonButton(app, index == 0)) }
         val pane = openPane
-        when {
-            libraryOpen -> {
-                searchHintView.textSize = 8.5f
-                searchHintView.typeface = Typeface.MONOSPACE
-                searchHintView.setTextColor(0xFF55585F.toInt())
-                searchHintView.text = "APP LIBRARY  ·  TAP TOP BUTTON FOR CATEGORY / GRID"
-            }
-            keyboardSettingsOpen -> {
-                searchHintView.textSize = 8.5f
-                searchHintView.typeface = Typeface.MONOSPACE
-                searchHintView.setTextColor(0xFF55585F.toInt())
-                searchHintView.text = "KEYBOARD SETTINGS"
-            }
-            pane?.kind == PaneKind.CHAT && composeText.isNotBlank() -> {
-                searchHintView.textSize = 15f
-                searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-                searchHintView.setTextColor(Ink)
-                searchHintView.text = composeText + "│"
-            }
-            pane?.kind == PaneKind.CHAT -> {
-                searchHintView.textSize = 8.5f
-                searchHintView.typeface = Typeface.MONOSPACE
-                searchHintView.setTextColor(0xFF55585F.toInt())
-                searchHintView.text = "→ ${pane.name.uppercase(Locale.US)}  ·  TYPE OR SWIPE"
-            }
-            query.isNotBlank() -> {
-                searchHintView.textSize = 15f
-                searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-                searchHintView.setTextColor(Ink)
-                searchHintView.text = query + "│"
-            }
-            else -> {
-                searchHintView.textSize = 8.5f
-                searchHintView.typeface = Typeface.MONOSPACE
-                searchHintView.setTextColor(0xFF55585F.toInt())
-                searchHintView.text = "SEARCHING APPS  ·  CLICKS FOR SETTINGS"
-            }
+        val typedText = when {
+            pane?.kind == PaneKind.CHAT -> composeText
+            else -> query
+        }
+        val hint = when {
+            libraryOpen -> "APP LIBRARY  ·  TAP TOP BUTTON FOR CATEGORY / GRID"
+            keyboardSettingsOpen -> "KEYBOARD SETTINGS"
+            numberPadOpen && typedText.isBlank() -> "TYPE NUMBER  ·  CONTACTS APPEAR ABOVE  ·  GO = DIAL"
+            pane?.kind == PaneKind.CHAT && typedText.isBlank() -> "→ ${pane.name.uppercase(Locale.US)}"
+            else -> "SEARCHING APPS  ·  CLICKS FOR SETTINGS"
+        }
+        if (typedText.isNotBlank() && !libraryOpen && !keyboardSettingsOpen) {
+            searchHintView.setTextColor(Ink)
+            searchHintView.text = typedText + "│"
+        } else {
+            searchHintView.setTextColor(0xFF55585F.toInt())
+            searchHintView.text = hint
         }
     }
 
@@ -1558,6 +1946,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── App loading ──────────────────────────────────────────────────────────
 
     private fun openExternal(target: PaneTarget) {
+        target.deepLinkUri?.takeIf { it.startsWith("tel:") }?.let {
+            startActivity(Intent(Intent.ACTION_DIAL, Uri.parse(it))); return
+        }
         val packageName = target.packageName
         if (packageName == null) { openHere(target); return }
         try {
@@ -1583,7 +1974,54 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return apps.filter { it.label.contains(query, ignoreCase = true) }
     }
 
+    private fun librarySearchResults(): List<AppEntry> {
+        val q = librarySearchQuery.trim()
+        if (q.isBlank()) return emptyList()
+        return apps
+            .filter { it.label.contains(q, ignoreCase = true) }
+            .sortedWith { left, right ->
+                val leftStarts = left.label.startsWith(q, ignoreCase = true)
+                val rightStarts = right.label.startsWith(q, ignoreCase = true)
+                when {
+                    leftStarts != rightStarts -> if (leftStarts) -1 else 1
+                    else -> collator.compare(left.label, right.label)
+                }
+            }
+    }
+
+    private fun searchContacts(digits: String): List<RibbonEntry> {
+        if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return emptyList()
+        val clean = digits.filter { it.isDigit() }
+        if (clean.isBlank()) return emptyList()
+        val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+        val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)
+        val sel = "${ContactsContract.CommonDataKinds.Phone.NUMBER} LIKE ?"
+        val cursor = contentResolver.query(uri, projection, sel, arrayOf("%$clean%"), ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME) ?: return emptyList()
+        val results = mutableListOf<RibbonEntry>()
+        val seen = mutableSetOf<String>()
+        cursor.use {
+            val nameIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val numIdx = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
+            while (cursor.moveToNext() && results.size < 8) {
+                val name = cursor.getString(nameIdx) ?: continue
+                val number = cursor.getString(numIdx) ?: continue
+                if (seen.add(name)) {
+                    val target = PaneTarget("tel:$number", name, Accent2, PaneKind.LIST, null, "tel:${number.filter { it.isDigit() || it == '+' }}", number)
+                    results.add(RibbonEntry(name.take(10), Accent2, target))
+                }
+            }
+        }
+        return results
+    }
+
+    private fun ensureContactsPermission() {
+        if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            contactsLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+        }
+    }
+
     private fun filteredRibbonEntries(): List<RibbonEntry> {
+        if (numberPadOpen) return searchContacts(query)
         if (query.isBlank()) return homeRibbonEntries()
         return apps
             .filter { app ->
@@ -1713,6 +2151,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun highlight(color: Int) = GradientDrawable().apply {
         setColor(Color.argb(34, Color.red(color), Color.green(color), Color.blue(color))); setStroke(dp(2), color)
+    }
+
+    private fun highlightedLabel(label: String, match: String): SpannableString {
+        val styled = SpannableString(label)
+        val q = match.trim()
+        if (q.isBlank()) return styled
+        val start = label.lowercase(Locale.US).indexOf(q.lowercase(Locale.US))
+        if (start < 0) return styled
+        val end = (start + q.length).coerceAtMost(label.length)
+        styled.setSpan(ForegroundColorSpan(Accent2), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        styled.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        return styled
     }
 
     private fun roundedPanel(fill: Int, radius: Int, stroke: Int? = null) =
@@ -1940,15 +2390,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun keyboardBottomPadding() = dp(12)
 
     private fun keyTextSize(label: String): Float {
-        val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "clicks", "enter", "back", "period" -> 13.5f; else -> 20f }
-        val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "clicks", "enter", "back", "period" -> 1.5f; else -> 2.5f }
+        if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
+        val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "mic", "clicks", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
+        val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "mic", "clicks", "enter", "back", "period", "abc" -> 1.5f; else -> 2.5f }
         return base + (keyboardSize * growth / 100f)
     }
 
     private fun keyTextColor(label: String) = when (label) {
         "enter" -> 0xFF180A06.toInt()
         "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF7D8078.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> Accent }
-        "123", "clicks", "back", "period" -> 0xFF7D8078.toInt()
+        "123", "mic", "clicks", "back", "period", "abc" -> 0xFF7D8078.toInt()
         else -> Ink
     }
 
@@ -1986,6 +2437,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
+    private fun systemStatusBarHeight(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else 0
+    }
+
     // ── Types ────────────────────────────────────────────────────────────────
 
     private enum class PaneKind { CHAT, MAIL, LIST, SETTINGS, MUSIC }
@@ -2017,6 +2473,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val PREFS_NAME = "clicks"
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
         private const val HAPTICS_PREF = "haptics"
+        private const val LIBRARY_GRID_MODE_PREF = "library_grid_mode"
         private const val GO_KEY_COLOR_PREF = "go_key_color"
         private const val FAVORITE_APPS_PREF = "favorite_apps"
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
@@ -2032,6 +2489,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val HUB_KIND_EMAIL = "email"
         private const val PANE_BODY_TAG = "pane"
         private const val VOICE_REQUEST_CODE = 9001
+        private const val CONTACTS_PERMISSION_CODE = 9002
 
         private val EMAIL_PACKAGES = setOf(
             "com.google.android.gm",
