@@ -61,6 +61,8 @@ import com.fran.clicks.keyboard.KeyPreviewManager
 import com.fran.clicks.keyboard.LivePredictionRouter
 import com.fran.clicks.keyboard.PredictionEngine
 import com.fran.clicks.keyboard.PredictionOverlayManager
+import com.fran.clicks.keyboard.SmsIngestionEngine
+import com.fran.clicks.keyboard.SmsSeedingCoordinator
 import com.fran.clicks.keyboard.SpatialScorer
 import com.fran.clicks.keyboard.WordBoundaryDeleter
 import com.fran.clicks.db.NgramRepository
@@ -120,6 +122,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private lateinit var contactsLauncher: ActivityResultLauncher<String>
+    private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
@@ -128,6 +131,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var flickDetector: FlickDetector
     private lateinit var predictionOverlay: PredictionOverlayManager
     private lateinit var liveRouter: LivePredictionRouter
+    private var wordlistFrequencies: Map<String, Float> = emptyMap()
     private lateinit var clockView: TextView
     private lateinit var dateView: TextView
     private lateinit var hubView: LinearLayout
@@ -141,6 +145,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         contactsLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { renderRibbon() }
+        smsPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) triggerSmsSeeding()
+        }
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
@@ -164,6 +171,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         liveRouter.start()
         loadGlideWords()
         render()
+        maybeRequestSmsPermission()
         mediaSessionSource.start()
         mediaUiScope.launch {
             mediaSessionSource.nowPlaying.collect {
@@ -1280,11 +1288,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val freqMap = freqs.mapValues { it.value }
                 handler.post {
                     glideClassifier = clf
+                    wordlistFrequencies = freqMap
                     predictionEngine = PredictionEngine(freqMap)
                     updateGlideLayout()
                 }
             }
         }.start()
+    }
+
+    private fun maybeRequestSmsPermission() {
+        val seeder = SmsSeedingCoordinator(this)
+        if (!seeder.needsSeeding()) return
+        if (checkSelfPermission(android.Manifest.permission.READ_SMS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            triggerSmsSeeding()
+        } else {
+            smsPermissionLauncher.launch(android.Manifest.permission.READ_SMS)
+        }
+    }
+
+    private fun triggerSmsSeeding() {
+        val seeder = SmsSeedingCoordinator(this)
+        mediaUiScope.launch {
+            seeder.runIfNeeded { smsFrequencies ->
+                // Merge: wordlist is base, SMS boosts words the user actually uses
+                val merged = HashMap<String, Float>(wordlistFrequencies)
+                smsFrequencies.forEach { (word, smsScore) ->
+                    val existing = merged[word] ?: 0f
+                    merged[word] = minOf(1f, existing + smsScore * 0.4f)
+                }
+                predictionEngine = PredictionEngine(merged)
+            }
+        }
     }
 
     private fun updateGlideLayout() {
