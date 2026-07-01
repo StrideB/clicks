@@ -54,9 +54,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import com.fran.clicks.keyboard.CustomHapticEngine
+import com.fran.clicks.keyboard.FlickDetector
+import com.fran.clicks.keyboard.FlickDirection
 import com.fran.clicks.keyboard.KeyPreviewManager
 import com.fran.clicks.keyboard.PredictionEngine
+import com.fran.clicks.keyboard.PredictionOverlayManager
 import com.fran.clicks.keyboard.SpatialScorer
+import com.fran.clicks.keyboard.WordBoundaryDeleter
 import com.fran.clicks.db.NgramRepository
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -119,6 +123,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var keyPreviewManager: KeyPreviewManager
     private lateinit var predictionEngine: PredictionEngine
     private lateinit var ngramRepo: NgramRepository
+    private lateinit var flickDetector: FlickDetector
+    private lateinit var predictionOverlay: PredictionOverlayManager
     private lateinit var clockView: TextView
     private lateinit var dateView: TextView
     private lateinit var hubView: LinearLayout
@@ -145,6 +151,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
         predictionEngine = PredictionEngine(emptyMap())
+        flickDetector = FlickDetector()
+        predictionOverlay = PredictionOverlayManager(this)
         loadGlideWords()
         render()
         mediaSessionSource.start()
@@ -931,7 +939,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Keyboard ─────────────────────────────────────────────────────────────
 
     private fun keyboard(): View {
-        return SwipeKeyboardLayout(this).apply {
+        val overlayLayer = FrameLayout(this)
+        predictionOverlay.overlayLayer = overlayLayer
+
+        val swipeLayout = SwipeKeyboardLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.BOTTOM
             setBackgroundColor(0xFF000000.toInt())
@@ -967,6 +978,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
                 addKeyRow(listOf("123", "mic", "clicks", "space", "period", "enter"), dp(15))
             }
+        }
+
+        return FrameLayout(this).apply {
+            addView(swipeLayout, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(overlayLayer, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
     }
 
@@ -1079,9 +1097,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             isClickable = true
             if (label == "enter") background = goKeyBackground(goKeyColor)
 
+            var touchDownX = 0f; var touchDownY = 0f
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
+                        touchDownX = event.x; touchDownY = event.y
                         v.background = when (label) {
                             "enter" -> goKeyBackground(brighten(goKeyColor))
                             else -> keyBackground(KeyHighlight)
@@ -1089,7 +1109,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         keyHaptic(label)
                         keyPreviewManager.show(v, label)
                     }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.background = when (label) {
+                    MotionEvent.ACTION_UP -> {
+                        v.background = when (label) {
+                            "enter" -> goKeyBackground(goKeyColor)
+                            else -> null
+                        }
+                        val flick = flickDetector.classify(touchDownX, touchDownY, event.x, event.y)
+                        if (flick == FlickDirection.UP) {
+                            val prediction = predictionOverlay.predictionFor(label)
+                            if (prediction != null) {
+                                keyHaptic("space")
+                                acceptSuggestion(prediction)
+                                return@setOnTouchListener true
+                            }
+                        }
+                    }
+                    MotionEvent.ACTION_CANCEL -> v.background = when (label) {
                         "enter" -> goKeyBackground(goKeyColor)
                         else -> null
                     }
@@ -1122,6 +1157,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun updateSuggestionBar() {
         if (!::suggestionBarView.isInitialized) return
+        predictionOverlay.update(suggestions, keyBounds)
         suggestionBarView.removeAllViews()
         suggestions.forEach { word ->
             suggestionBarView.addView(TextView(this).apply {
@@ -1223,6 +1259,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         spatialScorer.setKeys(keyBounds)
+        val overlayLoc = IntArray(2)
+        predictionOverlay.overlayLayer?.getLocationOnScreen(overlayLoc)
+        predictionOverlay.rootScreenY = overlayLoc[1]
+        predictionOverlay.update(suggestions, keyBounds)
         updateGlideLayout()
     }
 
@@ -1379,6 +1419,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     invalidate()
                 }
                 MotionEvent.ACTION_UP -> {
+                    // Swipe-left = whole-word delete (must be dominant horizontal, not a glide word path)
+                    if (flickDetector.isLeftSwipe(startRawX, startRawY, ev.rawX, ev.rawY) && traced.size <= 2) {
+                        tracking = false; traced.clear(); trailLocal.clear(); invalidate()
+                        glideClassifier?.clear()
+                        keyHaptic("back")
+                        deleteWord()
+                        return true
+                    }
                     val clf = glideClassifier
                     val t = traced.toList()
                     tracking = false; traced.clear(); trailLocal.clear(); invalidate()
@@ -1537,17 +1585,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun deleteWord() {
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) {
-            val trimmed = composeText.trimEnd()
-            val lastSpace = trimmed.lastIndexOf(' ')
-            composeText = if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)
+            composeText = WordBoundaryDeleter.deleteWord(composeText)
             updateAutoCapState(); updateKeyLabels()
             suggestions = emptyList(); updateSuggestionBar()
             renderPaneContent(pane); renderRibbon()
             return
         }
-        val trimmed = query.trimEnd()
-        val lastSpace = trimmed.lastIndexOf(' ')
-        query = if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)
+        query = WordBoundaryDeleter.deleteWord(query)
         suggestions = emptyList(); updateSuggestionBar()
         renderRibbon()
     }
