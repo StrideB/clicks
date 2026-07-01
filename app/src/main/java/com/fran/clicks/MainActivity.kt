@@ -440,7 +440,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun nowPlayingCardHeight(): Int {
-        return if (homeWidgetStackVisible()) dp(112) else 0
+        return if (homeWidgetStackVisible()) dp(138) else 0
     }
 
     private fun homeWidgetStackVisible() = openPane == null && !libraryOpen
@@ -1523,6 +1523,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         when (label) {
             "back" -> {
                 query = query.dropLast(1)
+                if (libraryOpen && query.isEmpty()) { closeLibrary(); return }
                 if (!libraryOpen) scheduleSpellCheck()
             }
             "space" -> {
@@ -1577,7 +1578,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 query += char
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
-                if (!libraryOpen) scheduleSpellCheck()
+                if (!libraryOpen && openPane == null) {
+                    // Auto-open library so search shows full-screen, not just the ribbon
+                    libraryOpen = true
+                    keyboardSettingsOpen = false
+                    showLibrary(animate = true)
+                    syncNowPlayingCardVisibility()
+                    refreshNowPlayingCard()
+                }
             }
         }
         if (libraryOpen) showLibrary(animate = false)
@@ -1993,9 +2001,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun renderRibbon() {
-        if (!::ribbonView.isInitialized) return
-        ribbonView.removeAllViews()
-        filteredRibbonEntries().forEachIndexed { index, app -> ribbonView.addView(ribbonButton(app, index == 0)) }
+        if (::ribbonView.isInitialized) {
+            ribbonView.removeAllViews()
+        }
+        renderFavoritesDock()
         val pane = openPane
         val typedText = when {
             pane?.kind == PaneKind.CHAT -> composeText
@@ -2024,6 +2033,76 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             searchHintView.setPadding(dp(16), dp(4), dp(16), dp(2))
             searchHintView.setTextColor(0xFF44474E.toInt())
             searchHintView.text = hint
+        }
+    }
+
+    private fun renderFavoritesDock() {
+        if (!::favoritesDockView.isInitialized) return
+        favoritesDockView.removeAllViews()
+        val dockApps = homeDockApps()
+        if (dockApps.isEmpty()) {
+            favoritesDockView.addView(mono("LONG-PRESS APPS IN THE LIBRARY TO ADD FAVORITES", 8.5f, InkDim).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.12f
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            return
+        }
+        dockApps.forEachIndexed { index, app ->
+            favoritesDockView.addView(dockAppButton(app, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+        repeat(6 - dockApps.size) {
+            favoritesDockView.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+    }
+
+    private fun dockAppButton(app: AppEntry, index: Int): View {
+        val target = app.toPaneTarget()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isClickable = true
+            setPadding(dp(2), 0, dp(2), 0)
+            alpha = 0f
+            scaleX = 0.92f
+            scaleY = 0.92f
+            postDelayed({
+                animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(180)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            }, (index * 24L).coerceAtMost(120L))
+            addView(FrameLayout(context).apply {
+                elevation = dp(4).toFloat()
+                background = roundedPanel(Panel2, dp(14), Line)
+                addView(ImageView(context).apply {
+                    setImageDrawable(iconFor(app.toLibraryApp()))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    adjustViewBounds = true
+                    setPadding(dp(5), dp(5), dp(5), dp(5))
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(dp(42), dp(42)))
+            addView(TextView(context).apply {
+                text = app.shortName
+                textSize = 9.5f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(InkDim)
+                includeFontPadding = false
+                setPadding(0, dp(5), 0, 0)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).start()
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                }
+                false
+            }
+            setOnClickListener { haptic(this); openExternal(target) }
+            setOnLongClickListener { haptic(this); showOpenMenu(this, target); true }
         }
     }
 
@@ -2085,7 +2164,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         menu.addView(menuItem("Open app", target.packageName != null) { popup.dismiss(); openExternal(target) })
         target.packageName?.let { packageName ->
             val onHome = isOnHome(packageName)
-            menu.addView(menuItem(if (onHome) "Remove from home" else "Add to home", true) {
+            menu.addView(menuItem(if (onHome) "Remove from dock" else "Add to dock", true) {
                 setHomePresence(packageName, !onHome)
                 popup.dismiss()
             })
@@ -2144,11 +2223,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         try {
             if (target.deepLinkUri != null && isInstalled(packageName)) {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target.deepLinkUri)))
+                recordAppLaunch(packageName)
                 return
             }
             val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             if (launchIntent != null) {
                 startActivity(launchIntent)
+                recordAppLaunch(packageName)
                 return
             }
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$packageName")))
@@ -2158,6 +2239,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun isInstalled(packageName: String) = packageManager.getLaunchIntentForPackage(packageName) != null
+
+    private fun recordAppLaunch(packageName: String) {
+        val counts = JSONObject(prefs().getString(APP_USAGE_PREF, "{}") ?: "{}")
+        val nextCount = counts.optInt(packageName, 0) + 1
+        counts.put(packageName, nextCount)
+        prefs().edit().putString(APP_USAGE_PREF, counts.toString()).apply()
+        renderFavoritesDock()
+    }
+
+    private fun appUsageCounts(): Map<String, Int> {
+        val raw = prefs().getString(APP_USAGE_PREF, "{}") ?: "{}"
+        val json = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyMap()
+        return buildMap {
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                put(key, json.optInt(key, 0))
+            }
+        }
+    }
 
     private fun filteredApps(): List<AppEntry> {
         if (query.isBlank()) return apps
@@ -2524,7 +2625,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun filteredRibbonEntries(): List<RibbonEntry> {
         if (numberPadOpen) return searchContacts(query)
-        if (query.isBlank()) return homeRibbonEntries()
+        if (query.isBlank()) return homeDockApps().map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
         return apps
             .filter { app ->
                 app.label.contains(query, ignoreCase = true) ||
@@ -2533,7 +2634,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .take(8)
             .map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
             .ifEmpty {
-                homeRibbonEntries().filter { entry ->
+                homeDockApps().map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }.filter { entry ->
                     entry.label.contains(query, ignoreCase = true) ||
                         entry.target.name.contains(query, ignoreCase = true) ||
                         entry.target.packageName?.contains(query, ignoreCase = true) == true
@@ -2541,12 +2642,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
     }
 
-    private fun homeRibbonEntries(): List<RibbonEntry> {
+    private fun homeDockApps(): List<AppEntry> {
         val hidden = hiddenHomePackages()
-        return apps
+        val favorites = apps
             .filter { it.packageName in favoritePackages() && it.packageName !in hidden }
             .take(6)
-            .map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
+        if (favorites.size >= 6) return favorites
+        val favoritePackages = favorites.map { it.packageName }.toSet()
+        val usage = appUsageCounts()
+        val oftenUsed = apps
+            .filter { it.packageName !in favoritePackages && it.packageName !in hidden }
+            .sortedWith { left, right ->
+                val usageCompare = (usage[right.packageName] ?: 0).compareTo(usage[left.packageName] ?: 0)
+                if (usageCompare != 0) usageCompare else collator.compare(left.label, right.label)
+            }
+            .filter { (usage[it.packageName] ?: 0) > 0 }
+        return (favorites + oftenUsed).take(6)
     }
 
     private fun favoritePackages(): Set<String> = prefs().getStringSet(FAVORITE_APPS_PREF, emptySet()) ?: emptySet()
@@ -2554,7 +2665,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun hiddenHomePackages(): Set<String> = prefs().getStringSet(HIDDEN_HOME_APPS_PREF, emptySet()) ?: emptySet()
 
     private fun isOnHome(packageName: String?) = packageName != null &&
-        homeRibbonEntries().any { it.target.packageName == packageName }
+        homeDockApps().any { it.packageName == packageName }
 
     private fun setHomePresence(packageName: String, showOnHome: Boolean) {
         val favorites = favoritePackages().toMutableSet()
@@ -2571,6 +2682,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .putStringSet(HIDDEN_HOME_APPS_PREF, hidden)
             .apply()
         renderRibbon()
+        renderFavoritesDock()
         if (libraryOpen) showLibrary(animate = false)
     }
 
@@ -2849,7 +2961,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val popup = PopupWindow(menu, dp(224), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true }
         app.target.packageName?.let { packageName ->
             val onHome = isOnHome(packageName)
-            menu.addView(menuItem(if (onHome) "Remove from home" else "Add to home", true) {
+            menu.addView(menuItem(if (onHome) "Remove from dock" else "Add to dock", true) {
                 setHomePresence(packageName, !onHome)
                 popup.dismiss()
             })
@@ -3080,6 +3192,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val GO_KEY_COLOR_PREF = "go_key_color"
         private const val FAVORITE_APPS_PREF = "favorite_apps"
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
+        private const val APP_USAGE_PREF = "app_usage_counts"
         private const val HUB_MESSAGES_PREF = "hub_messages"
         private const val SPOTIFY_INTEGRATION_PREF = "spotify_integration"
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
