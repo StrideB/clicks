@@ -2511,7 +2511,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
     private fun keyboardHeight() = dp(272 + keyboardSize * 80 / 100)
-    private fun keyboardTopPadding() = dp(4)
+    private fun keyboardTopPadding() = dp(14)
     private fun keyboardBottomPadding() = dp(20)
 
     private fun keyTextSize(label: String): Float {
