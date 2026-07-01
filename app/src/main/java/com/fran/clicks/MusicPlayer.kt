@@ -94,7 +94,7 @@ fun NowPlayingCard(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.98f else 1f, label = "now-playing-press")
-    Row(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .fillMaxSize()
@@ -131,48 +131,59 @@ fun NowPlayingCard(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
-        MiniAlbumArt(albumArt, isPlaying, sourceColor)
-        Spacer(Modifier.width(15.dp))
-        Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    LabelText("NOW PLAYING", sourceColor)
-                    Spacer(Modifier.width(7.dp))
-                    Box(Modifier.size(4.dp).clip(CircleShape).background(sourceColor))
-                    Spacer(Modifier.width(7.dp))
+        val artworkSize = (maxHeight - 24.dp).clamped(82.dp, 124.dp)
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            MiniAlbumArt(albumArt, sourceColor, artworkSize)
+            Spacer(Modifier.width(14.dp))
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .padding(vertical = 2.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        LabelText("NOW PLAYING", sourceColor)
+                        Spacer(Modifier.width(7.dp))
+                        Box(Modifier.size(4.dp).clip(CircleShape).background(sourceColor))
+                        Spacer(Modifier.width(7.dp))
+                        BasicText(
+                            text = sourceApp.ifBlank { "Media" }.uppercase(),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = TextStyle(color = InkDim, fontSize = 8.5.sp, letterSpacing = 0.8.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                        )
+                    }
+                    Spacer(Modifier.height(7.dp))
                     BasicText(
-                        text = sourceApp.ifBlank { "Media" }.uppercase(),
+                        text = title,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = TextStyle(color = InkDim, fontSize = 8.5.sp, letterSpacing = 0.8.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                        style = TextStyle(color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.SansSerif)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    BasicText(
+                        text = artist,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(color = InkDim, fontSize = 12.2.sp, fontFamily = FontFamily.SansSerif)
                     )
                 }
-                Spacer(Modifier.height(6.dp))
-                BasicText(
-                    text = title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.SansSerif)
-                )
-                Spacer(Modifier.height(4.dp))
-                BasicText(
-                    text = artist,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(color = InkDim, fontSize = 12.2.sp, fontFamily = FontFamily.SansSerif)
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Canvas(Modifier.weight(1f).height(8.dp)) {
-                    val y = size.height / 2f
-                    drawLine(Color(0xFF2A2D34), Offset(0f, y), Offset(size.width, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-                    drawLine(sourceColor.copy(alpha = 0.75f), Offset(0f, y), Offset(size.width * 0.56f, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Canvas(Modifier.weight(1f).height(10.dp)) {
+                        val y = size.height / 2f
+                        drawLine(Color(0xFF2A2D34), Offset(0f, y), Offset(size.width, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                        drawLine(sourceColor.copy(alpha = 0.75f), Offset(0f, y), Offset(size.width * 0.56f, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Equalizer(isPlaying, barColor = sourceColor, height = 28.dp)
                 }
-                Spacer(Modifier.width(12.dp))
-                Equalizer(isPlaying, barColor = sourceColor, height = 28.dp)
             }
         }
     }
@@ -307,11 +318,12 @@ private fun MusicOneLayout(
             .fillMaxSize()
             .padding(horizontal = 18.dp)
     ) {
-        val bottomGap = responsiveMusicBottomGap(maxHeight)
+        val paneHeight = maxHeight
+        val bottomGap = responsiveMusicBottomGap(paneHeight)
         Box(
             Modifier
                 .align(Alignment.Center)
-                .size((maxHeight * 0.42f).coerceIn(188.dp, 244.dp))
+                .size((paneHeight * 0.42f).clamped(188.dp, 244.dp))
                 .then(gestureModifier)
         )
         Column(
@@ -321,7 +333,7 @@ private fun MusicOneLayout(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             NowPlayingMeta(title, artist, album)
-            Spacer(Modifier.height((maxHeight * 0.025f).coerceIn(10.dp, 18.dp)))
+            Spacer(Modifier.height((paneHeight * 0.025f).clamped(10.dp, 18.dp)))
             ClassicLineProgress(position, duration, appColor, onSeekTo)
         }
     }
@@ -347,13 +359,14 @@ private fun MusicBlackLayout(
             .fillMaxSize()
             .padding(horizontal = 22.dp, vertical = 12.dp)
     ) {
-        val bottomGap = responsiveMusicBottomGap(maxHeight)
+        val paneHeight = maxHeight
+        val bottomGap = responsiveMusicBottomGap(paneHeight)
         Column(
             modifier = Modifier.align(Alignment.Center),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             LabelText("PLAYING NOW", InkDim)
-            Spacer(Modifier.height((maxHeight * 0.035f).coerceIn(14.dp, 22.dp)))
+            Spacer(Modifier.height((paneHeight * 0.035f).clamped(14.dp, 22.dp)))
             MusicBlackAlbumDisc(title, albumArt)
         }
         Column(
@@ -375,7 +388,7 @@ private fun MusicBlackLayout(
                 overflow = TextOverflow.Ellipsis,
                 style = TextStyle(color = InkDim, fontSize = 14.sp, textAlign = TextAlign.Center)
             )
-            Spacer(Modifier.height((maxHeight * 0.04f).coerceIn(18.dp, 30.dp)))
+            Spacer(Modifier.height((paneHeight * 0.04f).clamped(18.dp, 30.dp)))
             SimpleLineProgress(position, duration, appColor, onSeekTo)
         }
     }
@@ -953,13 +966,15 @@ private fun SimpleLineProgress(positionMs: Long, durationMs: Long, appColor: Col
     }
 }
 
+private fun Dp.clamped(min: Dp, max: Dp): Dp = when {
+    this < min -> min
+    this > max -> max
+    else -> this
+}
+
 private fun responsiveMusicBottomGap(height: Dp): Dp {
     val scaled = height * 0.085f
-    return when {
-        scaled < 26.dp -> 26.dp
-        scaled > 56.dp -> 56.dp
-        else -> scaled
-    }
+    return scaled.clamped(26.dp, 56.dp)
 }
 
 private fun Modifier.seekOnDrag(durationMs: Long, onSeekTo: (Long) -> Unit): Modifier {
@@ -985,18 +1000,34 @@ private fun Modifier.seekOnDrag(durationMs: Long, onSeekTo: (Long) -> Unit): Mod
 }
 
 @Composable
-private fun MiniAlbumArt(albumArt: Bitmap?, isPlaying: Boolean, sourceColor: Color) {
+private fun MiniAlbumArt(albumArt: Bitmap?, sourceColor: Color, artworkSize: Dp) {
     Box(
         Modifier
-            .size(72.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(Brush.radialGradient(listOf(sourceColor.copy(alpha = 0.95f), Color(0xFF101215)))),
+            .size(artworkSize)
+            .clip(RoundedCornerShape(20.dp))
+            .background(Brush.radialGradient(listOf(sourceColor.copy(alpha = 0.72f), Color(0xFF101215))))
+            .drawBehind {
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.13f),
+                    size = Size(size.width, 1.dp.toPx()),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
+                )
+            },
         contentAlignment = Alignment.Center
     ) {
         if (albumArt != null) {
             Image(albumArt.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        } else {
+            Canvas(Modifier.fillMaxSize()) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(Color.White.copy(alpha = 0.12f), Color.Transparent),
+                        center = Offset(size.width * 0.28f, size.height * 0.16f),
+                        radius = size.minDimension * 0.72f
+                    )
+                )
+            }
         }
-        VinylDot(isPlaying)
     }
 }
 

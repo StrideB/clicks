@@ -73,19 +73,24 @@ data class LauncherPhotoAlbum(
     val coverUri: Uri?
 )
 
+const val PHOTO_FAVORITES_BUCKET = "__clicks_photo_favorites__"
+
 @Composable
 fun LauncherPhotos(
     hasPermission: Boolean,
     selectedBucket: String?,
     selectedPhotoId: Long?,
+    favoriteIds: Set<Long>,
     brandStamp: String,
     onPhotoSelected: (Long) -> Unit,
     onOpenExternalPhoto: (Uri) -> Unit,
+    onToggleFavorite: (LauncherPhoto) -> Unit,
+    onDeletePhoto: (LauncherPhoto) -> Unit,
     onRequestPermission: () -> Unit
 ) {
     val context = LocalContext.current
-    val photos by produceState<List<LauncherPhoto>>(emptyList(), hasPermission, selectedBucket) {
-        value = if (hasPermission) loadRecentPhotos(context, selectedBucket) else emptyList()
+    val photos by produceState<List<LauncherPhoto>>(emptyList(), hasPermission, selectedBucket, favoriteIds) {
+        value = if (hasPermission) loadRecentPhotos(context, selectedBucket, favoriteIds) else emptyList()
     }
     var selected by remember(photos, selectedPhotoId) {
         mutableStateOf(photos.firstOrNull { it.id == selectedPhotoId } ?: photos.firstOrNull())
@@ -117,6 +122,9 @@ fun LauncherPhotos(
                     onPhotoSelected(it.id)
                 },
                 onOpenExternal = { onOpenExternalPhoto(active.uri) },
+                isFavorite = active.id in favoriteIds,
+                onToggleFavorite = { onToggleFavorite(active) },
+                onDeletePhoto = { onDeletePhoto(active) },
                 brandStamp = brandStamp
             )
         }
@@ -128,16 +136,17 @@ fun LauncherPhotoAlbumsDock(
     hasPermission: Boolean,
     selectedBucket: String?,
     selectedPhotoId: Long?,
+    favoriteIds: Set<Long>,
     onRequestPermission: () -> Unit,
     onPhotoSelected: (Long) -> Unit,
     onBucketSelected: (String?) -> Unit
 ) {
     val context = LocalContext.current
-    val albums by produceState<List<LauncherPhotoAlbum>>(emptyList(), hasPermission) {
-        value = if (hasPermission) loadPhotoAlbums(context) else emptyList()
+    val albums by produceState<List<LauncherPhotoAlbum>>(emptyList(), hasPermission, favoriteIds) {
+        value = if (hasPermission) loadPhotoAlbums(context, favoriteIds) else emptyList()
     }
-    val stripPhotos by produceState<List<LauncherPhoto>>(emptyList(), hasPermission, selectedBucket) {
-        value = if (hasPermission) loadRecentPhotos(context, selectedBucket) else emptyList()
+    val stripPhotos by produceState<List<LauncherPhoto>>(emptyList(), hasPermission, selectedBucket, favoriteIds) {
+        value = if (hasPermission) loadRecentPhotos(context, selectedBucket, favoriteIds) else emptyList()
     }
     Box(
         Modifier
@@ -208,10 +217,21 @@ private fun PhotoBrowser(
     photos: List<LauncherPhoto>,
     onSelect: (LauncherPhoto) -> Unit,
     onOpenExternal: () -> Unit,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onDeletePhoto: () -> Unit,
     brandStamp: String
 ) {
     Box(Modifier.fillMaxSize()) {
-        HeroPhoto(active, Modifier.fillMaxSize(), onDoubleTap = onOpenExternal, brandStamp = brandStamp)
+        HeroPhoto(
+            active,
+            Modifier.fillMaxSize(),
+            onDoubleTap = onOpenExternal,
+            isFavorite = isFavorite,
+            onToggleFavorite = onToggleFavorite,
+            onDeletePhoto = onDeletePhoto,
+            brandStamp = brandStamp
+        )
     }
 }
 
@@ -246,7 +266,15 @@ private fun PhotoHeader(count: Int) {
 }
 
 @Composable
-private fun HeroPhoto(photo: LauncherPhoto, modifier: Modifier = Modifier, onDoubleTap: () -> Unit = {}, brandStamp: String = "") {
+private fun HeroPhoto(
+    photo: LauncherPhoto,
+    modifier: Modifier = Modifier,
+    onDoubleTap: () -> Unit = {},
+    isFavorite: Boolean = false,
+    onToggleFavorite: () -> Unit = {},
+    onDeletePhoto: () -> Unit = {},
+    brandStamp: String = ""
+) {
     Box(
         modifier
             .fillMaxWidth()
@@ -283,6 +311,15 @@ private fun HeroPhoto(photo: LauncherPhoto, modifier: Modifier = Modifier, onDou
                 style = TextStyle(color = PhotoInkDim, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             )
         }
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 68.dp, end = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            PhotoActionButton(kind = PhotoActionKind.Favorite, active = isFavorite, onClick = onToggleFavorite)
+            PhotoActionButton(kind = PhotoActionKind.Trash, active = false, onClick = onDeletePhoto)
+        }
         if (brandStamp.isNotBlank()) {
             PhotoBrandStamp(
                 label = brandStamp,
@@ -290,6 +327,51 @@ private fun HeroPhoto(photo: LauncherPhoto, modifier: Modifier = Modifier, onDou
                     .align(Alignment.BottomEnd)
                     .padding(16.dp)
             )
+        }
+    }
+}
+
+private enum class PhotoActionKind { Favorite, Trash }
+
+@Composable
+private fun PhotoActionButton(kind: PhotoActionKind, active: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.34f))
+            .border(
+                1.dp,
+                if (active) Color(0xFFFF6B8A).copy(alpha = 0.82f) else Color.White.copy(alpha = 0.16f),
+                CircleShape
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        androidx.compose.foundation.Canvas(Modifier.size(19.dp)) {
+            val stroke = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.9.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+            val color = if (kind == PhotoActionKind.Favorite && active) Color(0xFFFF6B8A) else PhotoInk.copy(alpha = 0.86f)
+            when (kind) {
+                PhotoActionKind.Favorite -> {
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(size.width * 0.50f, size.height * 0.84f)
+                        cubicTo(size.width * 0.10f, size.height * 0.58f, size.width * 0.04f, size.height * 0.30f, size.width * 0.25f, size.height * 0.18f)
+                        cubicTo(size.width * 0.38f, size.height * 0.10f, size.width * 0.48f, size.height * 0.18f, size.width * 0.50f, size.height * 0.29f)
+                        cubicTo(size.width * 0.52f, size.height * 0.18f, size.width * 0.64f, size.height * 0.10f, size.width * 0.76f, size.height * 0.18f)
+                        cubicTo(size.width * 0.96f, size.height * 0.31f, size.width * 0.90f, size.height * 0.58f, size.width * 0.50f, size.height * 0.84f)
+                        close()
+                    }
+                    if (active) drawPath(path, color)
+                    else drawPath(path, color, style = stroke)
+                }
+                PhotoActionKind.Trash -> {
+                    drawLine(color, Offset(size.width * 0.26f, size.height * 0.30f), Offset(size.width * 0.74f, size.height * 0.30f), strokeWidth = 1.8.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                    drawLine(color, Offset(size.width * 0.40f, size.height * 0.20f), Offset(size.width * 0.60f, size.height * 0.20f), strokeWidth = 1.8.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                    drawRoundRect(color, topLeft = Offset(size.width * 0.31f, size.height * 0.36f), size = androidx.compose.ui.geometry.Size(size.width * 0.38f, size.height * 0.45f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.dp.toPx()), style = stroke)
+                    drawLine(color, Offset(size.width * 0.43f, size.height * 0.45f), Offset(size.width * 0.43f, size.height * 0.70f), strokeWidth = 1.3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                    drawLine(color, Offset(size.width * 0.57f, size.height * 0.45f), Offset(size.width * 0.57f, size.height * 0.70f), strokeWidth = 1.3.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                }
+            }
         }
     }
 }
@@ -525,7 +607,8 @@ private fun EmptyPhotoState() {
     }
 }
 
-fun loadRecentPhotos(context: Context, selectedBucket: String? = null): List<LauncherPhoto> {
+fun loadRecentPhotos(context: Context, selectedBucket: String? = null, favoriteIds: Set<Long> = emptySet()): List<LauncherPhoto> {
+    if (selectedBucket == PHOTO_FAVORITES_BUCKET && favoriteIds.isEmpty()) return emptyList()
     val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
     } else {
@@ -538,16 +621,18 @@ fun loadRecentPhotos(context: Context, selectedBucket: String? = null): List<Lau
         MediaStore.Images.Media.BUCKET_DISPLAY_NAME
     )
     val sort = "${MediaStore.Images.Media.DATE_TAKEN} DESC"
-    val selection = selectedBucket?.let { "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME}=?" }
-    val selectionArgs = selectedBucket?.let { arrayOf(it) }
+    val selection = selectedBucket?.takeIf { it != PHOTO_FAVORITES_BUCKET }?.let { "${MediaStore.Images.Media.BUCKET_DISPLAY_NAME}=?" }
+    val selectionArgs = selectedBucket?.takeIf { it != PHOTO_FAVORITES_BUCKET }?.let { arrayOf(it) }
     val photos = mutableListOf<LauncherPhoto>()
+    val limit = if (selectedBucket == PHOTO_FAVORITES_BUCKET) 500 else 80
     runCatching {
         context.contentResolver.query(collection, projection, selection, selectionArgs, sort)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_TAKEN)
             val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
-            while (cursor.moveToNext() && photos.size < 60) {
+            while (cursor.moveToNext() && photos.size < limit) {
                 val id = cursor.getLong(idCol)
+                if (selectedBucket == PHOTO_FAVORITES_BUCKET && id !in favoriteIds) continue
                 photos += LauncherPhoto(
                     id = id,
                     uri = ContentUris.withAppendedId(collection, id),
@@ -560,14 +645,20 @@ fun loadRecentPhotos(context: Context, selectedBucket: String? = null): List<Lau
     return photos
 }
 
-fun loadPhotoAlbums(context: Context): List<LauncherPhotoAlbum> {
-    val photos = loadRecentPhotos(context, null)
+fun loadPhotoAlbums(context: Context, favoriteIds: Set<Long> = emptySet()): List<LauncherPhotoAlbum> {
+    val photos = loadRecentPhotos(context, null, favoriteIds)
     if (photos.isEmpty()) return emptyList()
     val grouped = linkedMapOf<String, MutableList<LauncherPhoto>>()
     photos.forEach { photo ->
         grouped.getOrPut(photo.bucket.ifBlank { "Camera" }) { mutableListOf() }.add(photo)
     }
-    return listOf(LauncherPhotoAlbum(null, "All", photos.size, photos.firstOrNull()?.uri)) +
+    val favorites = photos.filter { it.id in favoriteIds }
+    val base = mutableListOf<LauncherPhotoAlbum>()
+    if (favorites.isNotEmpty()) {
+        base += LauncherPhotoAlbum(PHOTO_FAVORITES_BUCKET, "Favorites", favorites.size, favorites.firstOrNull()?.uri)
+    }
+    base += LauncherPhotoAlbum(null, "All", photos.size, photos.firstOrNull()?.uri)
+    return base +
         grouped.map { (bucket, bucketPhotos) ->
             LauncherPhotoAlbum(bucket, bucket, bucketPhotos.size, bucketPhotos.firstOrNull()?.uri)
         }
