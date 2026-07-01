@@ -280,16 +280,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Typing display — lives between content and keyboard so gravity=BOTTOM on keyboard
         // rows never clips it. Shows typed text + blinking cursor; hint text when idle.
         searchHintView = TextView(this).apply {
-            textSize = 17f
+            textSize = 15f
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             setTextColor(Ink)
             gravity = Gravity.CENTER_VERTICAL
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.START
-            setPadding(dp(16), 0, dp(16), 0)
-            setBackgroundColor(0xFF0A0B0E.toInt())
+            setPadding(dp(16), dp(4), dp(16), dp(4))
+            setBackgroundColor(0xFF000000.toInt())
         }
-        root.addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, dp(44))
+        root.addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
 
         root.addView(keyboard(), LinearLayout.LayoutParams.MATCH_PARENT, keyboardHeight())
         setContentView(root)
