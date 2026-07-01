@@ -12,10 +12,14 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -53,6 +57,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -63,17 +68,23 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.min
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NowPlayingCard(
     visible: Boolean,
     title: String,
     artist: String,
     sourceApp: String,
+    sourceColor: Color = GreenBright,
     albumArt: Bitmap?,
     isPlaying: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit = {}
 ) {
     if (!visible) return
     val interaction = remember { MutableInteractionSource() }
@@ -82,43 +93,84 @@ fun NowPlayingCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(68.dp)
+            .fillMaxSize()
             .graphicsLayer(scaleX = scale, scaleY = scale)
             .drawBehind {
                 drawRoundRect(
                     brush = Brush.verticalGradient(
-                        listOf(Color(0x268FD694), Color(0x108FD694))
+                        listOf(Color(0xFF20242A), Color(0xFF14171C), Color(0xFF101115))
                     ),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(16.dp.toPx())
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(22.dp.toPx())
+                )
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(sourceColor.copy(alpha = 0.22f), Color.Transparent),
+                        center = Offset(size.width * 0.84f, size.height * 0.14f),
+                        radius = size.width * 0.42f
+                    )
+                )
+                drawLine(
+                    color = Color.White.copy(alpha = 0.08f),
+                    start = Offset(18.dp.toPx(), 1.dp.toPx()),
+                    end = Offset(size.width - 18.dp.toPx(), 1.dp.toPx()),
+                    strokeWidth = 1.dp.toPx()
                 )
             }
             .border(
                 width = 1.dp,
-                color = if (pressed) GreenBright else Color(0x4D8FD694),
-                shape = RoundedCornerShape(16.dp)
+                color = if (pressed) sourceColor.copy(alpha = 0.62f) else Color(0xFF2E333B),
+                shape = RoundedCornerShape(22.dp)
             )
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        MiniAlbumArt(albumArt, isPlaying)
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-            LabelText("NOW PLAYING . ${sourceApp.uppercase()}", GreenSoft)
-            BasicText(
-                text = title,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.SansSerif)
-            )
-            BasicText(
-                text = artist,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = InkDim, fontSize = 11.sp, fontFamily = FontFamily.SansSerif)
-            )
+        MiniAlbumArt(albumArt, isPlaying, sourceColor)
+        Spacer(Modifier.width(15.dp))
+        Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    LabelText("NOW PLAYING", sourceColor)
+                    Spacer(Modifier.width(7.dp))
+                    Box(Modifier.size(4.dp).clip(CircleShape).background(sourceColor))
+                    Spacer(Modifier.width(7.dp))
+                    BasicText(
+                        text = sourceApp.ifBlank { "Media" }.uppercase(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(color = InkDim, fontSize = 8.5.sp, letterSpacing = 0.8.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                BasicText(
+                    text = title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.SansSerif)
+                )
+                Spacer(Modifier.height(4.dp))
+                BasicText(
+                    text = artist,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(color = InkDim, fontSize = 12.2.sp, fontFamily = FontFamily.SansSerif)
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Canvas(Modifier.weight(1f).height(8.dp)) {
+                    val y = size.height / 2f
+                    drawLine(Color(0xFF2A2D34), Offset(0f, y), Offset(size.width, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                    drawLine(sourceColor.copy(alpha = 0.75f), Offset(0f, y), Offset(size.width * 0.56f, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                }
+                Spacer(Modifier.width(12.dp))
+                Equalizer(isPlaying, barColor = sourceColor, height = 28.dp)
+            }
         }
-        Equalizer(isPlaying, barColor = GreenSoft, height = 25.dp)
     }
 }
 
@@ -128,7 +180,8 @@ fun MusicPlayer(
     onOpenSource: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onPrevious: () -> Unit,
-    onNext: () -> Unit
+    onNext: () -> Unit,
+    onSeekTo: (Long) -> Unit
 ) {
     val current = media
     if (current == null) {
@@ -152,42 +205,70 @@ fun MusicPlayer(
         }
     }
     val position = currentPlaybackPosition(current, tick)
+    val appColor = Color(current.appIconColor)
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Panel)
-            .padding(horizontal = 18.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .drawBehind {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(appColor.copy(alpha = 0.22f), appColor.copy(alpha = 0.06f), Color.Transparent),
+                        center = Offset(size.width * 0.76f, size.height * 0.22f),
+                        radius = size.minDimension * 0.72f
+                    )
+                )
+            }
     ) {
-        Turntable(current.title, current.albumArt, current.isPlaying)
-        Spacer(Modifier.height(6.dp))
-        SourceChip(
+        SourceIconButton(
             appName = current.sourceApp,
-            appIconColor = Color(current.appIconColor),
+            appIconColor = appColor,
             isPlaying = current.isPlaying,
-            onClick = onOpenSource
+            onClick = onOpenSource,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 10.dp, end = 14.dp)
         )
-        Spacer(Modifier.height(6.dp))
-        NowPlayingMeta(current.title, current.artist, current.album)
-        Spacer(Modifier.height(6.dp))
-        PlayerProgress(position, current.durationMs)
-        Spacer(Modifier.height(7.dp))
-        Transport(current.isPlaying, onPrevious, onTogglePlayPause, onNext)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Turntable(
+                current.title,
+                current.albumArt,
+                current.isPlaying,
+                modifier = Modifier.recordGestures(
+                    positionMs = position,
+                    durationMs = current.durationMs,
+                    onTogglePlayPause = onTogglePlayPause,
+                    onPrevious = onPrevious,
+                    onNext = onNext,
+                    onSeekTo = onSeekTo
+                )
+            )
+            Spacer(Modifier.height(13.dp))
+            NowPlayingMeta(current.title, current.artist, current.album)
+            Spacer(Modifier.height(11.dp))
+            PlayerProgress(position, current.durationMs, appColor)
+        }
     }
 }
 
 @Composable
-private fun Turntable(title: String, albumArt: Bitmap?, isPlaying: Boolean) {
-    Box(Modifier.size(162.dp), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(154.dp)) {
+private fun Turntable(title: String, albumArt: Bitmap?, isPlaying: Boolean, modifier: Modifier = Modifier) {
+    Box(modifier.size(222.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(214.dp)) {
             val r = min(size.width, size.height) / 2f
             drawCircle(Brush.radialGradient(listOf(Color(0xFF2A2D34), Color(0xFF070709)), radius = r))
             drawCircle(Color(0xAA000000), radius = r, style = Stroke(width = 10.dp.toPx()))
+            drawCircle(Color.White.copy(alpha = 0.05f), radius = r - 4.dp.toPx(), style = Stroke(width = 1.dp.toPx()))
         }
         VinylDisc(title, albumArt, isPlaying)
-        Tonearm(isPlaying, Modifier.align(Alignment.TopEnd).padding(top = 12.dp, end = 3.dp))
+        Tonearm(isPlaying, Modifier.align(Alignment.TopEnd).padding(top = 20.dp, end = 7.dp))
     }
 }
 
@@ -205,7 +286,7 @@ private fun VinylDisc(title: String, albumArt: Bitmap?, isPlaying: Boolean) {
         animateFloatAsState(0f, label = "vinyl-paused")
     }
 
-    Box(Modifier.size(132.dp).rotate(rotation), contentAlignment = Alignment.Center) {
+    Box(Modifier.size(186.dp).rotate(rotation), contentAlignment = Alignment.Center) {
         Canvas(Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
             val r = size.minDimension / 2f
@@ -230,7 +311,7 @@ private fun VinylDisc(title: String, albumArt: Bitmap?, isPlaying: Boolean) {
 private fun AlbumLabel(title: String, albumArt: Bitmap?) {
     Box(
         Modifier
-            .size(56.dp)
+            .size(72.dp)
             .clip(CircleShape)
             .background(Brush.radialGradient(listOf(Color(0xFFA9F0B6), Color(0xFF57C98A), Color(0xFF2F9F7A)))),
         contentAlignment = Alignment.Center
@@ -244,15 +325,15 @@ private fun AlbumLabel(title: String, albumArt: Bitmap?) {
                 overflow = TextOverflow.Ellipsis,
                 style = TextStyle(
                     color = Color(0xFF0C2B1F),
-                    fontSize = 8.sp,
-                    lineHeight = 8.sp,
+                    fontSize = 9.sp,
+                    lineHeight = 9.sp,
                     fontWeight = FontWeight.Black,
                     textAlign = TextAlign.Center
                 ),
                 modifier = Modifier.padding(horizontal = 7.dp)
             )
         }
-        Box(Modifier.size(7.dp).clip(CircleShape).background(Brush.radialGradient(listOf(Color(0xFFE8EFE6), Color(0xFF626C66)))))
+        Box(Modifier.size(8.dp).clip(CircleShape).background(Brush.radialGradient(listOf(Color(0xFFE8EFE6), Color(0xFF626C66)))))
     }
 }
 
@@ -331,14 +412,14 @@ private fun NowPlayingMeta(title: String, artist: String, album: String) {
 }
 
 @Composable
-private fun PlayerProgress(positionMs: Long, durationMs: Long) {
+private fun PlayerProgress(positionMs: Long, durationMs: Long, appColor: Color = GreenBright) {
     val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
     Column(Modifier.fillMaxWidth()) {
         Canvas(Modifier.fillMaxWidth().height(7.dp)) {
             val y = size.height / 2f
             drawLine(Color(0xFF2A2D34), Offset(0f, y), Offset(size.width, y), strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
             drawLine(
-                Brush.horizontalGradient(listOf(GreenBright, GreenSoft)),
+                Brush.horizontalGradient(listOf(appColor, appColor.copy(alpha = 0.72f), GreenSoft)),
                 Offset(0f, y),
                 Offset(size.width * progress, y),
                 strokeWidth = 3.dp.toPx(),
@@ -353,41 +434,47 @@ private fun PlayerProgress(positionMs: Long, durationMs: Long) {
 }
 
 @Composable
-private fun Transport(isPlaying: Boolean, onPrevious: () -> Unit, onToggle: () -> Unit, onNext: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-        TransportButton("<<", 32.dp, false, onPrevious)
-        Spacer(Modifier.width(16.dp))
-        TransportButton(if (isPlaying) "II" else ">", 42.dp, true, onToggle)
-        Spacer(Modifier.width(16.dp))
-        TransportButton(">>", 32.dp, false, onNext)
-    }
-}
-
-@Composable
-private fun TransportButton(label: String, size: Dp, primary: Boolean, onClick: () -> Unit) {
+private fun MiniAlbumArt(albumArt: Bitmap?, isPlaying: Boolean, sourceColor: Color) {
     Box(
-        modifier = Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(if (primary) Brush.verticalGradient(listOf(GreenSoft, GreenBright)) else Brush.verticalGradient(listOf(Color(0xFF20232A), Color(0xFF111216))))
-            .border(1.dp, if (primary) Color(0x668FD694) else Color(0xFF2A2C33), CircleShape)
-            .clickable(onClick = onClick),
+        Modifier
+            .size(72.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Brush.radialGradient(listOf(sourceColor.copy(alpha = 0.95f), Color(0xFF101215)))),
         contentAlignment = Alignment.Center
     ) {
-        BasicText(
-            text = label,
-            style = TextStyle(color = if (primary) Color(0xFF071009) else Ink, fontSize = if (primary) 17.sp else 13.sp, fontWeight = FontWeight.Black)
-        )
-    }
-}
-
-@Composable
-private fun MiniAlbumArt(albumArt: Bitmap?, isPlaying: Boolean) {
-    Box(Modifier.size(42.dp).clip(RoundedCornerShape(10.dp)).background(Brush.radialGradient(listOf(Color(0xFFA9F0B6), Color(0xFF2F9F7A)))), contentAlignment = Alignment.Center) {
         if (albumArt != null) {
             Image(albumArt.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         }
         VinylDot(isPlaying)
+    }
+}
+
+@Composable
+private fun SourceIconButton(
+    appName: String,
+    appIconColor: Color,
+    isPlaying: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF111318))
+            .border(1.dp, appIconColor.copy(alpha = 0.42f), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.size(28.dp).clip(CircleShape).background(appIconColor), contentAlignment = Alignment.Center) {
+            BasicText(
+                text = appName.take(1).uppercase().ifBlank { "M" },
+                style = TextStyle(color = Color(0xFF071009), fontSize = 14.sp, fontWeight = FontWeight.Black)
+            )
+        }
+        Box(Modifier.align(Alignment.BottomEnd).padding(2.dp)) {
+            Equalizer(isPlaying, appIconColor, height = 12.dp)
+        }
     }
 }
 
@@ -399,7 +486,7 @@ private fun VinylDot(isPlaying: Boolean) {
     } else {
         animateFloatAsState(0f, label = "mini-vinyl-paused")
     }
-    Canvas(Modifier.size(18.dp).rotate(rotation)) {
+    Canvas(Modifier.size(28.dp).rotate(rotation)) {
         drawCircle(Color(0xFF08090B))
         drawCircle(Color(0xFF15171B), radius = size.minDimension * 0.32f)
         drawLine(Color(0x55FFFFFF), Offset(size.width * 0.5f, 0f), Offset(size.width * 0.5f, size.height), strokeWidth = 1.dp.toPx())
@@ -409,7 +496,7 @@ private fun VinylDot(isPlaying: Boolean) {
 @Composable
 private fun Equalizer(isPlaying: Boolean, barColor: Color, height: Dp) {
     val transition = rememberInfiniteTransition(label = "eq")
-    Row(Modifier.height(height).width(22.dp), horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+    Row(Modifier.height(height).width(30.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
         repeat(4) { index ->
             val animated by if (isPlaying) {
                 transition.animateFloat(
@@ -455,6 +542,75 @@ private fun currentPlaybackPosition(info: NowPlayingInfo, nowElapsed: Long): Lon
     val elapsed = (nowElapsed - info.lastUpdateElapsedMs).coerceAtLeast(0L)
     val current = info.positionMs + elapsed
     return if (info.durationMs > 0) current.coerceIn(0L, info.durationMs) else current
+}
+
+private fun Modifier.recordGestures(
+    positionMs: Long,
+    durationMs: Long,
+    onTogglePlayPause: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onSeekTo: (Long) -> Unit
+): Modifier = pointerInput(positionMs, durationMs) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val touchSlop = 12.dp.toPx()
+        val scrubSlop = 28.dp.toPx()
+        var last = down.position
+        var totalDx = 0f
+        var totalDy = 0f
+        var maxTravel = 0f
+        val startAngle = angleFor(down.position, center)
+        var endAngle = startAngle
+        var isPressed = true
+
+        while (isPressed) {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull() ?: break
+            if (!change.pressed) {
+                isPressed = false
+            } else {
+                val delta = change.position - last
+                totalDx += delta.x
+                totalDy += delta.y
+                last = change.position
+                endAngle = angleFor(change.position, center)
+                maxTravel = maxTravel.coerceAtLeast((change.position - down.position).getDistance())
+                change.consume()
+            }
+        }
+
+        if (maxTravel < touchSlop) {
+            onTogglePlayPause()
+            return@awaitEachGesture
+        }
+
+        val angleDelta = shortestAngleDelta(startAngle, endAngle)
+        val isArc = abs(angleDelta) > (PI.toFloat() * 0.72f) && abs(totalDy) > touchSlop
+        if (isArc) {
+            if (totalDx >= 0f) onNext() else onPrevious()
+            return@awaitEachGesture
+        }
+
+        if (durationMs > 0L && abs(totalDx) > scrubSlop) {
+            val scrubWindow = min(durationMs / 3L, 45_000L).coerceAtLeast(8_000L)
+            val deltaMs = ((totalDx / size.width.toFloat()).coerceIn(-1f, 1f) * scrubWindow).toLong()
+            onSeekTo((positionMs + deltaMs).coerceIn(0L, durationMs))
+        }
+    }
+}
+
+private fun angleFor(point: Offset, center: Offset): Float {
+    return atan2(point.y - center.y, point.x - center.x)
+}
+
+private fun shortestAngleDelta(start: Float, end: Float): Float {
+    var delta = end - start
+    val full = (PI * 2.0).toFloat()
+    while (delta > PI.toFloat()) delta -= full
+    while (delta < -PI.toFloat()) delta += full
+    return delta
 }
 
 private fun formatMs(value: Long): String {

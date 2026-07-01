@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ResolveInfo
+import android.location.Location
+import android.location.LocationManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -78,6 +80,7 @@ import androidx.compose.ui.platform.ComposeView
 import org.json.JSONArray
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
+import java.net.URL
 import java.text.Collator
 import java.time.Instant
 import java.time.LocalDate
@@ -137,6 +140,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var contactsLauncher: ActivityResultLauncher<String>
     private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var calendarPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var weatherPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
@@ -146,8 +150,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var predictionOverlay: PredictionOverlayManager
     private lateinit var liveRouter: LivePredictionRouter
     private var wordlistFrequencies: Map<String, Float> = emptyMap()
-    private lateinit var clockView: TextView
-    private lateinit var dateView: TextView
+    private lateinit var weatherIconView: AnimatedWeatherIconView
+    private lateinit var weatherTempView: TextView
+    private lateinit var weatherMetaView: TextView
+    private lateinit var weatherFeelsView: TextView
+    private lateinit var weatherStatsView: TextView
     private lateinit var hubView: LinearLayout
     private lateinit var ribbonView: LinearLayout
     private lateinit var favoritesDockView: LinearLayout
@@ -177,6 +184,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
         }
+        weatherPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) refreshWeather(force = true) else showWeatherNeedsPermission()
+        }
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
@@ -202,6 +212,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         liveRouter.start()
         loadGlideWords()
         render()
+        refreshWeather(force = false)
         maybeRequestSmsPermission()
         mediaSessionSource.start()
         mediaUiScope.launch {
@@ -224,6 +235,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             renderRibbon()
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
+            refreshWeather(force = false)
         }
     }
 
@@ -313,17 +325,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         // Typing display — lives between content and keyboard so gravity=BOTTOM on keyboard
         // rows never clips it. Shows typed text + blinking cursor; hint text when idle.
-        searchHintView = TextView(this).apply {
-            textSize = 15f
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            setTextColor(Ink)
+        val hintBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.START
-            setPadding(dp(16), dp(4), dp(16), dp(4))
             setBackgroundColor(0xFF000000.toInt())
+            searchHintView = TextView(context).apply {
+                textSize = 15f
+                typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                setTextColor(Ink)
+                gravity = Gravity.CENTER_VERTICAL
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.START
+                setPadding(dp(16), dp(4), dp(8), dp(4))
+            }
+            addView(searchHintView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            if (isVivoDevice()) {
+                addView(zeissCameraButton(), LinearLayout.LayoutParams(dp(52), dp(23)).apply {
+                    topMargin = dp(6)
+                    marginEnd = dp(10)
+                })
+            }
         }
-        root.addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
+        root.addView(hintBar, LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
 
         root.addView(keyboard(), LinearLayout.LayoutParams.MATCH_PARENT, keyboardHeight())
         setContentView(root)
@@ -337,24 +360,73 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         root.post { captureKeyBounds() }
     }
 
+    private fun zeissCameraButton(): View {
+        return TextView(this).apply {
+            text = "ZEISS"
+            textSize = 8.8f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.1f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFE7ECFF.toInt())
+            background = GradientDrawable().apply {
+                setColor(0xFF102D86.toInt())
+                cornerRadius = dp(9).toFloat()
+                setStroke(dp(1), 0xFF4968B8.toInt())
+            }
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                openVivoCamera()
+            }
+        }
+    }
+
+    private fun isVivoDevice(): Boolean {
+        val device = listOf(Build.MANUFACTURER, Build.BRAND, Build.DEVICE, Build.MODEL)
+            .joinToString(" ")
+            .lowercase(Locale.US)
+        return device.contains("vivo") || device.contains("iqoo")
+    }
+
+    private fun openVivoCamera() {
+        val intents = listOf(
+            Intent(Intent.ACTION_MAIN).addCategory("android.intent.category.APP_CAMERA"),
+            Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA),
+            Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+        )
+        intents.firstOrNull { it.resolveActivity(packageManager) != null }?.let {
+            startSafeIntent(it, "Camera isn't available here")
+            return
+        }
+        listOf("com.android.camera", "com.vivo.camera", "com.bbk.camera").forEach { pkg ->
+            packageManager.getLaunchIntentForPackage(pkg)?.let {
+                startSafeIntent(it, "Camera isn't available here")
+                return
+            }
+        }
+        Toast.makeText(this, "Camera isn't available here", Toast.LENGTH_SHORT).show()
+    }
+
     private fun home(): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), dp(10))
+            setPadding(dp(20), dp(10), dp(20), dp(10))
             addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.9f))
             nowPlayingCardView = ComposeView(context).apply {
                 setBackgroundColor(Color.TRANSPARENT)
                 setNowPlayingCardContent()
                 elevation = dp(8).toFloat()
             }
             addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()).apply {
-                topMargin = dp(14)
+                topMargin = dp(2)
+                bottomMargin = dp(2)
             })
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.1f))
             favoritesDockView = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
-                setPadding(dp(8), dp(8), dp(8), dp(8))
+                setPadding(dp(14), dp(8), dp(14), dp(8))
                 background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xD916181D.toInt(), 0xE60D0E11.toInt())).apply {
                     cornerRadius = dp(22).toFloat()
                     setStroke(dp(1), 0x332A2C33)
@@ -368,19 +440,68 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun homeHeader(): View {
         return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            // Top-aligned by design: live widgets sit where Message Hub used to live.
-            gravity = Gravity.TOP
-            clockView = mono("", 44f, Ink).apply {
-                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
-                includeFontPadding = false
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(14), dp(10))
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
             }
-            addView(clockView)
-            dateView = TextView(context).apply {
-                textSize = 12f; letterSpacing = 0.08f; setTextColor(InkDim)
-                includeFontPadding = false; setPadding(0, dp(4), 0, 0)
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x14191B20, 0x06191B20)).apply {
+                cornerRadius = dp(24).toFloat()
             }
-            addView(dateView)
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                weatherTempView = TextView(context).apply {
+                    text = prefs().getString(WEATHER_TEMP_PREF, "--")
+                    textSize = 25f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    setTextColor(Ink)
+                    includeFontPadding = false
+                }
+                addView(weatherTempView)
+                weatherMetaView = TextView(context).apply {
+                    text = prefs().getString(WEATHER_META_PREF, "Tap for local weather")
+                    textSize = 10.5f
+                    letterSpacing = 0.10f
+                    setTextColor(InkDim)
+                    includeFontPadding = false
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }
+                addView(weatherMetaView)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+                weatherFeelsView = TextView(context).apply {
+                    text = prefs().getString(WEATHER_FEELS_PREF, "Feels --")
+                    textSize = 11.5f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    setTextColor(Ink)
+                    includeFontPadding = false
+                    gravity = Gravity.RIGHT
+                }
+                addView(weatherFeelsView)
+                weatherStatsView = TextView(context).apply {
+                    text = prefs().getString(WEATHER_STATS_PREF, "Local")
+                    textSize = 9.8f
+                    letterSpacing = 0.08f
+                    setTextColor(InkDim)
+                    includeFontPadding = false
+                    gravity = Gravity.RIGHT
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }
+                addView(weatherStatsView)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.72f).apply { marginEnd = dp(10) })
+            weatherIconView = AnimatedWeatherIconView(context).apply {
+                setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
+                setAnimationEnabled(animatedWeatherEnabled())
+            }
+            addView(weatherIconView, LinearLayout.LayoutParams(dp(50), dp(50)))
         }
     }
 
@@ -394,9 +515,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 title = current?.title.orEmpty(),
                 artist = current?.artist.orEmpty(),
                 sourceApp = current?.sourceApp.orEmpty(),
+                sourceColor = current?.appIconColor ?: 0xFF57C98A.toInt(),
                 albumArt = current?.albumArt,
                 calendarEvents = calendarEvents,
                 recentPeople = recentPeople(),
+                emailItems = contextItems(HUB_KIND_EMAIL),
+                newsItems = contextItems(HUB_KIND_NEWS),
+                mapsItems = contextItems(HUB_KIND_MAPS),
                 hasCalendarPermission = hasCalendarPermission(),
                 onMusicClick = {
                     haptic(this@setNowPlayingCardContent)
@@ -421,6 +546,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 onRecentPersonLongClick = { person ->
                     haptic(this@setNowPlayingCardContent)
                     openRecentPersonApp(person)
+                },
+                onEmailClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    openContextItem(item, clearAfterOpen = true)
+                },
+                onEmailLongClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    openContextItemApp(item)
+                },
+                onNewsClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    openContextItem(item, clearAfterOpen = true)
+                },
+                onNewsLongClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    openContextItemApp(item)
+                },
+                onMapsClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    openContextItem(item, clearAfterOpen = false)
+                },
+                onMapsLongClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    openContextItemApp(item)
                 }
             )
         }
@@ -440,7 +589,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun nowPlayingCardHeight(): Int {
-        return if (homeWidgetStackVisible()) dp(138) else 0
+        return if (homeWidgetStackVisible()) dp(152) else 0
     }
 
     private fun homeWidgetStackVisible() = openPane == null && !libraryOpen
@@ -458,9 +607,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 librarySwipeTriggered = false
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
             }
-            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP -> {
                 if (librarySwipeBlockedByWidget) {
-                    if (event.actionMasked == MotionEvent.ACTION_UP) librarySwipeBlockedByWidget = false
+                    librarySwipeBlockedByWidget = false
                     return
                 }
                 if (!inContent || librarySwipeTriggered) return
@@ -477,6 +626,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             librarySwipeTriggered = true
                             closeLibrary()
                         }
+                        dx > 0 && openPane == null -> {
+                            librarySwipeTriggered = true
+                            performHomeGesture(gestureAction(GESTURE_RIGHT_PREF, GESTURE_NONE))
+                        }
+                    }
+                } else if (!libraryOpen && openPane == null && abs(dy) > dp(42) && abs(dy) > abs(dx) * 1.2f) {
+                    librarySwipeTriggered = true
+                    if (dy < 0) {
+                        performHomeGesture(gestureAction(GESTURE_UP_PREF, GESTURE_LIBRARY))
+                    } else {
+                        performHomeGesture(gestureAction(GESTURE_DOWN_PREF, GESTURE_NOTIFICATIONS))
                     }
                 }
             }
@@ -523,6 +683,37 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 contentFrame.removeView(closing)
                 if (libraryView === closing) libraryView = null
             }.start()
+    }
+
+    private fun gestureAction(prefKey: String, fallback: String): String = prefs().getString(prefKey, fallback) ?: fallback
+
+    private fun performHomeGesture(action: String) {
+        when {
+            action == GESTURE_NONE -> Unit
+            action == GESTURE_LIBRARY -> openLibrary()
+            action == GESTURE_NOTIFICATIONS -> expandNotificationShade()
+            action == GESTURE_MUSIC -> openHere(musicTarget())
+            action == GESTURE_SETTINGS -> openHere(clicksSettingsTarget())
+            action.startsWith(GESTURE_APP_PREFIX) -> {
+                val packageName = action.removePrefix(GESTURE_APP_PREFIX)
+                apps.firstOrNull { it.packageName == packageName }?.let { openExternal(it.toPaneTarget()) }
+                    ?: Toast.makeText(this, "App isn't available here", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun expandNotificationShade() {
+        val statusBar = getSystemService("statusbar")
+        val methodName = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            "expandNotificationsPanel"
+        } else {
+            "expand"
+        }
+        runCatching {
+            statusBar?.javaClass?.getMethod(methodName)?.invoke(statusBar)
+        }.onFailure {
+            Toast.makeText(this, "Notification shade isn't available here", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun showLibrary(animate: Boolean) {
@@ -1790,6 +1981,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     onNext = {
                         haptic(this@apply)
                         mediaSessionSource.skipToNext()
+                    },
+                    onSeekTo = { positionMs ->
+                        haptic(this@apply)
+                        mediaSessionSource.seekTo(positionMs)
                     }
                 )
             }
@@ -1805,6 +2000,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             haptic(this)
             showIconPackMenu(this)
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("DOCK LABELS", showDockLabels()) {
+            val next = !showDockLabels()
+            prefs().edit().putBoolean(DOCK_LABELS_PREF, next).apply()
+            haptic(this)
+            renderFavoritesDock()
+            renderPaneContent(clicksSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("ANIMATED WEATHER", animatedWeatherEnabled()) {
+            val next = !animatedWeatherEnabled()
+            prefs().edit().putBoolean(ANIMATED_WEATHER_PREF, next).apply()
+            haptic(this)
+            if (::weatherIconView.isInitialized) weatherIconView.setAnimationEnabled(next)
+            renderPaneContent(clicksSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+
+        parent.addView(mono("GESTURES", 10f, Accent).apply {
+            letterSpacing = 0.22f
+            setPadding(0, dp(18), 0, dp(8))
+        })
+        parent.addView(gestureSettingRow("SWIPE UP", GESTURE_UP_PREF, GESTURE_LIBRARY), LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(gestureSettingRow("SWIPE RIGHT", GESTURE_RIGHT_PREF, GESTURE_NONE), LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(gestureSettingRow("SWIPE DOWN", GESTURE_DOWN_PREF, GESTURE_NOTIFICATIONS), LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
 
         parent.addView(mono("INTEGRATIONS", 10f, Accent).apply {
             letterSpacing = 0.22f
@@ -1816,6 +2033,83 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(0, dp(14), 0, 0)
             letterSpacing = 0.08f
         })
+    }
+
+    private fun gestureSettingRow(label: String, prefKey: String, fallback: String): View {
+        val action = gestureAction(prefKey, fallback)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), dp(8))
+            background = border(Line)
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                showGestureMenu(label, prefKey, fallback)
+            }
+            addView(TextView(context).apply {
+                text = label
+                textSize = 12.5f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Ink)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(mono(gestureActionLabel(action).uppercase(Locale.US), 9.5f, InkDim).apply {
+                letterSpacing = 0.08f
+                gravity = Gravity.RIGHT
+            })
+        }
+    }
+
+    private fun showGestureMenu(title: String, prefKey: String, fallback: String) {
+        val actions = listOf(
+            "No action" to GESTURE_NONE,
+            "Open app library" to GESTURE_LIBRARY,
+            "Notification shade" to GESTURE_NOTIFICATIONS,
+            "Open Music" to GESTURE_MUSIC,
+            "Clicks settings" to GESTURE_SETTINGS,
+            "Open app..." to "choose_app"
+        )
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setItems(actions.map { it.first }.toTypedArray()) { dialog, which ->
+                val value = actions[which].second
+                dialog.dismiss()
+                if (value == "choose_app") {
+                    showGestureAppPicker(title, prefKey)
+                } else {
+                    prefs().edit().putString(prefKey, value).apply()
+                    renderPaneContent(clicksSettingsTarget())
+                }
+            }
+            .show()
+    }
+
+    private fun showGestureAppPicker(title: String, prefKey: String) {
+        val sorted = apps.sortedWith { left, right -> collator.compare(left.label, right.label) }
+        AlertDialog.Builder(this)
+            .setTitle("$title app")
+            .setItems(sorted.map { it.label }.toTypedArray()) { dialog, which ->
+                prefs().edit().putString(prefKey, "$GESTURE_APP_PREFIX${sorted[which].packageName}").apply()
+                dialog.dismiss()
+                renderPaneContent(clicksSettingsTarget())
+            }
+            .show()
+    }
+
+    private fun gestureActionLabel(action: String): String {
+        return when {
+            action == GESTURE_NONE -> "None"
+            action == GESTURE_LIBRARY -> "App library"
+            action == GESTURE_NOTIFICATIONS -> "Notifications"
+            action == GESTURE_MUSIC -> "Music"
+            action == GESTURE_SETTINGS -> "Settings"
+            action.startsWith(GESTURE_APP_PREFIX) -> {
+                val packageName = action.removePrefix(GESTURE_APP_PREFIX)
+                apps.firstOrNull { it.packageName == packageName }?.label ?: "App"
+            }
+            else -> "None"
+        }
     }
 
     private fun integrationRow(name: String, packageName: String, prefKey: String): View {
@@ -2021,16 +2315,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             searchHintView.textSize = 15f
             searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             searchHintView.letterSpacing = 0f
+            searchHintView.ellipsize = android.text.TextUtils.TruncateAt.START
             searchHintView.gravity = Gravity.CENTER_VERTICAL
             searchHintView.setPadding(dp(16), dp(4), dp(16), dp(4))
             searchHintView.setTextColor(Ink)
             searchHintView.text = styledTypedCommand(typedText)
         } else {
-            searchHintView.textSize = 9.5f
+            searchHintView.textSize = if (isVivoDevice()) 8.6f else 9.5f
             searchHintView.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
-            searchHintView.letterSpacing = 0.18f
+            searchHintView.letterSpacing = if (isVivoDevice()) 0.14f else 0.18f
+            searchHintView.ellipsize = android.text.TextUtils.TruncateAt.END
             searchHintView.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            searchHintView.setPadding(dp(16), dp(4), dp(16), dp(2))
+            searchHintView.setPadding(dp(10), dp(4), dp(6), dp(2))
             searchHintView.setTextColor(0xFF44474E.toInt())
             searchHintView.text = hint
         }
@@ -2047,16 +2343,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return
         }
-        dockApps.forEachIndexed { index, app ->
-            favoritesDockView.addView(dockAppButton(app, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        dockApps.take(DOCK_APP_LIMIT).forEachIndexed { index, app ->
+            favoritesDockView.addView(dockAppButton(app, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (index > 0) marginStart = dp(8)
+            })
         }
-        repeat(6 - dockApps.size) {
-            favoritesDockView.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        repeat(DOCK_APP_LIMIT - dockApps.size.coerceAtMost(DOCK_APP_LIMIT)) { index ->
+            favoritesDockView.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (dockApps.isNotEmpty() || index > 0) marginStart = dp(8)
+            })
         }
     }
 
     private fun dockAppButton(app: AppEntry, index: Int): View {
         val target = app.toPaneTarget()
+        val showLabel = showDockLabels()
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -2083,17 +2384,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     adjustViewBounds = true
                     setPadding(dp(5), dp(5), dp(5), dp(5))
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }, LinearLayout.LayoutParams(dp(42), dp(42)))
-            addView(TextView(context).apply {
-                text = app.shortName
-                textSize = 9.5f
-                gravity = Gravity.CENTER
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(InkDim)
-                includeFontPadding = false
-                setPadding(0, dp(5), 0, 0)
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }, LinearLayout.LayoutParams(dp(if (showLabel) 42 else 48), dp(if (showLabel) 42 else 48)))
+            if (showLabel) {
+                addView(TextView(context).apply {
+                    text = app.shortName
+                    textSize = 9.5f
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(InkDim)
+                    includeFontPadding = false
+                    setPadding(0, dp(5), 0, 0)
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).start()
@@ -2646,8 +2949,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val hidden = hiddenHomePackages()
         val favorites = apps
             .filter { it.packageName in favoritePackages() && it.packageName !in hidden }
-            .take(6)
-        if (favorites.size >= 6) return favorites
+            .take(DOCK_APP_LIMIT)
+        if (favorites.size >= DOCK_APP_LIMIT) return favorites
         val favoritePackages = favorites.map { it.packageName }.toSet()
         val usage = appUsageCounts()
         val oftenUsed = apps
@@ -2657,12 +2960,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (usageCompare != 0) usageCompare else collator.compare(left.label, right.label)
             }
             .filter { (usage[it.packageName] ?: 0) > 0 }
-        return (favorites + oftenUsed).take(6)
+        return (favorites + oftenUsed).take(DOCK_APP_LIMIT)
     }
 
     private fun favoritePackages(): Set<String> = prefs().getStringSet(FAVORITE_APPS_PREF, emptySet()) ?: emptySet()
 
     private fun hiddenHomePackages(): Set<String> = prefs().getStringSet(HIDDEN_HOME_APPS_PREF, emptySet()) ?: emptySet()
+
+    private fun showDockLabels(): Boolean = prefs().getBoolean(DOCK_LABELS_PREF, true)
+
+    private fun animatedWeatherEnabled(): Boolean = prefs().getBoolean(ANIMATED_WEATHER_PREF, true)
 
     private fun isOnHome(packageName: String?) = packageName != null &&
         homeDockApps().any { it.packageName == packageName }
@@ -2719,7 +3026,53 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .filter { it.isActualPersonMessage() }
             .filter { seen.add("${it.packageName}:${it.sender}") }
             .take(6)
-            .map { RecentPerson(it.key, it.sender, it.preview, it.packageName, it.color) }
+            .map { RecentPerson(it.key, it.sender, it.preview, it.packageName, it.color, ClicksNotificationListener.notificationAvatars[it.key]) }
+    }
+
+    private fun contextItems(kind: String): List<ContextWidgetItem> {
+        return messages
+            .filter { it.kind == kind }
+            .take(6)
+            .map {
+                ContextWidgetItem(
+                    key = it.key,
+                    title = it.sender,
+                    preview = it.preview,
+                    packageName = it.packageName,
+                    color = contextColor(it),
+                    avatar = ClicksNotificationListener.notificationAvatars[it.key]
+                )
+            }
+    }
+
+    private fun contextColor(message: HubMessage): Int {
+        return when (message.kind) {
+            HUB_KIND_EMAIL -> 0xFFEA4335.toInt()
+            HUB_KIND_NEWS -> 0xFF8AB4F8.toInt()
+            HUB_KIND_MAPS -> 0xFF57C98A.toInt()
+            else -> message.color
+        }
+    }
+
+    private fun openContextItem(item: ContextWidgetItem, clearAfterOpen: Boolean) {
+        ClicksNotificationListener.notificationIntents[item.key]?.let { pending ->
+            runCatching { pending.send() }
+                .onSuccess {
+                    if (clearAfterOpen) clearHandledContextItem(item)
+                    return
+                }
+        }
+        openContextItemApp(item)
+    }
+
+    private fun openContextItemApp(item: ContextWidgetItem) {
+        item.packageName.takeIf { it.isNotBlank() }?.let { pkg ->
+            packageManager.getLaunchIntentForPackage(pkg)?.let {
+                startSafeIntent(it, "App isn't available here")
+                return
+            }
+        }
+        Toast.makeText(this, "App isn't available here", Toast.LENGTH_SHORT).show()
     }
 
     private fun openRecentPerson(person: RecentPerson) {
@@ -2781,6 +3134,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshNowPlayingCard()
     }
 
+    private fun clearHandledContextItem(item: ContextWidgetItem) {
+        ClicksNotificationListener.notificationIntents.remove(item.key)
+        ClicksNotificationListener.notificationAvatars.remove(item.key)
+        val filtered = messages.filterNot { item.key.isNotBlank() && it.key == item.key }
+        if (filtered.size == messages.size) return
+        messages = filtered
+        persistHubMessages(filtered)
+        renderHub()
+        refreshNowPlayingCard()
+    }
+
+    private fun persistHubMessages(nextMessages: List<HubMessage>) {
+        val next = JSONArray()
+        nextMessages.forEach { message ->
+            next.put(org.json.JSONObject()
+                .put("key", message.key)
+                .put("sender", message.sender)
+                .put("preview", message.preview)
+                .put("packageName", message.packageName)
+                .put("kind", message.kind)
+                .put("color", message.color))
+        }
+        prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
+    }
+
     private fun HubMessage.isActualPersonMessage(): Boolean {
         val cleanSender = sender.trim()
         val cleanPreview = preview.trim()
@@ -2824,7 +3202,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun inferHubKind(packageName: String): String {
-        return if (packageName in EMAIL_PACKAGES) HUB_KIND_EMAIL else HUB_KIND_MESSAGE
+        return when {
+            packageName in EMAIL_PACKAGES -> HUB_KIND_EMAIL
+            packageName in NEWS_PACKAGES -> HUB_KIND_NEWS
+            packageName in MAPS_PACKAGES -> HUB_KIND_MAPS
+            else -> HUB_KIND_MESSAGE
+        }
     }
 
     // ── Drawing / utils ──────────────────────────────────────────────────────
@@ -2838,9 +3221,110 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openNotificationAccessSettings() { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
 
     private fun updateClock() {
-        val now = LocalDateTime.now()
-        clockView.text = now.format(DateTimeFormatter.ofPattern("H:mm", Locale.US))
-        dateView.text = now.format(DateTimeFormatter.ofPattern("EEE . MMM d", Locale.US)).uppercase(Locale.US)
+        if (!::weatherTempView.isInitialized) return
+        weatherTempView.text = prefs().getString(WEATHER_TEMP_PREF, "--")
+        weatherMetaView.text = prefs().getString(WEATHER_META_PREF, "Tap for local weather")
+        weatherFeelsView.text = prefs().getString(WEATHER_FEELS_PREF, "Feels --")
+        weatherStatsView.text = prefs().getString(WEATHER_STATS_PREF, "Local")
+        weatherIconView.setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
+        weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
+    }
+
+    private fun refreshWeather(force: Boolean) {
+        if (!::weatherTempView.isInitialized) return
+        if (!hasWeatherPermission()) {
+            showWeatherNeedsPermission()
+            return
+        }
+        val lastFetch = prefs().getLong(WEATHER_FETCHED_AT_PREF, 0L)
+        if (!force && System.currentTimeMillis() - lastFetch < 30L * 60L * 1000L) {
+            updateClock()
+            return
+        }
+        val location = bestLastKnownLocation()
+        if (location == null) {
+            weatherTempView.text = "--"
+            weatherMetaView.text = "Tap to locate weather"
+            return
+        }
+        weatherMetaView.text = "Updating local weather"
+        mediaUiScope.launch(Dispatchers.IO) {
+            val result = runCatching { fetchWeather(location) }.getOrNull()
+            runOnUiThread {
+                if (result == null) {
+                    weatherMetaView.text = "Weather unavailable"
+                    return@runOnUiThread
+                }
+                val nextTemp = "${result.tempF}°"
+                val nextMeta = result.label.uppercase(Locale.US)
+                val nextFeels = "Feels ${result.feelsLikeF}°"
+                val nextStats = "${result.humidity}% RH . ${result.windMph} mph"
+                val weatherChanged =
+                    prefs().getString(WEATHER_TEMP_PREF, null) != nextTemp ||
+                        prefs().getString(WEATHER_META_PREF, null) != nextMeta ||
+                        prefs().getString(WEATHER_FEELS_PREF, null) != nextFeels ||
+                        prefs().getString(WEATHER_STATS_PREF, null) != nextStats ||
+                        prefs().getInt(WEATHER_CODE_PREF, Int.MIN_VALUE) != result.code
+                prefs().edit()
+                    .putString(WEATHER_TEMP_PREF, nextTemp)
+                    .putString(WEATHER_META_PREF, nextMeta)
+                    .putString(WEATHER_FEELS_PREF, nextFeels)
+                    .putString(WEATHER_STATS_PREF, nextStats)
+                    .putInt(WEATHER_CODE_PREF, result.code)
+                    .putLong(WEATHER_FETCHED_AT_PREF, System.currentTimeMillis())
+                    .apply()
+                updateClock()
+                if (weatherChanged) weatherIconView.playLivePhotoBurst()
+            }
+        }
+    }
+
+    private fun showWeatherNeedsPermission() {
+        if (!::weatherTempView.isInitialized) return
+        weatherTempView.text = "--"
+        weatherMetaView.text = "Tap for local weather"
+        weatherFeelsView.text = "Feels --"
+        weatherStatsView.text = "Local"
+        weatherIconView.setWeatherCode(0)
+        weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
+    }
+
+    private fun hasWeatherPermission(): Boolean {
+        return checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun bestLastKnownLocation(): Location? {
+        val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        if (!hasWeatherPermission()) return null
+        val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+        return providers.mapNotNull { provider ->
+            runCatching { manager.getLastKnownLocation(provider) }.getOrNull()
+        }.maxByOrNull { it.time }
+    }
+
+    private fun fetchWeather(location: Location): WeatherSnapshot {
+        val url = "https://api.open-meteo.com/v1/forecast?latitude=${location.latitude}&longitude=${location.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
+        val json = JSONObject(URL(url).readText())
+        val current = json.getJSONObject("current")
+        val temp = current.getDouble("temperature_2m").toInt()
+        val feels = current.optDouble("apparent_temperature", temp.toDouble()).toInt()
+        val humidity = current.optInt("relative_humidity_2m", 0)
+        val wind = current.optDouble("wind_speed_10m", 0.0).toInt()
+        val code = current.optInt("weather_code", 0)
+        return WeatherSnapshot(temp, feels, humidity, wind, code, weatherCodeLabel(code))
+    }
+
+    private fun weatherCodeLabel(code: Int): String = when (code) {
+        0 -> "Clear"
+        1, 2 -> "Partly cloudy"
+        3 -> "Cloudy"
+        45, 48 -> "Fog"
+        51, 53, 55, 56, 57 -> "Drizzle"
+        61, 63, 65, 66, 67, 80, 81, 82 -> "Rain"
+        71, 73, 75, 77, 85, 86 -> "Snow"
+        95, 96, 99 -> "Storm"
+        else -> "Local weather"
     }
 
     private fun mono(text: String, size: Float, color: Int) = TextView(this).apply {
@@ -3142,6 +3626,105 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return Color.rgb((red/count).toInt().coerceIn(48,232), (green/count).toInt().coerceIn(48,232), (blue/count).toInt().coerceIn(48,232))
     }
 
+    private inner class AnimatedWeatherIconView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var weatherCode = 0
+        private var animationEnabled = true
+        private var animationUntilMs = 0L
+        private var animationStartedAt = System.currentTimeMillis()
+
+        fun setWeatherCode(code: Int) {
+            weatherCode = code
+            invalidate()
+        }
+
+        fun setAnimationEnabled(enabled: Boolean) {
+            animationEnabled = enabled
+            if (!enabled) {
+                animationUntilMs = 0L
+            }
+            invalidate()
+        }
+
+        fun playLivePhotoBurst() {
+            if (animationEnabled) startBurst() else invalidate()
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            invalidate()
+        }
+
+        private fun startBurst() {
+            animationStartedAt = System.currentTimeMillis()
+            animationUntilMs = animationStartedAt + WEATHER_ANIMATION_BURST_MS
+            postInvalidateOnAnimation()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val now = System.currentTimeMillis()
+            val running = animationEnabled && now < animationUntilMs && isShown
+            val t = if (running) ((now - animationStartedAt) % 2600L) / 2600f else 0.12f
+            val cx = width / 2f
+            val cy = height / 2f
+            when (weatherCode) {
+                45, 48 -> drawCloud(canvas, cx, cy, 0xFFB7BBC4.toInt(), t, fog = true)
+                51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82 -> drawCloud(canvas, cx, cy, 0xFF8FD694.toInt(), t, rain = true)
+                71, 73, 75, 77, 85, 86 -> drawCloud(canvas, cx, cy, 0xFFE8EDF7.toInt(), t, snow = true)
+                95, 96, 99 -> drawCloud(canvas, cx, cy, Accent, t, rain = true)
+                1, 2, 3 -> {
+                    drawSun(canvas, cx - dp(7), cy - dp(5), t)
+                    drawCloud(canvas, cx + dp(4), cy + dp(5), 0xFFD8DCE6.toInt(), t)
+                }
+                else -> drawSun(canvas, cx, cy, t)
+            }
+            if (running) postInvalidateOnAnimation()
+        }
+
+        private fun drawSun(canvas: Canvas, cx: Float, cy: Float, t: Float) {
+            val pulse = 1f + kotlin.math.sin(t * Math.PI * 2).toFloat() * 0.035f
+            paint.color = 0xFFF5C451.toInt()
+            canvas.drawCircle(cx, cy, dp(12) * pulse, paint)
+            paint.color = 0x33F5C451.toInt()
+            canvas.drawCircle(cx, cy, dp(18) * pulse, paint)
+        }
+
+        private fun drawCloud(canvas: Canvas, cx: Float, cy: Float, color: Int, t: Float, rain: Boolean = false, snow: Boolean = false, fog: Boolean = false) {
+            val drift = kotlin.math.sin(t * Math.PI * 2).toFloat() * dp(1)
+            paint.color = color
+            canvas.drawCircle(cx - dp(9) + drift, cy + dp(1), dp(9).toFloat(), paint)
+            canvas.drawCircle(cx + drift, cy - dp(5), dp(12).toFloat(), paint)
+            canvas.drawCircle(cx + dp(12) + drift, cy + dp(2), dp(8).toFloat(), paint)
+            canvas.drawRoundRect(cx - dp(19) + drift, cy, cx + dp(21) + drift, cy + dp(13), dp(8).toFloat(), dp(8).toFloat(), paint)
+            paint.strokeWidth = dp(2).toFloat()
+            paint.strokeCap = Paint.Cap.ROUND
+            when {
+                rain -> {
+                    paint.color = 0xFF8FD694.toInt()
+                    repeat(3) { i ->
+                        val x = cx - dp(10) + i * dp(10) + drift
+                        val y = cy + dp(18) + ((t * dp(8)) % dp(8))
+                        canvas.drawLine(x, y, x - dp(2), y + dp(7), paint)
+                    }
+                }
+                snow -> {
+                    paint.color = 0xFFE8EDF7.toInt()
+                    repeat(3) { i ->
+                        canvas.drawCircle(cx - dp(10) + i * dp(10) + drift, cy + dp(22) + kotlin.math.sin((t + i) * Math.PI).toFloat() * dp(2), dp(2).toFloat(), paint)
+                    }
+                }
+                fog -> {
+                    paint.color = 0x778B8F99.toInt()
+                    repeat(2) { i ->
+                        val y = cy + dp(18) + i * dp(6)
+                        canvas.drawLine(cx - dp(18), y, cx + dp(18), y, paint)
+                    }
+                }
+            }
+        }
+    }
+
     private fun Drawable.toBitmap(width: Int, height: Int): Bitmap {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap); setBounds(0, 0, canvas.width, canvas.height); draw(canvas); return bitmap
@@ -3172,6 +3755,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private data class ContactMatch(val name: String, val value: String)
     private data class ContactCommand(val contact: ContactMatch, val message: String)
     private data class CalendarCommand(val title: String, val startMs: Long, val endMs: Long)
+    private data class WeatherSnapshot(val tempF: Int, val feelsLikeF: Int, val humidity: Int, val windMph: Int, val code: Int, val label: String)
 
     companion object {
         private const val Screen = 0xFF0D0E11.toInt()
@@ -3192,7 +3776,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val GO_KEY_COLOR_PREF = "go_key_color"
         private const val FAVORITE_APPS_PREF = "favorite_apps"
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
+        private const val DOCK_LABELS_PREF = "dock_labels"
+        private const val ANIMATED_WEATHER_PREF = "animated_weather"
+        private const val DOCK_APP_LIMIT = 5
         private const val APP_USAGE_PREF = "app_usage_counts"
+        private const val WEATHER_TEMP_PREF = "weather_temp"
+        private const val WEATHER_META_PREF = "weather_meta"
+        private const val WEATHER_FEELS_PREF = "weather_feels"
+        private const val WEATHER_STATS_PREF = "weather_stats"
+        private const val WEATHER_CODE_PREF = "weather_code"
+        private const val WEATHER_FETCHED_AT_PREF = "weather_fetched_at"
+        private const val WEATHER_ANIMATION_BURST_MS = 4000L
+        private const val GESTURE_UP_PREF = "gesture_up_action"
+        private const val GESTURE_RIGHT_PREF = "gesture_right_action"
+        private const val GESTURE_DOWN_PREF = "gesture_down_action"
+        private const val GESTURE_NONE = "none"
+        private const val GESTURE_LIBRARY = "library"
+        private const val GESTURE_NOTIFICATIONS = "notifications"
+        private const val GESTURE_MUSIC = "music"
+        private const val GESTURE_SETTINGS = "settings"
+        private const val GESTURE_APP_PREFIX = "app:"
         private const val HUB_MESSAGES_PREF = "hub_messages"
         private const val SPOTIFY_INTEGRATION_PREF = "spotify_integration"
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
@@ -3203,6 +3806,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val ICON_OVERRIDE_PREFIX = "icon_override_"
         private const val HUB_KIND_MESSAGE = "message"
         private const val HUB_KIND_EMAIL = "email"
+        private const val HUB_KIND_NEWS = "news"
+        private const val HUB_KIND_MAPS = "maps"
         private val SUMMARY_SENDER_WORDS = setOf("Found", "Stocks", "News", "Updates", "Promotions", "Social", "Primary")
         private val SUMMARY_SENDER_PATTERNS = listOf(
             Regex("\\bnew\\b", RegexOption.IGNORE_CASE),
@@ -3221,6 +3826,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "com.readdle.spark",
             "com.protonmail.android",
             "me.bluemail.mail"
+        )
+
+        private val NEWS_PACKAGES = setOf(
+            "com.google.android.apps.magazines"
+        )
+
+        private val MAPS_PACKAGES = setOf(
+            "com.google.android.apps.maps"
         )
 
         private val GO_COLORS = listOf(

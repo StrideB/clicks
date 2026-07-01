@@ -1,7 +1,11 @@
 package com.fran.clicks
 
 import android.app.Notification
+import android.app.PendingIntent
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import org.json.JSONArray
@@ -9,6 +13,10 @@ import org.json.JSONObject
 import kotlin.math.abs
 
 class ClicksNotificationListener : NotificationListenerService() {
+    override fun onListenerConnected() {
+        activeNotifications.orEmpty().forEach { onNotificationPosted(it) }
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (!sbn.isHubCandidate()) return
 
@@ -16,13 +24,19 @@ class ClicksNotificationListener : NotificationListenerService() {
         val sender = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         val preview = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
         if (sender.isBlank() && preview.isBlank()) return
+        val kind = sbn.hubKind()
+        if (kind == HUB_KIND_MESSAGE && !isConversationPerson(sender, preview, sbn.packageName)) return
+        if (kind in DIRECT_OPEN_KINDS && sbn.notification.contentIntent == null) return
+
+        sbn.notification.contentIntent?.let { notificationIntents[sbn.key] = it }
+        notificationAvatar(sbn.notification)?.let { notificationAvatars[sbn.key] = it }
 
         val item = JSONObject()
             .put("key", sbn.key)
-            .put("sender", sender.ifBlank { packageManagerLabel(sbn.packageName) })
+            .put("sender", sender.trim())
             .put("preview", preview)
             .put("packageName", sbn.packageName)
-            .put("kind", sbn.hubKind())
+            .put("kind", kind)
             .put("color", colorForPackage(sbn.packageName))
 
         val current = readMessages().filterNot { it.optString("key") == sbn.key }
@@ -33,6 +47,8 @@ class ClicksNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        notificationIntents.remove(sbn.key)
+        notificationAvatars.remove(sbn.key)
         val next = JSONArray()
         readMessages()
             .filterNot { it.optString("key") == sbn.key }
@@ -41,14 +57,30 @@ class ClicksNotificationListener : NotificationListenerService() {
     }
 
     private fun StatusBarNotification.isHubCandidate(): Boolean {
+        if (notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return false
         if (notification.category == Notification.CATEGORY_MESSAGE) return true
         if (notification.category == Notification.CATEGORY_EMAIL) return true
+        if (packageName in NEWS_PACKAGES) return true
+        if (packageName in MAPS_PACKAGES && isMapsContextNotification()) return true
         return packageName in MESSAGE_PACKAGES || packageName in EMAIL_PACKAGES
     }
 
     private fun StatusBarNotification.hubKind(): String {
         if (notification.category == Notification.CATEGORY_EMAIL || packageName in EMAIL_PACKAGES) return HUB_KIND_EMAIL
+        if (packageName in NEWS_PACKAGES) return HUB_KIND_NEWS
+        if (packageName in MAPS_PACKAGES) return HUB_KIND_MAPS
         return HUB_KIND_MESSAGE
+    }
+
+    private fun StatusBarNotification.isMapsContextNotification(): Boolean {
+        val extras = notification.extras
+        val text = listOf(
+            extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty(),
+            extras.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty(),
+            extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
+        ).joinToString(" ")
+        if (notification.flags and Notification.FLAG_ONGOING_EVENT != 0) return true
+        return text.contains(Regex("\\b(navigat|driv|ETA|traffic|route|arrival)\\b", RegexOption.IGNORE_CASE))
     }
 
     private fun readMessages(): List<JSONObject> {
@@ -68,6 +100,17 @@ class ClicksNotificationListener : NotificationListenerService() {
         }.getOrDefault("Message")
     }
 
+    private fun isConversationPerson(sender: String, preview: String, packageName: String): Boolean {
+        val cleanSender = sender.trim()
+        val cleanPreview = preview.trim()
+        if (cleanSender.isBlank()) return false
+        if (cleanSender.equals(packageManagerLabel(packageName), ignoreCase = true)) return false
+        if (cleanSender.equals(packageName.substringAfterLast('.'), ignoreCase = true)) return false
+        if (cleanPreview.contains(Regex("\\b\\d+\\s+messages?\\s+from\\b", RegexOption.IGNORE_CASE))) return false
+        if (cleanSender.contains(Regex("\\b\\d+\\s+messages?\\b", RegexOption.IGNORE_CASE))) return false
+        return true
+    }
+
     private fun colorForPackage(packageName: String): Int {
         val palette = intArrayOf(
             0xFF5FD0C4.toInt(),
@@ -80,6 +123,25 @@ class ClicksNotificationListener : NotificationListenerService() {
         return palette[abs(packageName.hashCode()) % palette.size]
     }
 
+    private fun notificationAvatar(notification: Notification): Bitmap? {
+        val largeIconDrawable = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            notification.getLargeIcon()?.loadDrawable(this)
+        } else {
+            @Suppress("DEPRECATION")
+            notification.largeIcon?.let { android.graphics.drawable.BitmapDrawable(resources, it) }
+        }
+        return largeIconDrawable?.toBitmap(96, 96)
+    }
+
+    private fun Drawable.toBitmap(width: Int, height: Int): Bitmap {
+        if (this is android.graphics.drawable.BitmapDrawable && bitmap != null) return bitmap
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        setBounds(0, 0, canvas.width, canvas.height)
+        draw(canvas)
+        return bitmap
+    }
+
     private fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     companion object {
@@ -87,7 +149,12 @@ class ClicksNotificationListener : NotificationListenerService() {
         private const val HUB_MESSAGES_PREF = "hub_messages"
         private const val HUB_KIND_MESSAGE = "message"
         private const val HUB_KIND_EMAIL = "email"
+        private const val HUB_KIND_NEWS = "news"
+        private const val HUB_KIND_MAPS = "maps"
         private const val MAX_MESSAGES = 12
+        private val DIRECT_OPEN_KINDS = setOf(HUB_KIND_EMAIL, HUB_KIND_NEWS, HUB_KIND_MAPS)
+        val notificationIntents = mutableMapOf<String, PendingIntent>()
+        val notificationAvatars = mutableMapOf<String, Bitmap>()
 
         private val MESSAGE_PACKAGES = setOf(
             "com.google.android.apps.messaging",
@@ -106,6 +173,14 @@ class ClicksNotificationListener : NotificationListenerService() {
             "com.readdle.spark",
             "com.protonmail.android",
             "me.bluemail.mail"
+        )
+
+        private val NEWS_PACKAGES = setOf(
+            "com.google.android.apps.magazines"
+        )
+
+        private val MAPS_PACKAGES = setOf(
+            "com.google.android.apps.maps"
         )
     }
 }

@@ -83,6 +83,11 @@ class MediaSessionSource(private val context: Context) {
         mainHandler.postDelayed({ refreshActiveSessions() }, 180)
     }
 
+    fun seekTo(positionMs: Long) {
+        controller?.transportControls?.seekTo(positionMs)
+        mainHandler.postDelayed({ refreshActiveSessions() }, 100)
+    }
+
     fun openSourceApp() {
         val pkg = _nowPlaying.value?.sourcePackage ?: return
         context.packageManager.getLaunchIntentForPackage(pkg)?.let { context.startActivity(it) }
