@@ -9,10 +9,14 @@ import android.content.pm.ResolveInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import com.fran.clicks.glide.KeyInfo
+import com.fran.clicks.glide.StatisticalGlideTypingClassifier
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -78,6 +82,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
+    private var glideClassifier: StatisticalGlideTypingClassifier? = null
 
     private lateinit var clockView: TextView
     private lateinit var dateView: TextView
@@ -96,6 +101,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         apps = loadLaunchableApps()
         messages = loadHubMessages()
         initSpellChecker()
+        loadGlideWords()
         render()
     }
 
@@ -519,6 +525,11 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
                 prefs().edit().putBoolean(HAPTICS_PREF, hapticsEnabled).apply()
                 haptic(this); render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
+
+            addView(settingAction("CLICKS SETTINGS") {
+                keyboardSettingsOpen = false
+                openHere(clicksSettingsTarget())
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
         }
     }
 
@@ -528,6 +539,20 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             textSize = 10f; letterSpacing = 0.12f; typeface = Typeface.MONOSPACE
             setTextColor(if (enabled) Accent2 else InkDim); setPadding(0, dp(8), 0, 0)
             isClickable = true; setOnClickListener { onClick() }
+        }
+    }
+
+    private fun settingAction(label: String, onClick: TextView.() -> Unit): View {
+        return TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER_VERTICAL
+            textSize = 10f
+            letterSpacing = 0.12f
+            typeface = Typeface.MONOSPACE
+            setTextColor(InkDim)
+            setPadding(0, dp(8), 0, 0)
+            isClickable = true
+            setOnClickListener { onClick() }
         }
     }
 
@@ -680,6 +705,47 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
                 keyBounds[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
             }
         }
+        updateGlideLayout()
+    }
+
+    private fun loadGlideWords() {
+        Thread {
+            runCatching {
+                val clf = StatisticalGlideTypingClassifier()
+                val words = mutableListOf<String>()
+                val counts = mutableMapOf<String, Long>()
+                assets.open("dict/en_wordlist.txt").bufferedReader().forEachLine { line ->
+                    val sp = line.trim().split(" ")
+                    if (sp.size >= 2) {
+                        val w = sp[0].lowercase()
+                        if (w.length in 2..20 && w.all { it.isLetter() }) {
+                            words.add(w)
+                            counts[w] = sp[1].toLongOrNull() ?: 1L
+                        }
+                    }
+                }
+                val maxCount = counts.values.maxOrNull() ?: 1L
+                val freqs = counts.mapValues { it.value.toFloat() / maxCount }
+                clf.setWordData(words, freqs)
+                handler.post { glideClassifier = clf; updateGlideLayout() }
+            }
+        }.start()
+    }
+
+    private fun updateGlideLayout() {
+        val clf = glideClassifier ?: return
+        if (keyBounds.isEmpty()) return
+        val keyInfos = keyBounds.mapNotNull { (label, rect) ->
+            if (label.length != 1) return@mapNotNull null
+            KeyInfo(
+                char = label[0],
+                centerX = rect.exactCenterX(),
+                centerY = rect.exactCenterY(),
+                width = rect.width().toFloat(),
+                height = rect.height().toFloat()
+            )
+        }
+        clf.setLayout(keyInfos)
     }
 
     private fun keyAtPoint(rawX: Float, rawY: Float): String? {
@@ -687,7 +753,27 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         return keyBounds.entries.firstOrNull { (_, r) -> r.contains(x, y) }?.key
     }
 
-    private fun handleSwipe(keys: List<String>) {
+    private fun handleGlideResult(results: List<String>) {
+        haptic(contentFrame)
+        val topWord = results[0]
+        val pane = openPane
+        if (pane?.kind == PaneKind.CHAT) {
+            val trimmed = composeText.trimEnd()
+            val lastSpace = trimmed.lastIndexOf(' ')
+            composeText = (if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)) + topWord + " "
+            updateAutoCapState(); updateKeyLabels()
+            renderPaneContent(pane)
+        } else {
+            val trimmed = query.trimEnd()
+            val lastSpace = trimmed.lastIndexOf(' ')
+            query = (if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)) + topWord + " "
+        }
+        suggestions = results.take(3)
+        updateSuggestionBar()
+        renderRibbon()
+    }
+
+    private fun handleSwipeFallback(keys: List<String>) {
         haptic(contentFrame)
         val rawWord = keys.joinToString("")
         val pane = openPane
@@ -707,11 +793,36 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         private var startRawY = 0f
         private var tracking = false
         private val traced = mutableListOf<String>()
+        private val trailLocal = mutableListOf<Pair<Float, Float>>()
+        private var screenX = 0f
+        private var screenY = 0f
+        private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Accent
+            strokeWidth = 8f
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            alpha = 150
+        }
+        private val trailPath = Path()
+
+        override fun dispatchDraw(canvas: Canvas) {
+            super.dispatchDraw(canvas)
+            if (tracking && trailLocal.size > 1) {
+                trailPath.reset()
+                trailPath.moveTo(trailLocal[0].first, trailLocal[0].second)
+                for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
+                canvas.drawPath(trailPath, trailPaint)
+            }
+        }
 
         override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    startRawX = ev.rawX; startRawY = ev.rawY; tracking = false; traced.clear()
+                    startRawX = ev.rawX; startRawY = ev.rawY
+                    tracking = false; traced.clear(); trailLocal.clear()
+                    val loc = IntArray(2); getLocationOnScreen(loc)
+                    screenX = loc[0].toFloat(); screenY = loc[1].toFloat()
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -719,6 +830,8 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
                         if (abs(ev.rawX - startRawX) > dp(10) || abs(ev.rawY - startRawY) > dp(10)) {
                             tracking = true
                             keyAtPoint(startRawX, startRawY)?.let { k -> if (k.length == 1) traced.add(k) }
+                            trailLocal.add(startRawX - screenX to startRawY - screenY)
+                            glideClassifier?.addGesturePoint(startRawX, startRawY)
                             return true
                         }
                     }
@@ -735,9 +848,32 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
                 MotionEvent.ACTION_MOVE -> {
                     val k = keyAtPoint(ev.rawX, ev.rawY)
                     if (k != null && k.length == 1 && (traced.isEmpty() || traced.last() != k)) traced.add(k)
+                    trailLocal.add(ev.rawX - screenX to ev.rawY - screenY)
+                    glideClassifier?.addGesturePoint(ev.rawX, ev.rawY)
+                    invalidate()
                 }
-                MotionEvent.ACTION_UP -> { if (traced.size >= 3) handleSwipe(traced.toList()); tracking = false; traced.clear() }
-                MotionEvent.ACTION_CANCEL -> { tracking = false; traced.clear() }
+                MotionEvent.ACTION_UP -> {
+                    val clf = glideClassifier
+                    val t = traced.toList()
+                    tracking = false; traced.clear(); trailLocal.clear(); invalidate()
+                    if (clf != null && clf.hasEnoughPoints) {
+                        Thread {
+                            val results = clf.getSuggestions(3)
+                            clf.clear()
+                            handler.post {
+                                if (results.isNotEmpty()) handleGlideResult(results)
+                                else if (t.size >= 3) handleSwipeFallback(t)
+                            }
+                        }.start()
+                    } else {
+                        clf?.clear()
+                        if (t.size >= 3) handleSwipeFallback(t)
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    tracking = false; traced.clear(); trailLocal.clear()
+                    glideClassifier?.clear(); invalidate()
+                }
             }
             return true
         }
@@ -900,15 +1036,94 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         return ScrollView(this).apply {
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
-                if (target.kind == PaneKind.CHAT) {
-                    chatLines(target).forEach { addView(bubble(it)) }
-                } else {
-                    addView(listRow("Inbox", "now"))
-                    addView(listRow(target.preview.ifBlank { "Open ${target.name}" }, "item"))
-                    addView(listRow("Open in real app from long press", "external"))
+                when (target.kind) {
+                    PaneKind.CHAT -> chatLines(target).forEach { addView(bubble(it)) }
+                    PaneKind.SETTINGS -> settingsPaneContent(this)
+                    PaneKind.LIST -> {
+                        addView(listRow("Inbox", "now"))
+                        addView(listRow(target.preview.ifBlank { "Open ${target.name}" }, "item"))
+                        addView(listRow("Open in real app from long press", "external"))
+                    }
                 }
             })
         }
+    }
+
+    private fun settingsPaneContent(parent: LinearLayout) {
+        parent.addView(mono("INTEGRATIONS", 10f, Accent).apply {
+            letterSpacing = 0.22f
+            setPadding(0, 0, 0, dp(8))
+        })
+        parent.addView(integrationRow("Spotify", "com.spotify.music", SPOTIFY_INTEGRATION_PREF))
+        parent.addView(integrationRow("Apple Music", "com.apple.android.music", APPLE_MUSIC_INTEGRATION_PREF))
+        parent.addView(mono("PLAYING MEDIA IS THE FAST PATH: CLICKS CAN READ THE PHONE'S ACTIVE MEDIA SESSION, THEN API CONNECTORS CAN ADD LIBRARY/PLAYLIST SYNC LATER.", 8.5f, InkDim).apply {
+            setPadding(0, dp(14), 0, 0)
+            letterSpacing = 0.08f
+        })
+    }
+
+    private fun integrationRow(name: String, packageName: String, prefKey: String): View {
+        val mode = prefs().getString(prefKey, INTEGRATION_OFF) ?: INTEGRATION_OFF
+        val installed = isInstalled(packageName)
+        val state = when (mode) {
+            INTEGRATION_MEDIA -> "MEDIA SESSION"
+            INTEGRATION_API -> "API"
+            else -> if (installed) "READY" else "NOT INSTALLED"
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(12), dp(2), dp(12))
+            background = border(Line)
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                showIntegrationMenu(this, name, packageName, prefKey)
+            }
+            addView(TextView(context).apply {
+                text = name
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Ink)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(mono(state, 10f, if (mode == INTEGRATION_OFF) InkDim else Accent2).apply {
+                letterSpacing = 0.08f
+            })
+        }
+    }
+
+    private fun showIntegrationMenu(anchor: View, name: String, packageName: String, prefKey: String) {
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = GradientDrawable().apply {
+                setColor(Panel2)
+                cornerRadius = dp(8).toFloat()
+                setStroke(dp(1), Line)
+            }
+        }
+        val popup = PopupWindow(menu, dp(228), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+        }
+        menu.addView(menuItem("Use playing media", true) {
+            prefs().edit().putString(prefKey, INTEGRATION_MEDIA).apply()
+            popup.dismiss()
+            renderPaneContent(clicksSettingsTarget())
+        })
+        menu.addView(menuItem("Connect account", true) {
+            popup.dismiss()
+            Toast.makeText(this, "$name OAuth needs developer credentials before account sync can run", Toast.LENGTH_LONG).show()
+        })
+        menu.addView(menuItem("Open $name", isInstalled(packageName)) {
+            popup.dismiss()
+            packageManager.getLaunchIntentForPackage(packageName)?.let { startActivity(it) }
+        })
+        menu.addView(menuItem("Disconnect", true) {
+            prefs().edit().putString(prefKey, INTEGRATION_OFF).apply()
+            popup.dismiss()
+            renderPaneContent(clicksSettingsTarget())
+        })
+        popup.showAsDropDown(anchor, -dp(64), -anchor.height)
     }
 
     private fun renderPaneContent(target: PaneTarget) {
@@ -1092,6 +1307,8 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private fun AppEntry.toLibraryApp() = LibraryApp(label, brandColor, toPaneTarget(), componentName)
 
     private fun HubMessage.toPaneTarget() = PaneTarget("$packageName:$sender", sender, color, PaneKind.CHAT, packageName, null, preview)
+
+    private fun clicksSettingsTarget() = PaneTarget("clicks-settings", "Clicks Settings", Accent, PaneKind.SETTINGS, null, null, "Integrations")
 
     private fun seedPaneTargets() = listOf(
         PaneTarget("mara", "Mara", 0xFF5FD0C4.toInt(), PaneKind.CHAT, "com.google.android.apps.messaging", null, "are we still on for 6?"),
@@ -1382,7 +1599,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
 
     // ── Types ────────────────────────────────────────────────────────────────
 
-    private enum class PaneKind { CHAT, LIST }
+    private enum class PaneKind { CHAT, LIST, SETTINGS }
     private enum class ShiftState { OFF, ONCE, LOCK }
 
     private data class PaneTarget(val id: String, val name: String, val accent: Int, val kind: PaneKind,
@@ -1413,6 +1630,11 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         private const val HAPTICS_PREF = "haptics"
         private const val GO_KEY_COLOR_PREF = "go_key_color"
         private const val HUB_MESSAGES_PREF = "hub_messages"
+        private const val SPOTIFY_INTEGRATION_PREF = "spotify_integration"
+        private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
+        private const val INTEGRATION_OFF = "off"
+        private const val INTEGRATION_MEDIA = "media"
+        private const val INTEGRATION_API = "api"
         private const val ACTIVE_ICON_PACK_PREF = "active_icon_pack"
         private const val ICON_OVERRIDE_PREFIX = "icon_override_"
         private const val PANE_BODY_TAG = "pane"
