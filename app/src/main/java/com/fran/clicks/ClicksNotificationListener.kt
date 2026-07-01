@@ -10,7 +10,7 @@ import kotlin.math.abs
 
 class ClicksNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (!sbn.isMessageLike()) return
+        if (!sbn.isHubCandidate()) return
 
         val extras = sbn.notification.extras
         val sender = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
@@ -22,6 +22,7 @@ class ClicksNotificationListener : NotificationListenerService() {
             .put("sender", sender.ifBlank { packageManagerLabel(sbn.packageName) })
             .put("preview", preview)
             .put("packageName", sbn.packageName)
+            .put("kind", sbn.hubKind())
             .put("color", colorForPackage(sbn.packageName))
 
         val current = readMessages().filterNot { it.optString("key") == sbn.key }
@@ -39,9 +40,15 @@ class ClicksNotificationListener : NotificationListenerService() {
         prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
     }
 
-    private fun StatusBarNotification.isMessageLike(): Boolean {
+    private fun StatusBarNotification.isHubCandidate(): Boolean {
         if (notification.category == Notification.CATEGORY_MESSAGE) return true
-        return packageName in MESSAGE_PACKAGES
+        if (notification.category == Notification.CATEGORY_EMAIL) return true
+        return packageName in MESSAGE_PACKAGES || packageName in EMAIL_PACKAGES
+    }
+
+    private fun StatusBarNotification.hubKind(): String {
+        if (notification.category == Notification.CATEGORY_EMAIL || packageName in EMAIL_PACKAGES) return HUB_KIND_EMAIL
+        return HUB_KIND_MESSAGE
     }
 
     private fun readMessages(): List<JSONObject> {
@@ -78,6 +85,8 @@ class ClicksNotificationListener : NotificationListenerService() {
     companion object {
         private const val PREFS_NAME = "clicks"
         private const val HUB_MESSAGES_PREF = "hub_messages"
+        private const val HUB_KIND_MESSAGE = "message"
+        private const val HUB_KIND_EMAIL = "email"
         private const val MAX_MESSAGES = 12
 
         private val MESSAGE_PACKAGES = setOf(
@@ -87,8 +96,16 @@ class ClicksNotificationListener : NotificationListenerService() {
             "org.telegram.messenger",
             "com.facebook.orca",
             "com.instagram.android",
-            "com.Slack",
-            "com.google.android.gm"
+            "com.Slack"
+        )
+
+        private val EMAIL_PACKAGES = setOf(
+            "com.google.android.gm",
+            "com.microsoft.office.outlook",
+            "com.yahoo.mobile.client.android.mail",
+            "com.readdle.spark",
+            "com.protonmail.android",
+            "me.bluemail.mail"
         )
     }
 }

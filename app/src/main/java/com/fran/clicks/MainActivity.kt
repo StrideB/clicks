@@ -1,6 +1,5 @@
 package com.fran.clicks
 
-import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
@@ -43,15 +42,24 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.ComposeView
 import org.json.JSONArray
 import org.xmlpull.v1.XmlPullParser
 import java.text.Collator
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener {
+class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessionListener {
     private val collator = Collator.getInstance()
     private var query = ""
     private var apps: List<AppEntry> = emptyList()
@@ -63,7 +71,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private var openPane: PaneTarget? = null
     private var paneView: View? = null
     private var libraryOpen = false
-    private var libraryGridMode = false
+    private var libraryGridMode = true
     private var libraryView: View? = null
     private var librarySwipeStartX = 0f
     private var librarySwipeStartY = 0f
@@ -84,12 +92,15 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
+    private lateinit var mediaSessionSource: MediaSessionSource
+    private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private lateinit var clockView: TextView
     private lateinit var dateView: TextView
     private lateinit var hubView: LinearLayout
     private lateinit var ribbonView: LinearLayout
     private lateinit var contentFrame: FrameLayout
+    private lateinit var nowPlayingCardView: ComposeView
     private lateinit var searchHintView: TextView
     private lateinit var sizeValueView: TextView
     private lateinit var suggestionBarView: LinearLayout
@@ -101,24 +112,36 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
         apps = loadLaunchableApps()
         messages = loadHubMessages()
+        mediaSessionSource = MediaSessionSource(this)
         initSpellChecker()
         loadGlideWords()
         render()
+        mediaSessionSource.start()
+        mediaUiScope.launch {
+            mediaSessionSource.nowPlaying.collect {
+                syncNowPlayingCardVisibility()
+                refreshNowPlayingCard()
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         apps = loadLaunchableApps()
         messages = loadHubMessages()
+        if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
         if (::ribbonView.isInitialized) {
             updateClock()
             renderHub()
             renderRibbon()
+            refreshNowPlayingCard()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
+        mediaUiScope.cancel()
         spellChecker?.close()
         handler.removeCallbacksAndMessages(null)
     }
@@ -214,29 +237,45 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             setPadding(dp(18), dp(7), dp(18), 0)
             addView(mono("CLICKS", 11f, InkDim).apply { letterSpacing = 0.05f },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(mono("5G  .  82%", 11f, InkDim).apply { letterSpacing = 0.05f; setTextColor(Accent2) })
+            addView(mono("5G  .  82%", 11f, InkDim).apply {
+                letterSpacing = 0.05f
+                setTextColor(Accent2)
+            })
         }
     }
 
     private fun home(): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(20), dp(6), dp(6), dp(8))
-            addView(homeLeft(), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-            ribbonView = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+        return FrameLayout(this).apply {
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(dp(20), dp(8), dp(6), dp(88))
+                addView(homeLeft(), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                ribbonView = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+                }
+                addView(ribbonView, LinearLayout.LayoutParams(dp(94), ViewGroup.LayoutParams.MATCH_PARENT))
+            }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+            nowPlayingCardView = ComposeView(context).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                setNowPlayingCardContent()
+                elevation = dp(8).toFloat()
             }
-            addView(ribbonView, LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(nowPlayingCardView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0, Gravity.BOTTOM).apply {
+                leftMargin = dp(14)
+                rightMargin = dp(14)
+                bottomMargin = dp(10)
+            })
         }
     }
 
     private fun homeLeft(): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.BOTTOM
-            setPadding(0, 0, dp(10), dp(8))
-            addView(View(context), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            // Top-aligned by design: bottom space is reserved for the now-playing overlay.
+            gravity = Gravity.TOP
+            setPadding(0, 0, dp(10), 0)
             clockView = mono("", 44f, Ink).apply {
                 typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
                 includeFontPadding = false
@@ -254,6 +293,39 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             hubView = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             addView(hubView, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
+    }
+
+    private fun ComposeView.setNowPlayingCardContent() {
+        setContent {
+            val media by mediaSessionSource.nowPlaying.collectAsState()
+            val current = media
+            NowPlayingCard(
+                visible = current?.isPlaying == true && openPane == null && !libraryOpen,
+                title = current?.title.orEmpty(),
+                artist = current?.artist.orEmpty(),
+                sourceApp = current?.sourceApp.orEmpty(),
+                albumArt = current?.albumArt,
+                isPlaying = current?.isPlaying == true,
+                onClick = {
+                    haptic(this@setNowPlayingCardContent)
+                    openHere(musicTarget())
+                }
+            )
+        }
+    }
+
+    private fun refreshNowPlayingCard() {
+        if (::nowPlayingCardView.isInitialized && ::mediaSessionSource.isInitialized) {
+            nowPlayingCardView.setNowPlayingCardContent()
+        }
+    }
+
+    private fun syncNowPlayingCardVisibility() {
+        if (!::nowPlayingCardView.isInitialized || !::mediaSessionSource.isInitialized) return
+        val shouldShow = mediaSessionSource.nowPlaying.value?.isPlaying == true && openPane == null && !libraryOpen
+        val targetHeight = if (shouldShow) dp(78) else 0
+        if (nowPlayingCardView.layoutParams?.height == targetHeight) return
+        nowPlayingCardView.layoutParams = nowPlayingCardView.layoutParams.apply { height = targetHeight }
     }
 
     private fun handleLibrarySwipe(event: MotionEvent) {
@@ -293,15 +365,20 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private fun openLibrary() {
         if (libraryOpen || openPane != null) return
         libraryOpen = true
+        libraryGridMode = true
         keyboardSettingsOpen = false
         showLibrary(animate = true)
         renderRibbon()
+        syncNowPlayingCardVisibility()
+        refreshNowPlayingCard()
     }
 
     private fun closeLibrary() {
         if (!libraryOpen) return
         libraryOpen = false
         renderRibbon()
+        syncNowPlayingCardVisibility()
+        refreshNowPlayingCard()
         val closing = libraryView ?: return
         closing.animate().translationX(closing.width.toFloat()).setDuration(240)
             .setInterpolator(DecelerateInterpolator())
@@ -344,12 +421,20 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             setTextColor(Ink); includeFontPadding = false
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         addView(TextView(context).apply {
-            text = if (libraryGridMode) "▤ Categories" else "▦ Grid"
-            gravity = Gravity.CENTER; textSize = 11f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Ink); includeFontPadding = false; background = roundedPanel(Panel2, dp(15), Line)
+            text = if (libraryGridMode) "Categories" else "Grid"
+            gravity = Gravity.CENTER
+            textSize = 11f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Ink)
+            includeFontPadding = false
+            background = roundedPanel(Panel2, dp(15), Line)
             isClickable = true
-            setOnClickListener { haptic(this); libraryGridMode = !libraryGridMode; showLibrary(animate = false) }
-        }, LinearLayout.LayoutParams(dp(118), dp(30)).apply { marginEnd = dp(8) })
+            setOnClickListener {
+                haptic(this)
+                libraryGridMode = !libraryGridMode
+                showLibrary(animate = false)
+            }
+        }, LinearLayout.LayoutParams(dp(94), dp(30)).apply { marginEnd = dp(8) })
         addView(TextView(context).apply {
             text = "X"; gravity = Gravity.CENTER; textSize = 14f; setTextColor(InkDim)
             background = roundedPanel(Panel2, dp(15), Line); isClickable = true
@@ -361,14 +446,12 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, dp(8))
-            val cats = libraryCategories()
-            addView(categoryCard(cats[0]), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(136)))
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(categoryCard(cats[1]), LinearLayout.LayoutParams(0, dp(226), 1f).apply { marginEnd = dp(5) })
-                addView(categoryCard(cats[2]), LinearLayout.LayoutParams(0, dp(172), 1f).apply { marginStart = dp(5) })
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
-            addView(categoryCard(cats[3]), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(136)).apply { topMargin = dp(10) })
+            libraryCategories().forEach { category ->
+                val rows = (category.apps.size + 3) / 4
+                addView(categoryCard(category), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48 + rows * 86)).apply {
+                    bottomMargin = dp(10)
+                })
+            }
         })
     }
 
@@ -378,16 +461,24 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         elevation = dp(4).toFloat()
         background = roundedPanel(Panel, dp(20), Line)
         addView(LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             addView(View(context).apply {
-                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Accent) }
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(category.accent)
+                }
             }, LinearLayout.LayoutParams(dp(7), dp(7)).apply { marginEnd = dp(7) })
             addView(TextView(context).apply {
-                text = category.name.uppercase(Locale.US); textSize = 11f
-                typeface = Typeface.DEFAULT_BOLD; letterSpacing = 0.12f; setTextColor(InkDim); includeFontPadding = false
+                text = category.name.uppercase(Locale.US)
+                textSize = 11f
+                typeface = Typeface.DEFAULT_BOLD
+                letterSpacing = 0.12f
+                setTextColor(InkDim)
+                includeFontPadding = false
             })
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(20))
-        addView(tileGrid(category.apps, if (category.span == LibrarySpan.WIDE) 4 else 2), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        addView(tileGrid(category.apps, 4), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
     private fun libraryGrid(): View = ScrollView(this).apply {
@@ -438,7 +529,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             setOnClickListener {
                 haptic(this); libraryOpen = false
                 libraryView?.let { contentFrame.removeView(it) }; libraryView = null
-                openHere(target)
+                if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target)
             }
             setOnLongClickListener { haptic(this); showIconMenu(this, app); true }
         }
@@ -459,14 +550,9 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         hubView.removeAllViews()
         if (!isNotificationAccessEnabled()) {
             hubView.addView(messageRow(Accent2, "Enable", "notification access for messages", null))
-            seedPaneTargets().take(2).forEach { hubView.addView(messageRow(it.accent, it.name, it.preview, it)) }
             return
         }
         val visibleMessages = messages.take(4)
-        if (visibleMessages.isEmpty()) {
-            seedPaneTargets().forEach { hubView.addView(messageRow(it.accent, it.name, it.preview, it)) }
-            return
-        }
         visibleMessages.forEach { message ->
             hubView.addView(messageRow(message.color, message.sender, message.preview, message.toPaneTarget()))
         }
@@ -481,9 +567,12 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             addView(View(context).apply {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
             }, LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(8) })
-            addView(TextView(context).apply { text = who; textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Ink); includeFontPadding = false })
+            addView(TextView(context).apply {
+                text = who; textSize = 13f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Ink); includeFontPadding = false
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.48f))
             addView(TextView(context).apply { text = "  $preview"; textSize = 11f; maxLines = 1; setTextColor(InkDim); includeFontPadding = false },
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.52f))
         }
     }
 
@@ -493,11 +582,13 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         return SwipeKeyboardLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.BOTTOM
-            setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
             setBackgroundColor(0xFF000000.toInt())
+            setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
             searchHintView = mono("", 8.5f, 0xFF55585F.toInt()).apply {
-                gravity = Gravity.CENTER; letterSpacing = 0.16f; setPadding(0, 0, 0, hintBottomGap())
+                gravity = Gravity.CENTER
+                letterSpacing = 0.16f
+                setPadding(0, 0, 0, hintBottomGap())
             }
             addView(searchHintView, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
@@ -509,11 +600,10 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             addView(suggestionBarView, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-
             addKeyRow("qwertyuiop".map { it.toString() })
-            addKeyRow("asdfghjkl".map { it.toString() }, dp(22))
-            addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"))
-            addKeyRow(listOf("mic", "clicks", "space", "period", "enter"))
+            addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
+            addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
+            addKeyRow(listOf("123", "clicks", "space", "period", "enter"), dp(15))
         }
     }
 
@@ -593,11 +683,22 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             setPadding(horizontalInset, 0, horizontalInset, 0)
             labels.forEach { label ->
                 val weight = when (label) {
-                    "space" -> 3.7f
-                    "123", "clicks", "enter", "back", "shift", "period" -> 1.15f
+                    "space" -> 3.65f
+                    "enter" -> 0.82f
+                    "period" -> 0.86f
+                    "clicks" -> 1.55f
+                    "123" -> 1.02f
+                    "back", "shift" -> 1.02f
                     else -> 1f
                 }
-                addView(key(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight))
+                if (label == "enter") {
+                    addView(key(label), LinearLayout.LayoutParams(goKeySize(), goKeySize()).apply {
+                        gravity = Gravity.CENTER_VERTICAL
+                        marginStart = dp(4)
+                    })
+                } else {
+                    addView(key(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight))
+                }
             }
         }, LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight())
     }
@@ -607,16 +708,24 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             text = keyLabel(label)
             gravity = Gravity.CENTER
             textSize = keyTextSize(label)
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            typeface = Typeface.create("sans-serif", if (label == "shift" || label == "enter") Typeface.BOLD else Typeface.NORMAL)
             includeFontPadding = false
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
             setTextColor(keyTextColor(label))
             isClickable = true
-            if (label == "enter") background = keyBackground(goKeyColor)
+            if (label == "enter") background = goKeyBackground(goKeyColor)
 
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> v.background = if (label == "enter") keyBackground(brighten(goKeyColor)) else keyBackground(KeyHighlight)
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.background = if (label == "enter") keyBackground(goKeyColor) else null
+                    MotionEvent.ACTION_DOWN -> v.background = when (label) {
+                        "enter" -> goKeyBackground(brighten(goKeyColor))
+                        else -> keyBackground(KeyHighlight)
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.background = when (label) {
+                        "enter" -> goKeyBackground(goKeyColor)
+                        else -> null
+                    }
                 }
                 false
             }
@@ -634,7 +743,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         "space" -> "space"
         "enter" -> "GO"
         "period" -> "."
-        "shift" -> "⬆"
+        "shift" -> "↑"
         "mic" -> "🎤"
         else -> if (label.length == 1) {
             if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label.lowercase(Locale.US)
@@ -729,6 +838,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     // ── Swipe ────────────────────────────────────────────────────────────────
 
     private fun captureKeyBounds() {
+        if (keyViews.isEmpty()) return
         keyBounds.clear()
         val loc = IntArray(2)
         keyViews.forEach { (label, view) ->
@@ -935,7 +1045,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             }
             "period" -> { query += "."; suggestions = emptyList(); updateSuggestionBar() }
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; query = ""; render(); return }
-            "enter" -> filteredApps().firstOrNull()?.let { openExternal(it.toPaneTarget()) }
+            "enter" -> filteredRibbonEntries().firstOrNull()?.let { if (it.target.kind == PaneKind.MUSIC || it.target.packageName == null) openHere(it.target) else openExternal(it.target) }
             "mic" -> { startVoiceInput(); return }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
@@ -1013,6 +1123,8 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         shiftState = ShiftState.ONCE; suggestions = emptyList()
         updateKeyLabels(); updateSuggestionBar()
         openPane = target; showPane(target, animate = true); renderRibbon()
+        syncNowPlayingCardVisibility()
+        refreshNowPlayingCard()
     }
 
     private fun showPane(target: PaneTarget, animate: Boolean) {
@@ -1027,7 +1139,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         val closing = paneView
         openPane = null; composeText = ""
         shiftState = ShiftState.OFF; suggestions = emptyList()
-        updateKeyLabels(); updateSuggestionBar(); renderRibbon()
+        updateKeyLabels(); updateSuggestionBar(); renderRibbon(); syncNowPlayingCardVisibility(); refreshNowPlayingCard()
         if (closing == null) return
         closing.animate().translationY(closing.height.toFloat()).setDuration(220).withEndAction {
             contentFrame.removeView(closing); if (paneView === closing) paneView = null
@@ -1065,11 +1177,14 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     }
 
     private fun paneBody(target: PaneTarget): View {
+        if (target.kind == PaneKind.MUSIC) return musicPane()
         return ScrollView(this).apply {
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
                 when (target.kind) {
                     PaneKind.CHAT -> chatLines(target).forEach { addView(bubble(it)) }
+                    PaneKind.MAIL -> mailLines(target).forEach { addView(listRow(it.first, it.second)) }
+                    PaneKind.MUSIC -> Unit
                     PaneKind.SETTINGS -> settingsPaneContent(this)
                     PaneKind.LIST -> {
                         addView(listRow("Inbox", "now"))
@@ -1081,10 +1196,47 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         }
     }
 
+    private fun musicPane(): View {
+        return ComposeView(this).apply {
+            setBackgroundColor(Panel)
+            setContent {
+                val media by mediaSessionSource.nowPlaying.collectAsState()
+                MusicPlayer(
+                    media = media,
+                    onOpenSource = {
+                        haptic(this@apply)
+                        mediaSessionSource.openSourceApp()
+                    },
+                    onTogglePlayPause = {
+                        haptic(this@apply)
+                        mediaSessionSource.togglePlayPause()
+                    },
+                    onPrevious = {
+                        haptic(this@apply)
+                        mediaSessionSource.skipToPrevious()
+                    },
+                    onNext = {
+                        haptic(this@apply)
+                        mediaSessionSource.skipToNext()
+                    }
+                )
+            }
+        }
+    }
+
     private fun settingsPaneContent(parent: LinearLayout) {
-        parent.addView(mono("INTEGRATIONS", 10f, Accent).apply {
+        parent.addView(mono("LAUNCHER", 10f, Accent).apply {
             letterSpacing = 0.22f
             setPadding(0, 0, 0, dp(8))
+        })
+        parent.addView(settingAction("ICON PACK   ${activeIconPackLabel().uppercase(Locale.US)}") {
+            haptic(this)
+            showIconPackMenu(this)
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+
+        parent.addView(mono("INTEGRATIONS", 10f, Accent).apply {
+            letterSpacing = 0.22f
+            setPadding(0, dp(18), 0, dp(8))
         })
         parent.addView(integrationRow("Spotify", "com.spotify.music", SPOTIFY_INTEGRATION_PREF))
         parent.addView(integrationRow("Apple Music", "com.apple.android.music", APPLE_MUSIC_INTEGRATION_PREF))
@@ -1158,6 +1310,44 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         popup.showAsDropDown(anchor, -dp(64), -anchor.height)
     }
 
+    private fun activeIconPackLabel(): String {
+        val active = prefs().getString(ACTIVE_ICON_PACK_PREF, null) ?: return "System"
+        return iconPacks().firstOrNull { it.packageName == active }?.name ?: "System"
+    }
+
+    private fun showIconPackMenu(anchor: View) {
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = GradientDrawable().apply {
+                setColor(Panel2)
+                cornerRadius = dp(8).toFloat()
+                setStroke(dp(1), Line)
+            }
+        }
+        val popup = PopupWindow(menu, dp(244), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+        }
+        menu.addView(menuItem("System icons", true) {
+            prefs().edit().remove(ACTIVE_ICON_PACK_PREF).apply()
+            popup.dismiss()
+            renderPaneContent(clicksSettingsTarget())
+            renderRibbon()
+        })
+        iconPacks().forEach { pack ->
+            menu.addView(menuItem(pack.name, true) {
+                prefs().edit().putString(ACTIVE_ICON_PACK_PREF, pack.packageName).apply()
+                popup.dismiss()
+                renderPaneContent(clicksSettingsTarget())
+                renderRibbon()
+            })
+        }
+        if (iconPacks().isEmpty()) {
+            menu.addView(menuItem("No icon packs installed", false) {})
+        }
+        popup.showAsDropDown(anchor, -dp(80), -anchor.height)
+    }
+
     private fun renderPaneContent(target: PaneTarget) {
         val existing = paneView as? LinearLayout ?: return
         existing.removeAllViews()
@@ -1170,6 +1360,15 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         return chatLinesById.getOrPut(target.id) {
             mutableListOf(ChatLine(target.preview.ifBlank { "Ready when you are." }, false))
         }
+    }
+
+    private fun mailLines(target: PaneTarget): List<Pair<String, String>> {
+        val source = target.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg }?.label } ?: "Mail"
+        return listOf(
+            "From" to target.name,
+            "Preview" to target.preview.ifBlank { "No preview available" },
+            "Source" to source
+        )
     }
 
     private fun postComposeBubble(target: PaneTarget) {
@@ -1232,7 +1431,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private fun renderRibbon() {
         if (!::ribbonView.isInitialized) return
         ribbonView.removeAllViews()
-        filteredApps().take(8).forEachIndexed { index, app -> ribbonView.addView(ribbonButton(app, index == 0)) }
+        filteredRibbonEntries().forEachIndexed { index, app -> ribbonView.addView(ribbonButton(app, index == 0)) }
         val pane = openPane
         when {
             libraryOpen -> {
@@ -1274,16 +1473,23 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         }
     }
 
-    private fun ribbonButton(app: AppEntry, isFirst: Boolean): View {
-        val target = app.toPaneTarget()
+    private fun ribbonButton(app: RibbonEntry, isFirst: Boolean): View {
+        val target = app.target
         return TextView(this).apply {
-            text = app.shortName; gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
-            textSize = 12f; typeface = Typeface.DEFAULT_BOLD; letterSpacing = 0.04f
+            text = app.label; gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+            textSize = 14.5f; typeface = Typeface.create("sans-serif-medium", Typeface.BOLD); letterSpacing = 0.02f
             setTextColor(if (isFirst && query.isNotBlank()) Ink else InkDim)
-            setPadding(dp(4), dp(8), dp(14), dp(8))
-            background = if (isFirst && query.isNotBlank()) highlight(app.brandColor) else null
+            setPadding(dp(2), dp(9), dp(9), dp(9))
+            background = if (isFirst && query.isNotBlank()) highlight(app.accent) else null
             isClickable = true
-            setOnClickListener { haptic(this); openExternal(target) }
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> v.animate().translationX(-dp(3).toFloat()).setDuration(70).start()
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().translationX(0f).setDuration(110).start()
+                }
+                false
+            }
+            setOnClickListener { haptic(this); if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target) }
             setOnLongClickListener { haptic(this); showOpenMenu(this, target); true }
         }
     }
@@ -1295,9 +1501,23 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6))
             background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
         }
-        val popup = PopupWindow(menu, dp(164), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true }
-        menu.addView(menuItem("Open here", true) { popup.dismiss(); openHere(target) })
-        menu.addView(menuItem("Open in ${target.name}", target.packageName != null) { popup.dismiss(); openExternal(target) })
+        val popup = PopupWindow(menu, dp(204), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true }
+        val canOpenHere = target.kind != PaneKind.LIST || target.packageName == null
+        menu.addView(menuItem("Open here", canOpenHere) { popup.dismiss(); openHere(target) })
+        menu.addView(menuItem("Open app", target.packageName != null) { popup.dismiss(); openExternal(target) })
+        target.packageName?.let { packageName ->
+            val onHome = isOnHome(packageName)
+            menu.addView(menuItem(if (onHome) "Remove from home" else "Add to home", true) {
+                setHomePresence(packageName, !onHome)
+                popup.dismiss()
+            })
+            apps.firstOrNull { it.packageName == packageName }?.let { app ->
+                menu.addView(menuItem("Change icon", true) {
+                    popup.dismiss()
+                    showIconMenu(anchor, app.toLibraryApp())
+                })
+            }
+        }
         popup.showAsDropDown(anchor, -dp(82), -anchor.height)
     }
 
@@ -1311,6 +1531,13 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     }
 
     private fun showGoColorMenu(anchor: View) {
+        showKeyColorMenu(anchor, goKeyColor) { color ->
+            goKeyColor = color
+            prefs().edit().putInt(GO_KEY_COLOR_PREF, goKeyColor).apply()
+        }
+    }
+
+    private fun showKeyColorMenu(anchor: View, selectedColor: Int, onSelect: (Int) -> Unit) {
         val menu = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6))
             background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
@@ -1320,9 +1547,9 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             menu.addView(TextView(this).apply {
                 text = option.name; textSize = 12f; typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER_VERTICAL
                 setTextColor(option.color); setPadding(dp(10), dp(9), dp(10), dp(9))
-                background = if (goKeyColor == option.color) highlight(option.color) else null
+                background = if (selectedColor == option.color) highlight(option.color) else null
                 isClickable = true
-                setOnClickListener { haptic(this); goKeyColor = option.color; prefs().edit().putInt(GO_KEY_COLOR_PREF, goKeyColor).apply(); popup.dismiss(); render() }
+                setOnClickListener { haptic(this); onSelect(option.color); popup.dismiss(); render() }
             })
         }
         popup.showAsDropDown(anchor, -dp(96), -dp(180))
@@ -1335,10 +1562,14 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         if (packageName == null) { openHere(target); return }
         try {
             if (target.deepLinkUri != null && isInstalled(packageName)) {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target.deepLinkUri))); return
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target.deepLinkUri)))
+                return
             }
             val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-            if (launchIntent != null) { startActivity(launchIntent); return }
+            if (launchIntent != null) {
+                startActivity(launchIntent)
+                return
+            }
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$packageName")))
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, "${target.name} isn't available here", Toast.LENGTH_SHORT).show()
@@ -1350,6 +1581,63 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private fun filteredApps(): List<AppEntry> {
         if (query.isBlank()) return apps
         return apps.filter { it.label.contains(query, ignoreCase = true) }
+    }
+
+    private fun filteredRibbonEntries(): List<RibbonEntry> {
+        if (query.isBlank()) return homeRibbonEntries()
+        return apps
+            .filter { app ->
+                app.label.contains(query, ignoreCase = true) ||
+                    app.packageName.contains(query, ignoreCase = true)
+            }
+            .take(8)
+            .map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
+            .ifEmpty {
+                homeRibbonEntries().filter { entry ->
+                    entry.label.contains(query, ignoreCase = true) ||
+                        entry.target.name.contains(query, ignoreCase = true) ||
+                        entry.target.packageName?.contains(query, ignoreCase = true) == true
+                }
+            }
+    }
+
+    private fun homeRibbonEntries(): List<RibbonEntry> {
+        val hidden = hiddenHomePackages()
+        val favoriteEntries = apps
+            .filter { it.packageName in favoritePackages() && it.packageName !in hidden }
+            .take(8)
+            .map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
+        return favoriteEntries.ifEmpty {
+            apps
+                .filterNot { it.packageName in hidden }
+                .take(6)
+                .map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
+        }
+    }
+
+    private fun favoritePackages(): Set<String> = prefs().getStringSet(FAVORITE_APPS_PREF, emptySet()) ?: emptySet()
+
+    private fun hiddenHomePackages(): Set<String> = prefs().getStringSet(HIDDEN_HOME_APPS_PREF, emptySet()) ?: emptySet()
+
+    private fun isOnHome(packageName: String?) = packageName != null &&
+        homeRibbonEntries().any { it.target.packageName == packageName }
+
+    private fun setHomePresence(packageName: String, showOnHome: Boolean) {
+        val favorites = favoritePackages().toMutableSet()
+        val hidden = hiddenHomePackages().toMutableSet()
+        if (showOnHome) {
+            favorites.add(packageName)
+            hidden.remove(packageName)
+        } else {
+            favorites.remove(packageName)
+            hidden.add(packageName)
+        }
+        prefs().edit()
+            .putStringSet(FAVORITE_APPS_PREF, favorites)
+            .putStringSet(HIDDEN_HOME_APPS_PREF, hidden)
+            .apply()
+        renderRibbon()
+        if (libraryOpen) showLibrary(animate = false)
     }
 
     private fun loadLaunchableApps(): List<AppEntry> {
@@ -1369,15 +1657,19 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
 
     private fun AppEntry.toLibraryApp() = LibraryApp(label, brandColor, toPaneTarget(), componentName)
 
-    private fun HubMessage.toPaneTarget() = PaneTarget("$packageName:$sender", sender, color, PaneKind.CHAT, packageName, null, preview)
+    private fun HubMessage.toPaneTarget() = PaneTarget(
+        "$packageName:$sender",
+        sender,
+        color,
+        if (kind == HUB_KIND_EMAIL) PaneKind.MAIL else PaneKind.CHAT,
+        packageName,
+        null,
+        preview
+    )
 
     private fun clicksSettingsTarget() = PaneTarget("clicks-settings", "Clicks Settings", Accent, PaneKind.SETTINGS, null, null, "Integrations")
 
-    private fun seedPaneTargets() = listOf(
-        PaneTarget("mara", "Mara", 0xFF5FD0C4.toInt(), PaneKind.CHAT, "com.google.android.apps.messaging", null, "are we still on for 6?"),
-        PaneTarget("devgrp", "Dev grp", 0xFF54A9EB.toInt(), PaneKind.CHAT, "org.telegram.messenger", null, "pushed the build"),
-        PaneTarget("boss", "Boss", 0xFFF5C451.toInt(), PaneKind.LIST, "com.google.android.gm", null, "re: friday numbers")
-    )
+    private fun musicTarget() = PaneTarget("clicks-music", "Music", 0xFF57C98A.toInt(), PaneKind.MUSIC, null, null, "Now playing")
 
     private fun loadHubMessages(): List<HubMessage> {
         val raw = prefs().getString(HUB_MESSAGES_PREF, "[]") ?: "[]"
@@ -1386,9 +1678,15 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
                 add(HubMessage(item.optString("sender", "Message").ifBlank { "Message" },
-                    item.optString("preview", ""), item.optString("packageName", ""), item.optInt("color", Accent2)))
+                    item.optString("preview", ""), item.optString("packageName", ""),
+                    item.optString("kind", inferHubKind(item.optString("packageName", ""))),
+                    item.optInt("color", Accent2)))
             }
         }
+    }
+
+    private fun inferHubKind(packageName: String): String {
+        return if (packageName in EMAIL_PACKAGES) HUB_KIND_EMAIL else HUB_KIND_MESSAGE
     }
 
     // ── Drawing / utils ──────────────────────────────────────────────────────
@@ -1423,31 +1721,43 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             stroke?.let { setStroke(dp(1), it) }
         }
 
-    private fun libraryCategories() = listOf(
-        LibraryCategory("Communication", LibrarySpan.WIDE, listOf("Messages", "Telegram", "Mail", "Phone").map { libraryApp(it) }),
-        LibraryCategory("Productivity", LibrarySpan.TALL, listOf("Notes", "Search", "Calendar", "Files", "Tasks", "Docs").map { libraryApp(it) }),
-        LibraryCategory("Media", LibrarySpan.NORMAL, listOf("Music", "Photos", "Camera", "Podcasts").map { libraryApp(it) }),
-        LibraryCategory("Tools", LibrarySpan.WIDE, listOf("Maps", "Weather", "Clock", "Calc", "Settings").map { libraryApp(it) })
-    )
-
-    private fun libraryApp(seedName: String): LibraryApp {
-        val installed = apps.firstOrNull { app ->
-            app.label.equals(seedName, ignoreCase = true) ||
-                app.label.contains(seedName, ignoreCase = true) ||
-                seedName.contains(app.label, ignoreCase = true)
-        }
-        if (installed != null) return installed.toLibraryApp()
-        val accent = seedAccent(seedName)
-        val target = PaneTarget("library:${seedName.lowercase(Locale.US)}", seedName, accent, PaneKind.LIST, null, null, "Open $seedName")
-        return LibraryApp(seedName, accent, target, null)
+    private fun libraryCategories(): List<LibraryCategory> {
+        val grouped = apps.map { it.toLibraryApp() }.groupBy { app -> categoryNameFor(app.target.packageName) }
+        val preferredOrder = listOf("Social", "Music & Audio", "Video", "Photos", "Maps", "Productivity", "Games", "News", "Tools", "Other")
+        return preferredOrder.mapNotNull { name ->
+            grouped[name]?.takeIf { it.isNotEmpty() }?.let { LibraryCategory(name, categoryAccent(name), it) }
+        } + grouped.keys
+            .filterNot { it in preferredOrder }
+            .sortedWith(collator)
+            .mapNotNull { name -> grouped[name]?.takeIf { it.isNotEmpty() }?.let { LibraryCategory(name, categoryAccent(name), it) } }
     }
 
-    private fun seedAccent(name: String) = when (name.lowercase(Locale.US)) {
-        "messages" -> 0xFF65D6B7.toInt(); "telegram" -> 0xFF54A9EB.toInt(); "mail" -> 0xFFF15F5F.toInt()
-        "phone" -> 0xFF6DD77B.toInt(); "notes" -> Accent2; "search" -> 0xFF8AB4F8.toInt()
-        "calendar" -> 0xFF5C7CFA.toInt(); "files", "docs" -> 0xFFB8A7FF.toInt(); "tasks" -> 0xFFFF8A4C.toInt()
-        "music", "podcasts" -> 0xFFFF5A8A.toInt(); "photos", "camera" -> 0xFF72D4FF.toInt()
-        "maps", "weather" -> 0xFF79D39D.toInt(); "clock", "calc", "settings" -> 0xFF9FA6B2.toInt()
+    private fun categoryNameFor(packageName: String?): String {
+        val category = packageName?.let { pkg ->
+            runCatching { packageManager.getApplicationInfo(pkg, 0).category }.getOrNull()
+        }
+        return when (category) {
+            android.content.pm.ApplicationInfo.CATEGORY_SOCIAL -> "Social"
+            android.content.pm.ApplicationInfo.CATEGORY_AUDIO -> "Music & Audio"
+            android.content.pm.ApplicationInfo.CATEGORY_VIDEO -> "Video"
+            android.content.pm.ApplicationInfo.CATEGORY_IMAGE -> "Photos"
+            android.content.pm.ApplicationInfo.CATEGORY_MAPS -> "Maps"
+            android.content.pm.ApplicationInfo.CATEGORY_PRODUCTIVITY -> "Productivity"
+            android.content.pm.ApplicationInfo.CATEGORY_GAME -> "Games"
+            android.content.pm.ApplicationInfo.CATEGORY_NEWS -> "News"
+            else -> "Other"
+        }
+    }
+
+    private fun categoryAccent(name: String) = when (name) {
+        "Social" -> 0xFF5FD0C4.toInt()
+        "Music & Audio" -> 0xFF8FD694.toInt()
+        "Video" -> 0xFFFF8A4C.toInt()
+        "Photos" -> 0xFF72D4FF.toInt()
+        "Maps" -> 0xFF79D39D.toInt()
+        "Productivity" -> Accent2
+        "Games" -> 0xFFC4B5FF.toInt()
+        "News" -> 0xFF54A9EB.toInt()
         else -> Accent
     }
 
@@ -1492,6 +1802,13 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
         }
         val popup = PopupWindow(menu, dp(224), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true }
+        app.target.packageName?.let { packageName ->
+            val onHome = isOnHome(packageName)
+            menu.addView(menuItem(if (onHome) "Remove from home" else "Add to home", true) {
+                setHomePresence(packageName, !onHome)
+                popup.dismiss()
+            })
+        }
         menu.addView(menuItem("Default icon", true) {
             prefs().edit().remove(iconOverrideKey(app)).apply(); popup.dismiss(); showLibrary(animate = false)
         })
@@ -1522,7 +1839,7 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6))
                 background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
-                apps.take(36).forEach { candidate ->
+                apps.forEach { candidate ->
                     addView(menuItem(candidate.label, true) {
                         prefs().edit().putString(iconOverrideKey(app), "component:${candidate.componentName.flattenToString()}").apply()
                         popup.dismiss(); showLibrary(animate = false)
@@ -1602,11 +1919,20 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         }
     }
 
+    private fun goKeyBackground(fillColor: Int): GradientDrawable {
+        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(fillColor), fillColor)).apply {
+            shape = GradientDrawable.OVAL
+            setStroke(dp(1), brighten(fillColor))
+        }
+    }
+
     private fun keyRowHeight(): Int {
         val base = if (keyboardSettingsOpen) 44 else 56
         val growth = if (keyboardSettingsOpen) 8 else 20
         return dp(base + (keyboardSize * growth / 100))
     }
+
+    private fun goKeySize() = dp(43 + (keyboardSize * 8 / 100))
 
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
     private fun keyboardHeight() = dp(272 + keyboardSize * 80 / 100)
@@ -1614,13 +1940,13 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
     private fun keyboardBottomPadding() = dp(12)
 
     private fun keyTextSize(label: String): Float {
-        val base = when (label) { "space" -> 18f; "123", "clicks", "enter", "back", "shift", "period" -> 13.5f; else -> 20f }
-        val growth = when (label) { "space" -> 2f; "123", "clicks", "enter", "back", "shift", "period" -> 1.5f; else -> 2.5f }
+        val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "clicks", "enter", "back", "period" -> 13.5f; else -> 20f }
+        val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "clicks", "enter", "back", "period" -> 1.5f; else -> 2.5f }
         return base + (keyboardSize * growth / 100f)
     }
 
     private fun keyTextColor(label: String) = when (label) {
-        "enter" -> goKeyColor
+        "enter" -> 0xFF180A06.toInt()
         "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF7D8078.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> Accent }
         "123", "clicks", "back", "period" -> 0xFF7D8078.toInt()
         else -> Ink
@@ -1662,18 +1988,18 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
 
     // ── Types ────────────────────────────────────────────────────────────────
 
-    private enum class PaneKind { CHAT, LIST, SETTINGS }
+    private enum class PaneKind { CHAT, MAIL, LIST, SETTINGS, MUSIC }
     private enum class ShiftState { OFF, ONCE, LOCK }
 
     private data class PaneTarget(val id: String, val name: String, val accent: Int, val kind: PaneKind,
         val packageName: String?, val deepLinkUri: String?, val preview: String)
     private data class AppEntry(val label: String, val shortName: String, val packageName: String, val componentName: ComponentName, val brandColor: Int)
-    private enum class LibrarySpan { WIDE, TALL, NORMAL }
-    private data class LibraryCategory(val name: String, val span: LibrarySpan, val apps: List<LibraryApp>)
+    private data class LibraryCategory(val name: String, val accent: Int, val apps: List<LibraryApp>)
     private data class LibraryApp(val name: String, val accent: Int, val target: PaneTarget, val componentName: ComponentName?)
     private data class IconPack(val name: String, val packageName: String)
     private data class IconPackIcon(val packageName: String, val drawableName: String)
-    private data class HubMessage(val sender: String, val preview: String, val packageName: String, val color: Int)
+    private data class RibbonEntry(val label: String, val accent: Int, val target: PaneTarget)
+    private data class HubMessage(val sender: String, val preview: String, val packageName: String, val kind: String, val color: Int)
     private data class ChatLine(val text: String, val fromMe: Boolean)
 
     companion object {
@@ -1692,6 +2018,8 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
         private const val HAPTICS_PREF = "haptics"
         private const val GO_KEY_COLOR_PREF = "go_key_color"
+        private const val FAVORITE_APPS_PREF = "favorite_apps"
+        private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
         private const val HUB_MESSAGES_PREF = "hub_messages"
         private const val SPOTIFY_INTEGRATION_PREF = "spotify_integration"
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
@@ -1700,8 +2028,19 @@ class MainActivity : Activity(), SpellCheckerSession.SpellCheckerSessionListener
         private const val INTEGRATION_API = "api"
         private const val ACTIVE_ICON_PACK_PREF = "active_icon_pack"
         private const val ICON_OVERRIDE_PREFIX = "icon_override_"
+        private const val HUB_KIND_MESSAGE = "message"
+        private const val HUB_KIND_EMAIL = "email"
         private const val PANE_BODY_TAG = "pane"
         private const val VOICE_REQUEST_CODE = 9001
+
+        private val EMAIL_PACKAGES = setOf(
+            "com.google.android.gm",
+            "com.microsoft.office.outlook",
+            "com.yahoo.mobile.client.android.mail",
+            "com.readdle.spark",
+            "com.protonmail.android",
+            "me.bluemail.mail"
+        )
 
         private val GO_COLORS = listOf(
             ColorOption("ORANGE", Accent), ColorOption("AMBER", Accent2),
