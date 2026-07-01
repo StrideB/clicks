@@ -972,13 +972,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setBackgroundColor(0xFF000000.toInt())
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
-            suggestionBarView = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(2), 0, dp(2), dp(4))
-            }
-            addView(suggestionBarView, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             if (numberPadOpen) {
                 addKeyRow(listOf("1", "2", "3"))
@@ -1131,7 +1124,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         val flick = flickDetector.classify(touchDownX, touchDownY, event.x, event.y)
                         if (flick == FlickDirection.UP) {
                             val prediction = (keyViews[label] as? DynamicFlickKeyView)?.upWordHint
-                                ?: predictionOverlay.predictionFor(label)
                             if (prediction != null) {
                                 keyHaptic("space")
                                 acceptSuggestion(prediction)
@@ -1171,20 +1163,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Suggestions ──────────────────────────────────────────────────────────
 
     private fun updateSuggestionBar() {
-        if (!::suggestionBarView.isInitialized) return
-        predictionOverlay.update(suggestions, keyBounds)
-        suggestionBarView.removeAllViews()
-        suggestions.forEach { word ->
-            suggestionBarView.addView(TextView(this).apply {
-                text = word; textSize = 11.5f; gravity = Gravity.CENTER
-                setTextColor(InkDim); typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-                setPadding(dp(4), dp(2), dp(4), dp(2))
-                background = GradientDrawable().apply {
-                    setColor(0xFF1A1C21.toInt()); cornerRadius = dp(8).toFloat(); setStroke(dp(1), KeyEdge)
-                }
-                isClickable = true; setOnClickListener { haptic(this); acceptSuggestion(word) }
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(3) })
-        }
+        // Predictions are shown inline on keys via DynamicFlickKeyView — no separate chip bar.
     }
 
     private fun acceptSuggestion(word: String) {
@@ -1276,10 +1255,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         spatialScorer.setKeys(keyBounds)
-        val overlayLoc = IntArray(2)
-        predictionOverlay.overlayLayer?.getLocationOnScreen(overlayLoc)
-        predictionOverlay.rootScreenY = overlayLoc[1]
-        predictionOverlay.update(suggestions, keyBounds)
         updateGlideLayout()
     }
 
