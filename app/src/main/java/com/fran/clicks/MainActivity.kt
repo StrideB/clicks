@@ -53,6 +53,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import com.fran.clicks.keyboard.CustomHapticEngine
+import com.fran.clicks.keyboard.KeyPreviewManager
+import com.fran.clicks.keyboard.PredictionEngine
+import com.fran.clicks.keyboard.SpatialScorer
+import com.fran.clicks.db.NgramRepository
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
@@ -109,6 +114,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     private lateinit var contactsLauncher: ActivityResultLauncher<String>
+    private lateinit var hapticEngine: CustomHapticEngine
+    private lateinit var spatialScorer: SpatialScorer
+    private lateinit var keyPreviewManager: KeyPreviewManager
+    private lateinit var predictionEngine: PredictionEngine
+    private lateinit var ngramRepo: NgramRepository
     private lateinit var clockView: TextView
     private lateinit var dateView: TextView
     private lateinit var hubView: LinearLayout
@@ -130,6 +140,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         messages = loadHubMessages()
         mediaSessionSource = MediaSessionSource(this)
         initSpellChecker()
+        hapticEngine = CustomHapticEngine(this)
+        spatialScorer = SpatialScorer()
+        keyPreviewManager = KeyPreviewManager(this)
+        ngramRepo = NgramRepository(this)
+        predictionEngine = PredictionEngine(emptyMap())
         loadGlideWords()
         render()
         mediaSessionSource.start()
@@ -243,6 +258,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         renderRibbon()
         openPane?.let { showPane(it, animate = false) }
         if (libraryOpen) showLibrary(animate = false)
+        syncNowPlayingCardVisibility()
+        refreshNowPlayingCard()
         root.post { captureKeyBounds() }
     }
 
@@ -264,7 +281,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setNowPlayingCardContent()
                 elevation = dp(8).toFloat()
             }
-            addView(nowPlayingCardView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0, Gravity.BOTTOM).apply {
+            addView(nowPlayingCardView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight(), Gravity.BOTTOM).apply {
                 leftMargin = dp(14)
                 rightMargin = dp(14)
                 bottomMargin = dp(10)
@@ -324,10 +341,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun syncNowPlayingCardVisibility() {
         if (!::nowPlayingCardView.isInitialized || !::mediaSessionSource.isInitialized) return
-        val shouldShow = mediaSessionSource.nowPlaying.value?.isPlaying == true && openPane == null && !libraryOpen
-        val targetHeight = if (shouldShow) dp(78) else 0
+        val targetHeight = nowPlayingCardHeight()
         if (nowPlayingCardView.layoutParams?.height == targetHeight) return
         nowPlayingCardView.layoutParams = nowPlayingCardView.layoutParams.apply { height = targetHeight }
+    }
+
+    private fun nowPlayingCardHeight(): Int {
+        val shouldShow = ::mediaSessionSource.isInitialized &&
+            mediaSessionSource.nowPlaying.value?.isPlaying == true &&
+            openPane == null &&
+            !libraryOpen
+        return if (shouldShow) dp(78) else 0
     }
 
     private fun handleLibrarySwipe(event: MotionEvent) {
@@ -1057,9 +1081,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> v.background = when (label) {
-                        "enter" -> goKeyBackground(brighten(goKeyColor))
-                        else -> keyBackground(KeyHighlight)
+                    MotionEvent.ACTION_DOWN -> {
+                        v.background = when (label) {
+                            "enter" -> goKeyBackground(brighten(goKeyColor))
+                            else -> keyBackground(KeyHighlight)
+                        }
+                        keyHaptic(label)
+                        keyPreviewManager.show(v, label)
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.background = when (label) {
                         "enter" -> goKeyBackground(goKeyColor)
@@ -1069,7 +1097,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 false
             }
             setOnClickListener {
-                haptic(this)
                 if (label == "shift") handleShiftTap() else handleKey(label)
             }
             if (label == "enter") setOnLongClickListener { haptic(this); showGoColorMenu(this); true }
@@ -1133,7 +1160,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (suggestions.isNotEmpty()) { suggestions = emptyList(); updateSuggestionBar() }
             return
         }
-        val r = Runnable { lastSuggestWord = word; spellChecker?.getSuggestions(TextInfo(word), 5) }
+        val r = Runnable {
+            lastSuggestWord = word
+            val localSuggs = predictionEngine.getSuggestions(word, 3)
+            if (localSuggs.isNotEmpty()) {
+                suggestions = localSuggs; updateSuggestionBar()
+            }
+            spellChecker?.getSuggestions(TextInfo(word), 5)
+        }
         suggestDebounce = r
         handler.postDelayed(r, 160)
     }
@@ -1188,6 +1222,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 keyBounds[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
             }
         }
+        spatialScorer.setKeys(keyBounds)
         updateGlideLayout()
     }
 
@@ -1210,7 +1245,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val maxCount = counts.values.maxOrNull() ?: 1L
                 val freqs = counts.mapValues { it.value.toFloat() / maxCount }
                 clf.setWordData(words, freqs)
-                handler.post { glideClassifier = clf; updateGlideLayout() }
+                val freqMap = freqs.mapValues { it.value }
+                handler.post {
+                    glideClassifier = clf
+                    predictionEngine = PredictionEngine(freqMap)
+                    updateGlideLayout()
+                }
             }
         }.start()
     }
@@ -1232,8 +1272,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyAtPoint(rawX: Float, rawY: Float): String? {
-        val x = rawX.toInt(); val y = rawY.toInt()
-        return keyBounds.entries.firstOrNull { (_, r) -> r.contains(x, y) }?.key
+        if (keyBounds.isEmpty()) {
+            val x = rawX.toInt(); val y = rawY.toInt()
+            return keyBounds.entries.firstOrNull { (_, r) -> r.contains(x, y) }?.key
+        }
+        return spatialScorer.bestKey(rawX, rawY)
     }
 
     private fun handleGlideResult(results: List<String>) {
@@ -1383,6 +1426,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     query = query.dropLast(1) + ". "
                     suggestions = emptyList(); updateSuggestionBar()
                 } else {
+                    val words = query.trimEnd().split(" ")
+                    if (words.size >= 2) ngramRepo.recordWord(words.last(), words[words.size - 2])
                     query += " "
                     suggestions = emptyList(); updateSuggestionBar()
                 }
@@ -2408,6 +2453,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun haptic(view: View) {
         if (!hapticsEnabled) return
         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    private fun keyHaptic(label: String) {
+        if (!hapticsEnabled) return
+        hapticEngine.tap(label)
     }
 
     private fun brighten(color: Int) = Color.rgb(
