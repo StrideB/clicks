@@ -25,16 +25,27 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         if (upWordHint != word) { upWordHint = word; invalidate() }
     }
 
+    private var keyW = 0
+    private var keyH = 0
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        hintPaint.textSize = h * 0.22f   // ~22% of key height — scales with keyboard size
+        keyW = w
+        keyH = h
+        hintPaint.textSize = h * 0.20f
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val hint = upWordHint ?: return
-        // Clip to avoid drawing outside key bounds
-        val y = hintPaint.textSize * 1.05f
-        canvas.drawText(hint, width / 2f, y, hintPaint)
+        if (keyW == 0) return
+        // Scale text down if the word is wider than the key (minus 4px margins each side)
+        val maxWidth = (keyW - 8).toFloat()
+        val measured = hintPaint.measureText(hint)
+        val savedSize = hintPaint.textSize
+        if (measured > maxWidth) hintPaint.textSize = savedSize * (maxWidth / measured)
+        val y = hintPaint.textSize + 2f
+        canvas.drawText(hint, keyW / 2f, y, hintPaint)
+        hintPaint.textSize = savedSize
     }
 }
