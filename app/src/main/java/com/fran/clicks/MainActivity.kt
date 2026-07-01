@@ -1968,10 +1968,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             else -> "SEARCHING APPS  ·  CLICKS FOR SETTINGS"
         }
         if (typedText.isNotBlank() && !libraryOpen && !keyboardSettingsOpen) {
+            searchHintView.textSize = 15f
+            searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            searchHintView.letterSpacing = 0f
+            searchHintView.gravity = Gravity.CENTER_VERTICAL
+            searchHintView.setPadding(dp(16), dp(4), dp(16), dp(4))
             searchHintView.setTextColor(Ink)
             searchHintView.text = typedText + "│"
         } else {
-            searchHintView.setTextColor(0xFF55585F.toInt())
+            searchHintView.textSize = 9.5f
+            searchHintView.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
+            searchHintView.letterSpacing = 0.18f
+            searchHintView.gravity = Gravity.BOTTOM or Gravity.START
+            searchHintView.setPadding(dp(16), dp(4), dp(16), dp(7))
+            searchHintView.setTextColor(0xFF44474E.toInt())
             searchHintView.text = hint
         }
     }
