@@ -39,6 +39,7 @@ import android.speech.RecognizerIntent
 import android.os.Handler
 import android.os.Looper
 import android.provider.CalendarContract
+import android.provider.MediaStore
 import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
@@ -71,6 +72,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import com.fran.clicks.keyboard.CustomHapticEngine
 import com.fran.clicks.keyboard.DynamicFlickKeyView
@@ -175,6 +177,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var calendarPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var weatherPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var photosPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var photoTrashLauncher: ActivityResultLauncher<IntentSenderRequest>
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
@@ -201,6 +204,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var zeissButtonView: ZeissCameraButtonView? = null
     private var homeEditChipView: TextView? = null
     private var homeEditMode = false
+    private var pendingTrashPhotoId: Long? = null
     private val homeTileViews = mutableMapOf<String, FrameLayout>()
     private lateinit var sizeValueView: TextView
     private lateinit var suggestionBarView: LinearLayout
@@ -234,6 +238,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 openHere(photosTarget())
             }
             else Toast.makeText(this, "Photo access is needed for ZEISS Optics.", Toast.LENGTH_SHORT).show()
+        }
+        photoTrashLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            val deletedId = pendingTrashPhotoId
+            pendingTrashPhotoId = null
+            if (result.resultCode == RESULT_OK && deletedId != null) {
+                removeFavoritePhoto(deletedId)
+                if (selectedPhotoId() == deletedId) prefs().edit().remove(PHOTO_SELECTED_ID_PREF).apply()
+                Toast.makeText(this, "Moved to Photos trash.", Toast.LENGTH_SHORT).show()
+                if (openPane?.kind == PaneKind.PHOTOS) showPane(photosTarget(), animate = false)
+                refreshKeyboardDock()
+            }
         }
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
@@ -571,6 +586,56 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setLayerInset(2, dp(2), dp(2), dp(2), dp(2))
             setLayerInset(3, dp(3), dp(2), dp(3), dp(13))
         }
+    }
+
+    private fun zeissHeaderLogo(): View {
+        return TextView(this).apply {
+            text = "ZEISS"
+            textSize = 8.6f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.11f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(0xFFEAF0FF.toInt())
+            background = zeissRecessedBackground()
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                openVivoCamera()
+            }
+        }
+    }
+
+    private fun zeissHeaderBadge(): View {
+        return TextView(this).apply {
+            text = "Z"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.02f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(0xFFEAF0FF.toInt())
+            background = zeissRecessedBackground()
+        }
+    }
+
+    private fun zeissHeaderGlassBg(): Drawable {
+        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x70151922,
+            0x50101820,
+            0x7205060A
+        ))
+        val blueVeil = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
+            0x1A2D5DFF,
+            0x08000000,
+            0x182D5DFF
+        ))
+        val edge = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x18FFFFFF,
+            0x00000000,
+            0x30000000
+        ))
+        return LayerDrawable(arrayOf(base, blueVeil, edge))
     }
 
     private fun isVivoDevice(): Boolean {
@@ -1236,7 +1301,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun handlePaneSwipe(event: MotionEvent): Boolean {
-        if (!::contentFrame.isInitialized || openPane?.kind != PaneKind.MUSIC || libraryOpen || widgetBoardView != null) return false
+        val paneKind = openPane?.kind
+        if (!::contentFrame.isInitialized || (paneKind != PaneKind.MUSIC && paneKind != PaneKind.PHOTOS) || libraryOpen || widgetBoardView != null) return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 paneSwipeStartX = event.rawX
@@ -2363,6 +2429,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         prefs().edit().putLong(PHOTO_SELECTED_ID_PREF, id).apply()
     }
 
+    private fun favoritePhotoIds(): Set<Long> {
+        return prefs().getString(PHOTO_FAVORITES_PREF, "").orEmpty()
+            .split(',')
+            .mapNotNull { it.toLongOrNull() }
+            .toSet()
+    }
+
+    private fun saveFavoritePhotoIds(ids: Set<Long>) {
+        prefs().edit().putString(PHOTO_FAVORITES_PREF, ids.sortedDescending().joinToString(",")).apply()
+    }
+
+    private fun toggleFavoritePhoto(photoId: Long) {
+        val next = favoritePhotoIds().toMutableSet()
+        val added = if (photoId in next) {
+            next.remove(photoId)
+            false
+        } else {
+            next.add(photoId)
+            true
+        }
+        saveFavoritePhotoIds(next)
+        Toast.makeText(this, if (added) "Added to ZEISS Favorites." else "Removed from ZEISS Favorites.", Toast.LENGTH_SHORT).show()
+        if (openPane?.kind == PaneKind.PHOTOS) showPane(photosTarget(), animate = false)
+        refreshKeyboardDock()
+    }
+
+    private fun removeFavoritePhoto(photoId: Long) {
+        val next = favoritePhotoIds().filterNot { it == photoId }.toSet()
+        saveFavoritePhotoIds(next)
+    }
+
+    private fun requestTrashPhoto(photo: LauncherPhoto) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            Toast.makeText(this, "Photo trash requires Android 11 or newer.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        runCatching {
+            pendingTrashPhotoId = photo.id
+            val request = MediaStore.createTrashRequest(contentResolver, listOf(photo.uri), true)
+            photoTrashLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+        }.onFailure {
+            pendingTrashPhotoId = null
+            Toast.makeText(this, "Couldn't move this image to trash.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun musicTheme(): String {
         return prefs().getString(MUSIC_THEME_PREF, MUSIC_THEME_MUSIC1) ?: MUSIC_THEME_MUSIC1
     }
@@ -2741,6 +2853,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     hasPermission = hasPhotoPermission(),
                     selectedBucket = selectedPhotoBucket(),
                     selectedPhotoId = selectedPhotoId(),
+                    favoriteIds = favoritePhotoIds(),
                     onRequestPermission = { photosPermissionLauncher.launch(photoPermissionName()) },
                     onPhotoSelected = { id ->
                         persistSelectedPhoto(id)
@@ -3822,7 +3935,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun pane(target: PaneTarget): View {
-        if (target.kind == PaneKind.MUSIC) {
+        if (target.kind == PaneKind.MUSIC || target.kind == PaneKind.PHOTOS) {
             return FrameLayout(this).apply {
                 setBackgroundColor(Panel)
                 tag = PANE_BODY_TAG
@@ -3845,7 +3958,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), 0, dp(10), 0)
-            background = if (target.kind == PaneKind.MUSIC) musicHeaderGlassBg() else frostedHeaderBg()
+            background = when (target.kind) {
+                PaneKind.MUSIC -> musicHeaderGlassBg()
+                PaneKind.PHOTOS -> zeissHeaderGlassBg()
+                else -> frostedHeaderBg()
+            }
             if (target.kind == PaneKind.MUSIC) {
                 elevation = dp(10).toFloat()
                 isClickable = true
@@ -3853,6 +3970,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     haptic(this)
                     mediaSessionSource.openSourceApp()
                 }
+            } else if (target.kind == PaneKind.PHOTOS) {
+                elevation = dp(10).toFloat()
             }
             val iconBitmap = media?.appIcon
             if (target.kind == PaneKind.MUSIC && iconBitmap != null) {
@@ -3862,6 +3981,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     background = GradientDrawable().apply { setColor(0x3316181D); cornerRadius = dp(8).toFloat() }
                     setPadding(dp(2), dp(2), dp(2), dp(2))
                 }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(10) })
+            } else if (target.kind == PaneKind.PHOTOS) {
+                addView(zeissHeaderBadge(), LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) })
             } else {
                 addView(TextView(context).apply {
                     text = headerTitle.take(1).uppercase(Locale.US); textSize = 13f; gravity = Gravity.CENTER
@@ -3873,14 +3994,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 text = headerTitle; textSize = 13f; typeface = Typeface.DEFAULT_BOLD
                 letterSpacing = 0.03f; setTextColor(Ink)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            if (target.kind != PaneKind.MUSIC) {
-                addView(TextView(context).apply {
-                    text = "X"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(InkDim)
-                    background = keyBackground(); isClickable = true
-                    setOnClickListener { haptic(this); closePane() }
-                }, LinearLayout.LayoutParams(dp(28), dp(28)))
-            } else {
-                addView(View(context), LinearLayout.LayoutParams(dp(28), dp(28)))
+            when (target.kind) {
+                PaneKind.MUSIC -> addView(View(context), LinearLayout.LayoutParams(dp(28), dp(28)))
+                PaneKind.PHOTOS -> addView(View(context), LinearLayout.LayoutParams(dp(28), dp(28)))
+                else -> {
+                    addView(TextView(context).apply {
+                        text = "X"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(InkDim)
+                        background = keyBackground(); isClickable = true
+                        setOnClickListener { haptic(this); closePane() }
+                    }, LinearLayout.LayoutParams(dp(28), dp(28)))
+                }
             }
         }
     }
@@ -3915,9 +4038,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     hasPermission = hasPhotoPermission(),
                     selectedBucket = selectedPhotoBucket(),
                     selectedPhotoId = selectedPhotoId(),
+                    favoriteIds = favoritePhotoIds(),
                     brandStamp = photoStampLabel(),
                     onPhotoSelected = { id -> persistSelectedPhoto(id) },
                     onOpenExternalPhoto = { uri -> openExternalPhoto(uri) },
+                    onToggleFavorite = { photo -> toggleFavoritePhoto(photo.id) },
+                    onDeletePhoto = { photo -> requestTrashPhoto(photo) },
                     onRequestPermission = { photosPermissionLauncher.launch(photoPermissionName()) }
                 )
             }
@@ -6262,6 +6388,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val MUSIC_THEME_BLACK = "music_black"
         private const val PHOTO_BUCKET_PREF = "photo_bucket"
         private const val PHOTO_SELECTED_ID_PREF = "photo_selected_id"
+        private const val PHOTO_FAVORITES_PREF = "photo_favorites"
         private const val HAPTICS_PREF = "haptics"
         private const val LIBRARY_GRID_MODE_PREF = "library_grid_mode"
         private const val GO_KEY_COLOR_PREF = "go_key_color"

@@ -24,6 +24,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -246,7 +247,8 @@ fun MusicPlayer(
                     onPrevious = onPrevious,
                     onNext = onNext,
                     onSeekTo = onSeekTo
-                )
+                ),
+                onSeekTo = onSeekTo
             )
             NowPlayingTheme.MUSIC_BLACK -> MusicBlackLayout(
                 title = current.title,
@@ -259,7 +261,8 @@ fun MusicPlayer(
                 appColor = appColor,
                 onPrevious = onPrevious,
                 onTogglePlayPause = onTogglePlayPause,
-                onNext = onNext
+                onNext = onNext,
+                onSeekTo = onSeekTo
             )
         }
     }
@@ -296,20 +299,31 @@ private fun MusicOneLayout(
     position: Long,
     duration: Long,
     appColor: Color,
-    gestureModifier: Modifier
+    gestureModifier: Modifier,
+    onSeekTo: (Long) -> Unit
 ) {
-    Column(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 18.dp, vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .padding(horizontal = 18.dp)
     ) {
-        Spacer(Modifier.size(222.dp).then(gestureModifier))
-        Spacer(Modifier.height(13.dp))
-        NowPlayingMeta(title, artist, album)
-        Spacer(Modifier.height(11.dp))
-        ClassicLineProgress(position, duration, appColor)
+        val bottomGap = responsiveMusicBottomGap(maxHeight)
+        Box(
+            Modifier
+                .align(Alignment.Center)
+                .size((maxHeight * 0.42f).coerceIn(188.dp, 244.dp))
+                .then(gestureModifier)
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = bottomGap),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            NowPlayingMeta(title, artist, album)
+            Spacer(Modifier.height((maxHeight * 0.025f).coerceIn(10.dp, 18.dp)))
+            ClassicLineProgress(position, duration, appColor, onSeekTo)
+        }
     }
 }
 
@@ -325,34 +339,45 @@ private fun MusicBlackLayout(
     appColor: Color,
     onPrevious: () -> Unit,
     onTogglePlayPause: () -> Unit,
-    onNext: () -> Unit
+    onNext: () -> Unit,
+    onSeekTo: (Long) -> Unit
 ) {
-    Column(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 22.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .padding(horizontal = 22.dp, vertical = 12.dp)
     ) {
-        LabelText("PLAYING NOW", InkDim)
-        Spacer(Modifier.height(18.dp))
-        MusicBlackAlbumDisc(title, albumArt)
-        Spacer(Modifier.height(18.dp))
-        BasicText(
-            text = title,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = TextStyle(color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
-        )
-        Spacer(Modifier.height(7.dp))
-        BasicText(
-            text = listOf(artist, album).filter { it.isNotBlank() }.joinToString("  ·  "),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = TextStyle(color = InkDim, fontSize = 14.sp, textAlign = TextAlign.Center)
-        )
-        Spacer(Modifier.height(26.dp))
-        SimpleLineProgress(position, duration, appColor)
+        val bottomGap = responsiveMusicBottomGap(maxHeight)
+        Column(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            LabelText("PLAYING NOW", InkDim)
+            Spacer(Modifier.height((maxHeight * 0.035f).coerceIn(14.dp, 22.dp)))
+            MusicBlackAlbumDisc(title, albumArt)
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = bottomGap),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            BasicText(
+                text = title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+            )
+            Spacer(Modifier.height(7.dp))
+            BasicText(
+                text = listOf(artist, album).filter { it.isNotBlank() }.joinToString("  ·  "),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(color = InkDim, fontSize = 14.sp, textAlign = TextAlign.Center)
+            )
+            Spacer(Modifier.height((maxHeight * 0.04f).coerceIn(18.dp, 30.dp)))
+            SimpleLineProgress(position, duration, appColor, onSeekTo)
+        }
     }
 }
 
@@ -809,10 +834,15 @@ private fun NowPlayingMeta(title: String, artist: String, album: String) {
 }
 
 @Composable
-private fun ClassicLineProgress(positionMs: Long, durationMs: Long, appColor: Color = GreenBright) {
+private fun ClassicLineProgress(positionMs: Long, durationMs: Long, appColor: Color = GreenBright, onSeekTo: ((Long) -> Unit)? = null) {
     val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
     Column(Modifier.fillMaxWidth()) {
-        Canvas(Modifier.fillMaxWidth().height(7.dp)) {
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(30.dp)
+                .then(if (onSeekTo != null) Modifier.seekOnDrag(durationMs, onSeekTo) else Modifier)
+        ) {
             val y = size.height / 2f
             drawLine(Color(0xFF2A2D34), Offset(0f, y), Offset(size.width, y), strokeWidth = 3.dp.toPx(), cap = StrokeCap.Round)
             drawLine(
@@ -822,6 +852,9 @@ private fun ClassicLineProgress(positionMs: Long, durationMs: Long, appColor: Co
                 strokeWidth = 3.dp.toPx(),
                 cap = StrokeCap.Round
             )
+            val knobX = size.width * progress
+            drawCircle(Color.Black.copy(alpha = 0.46f), radius = 8.dp.toPx(), center = Offset(knobX, y + 2.dp.toPx()))
+            drawCircle(appColor.copy(alpha = 0.96f), radius = 5.5.dp.toPx(), center = Offset(knobX, y))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TimeText(formatMs(positionMs))
@@ -873,7 +906,7 @@ private fun RadioFrequencyProgress(positionMs: Long, durationMs: Long, appColor:
 }
 
 @Composable
-private fun SimpleLineProgress(positionMs: Long, durationMs: Long, appColor: Color = GreenBright) {
+private fun SimpleLineProgress(positionMs: Long, durationMs: Long, appColor: Color = GreenBright, onSeekTo: ((Long) -> Unit)? = null) {
     val progress = if (durationMs > 0) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -881,7 +914,12 @@ private fun SimpleLineProgress(positionMs: Long, durationMs: Long, appColor: Col
             TimeText(formatMs(durationMs))
         }
         Spacer(Modifier.height(7.dp))
-        Canvas(Modifier.fillMaxWidth().height(18.dp)) {
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(34.dp)
+                .then(if (onSeekTo != null) Modifier.seekOnDrag(durationMs, onSeekTo) else Modifier)
+        ) {
             val y = size.height / 2f
             drawLine(
                 color = Color.Black.copy(alpha = 0.62f),
@@ -911,6 +949,37 @@ private fun SimpleLineProgress(positionMs: Long, durationMs: Long, appColor: Col
                 radius = 9.dp.toPx(),
                 center = Offset(knobX, y)
             )
+        }
+    }
+}
+
+private fun responsiveMusicBottomGap(height: Dp): Dp {
+    val scaled = height * 0.085f
+    return when {
+        scaled < 26.dp -> 26.dp
+        scaled > 56.dp -> 56.dp
+        else -> scaled
+    }
+}
+
+private fun Modifier.seekOnDrag(durationMs: Long, onSeekTo: (Long) -> Unit): Modifier {
+    if (durationMs <= 0L) return this
+    return pointerInput(durationMs) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            fun seekAt(x: Float) {
+                val progress = (x / size.width.toFloat()).coerceIn(0f, 1f)
+                onSeekTo((durationMs * progress).toLong().coerceIn(0L, durationMs))
+            }
+            seekAt(down.position.x)
+            down.consume()
+            while (true) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull() ?: break
+                if (!change.pressed) break
+                seekAt(change.position.x)
+                change.consume()
+            }
         }
     }
 }
