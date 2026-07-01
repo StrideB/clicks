@@ -2,6 +2,7 @@ package com.fran.clicks
 
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ResolveInfo
@@ -25,6 +26,7 @@ import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.os.Handler
 import android.os.Looper
+import android.provider.CalendarContract
 import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
@@ -72,7 +74,10 @@ import androidx.compose.ui.platform.ComposeView
 import org.json.JSONArray
 import org.xmlpull.v1.XmlPullParser
 import java.text.Collator
+import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -91,6 +96,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var keyboardSettingsOpen = false
     private var goKeyColor = Accent
     private var messages: List<HubMessage> = emptyList()
+    private var calendarEvents: List<CalendarEvent> = emptyList()
     private var openPane: PaneTarget? = null
     private var paneView: View? = null
     private var libraryOpen = false
@@ -101,6 +107,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var librarySwipeStartX = 0f
     private var librarySwipeStartY = 0f
     private var librarySwipeTriggered = false
+    private var librarySwipeBlockedByWidget = false
     private var iconPacksCache: List<IconPack>? = null
     private val iconPackMatchCache = mutableMapOf<String, IconPackIcon?>()
     private var composeText = ""
@@ -123,6 +130,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private lateinit var contactsLauncher: ActivityResultLauncher<String>
     private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var calendarPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
@@ -148,12 +156,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         smsPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) triggerSmsSeeding()
         }
+        calendarPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            calendarEvents = loadCalendarEvents()
+            syncNowPlayingCardVisibility()
+            refreshNowPlayingCard()
+        }
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
         apps = loadLaunchableApps()
         messages = loadHubMessages()
+        calendarEvents = loadCalendarEvents()
         mediaSessionSource = MediaSessionSource(this)
         initSpellChecker()
         hapticEngine = CustomHapticEngine(this)
@@ -185,11 +199,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         super.onResume()
         apps = loadLaunchableApps()
         messages = loadHubMessages()
+        calendarEvents = loadCalendarEvents()
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
         if (::ribbonView.isInitialized) {
             updateClock()
             renderHub()
             renderRibbon()
+            syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
         }
     }
@@ -358,16 +374,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         setContent {
             val media by mediaSessionSource.nowPlaying.collectAsState()
             val current = media
-            NowPlayingCard(
-                visible = current?.isPlaying == true && openPane == null && !libraryOpen,
+            HomeWidgetStack(
+                visible = homeWidgetStackVisible(),
+                isMusicPlaying = current?.isPlaying == true,
                 title = current?.title.orEmpty(),
                 artist = current?.artist.orEmpty(),
                 sourceApp = current?.sourceApp.orEmpty(),
                 albumArt = current?.albumArt,
-                isPlaying = current?.isPlaying == true,
-                onClick = {
+                calendarEvents = calendarEvents,
+                hasCalendarPermission = hasCalendarPermission(),
+                onMusicClick = {
                     haptic(this@setNowPlayingCardContent)
                     openHere(musicTarget())
+                },
+                onCalendarClick = {
+                    haptic(this@setNowPlayingCardContent)
+                    openCalendarEventOrRequest(calendarEvents.firstOrNull())
                 }
             )
         }
@@ -387,12 +409,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun nowPlayingCardHeight(): Int {
-        val shouldShow = ::mediaSessionSource.isInitialized &&
-            mediaSessionSource.nowPlaying.value?.isPlaying == true &&
-            openPane == null &&
-            !libraryOpen
-        return if (shouldShow) dp(78) else 0
+        return if (homeWidgetStackVisible()) dp(78) else 0
     }
+
+    private fun homeWidgetStackVisible() = openPane == null && !libraryOpen
 
     private fun handleLibrarySwipe(event: MotionEvent) {
         if (!::contentFrame.isInitialized) return
@@ -405,8 +425,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 librarySwipeStartX = event.rawX
                 librarySwipeStartY = event.rawY
                 librarySwipeTriggered = false
+                librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
             }
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+                if (librarySwipeBlockedByWidget) {
+                    if (event.actionMasked == MotionEvent.ACTION_UP) librarySwipeBlockedByWidget = false
+                    return
+                }
                 if (!inContent || librarySwipeTriggered) return
                 val dx = event.rawX - librarySwipeStartX
                 val dy = event.rawY - librarySwipeStartY
@@ -424,8 +449,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                 }
             }
-            MotionEvent.ACTION_CANCEL -> librarySwipeTriggered = false
+            MotionEvent.ACTION_CANCEL -> {
+                librarySwipeTriggered = false
+                librarySwipeBlockedByWidget = false
+            }
         }
+    }
+
+    private fun isInsideHomeWidget(rawX: Float, rawY: Float): Boolean {
+        if (!homeWidgetStackVisible() || !::nowPlayingCardView.isInitialized || nowPlayingCardView.height <= 0) return false
+        val loc = IntArray(2)
+        nowPlayingCardView.getLocationOnScreen(loc)
+        return rawX >= loc[0] &&
+            rawX <= loc[0] + nowPlayingCardView.width &&
+            rawY >= loc[1] &&
+            rawY <= loc[1] + nowPlayingCardView.height
     }
 
     private fun openLibrary() {
@@ -2139,6 +2177,95 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             contactsLauncher.launch(android.Manifest.permission.READ_CONTACTS)
         }
+    }
+
+    private fun hasCalendarPermission(): Boolean {
+        return checkSelfPermission(android.Manifest.permission.READ_CALENDAR) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun openCalendarEventOrRequest(event: CalendarEvent?) {
+        if (!hasCalendarPermission()) {
+            calendarPermissionLauncher.launch(android.Manifest.permission.READ_CALENDAR)
+            return
+        }
+        if (event != null) {
+            val eventUri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, event.eventId)
+            val eventIntent = Intent(Intent.ACTION_VIEW, eventUri).apply {
+                putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, event.beginMs)
+                putExtra(CalendarContract.EXTRA_EVENT_END_TIME, event.endMs)
+            }
+            runCatching { startActivity(eventIntent) }
+                .onFailure { openCalendarApp() }
+            return
+        }
+        openCalendarApp()
+    }
+
+    private fun openCalendarApp() {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_CALENDAR)
+        runCatching { startActivity(intent) }
+            .onFailure { Toast.makeText(this, "Calendar isn't available here", Toast.LENGTH_SHORT).show() }
+    }
+
+    private fun loadCalendarEvents(): List<CalendarEvent> {
+        if (!hasCalendarPermission()) return emptyList()
+        val startMs = System.currentTimeMillis()
+        val endMs = startMs + 7L * 24L * 60L * 60L * 1000L
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
+            ContentUris.appendId(it, startMs)
+            ContentUris.appendId(it, endMs)
+        }.build()
+        val projection = arrayOf(
+            CalendarContract.Instances.TITLE,
+            CalendarContract.Instances.EVENT_ID,
+            CalendarContract.Instances.BEGIN,
+            CalendarContract.Instances.END,
+            CalendarContract.Instances.EVENT_LOCATION,
+            CalendarContract.Instances.ALL_DAY
+        )
+        val cursor = contentResolver.query(
+            uri,
+            projection,
+            null,
+            null,
+            "${CalendarContract.Instances.BEGIN} ASC"
+        ) ?: return emptyList()
+
+        return buildList {
+            cursor.use {
+                val titleIdx = it.getColumnIndexOrThrow(CalendarContract.Instances.TITLE)
+                val eventIdIdx = it.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_ID)
+                val beginIdx = it.getColumnIndexOrThrow(CalendarContract.Instances.BEGIN)
+                val endIdx = it.getColumnIndexOrThrow(CalendarContract.Instances.END)
+                val locationIdx = it.getColumnIndexOrThrow(CalendarContract.Instances.EVENT_LOCATION)
+                val allDayIdx = it.getColumnIndexOrThrow(CalendarContract.Instances.ALL_DAY)
+                while (it.moveToNext() && size < 4) {
+                    val title = it.getString(titleIdx)?.ifBlank { null } ?: "Untitled event"
+                    val eventId = it.getLong(eventIdIdx)
+                    val begin = it.getLong(beginIdx)
+                    val end = it.getLong(endIdx)
+                    val location = it.getString(locationIdx).orEmpty()
+                    val allDay = it.getInt(allDayIdx) == 1
+                    add(CalendarEvent(eventId, title, calendarTimeLabel(begin, end, allDay), location, begin, end))
+                }
+            }
+        }
+    }
+
+    private fun calendarTimeLabel(beginMs: Long, endMs: Long, allDay: Boolean): String {
+        val zone = ZoneId.systemDefault()
+        val start = LocalDateTime.ofInstant(Instant.ofEpochMilli(beginMs), zone)
+        val today = LocalDate.now(zone)
+        val day = when (start.toLocalDate()) {
+            today -> "Today"
+            today.plusDays(1) -> "Tomorrow"
+            else -> start.format(DateTimeFormatter.ofPattern("EEE", Locale.US))
+        }
+        if (allDay) return "$day all day"
+        val time = start.format(DateTimeFormatter.ofPattern("h:mm a", Locale.US)).lowercase(Locale.US)
+        val end = LocalDateTime.ofInstant(Instant.ofEpochMilli(endMs), zone)
+        val endTime = end.format(DateTimeFormatter.ofPattern("h:mm a", Locale.US)).lowercase(Locale.US)
+        return if (endMs > beginMs && start.toLocalDate() == end.toLocalDate()) "$day $time-$endTime" else "$day $time"
     }
 
     private fun filteredRibbonEntries(): List<RibbonEntry> {
