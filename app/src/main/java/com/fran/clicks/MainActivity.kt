@@ -989,7 +989,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow("qwertyuiop".map { it.toString() })
                 addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
                 addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
-                addKeyRow(listOf("123", "mic", "clicks", "space", "period", "enter"), dp(15))
+                addKeyRow(listOf("123", "clicks", "space", "period", "enter"), dp(15))
             }
         }
 
@@ -1081,7 +1081,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     "enter" -> if (numberPadOpen) 1f else 0.82f
                     "period" -> 0.86f
                     "clicks" -> 1.55f
-                    "123", "mic" -> 1.02f
+                    "123" -> 1.02f
                     "back", "shift", "abc" -> 1.02f
                     else -> 1f
                 }
@@ -1148,7 +1148,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setOnClickListener {
                 if (label == "shift") handleShiftTap() else handleKey(label)
             }
-            if (label == "enter") setOnLongClickListener { haptic(this); showGoColorMenu(this); true }
+            if (label == "enter") setOnLongClickListener { haptic(this); startVoiceInput(); true }
             if (label == "back") setOnLongClickListener { haptic(this); deleteWord(); true }
         }.also { keyViews[label] = it }
     }
@@ -1159,7 +1159,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         "enter" -> "GO"
         "period" -> "."
         "shift" -> "↑"
-        "mic" -> "🎤"
         "abc" -> "ABC"
         "123" -> "123"
         else -> if (label.length == 1) {
@@ -1519,7 +1518,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     filteredRibbonEntries().firstOrNull()?.let { if (it.target.kind == PaneKind.MUSIC || it.target.packageName == null) openHere(it.target) else openExternal(it.target) }
                 }
             }
-            "mic" -> { startVoiceInput(); return }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 query += char
@@ -1553,7 +1551,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 return
             }
-            "mic" -> return
             else -> {
                 if (label.length != 1) return
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label.lowercase(Locale.US)
@@ -1596,7 +1593,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "abc" -> { numberPadOpen = false; render(); return }
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; render(); return }
             "enter" -> postComposeBubble(pane)
-            "mic" -> { startVoiceInput(); return }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 composeText += char
@@ -1979,8 +1975,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             searchHintView.textSize = 9.5f
             searchHintView.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
             searchHintView.letterSpacing = 0.18f
-            searchHintView.gravity = Gravity.BOTTOM or Gravity.START
-            searchHintView.setPadding(dp(16), dp(4), dp(16), dp(7))
+            searchHintView.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            searchHintView.setPadding(dp(16), dp(4), dp(16), dp(2))
             searchHintView.setTextColor(0xFF44474E.toInt())
             searchHintView.text = hint
         }
@@ -2511,20 +2507,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
     private fun keyboardHeight() = dp(272 + keyboardSize * 80 / 100)
-    private fun keyboardTopPadding() = dp(14)
+    private fun keyboardTopPadding() = dp(4)
     private fun keyboardBottomPadding() = dp(20)
 
     private fun keyTextSize(label: String): Float {
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
-        val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "mic", "clicks", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
-        val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "mic", "clicks", "enter", "back", "period", "abc" -> 1.5f; else -> 2.5f }
+        val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "clicks", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
+        val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "clicks", "enter", "back", "period", "abc" -> 1.5f; else -> 2.5f }
         return base + (keyboardSize * growth / 100f)
     }
 
     private fun keyTextColor(label: String) = when (label) {
         "enter" -> 0xFF180A06.toInt()
         "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF7D8078.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> Accent }
-        "123", "mic", "clicks", "back", "period", "abc" -> 0xFF7D8078.toInt()
+        "123", "clicks", "back", "period", "abc" -> 0xFF7D8078.toInt()
         else -> Ink
     }
 
