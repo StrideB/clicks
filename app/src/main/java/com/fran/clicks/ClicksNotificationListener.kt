@@ -51,6 +51,7 @@ class ClicksNotificationListener : NotificationListenerService() {
             .put("packageName", sbn.packageName)
             .put("kind", kind)
             .put("color", colorForPackage(sbn.packageName))
+            .put("lastUpdated", System.currentTimeMillis())
 
         val current = readMessages().filterNot { it.optString("key") == sbn.key }
         val next = JSONArray()

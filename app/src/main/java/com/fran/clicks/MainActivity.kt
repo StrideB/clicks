@@ -8266,7 +8266,7 @@ Reply format: ["word1","word2","word3"]"""
             .filter { it.isActualPersonMessage() }
             .filter { seen.add("${it.packageName}:${it.sender}") }
             .take(6)
-            .map { RecentPerson(it.key, it.sender, it.preview, it.packageName, it.color, ClicksNotificationListener.notificationAvatars[it.key]) }
+            .map { RecentPerson(it.key, it.sender, it.preview, it.packageName, it.color, ClicksNotificationListener.notificationAvatars[it.key], it.lastUpdated) }
     }
 
     private fun contextItems(kind: String): List<ContextWidgetItem> {
@@ -8280,7 +8280,8 @@ Reply format: ["word1","word2","word3"]"""
                     preview = it.preview,
                     packageName = it.packageName,
                     color = contextColor(it),
-                    avatar = ClicksNotificationListener.notificationAvatars[it.key]
+                    avatar = ClicksNotificationListener.notificationAvatars[it.key],
+                    lastUpdated = it.lastUpdated
                 )
             }
     }
@@ -8395,7 +8396,8 @@ Reply format: ["word1","word2","word3"]"""
                 .put("preview", message.preview)
                 .put("packageName", message.packageName)
                 .put("kind", message.kind)
-                .put("color", message.color))
+                .put("color", message.color)
+                .put("lastUpdated", message.lastUpdated))
         }
         prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
         renderHub()
@@ -8422,7 +8424,8 @@ Reply format: ["word1","word2","word3"]"""
                 .put("preview", message.preview)
                 .put("packageName", message.packageName)
                 .put("kind", message.kind)
-                .put("color", message.color))
+                .put("color", message.color)
+                .put("lastUpdated", message.lastUpdated))
         }
         prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
     }
@@ -8460,13 +8463,15 @@ Reply format: ["word1","word2","word3"]"""
     private fun loadHubMessages(): List<HubMessage> {
         val raw = prefs().getString(HUB_MESSAGES_PREF, "[]") ?: "[]"
         val array = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
+        val loadedAt = System.currentTimeMillis()
         return buildList {
             for (i in 0 until array.length()) {
                 val item = array.optJSONObject(i) ?: continue
                 add(HubMessage(item.optString("key", ""), item.optString("sender", "Message").ifBlank { "Message" },
                     item.optString("preview", ""), item.optString("packageName", ""),
                     item.optString("kind", inferHubKind(item.optString("packageName", ""))),
-                    item.optInt("color", Accent2)))
+                    item.optInt("color", Accent2),
+                    item.optLong("lastUpdated", loadedAt - i * 1_000L)))
             }
         }
     }
@@ -8673,24 +8678,19 @@ Reply format: ["word1","word2","word3"]"""
 
     private fun weatherHeaderBackground(): Drawable {
         val body = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xF020232A.toInt(),
             0xF0181B20.toInt(),
-            0xF014161B.toInt()
+            0xF014171C.toInt(),
+            0xF0101216.toInt()
         )).apply {
             cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), 0x14FFFFFF)
+            setStroke(dp(1), 0x081C222B)
         }
-        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x12FFFFFF,
-            0x00FFFFFF
-        )).apply { cornerRadius = dp(26).toFloat() }
         val lowerShade = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-            0x66000000,
+            0x52000000,
             0x00000000
         )).apply { cornerRadius = dp(26).toFloat() }
-        return LayerDrawable(arrayOf(body, sheen, lowerShade)).apply {
-            setLayerInset(1, dp(1), dp(1), dp(1), dp(42))
-            setLayerInset(2, dp(1), dp(38), dp(1), dp(1))
+        return LayerDrawable(arrayOf(body, lowerShade)).apply {
+            setLayerInset(1, dp(1), dp(42), dp(1), dp(1))
         }
     }
 
@@ -8701,15 +8701,9 @@ Reply format: ["word1","word2","word3"]"""
             0xF00B0C0F.toInt()
         )).apply {
             cornerRadius = dp(28).toFloat()
-            setStroke(dp(1), 0x18FFFFFF)
+            setStroke(dp(1), 0x0AFFFFFF)
         }
-        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x12FFFFFF,
-            0x00FFFFFF
-        )).apply { cornerRadius = dp(28).toFloat() }
-        return LayerDrawable(arrayOf(body, sheen)).apply {
-            setLayerInset(1, dp(1), dp(1), dp(1), dp(96))
-        }
+        return body
     }
 
     private fun widgetKeyboardHeight(): Int {
@@ -8760,21 +8754,16 @@ Reply format: ["word1","word2","word3"]"""
             cornerRadius = dp(14).toFloat()
         }
         val face = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFF252A32.toInt(),
-            0xFF181C23.toInt(),
+            0xFF1D2229.toInt(),
+            0xFF161A20.toInt(),
             0xFF0C0E12.toInt()
         )).apply {
             cornerRadius = dp(14).toFloat()
             setStroke(dp(1), 0xFF11151B.toInt())
         }
-        val softTopEdge = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x18FFFFFF,
-            0x00FFFFFF
-        )).apply { cornerRadius = dp(14).toFloat() }
-        return LayerDrawable(arrayOf(skirt, face, softTopEdge)).apply {
+        return LayerDrawable(arrayOf(skirt, face)).apply {
             setLayerInset(0, 0, dp(3), 0, 0)
             setLayerInset(1, dp(1), 0, dp(1), dp(3))
-            setLayerInset(2, dp(2), dp(1), dp(2), dp(24))
         }
     }
 
@@ -8810,19 +8799,14 @@ Reply format: ["word1","word2","word3"]"""
             0xF00A0B0F.toInt()
         )).apply {
             cornerRadius = dp(24).toFloat()
-            setStroke(dp(1), 0x22FFFFFF)
+            setStroke(dp(1), 0x0DFFFFFF)
         }
-        val innerShade = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x12FFFFFF,
-            0x00000000
-        )).apply { cornerRadius = dp(24).toFloat() }
         val lowerShade = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-            0x66000000,
+            0x56000000,
             0x00000000
         )).apply { cornerRadius = dp(24).toFloat() }
-        return LayerDrawable(arrayOf(pocket, innerShade, lowerShade)).apply {
-            setLayerInset(1, dp(1), dp(1), dp(1), dp(74))
-            setLayerInset(2, dp(1), dp(80), dp(1), dp(1))
+        return LayerDrawable(arrayOf(pocket, lowerShade)).apply {
+            setLayerInset(1, dp(1), dp(80), dp(1), dp(1))
         }
     }
 
@@ -8833,15 +8817,9 @@ Reply format: ["word1","word2","word3"]"""
             0xFA08090D.toInt()
         )).apply {
             cornerRadius = dp(28).toFloat()
-            setStroke(dp(1), 0x22FFFFFF)
+            setStroke(dp(1), 0x0DFFFFFF)
         }
-        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x14FFFFFF,
-            0x00FFFFFF
-        )).apply { cornerRadius = dp(28).toFloat() }
-        return LayerDrawable(arrayOf(base, sheen)).apply {
-            setLayerInset(1, dp(1), dp(1), dp(1), dp(96))
-        }
+        return base
     }
 
     private fun widgetEmptyBackground(): Drawable {
@@ -8851,7 +8829,7 @@ Reply format: ["word1","word2","word3"]"""
             0x9908090D.toInt()
         )).apply {
             cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), 0x24FFFFFF)
+            setStroke(dp(1), 0x0FFFFFFF)
         }
     }
 
@@ -8862,15 +8840,9 @@ Reply format: ["word1","word2","word3"]"""
             0xF00B0C10.toInt()
         )).apply {
             cornerRadius = dp(22).toFloat()
-            setStroke(dp(1), 0x18FFFFFF)
+            setStroke(dp(1), 0x0AFFFFFF)
         }
-        val top = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x12FFFFFF,
-            0x00FFFFFF
-        )).apply { cornerRadius = dp(22).toFloat() }
-        return LayerDrawable(arrayOf(base, top)).apply {
-            setLayerInset(1, dp(1), dp(1), dp(1), dp(54))
-        }
+        return base
     }
 
     private fun libraryCategories(): List<LibraryCategory> {
@@ -9561,7 +9533,7 @@ Reply format: ["word1","word2","word3"]"""
     private data class IconPackIcon(val packageName: String, val drawableName: String)
     private data class RibbonEntry(val label: String, val accent: Int, val target: PaneTarget)
     private data class HomeTileSpec(val id: String, val col: Int, val row: Int, val colSpan: Int, val rowSpan: Int)
-    private data class HubMessage(val key: String, val sender: String, val preview: String, val packageName: String, val kind: String, val color: Int)
+    private data class HubMessage(val key: String, val sender: String, val preview: String, val packageName: String, val kind: String, val color: Int, val lastUpdated: Long)
     private data class ChatLine(val text: String, val fromMe: Boolean)
     private data class ContactMatch(val name: String, val value: String)
     private data class ContactCommand(val contact: ContactMatch, val message: String)

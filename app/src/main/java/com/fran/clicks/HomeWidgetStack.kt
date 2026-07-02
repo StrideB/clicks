@@ -23,7 +23,10 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -69,7 +73,8 @@ data class RecentPerson(
     val preview: String,
     val packageName: String,
     val color: Int,
-    val avatar: Bitmap?
+    val avatar: Bitmap?,
+    val lastUpdated: Long = 0L
 )
 
 data class ContextWidgetItem(
@@ -78,8 +83,68 @@ data class ContextWidgetItem(
     val preview: String,
     val packageName: String,
     val color: Int,
-    val avatar: Bitmap?
+    val avatar: Bitmap?,
+    val lastUpdated: Long = 0L
 )
+
+private sealed interface WidgetItem {
+    val id: String
+    val lastUpdated: Long
+    val accent: Color
+
+    data class Music(
+        override val lastUpdated: Long,
+        val title: String,
+        val artist: String,
+        val sourceApp: String,
+        val sourceColor: Color,
+        val albumArt: Bitmap?
+    ) : WidgetItem {
+        override val id = "music"
+        override val accent = GreenSoft
+    }
+
+    data class People(
+        override val lastUpdated: Long,
+        val people: List<RecentPerson>
+    ) : WidgetItem {
+        override val id = "people"
+        override val accent = Color(0xFFFF8A4C)
+    }
+
+    data class Email(
+        override val lastUpdated: Long,
+        val emails: List<ContextWidgetItem>
+    ) : WidgetItem {
+        override val id = "email"
+        override val accent = Color(0xFF3B9DFF)
+    }
+
+    data class News(
+        override val lastUpdated: Long,
+        val item: ContextWidgetItem
+    ) : WidgetItem {
+        override val id = "news:${item.key}"
+        override val accent = Accent
+    }
+
+    data class Maps(
+        override val lastUpdated: Long,
+        val item: ContextWidgetItem
+    ) : WidgetItem {
+        override val id = "maps:${item.key}"
+        override val accent = GreenSoft
+    }
+
+    data class Calendar(
+        override val lastUpdated: Long,
+        val events: List<CalendarEvent>,
+        val hasPermission: Boolean
+    ) : WidgetItem {
+        override val id = "calendar"
+        override val accent = Amber
+    }
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -112,71 +177,77 @@ fun HomeWidgetStack(
 ) {
     if (!visible) return
 
+    val now = System.currentTimeMillis()
     val pages = buildList {
-        if (isMusicPlaying) add(WidgetPage.Music)
-        mapsItems.firstOrNull()?.let { add(WidgetPage.Maps(it)) }
-        if (emailItems.isNotEmpty()) add(WidgetPage.Email)
-        if (recentPeople.isNotEmpty()) add(WidgetPage.People)
-        newsItems.firstOrNull()?.let { add(WidgetPage.News(it)) }
-        add(WidgetPage.Calendar)
-    }
+        if (isMusicPlaying) {
+            add(WidgetItem.Music(now, title, artist, sourceApp, Color(sourceColor), albumArt))
+        }
+        mapsItems.firstOrNull()?.let { add(WidgetItem.Maps(it.lastUpdated, it)) }
+        if (emailItems.isNotEmpty()) {
+            add(WidgetItem.Email(emailItems.maxOf { it.lastUpdated }, emailItems))
+        }
+        if (recentPeople.isNotEmpty()) {
+            add(WidgetItem.People(recentPeople.maxOf { it.lastUpdated }, recentPeople))
+        }
+        newsItems.firstOrNull()?.let { add(WidgetItem.News(it.lastUpdated, it)) }
+        add(WidgetItem.Calendar(calendarEvents.maxOfOrNull { it.beginMs } ?: 0L, calendarEvents, hasCalendarPermission))
+    }.sortedByDescending { it.lastUpdated }
     val pageCount = pages.size
     val pagerState = rememberPagerState(pageCount = { pageCount })
+    val scope = rememberCoroutineScope()
     Box(
         Modifier
             .fillMaxSize()
-            .clip(RoundedCornerShape(24.dp))
+            .clip(RoundedCornerShape(18.dp))
     ) {
         VerticalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize()
         ) { page ->
             when (val widgetPage = pages[page]) {
-                WidgetPage.Music -> {
-                    NowPlayingCard(
-                        visible = true,
-                        title = title,
-                        artist = artist,
-                        sourceApp = sourceApp,
-                        sourceColor = Color(sourceColor),
-                        albumArt = albumArt,
-                        isPlaying = true,
+                is WidgetItem.Music -> {
+                    MusicWidgetCard(
+                        title = widgetPage.title,
+                        artist = widgetPage.artist,
+                        sourceApp = widgetPage.sourceApp,
+                        sourceColor = widgetPage.sourceColor,
+                        albumArt = widgetPage.albumArt,
                         onClick = onMusicClick,
                         onLongClick = onMusicLongClick
                     )
                 }
-                WidgetPage.Calendar -> {
+                is WidgetItem.Calendar -> {
                     CalendarWidgetCard(
-                        events = calendarEvents,
-                        hasPermission = hasCalendarPermission,
+                        events = widgetPage.events,
+                        hasPermission = widgetPage.hasPermission,
                         onClick = onCalendarClick,
                         onLongClick = onCalendarLongClick
                     )
                 }
-                WidgetPage.Email -> {
+                is WidgetItem.Email -> {
                     EmailWidgetCard(
-                        emails = emailItems,
+                        emails = widgetPage.emails,
                         onClick = onEmailClick,
                         onLongClick = onEmailLongClick
                     )
                 }
-                is WidgetPage.Maps -> {
+                is WidgetItem.Maps -> {
                     MapsWidgetCard(
                         item = widgetPage.item,
                         onClick = { onMapsClick(widgetPage.item) },
                         onLongClick = { onMapsLongClick(widgetPage.item) }
                     )
                 }
-                is WidgetPage.News -> {
+                is WidgetItem.News -> {
                     NewsWidgetCard(
                         item = widgetPage.item,
                         onClick = { onNewsClick(widgetPage.item) },
                         onLongClick = { onNewsLongClick(widgetPage.item) }
                     )
                 }
-                WidgetPage.People -> {
+                is WidgetItem.People -> {
                     RecentPeopleCard(
-                        people = recentPeople,
+                        people = widgetPage.people,
                         onPersonClick = onRecentPersonClick,
                         onPersonLongClick = onRecentPersonLongClick
                     )
@@ -190,11 +261,18 @@ fun HomeWidgetStack(
             ) {
                 repeat(pageCount) { index ->
                     val selected = pagerState.currentPage == index
+                    val dotHeight = animateDpAsState(
+                        targetValue = if (selected) 18.dp else 5.dp,
+                        animationSpec = tween(durationMillis = 260),
+                        label = "widgetDot"
+                    )
                     Box(
                         Modifier
-                            .size(if (selected) 6.dp else 4.dp)
+                            .width(5.dp)
+                            .height(dotHeight.value)
                             .clip(RoundedCornerShape(99.dp))
                             .background(if (selected) GreenSoft else Color(0x668B8F99))
+                            .clickable { scope.launch { pagerState.animateScrollToPage(index) } }
                     )
                 }
             }
@@ -202,13 +280,80 @@ fun HomeWidgetStack(
     }
 }
 
-private sealed class WidgetPage {
-    data object Music : WidgetPage()
-    data object Calendar : WidgetPage()
-    data object Email : WidgetPage()
-    data object People : WidgetPage()
-    data class News(val item: ContextWidgetItem) : WidgetPage()
-    data class Maps(val item: ContextWidgetItem) : WidgetPage()
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MusicWidgetCard(
+    title: String,
+    artist: String,
+    sourceApp: String,
+    sourceColor: Color,
+    albumArt: Bitmap?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .drawMusicSurface(sourceColor)
+            .border(1.dp, sourceColor.copy(alpha = 0.14f), RoundedCornerShape(24.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 15.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(76.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .recessedTraySurface(sourceColor, 20)
+                .border(1.dp, sourceColor.copy(alpha = 0.12f), RoundedCornerShape(20.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (albumArt != null) {
+                Image(
+                    bitmap = albumArt.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Canvas(Modifier.fillMaxSize()) {
+                    drawCircle(sourceColor.copy(alpha = 0.84f), radius = size.minDimension * 0.36f, center = center)
+                    drawCircle(Color(0xFF0A0B0E), radius = size.minDimension * 0.13f, center = center)
+                    drawCircle(Color.White.copy(alpha = 0.16f), radius = size.minDimension * 0.04f, center = center)
+                }
+            }
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+            LabelText("NOW PLAYING", sourceColor)
+            Spacer(Modifier.height(7.dp))
+            BasicText(
+                text = title.ifBlank { "Music" },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
+            )
+            Spacer(Modifier.height(5.dp))
+            BasicText(
+                text = listOf(artist, sourceApp).filter { it.isNotBlank() }.joinToString(" . "),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(color = InkDim, fontSize = 11.4.sp, fontFamily = FontFamily.SansSerif)
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+                listOf(10.dp, 18.dp, 13.dp, 22.dp, 15.dp, 8.dp).forEach { height ->
+                    Box(
+                        Modifier
+                            .width(3.dp)
+                            .height(height)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(sourceColor.copy(alpha = 0.78f))
+                    )
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -224,7 +369,7 @@ private fun EmailWidgetCard(
             .fillMaxWidth()
             .fillMaxSize()
             .drawEmailSurface()
-            .border(1.dp, Color(0x30EA4335), RoundedCornerShape(24.dp))
+            .border(1.dp, Color(0x18EA4335), RoundedCornerShape(24.dp))
             .combinedClickable(onClick = { onClick(primary) }, onLongClick = { onLongClick(primary) })
             .padding(horizontal = 15.dp, vertical = 13.dp),
         verticalArrangement = Arrangement.SpaceBetween
@@ -235,7 +380,7 @@ private fun EmailWidgetCard(
                     .size(30.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .domedSurface(Color(0xFFFFD8D4), Color(0xFFEA4335), 10)
-                    .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(10.dp)),
+                    .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 BasicText("M", style = TextStyle(color = Color(0xFF260805), fontSize = 15.sp, fontWeight = FontWeight.Black))
@@ -254,7 +399,7 @@ private fun EmailWidgetCard(
                 Modifier
                     .clip(RoundedCornerShape(99.dp))
                     .background(Color(0x22EA4335))
-                    .border(1.dp, Color(0x44EA4335), RoundedCornerShape(99.dp))
+                    .border(1.dp, Color(0x24EA4335), RoundedCornerShape(99.dp))
                     .padding(horizontal = 9.dp, vertical = 4.dp)
             ) {
                 BasicText(
@@ -269,7 +414,7 @@ private fun EmailWidgetCard(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(18.dp))
                 .recessedTraySurface(Color(0xFFEA4335), 18)
-                .border(1.dp, Color(0x1FEA4335), RoundedCornerShape(18.dp))
+                .border(1.dp, Color(0x14EA4335), RoundedCornerShape(18.dp))
                 .padding(horizontal = 11.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -322,7 +467,7 @@ private fun NewsWidgetCard(
             .fillMaxWidth()
             .fillMaxSize()
             .drawNewsSurface()
-            .border(1.dp, Color(0x223B82F6), RoundedCornerShape(24.dp))
+            .border(1.dp, Color(0x143B82F6), RoundedCornerShape(24.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -361,7 +506,7 @@ private fun MapsWidgetCard(
             .fillMaxWidth()
             .fillMaxSize()
             .drawMapsSurface()
-            .border(1.dp, Color(0x3057C98A), RoundedCornerShape(24.dp))
+            .border(1.dp, Color(0x1857C98A), RoundedCornerShape(24.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -371,7 +516,7 @@ private fun MapsWidgetCard(
                 .size(86.dp)
                 .clip(RoundedCornerShape(22.dp))
                 .background(Brush.radialGradient(listOf(Color(0x2257C98A), Color(0xFF101318), Color(0xFF0A0B0E))))
-                .border(1.dp, Color(0x3357C98A), RoundedCornerShape(22.dp))
+                .border(1.dp, Color(0x1857C98A), RoundedCornerShape(22.dp))
         ) {
             Canvas(Modifier.fillMaxSize()) {
                 val road = Color(0xFF2A2F36)
@@ -424,7 +569,7 @@ private fun ContextIcon(item: ContextWidgetItem, fallback: String, size: Int) {
             .size(size.dp)
             .clip(RoundedCornerShape(16.dp))
             .domedSurface(accent.copy(alpha = 0.95f), accent.copy(alpha = 0.42f), 16)
-            .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(16.dp)),
+            .border(1.dp, accent.copy(alpha = 0.18f), RoundedCornerShape(16.dp)),
         contentAlignment = Alignment.Center
     ) {
         if (item.avatar != null) {
@@ -455,7 +600,7 @@ private fun RecentPeopleCard(
             .fillMaxWidth()
             .fillMaxSize()
             .drawPeopleSurface()
-            .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(24.dp))
+            .border(1.dp, Color(0x0EFFFFFF), RoundedCornerShape(24.dp))
             .padding(horizontal = 15.dp, vertical = 13.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
@@ -481,7 +626,7 @@ private fun RecentPeopleCard(
                                 .size(34.dp)
                                 .clip(RoundedCornerShape(99.dp))
                                 .background(Color(0x17191B20))
-                                .border(1.dp, Color(0x225FD0C4), RoundedCornerShape(99.dp))
+                                .border(1.dp, Color(0x145FD0C4), RoundedCornerShape(99.dp))
                         )
                     }
                 }
@@ -528,7 +673,7 @@ private fun RecentPersonWideCard(
             .height(82.dp)
             .clip(RoundedCornerShape(22.dp))
             .recessedTraySurface(accent, 22)
-            .border(1.dp, accent.copy(alpha = 0.30f), RoundedCornerShape(22.dp))
+            .border(1.dp, accent.copy(alpha = 0.16f), RoundedCornerShape(22.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -573,7 +718,7 @@ private fun RecentPersonChip(
             .height(78.dp)
             .clip(RoundedCornerShape(20.dp))
             .recessedTraySurface(Color(person.color), 20)
-            .border(1.dp, Color(person.color).copy(alpha = 0.22f), RoundedCornerShape(20.dp))
+            .border(1.dp, Color(person.color).copy(alpha = 0.12f), RoundedCornerShape(20.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 7.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -599,7 +744,7 @@ private fun ProfileOrb(person: RecentPerson, size: Int, fontSize: Int) {
             .size(size.dp)
             .clip(RoundedCornerShape(99.dp))
             .domedSurface(accent.copy(alpha = 0.96f), Color(0xFF111318), 99)
-            .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(99.dp)),
+            .border(1.dp, accent.copy(alpha = 0.18f), RoundedCornerShape(99.dp)),
         contentAlignment = Alignment.Center
     ) {
         if (person.avatar != null) {
@@ -637,7 +782,7 @@ private fun CalendarWidgetCard(
             .fillMaxWidth()
             .fillMaxSize()
             .drawCalendarSurface()
-            .border(1.dp, Color(0x332A2C33), RoundedCornerShape(22.dp))
+            .border(1.dp, Color(0x182A2C33), RoundedCornerShape(22.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -665,7 +810,7 @@ private fun CalendarNowBlock(event: CalendarEvent?, hasPermission: Boolean, modi
             .fillMaxSize()
             .clip(RoundedCornerShape(18.dp))
             .recessedTraySurface(accent, 18)
-            .border(1.dp, accent.copy(alpha = 0.24f), RoundedCornerShape(18.dp))
+            .border(1.dp, accent.copy(alpha = 0.13f), RoundedCornerShape(18.dp))
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
@@ -721,7 +866,7 @@ private fun CalendarNextBlock(event: CalendarEvent?, hasPermission: Boolean, cou
                 .weight(1f)
                 .clip(RoundedCornerShape(17.dp))
                 .recessedTraySurface(Amber, 17)
-                .border(1.dp, Color(0x202A2C33), RoundedCornerShape(17.dp))
+                .border(1.dp, Color(0x142A2C33), RoundedCornerShape(17.dp))
                 .padding(horizontal = 11.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.Center
         ) {
@@ -754,6 +899,8 @@ private fun Modifier.drawCalendarSurface(): Modifier = raisedGlassSurface(Amber,
 
 private fun Modifier.drawNeutralSurface(): Modifier = raisedGlassSurface(GreenSoft, 22)
 
+private fun Modifier.drawMusicSurface(accent: Color): Modifier = raisedGlassSurface(accent, 24)
+
 private fun Modifier.drawPeopleSurface(): Modifier = raisedGlassSurface(Purple, 24)
 
 private fun Modifier.drawEmailSurface(): Modifier = raisedGlassSurface(Color(0xFFEA4335), 24)
@@ -765,34 +912,43 @@ private fun Modifier.drawMapsSurface(): Modifier = raisedGlassSurface(GreenSoft,
 private fun Modifier.raisedGlassSurface(accent: Color, radiusDp: Int): Modifier = this.drawWithContent {
     val radius = radiusDp.dp.toPx()
     drawRoundRect(
+        color = Color.Black.copy(alpha = 0.58f),
+        topLeft = Offset(0f, 2.dp.toPx()),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
         brush = Brush.verticalGradient(
             listOf(
-                Color(0xFF20232A),
-                Color(0xFF181B20),
-                Color(0xFF14161B)
+                Color(0xFF191C21),
+                Color(0xFF14171B),
+                Color(0xFF101216)
             )
         ),
         cornerRadius = CornerRadius(radius, radius)
     )
-    drawCircle(
-        color = accent.copy(alpha = 0.16f),
-        radius = size.minDimension * 0.62f,
-        center = Offset(size.width * 0.08f, size.height * 0.45f)
+    drawRoundRect(
+        color = Color.Black.copy(alpha = 0.22f),
+        topLeft = Offset(0f, 0f),
+        size = Size(size.width, 1.4.dp.toPx())
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(
-            listOf(Color.White.copy(alpha = 0.075f), Color.Transparent)
-        ),
-        size = Size(size.width, size.height * 0.38f),
+        color = Color.Black.copy(alpha = 0.48f),
+        topLeft = Offset(0f, size.height - 4.dp.toPx()),
+        size = Size(size.width, 4.dp.toPx()),
         cornerRadius = CornerRadius(radius, radius)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(accent.copy(alpha = 0.96f), accent.copy(alpha = 0.58f))),
+        brush = Brush.verticalGradient(listOf(accent.copy(alpha = 0.70f), accent.copy(alpha = 0.30f))),
         size = Size(4.dp.toPx(), size.height),
         cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
     )
     drawRoundRect(
-        color = Color.White.copy(alpha = 0.08f),
+        color = Color.White.copy(alpha = 0.025f),
+        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        color = Color.Black.copy(alpha = 0.42f),
         style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
         cornerRadius = CornerRadius(radius, radius)
     )
@@ -802,20 +958,20 @@ private fun Modifier.raisedGlassSurface(accent: Color, radiusDp: Int): Modifier 
 private fun Modifier.recessedTraySurface(accent: Color, radiusDp: Int): Modifier = this.drawWithContent {
     val radius = radiusDp.dp.toPx()
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color(0xFF0F1114), Color(0xFF15181D))),
+        brush = Brush.verticalGradient(listOf(Color(0xFF0B0D10), Color(0xFF101319))),
         cornerRadius = CornerRadius(radius, radius)
     )
     drawRoundRect(
-        color = Color.Black.copy(alpha = 0.34f),
-        size = Size(size.width, size.height * 0.42f),
+        color = Color.Black.copy(alpha = 0.40f),
+        size = Size(size.width, 2.dp.toPx()),
         cornerRadius = CornerRadius(radius, radius)
     )
     drawRoundRect(
-        color = accent.copy(alpha = 0.10f),
+        color = accent.copy(alpha = 0.045f),
         cornerRadius = CornerRadius(radius, radius)
     )
     drawRoundRect(
-        color = Color.White.copy(alpha = 0.04f),
+        color = Color.White.copy(alpha = 0.018f),
         style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
         cornerRadius = CornerRadius(radius, radius)
     )
@@ -825,20 +981,18 @@ private fun Modifier.recessedTraySurface(accent: Color, radiusDp: Int): Modifier
 private fun Modifier.domedSurface(light: Color, dark: Color, radiusDp: Int): Modifier = this.drawWithContent {
     val radius = radiusDp.dp.toPx()
     drawRoundRect(
-        brush = Brush.radialGradient(
-            colors = listOf(light, dark, Color(0xFF0B0D11)),
-            center = Offset(size.width * 0.36f, size.height * 0.30f),
-            radius = size.maxDimension * 0.92f
+        brush = Brush.verticalGradient(
+            colors = listOf(light.copy(alpha = 0.86f), dark.copy(alpha = 0.72f), Color(0xFF0B0D11))
         ),
         cornerRadius = CornerRadius(radius, radius)
     )
     drawRoundRect(
-        brush = Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.26f), Color.Transparent)),
-        size = Size(size.width, size.height * 0.45f),
-        cornerRadius = CornerRadius(radius, radius)
+        color = Color.Black.copy(alpha = 0.25f),
+        topLeft = Offset(0f, size.height - 2.dp.toPx()),
+        size = Size(size.width, 2.dp.toPx())
     )
     drawRoundRect(
-        color = Color.White.copy(alpha = 0.10f),
+        color = Color.White.copy(alpha = 0.035f),
         style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
         cornerRadius = CornerRadius(radius, radius)
     )
