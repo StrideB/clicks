@@ -43,6 +43,7 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.InputType
 import android.text.style.ForegroundColorSpan
 import android.text.style.ScaleXSpan
 import android.text.style.StyleSpan
@@ -64,6 +65,7 @@ import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
@@ -94,6 +96,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
 import java.net.URL
+import java.net.HttpURLConnection
+import java.net.URLEncoder
+import java.io.OutputStreamWriter
 import java.text.Collator
 import java.time.Instant
 import java.time.LocalDate
@@ -155,6 +160,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastShiftTapMs = 0L
     private var suggestions: List<String> = emptyList()
     private var pendingTypeToDoCommand: String? = null
+    private val aiAnswersById = mutableMapOf<String, AiAnswerState>()
     private var spellChecker: SpellCheckerSession? = null
     private val handler = Handler(Looper.getMainLooper())
     private var suggestDebounce: Runnable? = null
@@ -1993,10 +1999,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun searchResultsGrid(): View = ScrollView(this).apply {
-        val results = librarySearchResults()
+        val results = universalSearchResults()
         if (results.isEmpty()) {
             addView(TextView(context).apply {
-                text = "No apps match \"$query\""
+                text = "No results for \"$query\""
                 textSize = 13f
                 gravity = Gravity.CENTER
                 setTextColor(InkDim)
@@ -2007,18 +2013,77 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(12), 0, dp(8))
-            results.map { it.toLibraryApp() }.chunked(4).forEachIndexed { rowIndex, rowItems ->
-                addView(LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    rowItems.forEachIndexed { columnIndex, app ->
-                        val index = rowIndex * 4 + columnIndex
-                        addView(resultTile(app, index == 0, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-                    }
-                    repeat(4 - rowItems.size) { addView(View(context), LinearLayout.LayoutParams(0, 1, 1f)) }
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(92)).apply { bottomMargin = dp(10) })
+            results.forEachIndexed { index, result ->
+                addView(searchResultRow(result, index == 0, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
+                    bottomMargin = dp(8)
+                })
             }
         })
+    }
+
+    private fun searchResultRow(result: SearchResult, isBest: Boolean, index: Int): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            alpha = 0f
+            translationY = dp(8).toFloat()
+            setPadding(dp(10), dp(8), dp(12), dp(8))
+            background = roundedPanel(if (isBest) 0xFF20242B.toInt() else Panel2, dp(18), if (isBest) result.accent else Line)
+            postDelayed({
+                animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+            }, (index * 28L).coerceAtMost(240L))
+            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(12) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = highlightedLabel(result.title, query)
+                    textSize = 14f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    setTextColor(Ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                addView(mono(result.subtitle.uppercase(Locale.US), 8.5f, InkDim).apply {
+                    letterSpacing = 0.08f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, dp(5), 0, 0)
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            setOnClickListener { haptic(this); openSearchResult(result) }
+        }
+    }
+
+    private fun searchResultIcon(result: SearchResult): View {
+        val app = result.target?.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg } }
+        return FrameLayout(this).apply {
+            background = roundedPanel(0xFF171A20.toInt(), dp(14), adjustAlpha(result.accent, 0.55f))
+            if (result.kind == SearchKind.APP && app != null) {
+                addView(ImageView(context).apply {
+                    setImageDrawable(iconFor(app.toLibraryApp()))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setPadding(dp(5), dp(5), dp(5), dp(5))
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            } else {
+                addView(TextView(context).apply {
+                    text = when (result.kind) {
+                        SearchKind.CONTACT -> "P"
+                        SearchKind.EMAIL -> "@"
+                        SearchKind.MESSAGE -> "M"
+                        SearchKind.CALENDAR -> "C"
+                        SearchKind.AI -> "AI"
+                        SearchKind.APP -> "A"
+                    }
+                    gravity = Gravity.CENTER
+                    textSize = if (result.kind == SearchKind.AI) 11f else 14f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(result.accent)
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
+        }
     }
 
     private fun resultTile(app: LibraryApp, isBest: Boolean, index: Int): View {
@@ -3056,8 +3121,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setTextColor(keyTextColor(label))
             isClickable = true
             val vInset = keyVerticalInset()
-            fun idleBg() = android.graphics.drawable.InsetDrawable(keyIdleBackground(label), 0, vInset, 0, vInset)
-            fun pressedBg() = android.graphics.drawable.InsetDrawable(keyPressedBackground(label), 0, vInset, 0, vInset)
+            val needsInset = label != "enter" && label != "123"
+            fun idleBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyIdleBackground(label), 0, vInset, 0, vInset) else keyIdleBackground(label)
+            fun pressedBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyPressedBackground(label), 0, vInset, 0, vInset) else keyPressedBackground(label)
             background = idleBg()
             if (keyboardTheme != KEYBOARD_THEME_DEFAULT) {
                 elevation = dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 5 else 3).toFloat()
@@ -3799,7 +3865,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             "enter" -> {
                 if (libraryOpen) {
-                    librarySearchResults().firstOrNull()?.let { openLibraryResult(it.toPaneTarget()) }
+                    universalSearchResults().firstOrNull()?.let { openSearchResult(it) }
                     return
                 }
                 if (numberPadOpen) {
@@ -4045,6 +4111,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     PaneKind.MAIL -> mailLines(target).forEach { addView(listRow(it.first, it.second)) }
                     PaneKind.MUSIC -> Unit
                     PaneKind.PHOTOS -> Unit
+                    PaneKind.AI -> aiPaneContent(this, target)
                     PaneKind.SETTINGS -> settingsPaneContent(this)
                     PaneKind.LIST -> {
                         addView(listRow("Inbox", "now"))
@@ -4161,10 +4228,60 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         })
         parent.addView(integrationRow("Spotify", "com.spotify.music", SPOTIFY_INTEGRATION_PREF))
         parent.addView(integrationRow("Apple Music", "com.apple.android.music", APPLE_MUSIC_INTEGRATION_PREF))
+        parent.addView(geminiIntegrationRow())
+        parent.addView(nativeIntegrationRow("Notifications", isNotificationAccessEnabled(), "MESSAGE, EMAIL, NEWS, MAPS WIDGETS") {
+            openNotificationAccessSettings()
+        })
+        parent.addView(nativeIntegrationRow("Contacts", hasContactsPermission(), "PEOPLE SEARCH, CALL, TEXT, EMAIL") {
+            contactsLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+        })
+        parent.addView(nativeIntegrationRow("Calendar", hasCalendarPermission(), "EVENT SEARCH, CALENDAR WIDGET") {
+            calendarPermissionLauncher.launch(android.Manifest.permission.READ_CALENDAR)
+        })
+        parent.addView(nativeIntegrationRow("Weather", hasWeatherPermission(), "LOCAL WEATHER HOME MODULE") {
+            weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        })
         parent.addView(mono("PLAYING MEDIA IS THE FAST PATH: CLICKS CAN READ THE PHONE'S ACTIVE MEDIA SESSION, THEN API CONNECTORS CAN ADD LIBRARY/PLAYLIST SYNC LATER.", 8.5f, InkDim).apply {
             setPadding(0, dp(14), 0, 0)
             letterSpacing = 0.08f
         })
+    }
+
+    private fun geminiIntegrationRow(): View {
+        val enabled = prefs().getBoolean(GEMINI_ENABLED_PREF, false)
+        val configured = geminiConfigured()
+        val state = when {
+            enabled && configured -> "READY"
+            configured -> "OFF"
+            else -> "SET UP"
+        }
+        return integrationLikeRow("Gemini AI", state, if (enabled && configured) 0xFF8AB4F8.toInt() else InkDim) { anchor ->
+            showGeminiMenu(anchor)
+        }
+    }
+
+    private fun nativeIntegrationRow(name: String, enabled: Boolean, detail: String, onClick: () -> Unit): View {
+        return integrationLikeRow(name, if (enabled) "ON" else "CONNECT", if (enabled) Accent2 else InkDim, { onClick() }).apply {
+            contentDescription = detail
+        }
+    }
+
+    private fun integrationLikeRow(name: String, state: String, stateColor: Int, onClick: (View) -> Unit): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(12), dp(2), dp(12))
+            background = border(Line)
+            isClickable = true
+            setOnClickListener { haptic(this); onClick(this) }
+            addView(TextView(context).apply {
+                text = name
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Ink)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(mono(state, 10f, stateColor).apply { letterSpacing = 0.08f })
+        }
     }
 
     private fun gestureSettingRow(label: String, prefKey: String, fallback: String): View {
@@ -4390,6 +4507,92 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         popup.showAsDropDown(anchor, -dp(64), -anchor.height)
     }
 
+    private fun showGeminiMenu(anchor: View) {
+        val configured = geminiConfigured()
+        val enabled = prefs().getBoolean(GEMINI_ENABLED_PREF, false)
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = GradientDrawable().apply {
+                setColor(Panel2)
+                cornerRadius = dp(8).toFloat()
+                setStroke(dp(1), Line)
+            }
+        }
+        val popup = PopupWindow(menu, dp(244), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+        }
+        menu.addView(menuItem(if (enabled) "Disable Gemini" else "Enable Gemini", configured) {
+            prefs().edit().putBoolean(GEMINI_ENABLED_PREF, !enabled).apply()
+            popup.dismiss()
+            renderPaneContent(clicksSettingsTarget())
+        })
+        menu.addView(menuItem(if (configured) "Replace API key" else "Add API key", true) {
+            popup.dismiss()
+            promptGeminiApiKey()
+        })
+        menu.addView(menuItem("Set model", true) {
+            popup.dismiss()
+            promptGeminiModel()
+        })
+        menu.addView(menuItem("Clear Gemini key", configured) {
+            prefs().edit()
+                .remove(GEMINI_API_KEY_PREF)
+                .putBoolean(GEMINI_ENABLED_PREF, false)
+                .apply()
+            popup.dismiss()
+            renderPaneContent(clicksSettingsTarget())
+        })
+        popup.showAsDropDown(anchor, -dp(72), -anchor.height)
+    }
+
+    private fun promptGeminiApiKey() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+            hint = "AIza..."
+            setTextColor(Ink)
+            setHintTextColor(InkDim)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Gemini API key")
+            .setMessage("For this prototype the key is stored locally on this device. Later we can move it behind Firebase AI Logic or a backend proxy.")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val key = input.text?.toString()?.trim().orEmpty()
+                if (key.isNotBlank()) {
+                    prefs().edit()
+                        .putString(GEMINI_API_KEY_PREF, key)
+                        .putBoolean(GEMINI_ENABLED_PREF, true)
+                        .apply()
+                    Toast.makeText(this, "Gemini is ready.", Toast.LENGTH_SHORT).show()
+                    if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(clicksSettingsTarget())
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptGeminiModel() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            setText(prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL) ?: GEMINI_DEFAULT_MODEL)
+            setTextColor(Ink)
+            setHintTextColor(InkDim)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Gemini model")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val model = input.text?.toString()?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+                prefs().edit().putString(GEMINI_MODEL_PREF, model).apply()
+                if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(clicksSettingsTarget())
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun activeIconPackLabel(): String {
         val active = prefs().getString(ACTIVE_ICON_PACK_PREF, null) ?: return "System"
         return iconPacks().firstOrNull { it.packageName == active }?.name ?: "System"
@@ -4449,6 +4652,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "Preview" to target.preview.ifBlank { "No preview available" },
             "Source" to source
         )
+    }
+
+    private fun aiPaneContent(parent: LinearLayout, target: PaneTarget) {
+        val state = aiAnswersById[target.id] ?: AiAnswerState(target.preview, "Thinking...", true)
+        if (!geminiConfigured()) {
+            parent.addView(mono("GEMINI", 10f, 0xFF8AB4F8.toInt()).apply {
+                letterSpacing = 0.22f
+                setPadding(0, 0, 0, dp(10))
+            })
+            parent.addView(TextView(this).apply {
+                text = "Add a Gemini API key in Clicks Settings to ask questions without leaving the launcher."
+                textSize = 14f
+                setLineSpacing(dp(3).toFloat(), 1f)
+                setTextColor(Ink)
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                background = roundedPanel(Panel2, dp(16), Line)
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            parent.addView(settingAction("ADD GEMINI KEY") {
+                haptic(this)
+                promptGeminiApiKey()
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(42)).apply { topMargin = dp(10) })
+            return
+        }
+        parent.addView(mono("ASKED", 10f, 0xFF8AB4F8.toInt()).apply {
+            letterSpacing = 0.18f
+            setPadding(0, 0, 0, dp(8))
+        })
+        parent.addView(TextView(this).apply {
+            text = state.prompt
+            textSize = 13f
+            setTextColor(Ink)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = roundedPanel(0xFF20242B.toInt(), dp(16), 0xFF303744.toInt())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        parent.addView(mono(if (state.loading) "GEMINI IS THINKING" else "GEMINI", 10f, if (state.loading) Accent2 else Accent).apply {
+            letterSpacing = 0.18f
+            setPadding(0, dp(18), 0, dp(8))
+        })
+        parent.addView(TextView(this).apply {
+            text = state.answer
+            textSize = 14.5f
+            setLineSpacing(dp(4).toFloat(), 1f)
+            setTextColor(if (state.loading) InkDim else Ink)
+            setPadding(dp(14), dp(13), dp(14), dp(13))
+            background = roundedPanel(Panel2, dp(18), Line)
+        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     private fun postComposeBubble(target: PaneTarget) {
@@ -4806,6 +5055,142 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
     }
 
+    private fun universalSearchResults(): List<SearchResult> {
+        val q = query.trim()
+        if (q.isBlank()) return emptyList()
+        val results = mutableListOf<SearchResult>()
+        if (looksLikeAiQuestion(q)) {
+            results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
+        }
+        librarySearchResults().take(6).forEach { app ->
+            results.add(SearchResult(app.label, "App . ${app.packageName}", app.brandColor, SearchKind.APP, app.toPaneTarget()))
+        }
+        results.addAll(searchContactResults(q))
+        results.addAll(searchMessageResults(q))
+        results.addAll(searchCalendarResults(q))
+        if (!looksLikeAiQuestion(q) && q.length >= 4) {
+            results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
+        }
+        return results.distinctBy { "${it.kind}:${it.title}:${it.subtitle}" }.take(14)
+    }
+
+    private fun looksLikeAiQuestion(text: String): Boolean {
+        val lower = text.lowercase(Locale.US).trim()
+        return lower.endsWith("?") ||
+            lower.startsWith("ask ") ||
+            lower.startsWith("ai ") ||
+            lower.startsWith("gemini ") ||
+            listOf("what ", "why ", "how ", "when ", "where ", "who ", "summarize ", "explain ", "draft ").any { lower.startsWith(it) }
+    }
+
+    private fun searchContactResults(q: String): List<SearchResult> {
+        if (!hasContactsPermission()) {
+            if (q.length < 3) return emptyList()
+            return listOf(SearchResult("Connect contacts", "Find people, phone numbers, and email addresses", Accent2, SearchKind.CONTACT, null) {
+                contactsLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+            })
+        }
+        val results = mutableListOf<SearchResult>()
+        queryContactPhones(q).take(3).forEach { contact ->
+            results.add(SearchResult(contact.name, "Call or text . ${contact.value}", 0xFF5FD0C4.toInt(), SearchKind.CONTACT, null) {
+                startSafeIntent(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(contact.value)}")), "Phone isn't available here")
+            })
+        }
+        queryContactEmails(q).take(3).forEach { contact ->
+            results.add(SearchResult(contact.name, "Email . ${contact.value}", 0xFFF5C451.toInt(), SearchKind.EMAIL, null) {
+                startSafeIntent(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${Uri.encode(contact.value)}")), "Email isn't available here")
+            })
+        }
+        return results
+    }
+
+    private fun searchMessageResults(q: String): List<SearchResult> {
+        return messages
+            .filter { it.sender.contains(q, ignoreCase = true) || it.preview.contains(q, ignoreCase = true) || appLabel(it.packageName).contains(q, ignoreCase = true) }
+            .take(5)
+            .map {
+                val kind = if (it.kind == HUB_KIND_EMAIL) SearchKind.EMAIL else SearchKind.MESSAGE
+                SearchResult(it.sender, "${it.preview} . ${appLabel(it.packageName)}", contextColor(it), kind, it.toPaneTarget())
+            }
+    }
+
+    private fun searchCalendarResults(q: String): List<SearchResult> {
+        if (!hasCalendarPermission()) {
+            if (q.length < 3 || !"calendar".contains(q, ignoreCase = true)) return emptyList()
+            return listOf(SearchResult("Connect calendar", "Search upcoming events", 0xFFFF8F8F.toInt(), SearchKind.CALENDAR, null) {
+                calendarPermissionLauncher.launch(android.Manifest.permission.READ_CALENDAR)
+            })
+        }
+        return calendarEvents
+            .filter { it.title.contains(q, ignoreCase = true) || it.location.contains(q, ignoreCase = true) || it.timeLabel.contains(q, ignoreCase = true) }
+            .take(4)
+            .map { event ->
+                SearchResult(event.title, "${event.timeLabel}${if (event.location.isNotBlank()) " . ${event.location}" else ""}", 0xFFFF8F8F.toInt(), SearchKind.CALENDAR, null) {
+                    openCalendarEventOrRequest(event)
+                }
+            }
+    }
+
+    private fun openSearchResult(result: SearchResult) {
+        result.action?.invoke()?.let { return }
+        val target = result.target ?: return
+        when {
+            target.kind == PaneKind.AI -> askGemini(target.preview)
+            target.kind == PaneKind.MUSIC || target.packageName == null -> openHere(target)
+            else -> openExternal(target)
+        }
+    }
+
+    private fun queryContactPhones(name: String): List<ContactMatch> {
+        if (!hasContactsPermission()) return emptyList()
+        val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)
+        val cursor = contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            projection,
+            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ? OR ${ContactsContract.CommonDataKinds.Phone.NUMBER} LIKE ?",
+            arrayOf("%$name%", "%$name%"),
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+        ) ?: return emptyList()
+        return contactMatches(cursor, name, projection[0], projection[1])
+    }
+
+    private fun queryContactEmails(name: String): List<ContactMatch> {
+        if (!hasContactsPermission()) return emptyList()
+        val projection = arrayOf(ContactsContract.CommonDataKinds.Email.DISPLAY_NAME, ContactsContract.CommonDataKinds.Email.ADDRESS)
+        val cursor = contentResolver.query(
+            ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+            projection,
+            "${ContactsContract.CommonDataKinds.Email.DISPLAY_NAME} LIKE ? OR ${ContactsContract.CommonDataKinds.Email.ADDRESS} LIKE ?",
+            arrayOf("%$name%", "%$name%"),
+            ContactsContract.CommonDataKinds.Email.DISPLAY_NAME
+        ) ?: return emptyList()
+        return contactMatches(cursor, name, projection[0], projection[1])
+    }
+
+    private fun contactMatches(cursor: android.database.Cursor, q: String, nameColumn: String, valueColumn: String): List<ContactMatch> {
+        return buildList {
+            val seen = mutableSetOf<String>()
+            cursor.use {
+                val nameIdx = it.getColumnIndexOrThrow(nameColumn)
+                val valueIdx = it.getColumnIndexOrThrow(valueColumn)
+                while (it.moveToNext() && size < 6) {
+                    val displayName = it.getString(nameIdx)?.trim().orEmpty()
+                    val value = it.getString(valueIdx)?.trim().orEmpty()
+                    if (displayName.isBlank() || value.isBlank()) continue
+                    val key = "$displayName:$value"
+                    if (seen.add(key)) add(ContactMatch(displayName, value))
+                }
+            }
+        }.sortedWith { left, right ->
+            val leftStarts = left.name.startsWith(q, ignoreCase = true)
+            val rightStarts = right.name.startsWith(q, ignoreCase = true)
+            when {
+                leftStarts != rightStarts -> if (leftStarts) -1 else 1
+                else -> collator.compare(left.name, right.name)
+            }
+        }
+    }
+
     private fun searchContacts(digits: String): List<RibbonEntry> {
         if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return emptyList()
         val clean = digits.filter { it.isDigit() }
@@ -4837,12 +5222,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    private fun hasContactsPermission(): Boolean {
+        return checkSelfPermission(android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+
     private fun executeTypeToDoCommand(queryText: String): Boolean {
         val command = queryText.trim()
         if (command.isBlank()) return false
         val verb = command.substringBefore(' ').lowercase(Locale.US)
         val body = command.substringAfter(' ', "").trim()
         return when (verb) {
+            "ask", "ai", "gemini" -> executeAiCommand(body.ifBlank { command })
             "call" -> executeCallCommand(body, command)
             "text", "sms", "message" -> executeTextCommand(body, command)
             "email", "mail" -> executeEmailCommand(body, command)
@@ -4851,6 +5241,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "play" -> executePlayCommand(body)
             else -> false
         }
+    }
+
+    private fun executeAiCommand(body: String): Boolean {
+        val prompt = body.trim()
+        if (prompt.isBlank()) return false
+        askGemini(prompt)
+        return true
     }
 
     private fun executeCallCommand(body: String, originalCommand: String): Boolean {
@@ -4930,6 +5327,73 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         runCatching { startActivity(intent) }
             .onFailure { executeOpenCommand("spotify") }
         return true
+    }
+
+    private fun askGemini(prompt: String) {
+        val target = aiTarget(prompt)
+        aiAnswersById[target.id] = AiAnswerState(prompt, if (geminiConfigured()) "Thinking..." else "Gemini needs an API key first.", geminiConfigured())
+        openHere(target)
+        if (!geminiConfigured()) return
+        mediaUiScope.launch(Dispatchers.IO) {
+            val answer = runCatching { fetchGeminiAnswer(prompt) }
+                .getOrElse { "I couldn't reach Gemini: ${it.message ?: "network unavailable"}" }
+            runOnUiThread {
+                aiAnswersById[target.id] = AiAnswerState(prompt, answer, false)
+                if (openPane?.id == target.id) renderPaneContent(target)
+            }
+        }
+    }
+
+    private fun fetchGeminiAnswer(prompt: String): String {
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        if (key.isBlank()) return "Gemini needs an API key first."
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(key, "UTF-8")}")
+        val body = JSONObject()
+            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", geminiPrompt(prompt))))))
+            .put("generationConfig", JSONObject().put("temperature", 0.4).put("maxOutputTokens", 650))
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 10_000
+            readTimeout = 20_000
+            setRequestProperty("Content-Type", "application/json")
+            doOutput = true
+        }
+        OutputStreamWriter(connection.outputStream).use { it.write(body.toString()) }
+        val raw = if (connection.responseCode in 200..299) {
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            throw IllegalStateException(error.ifBlank { "HTTP ${connection.responseCode}" })
+        }
+        val json = JSONObject(raw)
+        val candidates = json.optJSONArray("candidates")
+        val parts = candidates?.optJSONObject(0)
+            ?.optJSONObject("content")
+            ?.optJSONArray("parts")
+        return parts?.optJSONObject(0)?.optString("text")?.trim().orEmpty().ifBlank { "Gemini returned no text." }
+    }
+
+    private fun geminiPrompt(prompt: String): String {
+        val appHints = apps.take(12).joinToString(", ") { it.label }
+        val eventHints = calendarEvents.take(4).joinToString("; ") { "${it.title} ${it.timeLabel}" }
+        val messageHints = messages.take(6).joinToString("; ") { "${it.sender}: ${it.preview}" }
+        return """
+            You are Clicks AI inside an Android launcher. Be concise, helpful, and action-oriented.
+            User request: $prompt
+
+            Launcher context:
+            Apps: $appHints
+            Upcoming calendar: $eventHints
+            Recent notifications/messages: $messageHints
+
+            If the user is asking to perform a launcher action, suggest the direct Clicks command they can type.
+        """.trimIndent()
+    }
+
+    private fun geminiConfigured(): Boolean {
+        return prefs().getBoolean(GEMINI_ENABLED_PREF, false) &&
+            !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank()
     }
 
     private fun startSafeIntent(intent: Intent, failureMessage: String) {
@@ -5410,6 +5874,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun musicTarget() = PaneTarget("clicks-music", "Music", 0xFF57C98A.toInt(), PaneKind.MUSIC, null, null, "Now playing")
     private fun photosTarget() = PaneTarget("clicks-photos", "ZEISS Optics", 0xFFDCE6FF.toInt(), PaneKind.PHOTOS, null, null, "Latest photos")
+    private fun aiTarget(prompt: String) = PaneTarget("clicks-ai:${prompt.hashCode()}", "Clicks AI", 0xFF8AB4F8.toInt(), PaneKind.AI, null, null, prompt)
 
     private fun loadHubMessages(): List<HubMessage> {
         val raw = prefs().getString(HUB_MESSAGES_PREF, "[]") ?: "[]"
@@ -6371,7 +6836,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     // ── Types ────────────────────────────────────────────────────────────────
 
-    private enum class PaneKind { CHAT, MAIL, LIST, SETTINGS, MUSIC, PHOTOS }
+    private enum class PaneKind { CHAT, MAIL, LIST, SETTINGS, MUSIC, PHOTOS, AI }
     private enum class ShiftState { OFF, ONCE, LOCK }
 
     private data class PaneTarget(val id: String, val name: String, val accent: Int, val kind: PaneKind,
@@ -6388,6 +6853,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private data class ContactMatch(val name: String, val value: String)
     private data class ContactCommand(val contact: ContactMatch, val message: String)
     private data class CalendarCommand(val title: String, val startMs: Long, val endMs: Long)
+    private data class AiAnswerState(val prompt: String, val answer: String, val loading: Boolean)
+    private data class SearchResult(val title: String, val subtitle: String, val accent: Int, val kind: SearchKind, val target: PaneTarget?, val action: (() -> Unit)? = null)
+    private enum class SearchKind { APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI }
     private data class WeatherSnapshot(val tempF: Int, val feelsLikeF: Int, val humidity: Int, val windMph: Int, val code: Int, val label: String)
     private data class WidgetSpec(val id: Int, val size: String)
 
@@ -6458,6 +6926,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val HUB_MESSAGES_PREF = "hub_messages"
         private const val SPOTIFY_INTEGRATION_PREF = "spotify_integration"
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
+        private const val GEMINI_ENABLED_PREF = "gemini_enabled"
+        private const val GEMINI_API_KEY_PREF = "gemini_api_key"
+        private const val GEMINI_MODEL_PREF = "gemini_model"
+        private const val GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
         private const val INTEGRATION_OFF = "off"
         private const val INTEGRATION_MEDIA = "media"
         private const val INTEGRATION_API = "api"
