@@ -219,59 +219,84 @@ private fun EmailWidgetCard(
             .fillMaxWidth()
             .fillMaxSize()
             .drawEmailSurface()
-            .border(1.dp, Color(0x24F3F0E7), RoundedCornerShape(24.dp))
+            .border(1.dp, Color(0x30EA4335), RoundedCornerShape(24.dp))
             .combinedClickable(onClick = { onClick(primary) }, onLongClick = { onLongClick(primary) })
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 15.dp, vertical = 13.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            LabelText("GMAIL", Color(0xFFEA4335))
-            Spacer(Modifier.width(8.dp))
-            Box(Modifier.height(1.dp).weight(1f).background(Color(0x222A2C33)))
-            Spacer(Modifier.width(8.dp))
-            BasicText(
-                text = emails.size.coerceAtMost(99).toString(),
-                maxLines = 1,
-                style = TextStyle(color = Color(0xFFEA4335), fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-            )
+            Box(
+                Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Brush.verticalGradient(listOf(Color(0xFFFFE4E0), Color(0xFFEA4335))))
+                    .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                BasicText("M", style = TextStyle(color = Color(0xFF260805), fontSize = 15.sp, fontWeight = FontWeight.Black))
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                LabelText("INBOX", Color(0xFFEA4335))
+                Spacer(Modifier.height(3.dp))
+                BasicText(
+                    text = "Latest email",
+                    maxLines = 1,
+                    style = TextStyle(color = InkDim, fontSize = 10.4.sp, fontFamily = FontFamily.SansSerif)
+                )
+            }
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(Color(0x22EA4335))
+                    .border(1.dp, Color(0x44EA4335), RoundedCornerShape(99.dp))
+                    .padding(horizontal = 9.dp, vertical = 4.dp)
+            ) {
+                BasicText(
+                    text = emails.size.coerceAtMost(99).toString(),
+                    maxLines = 1,
+                    style = TextStyle(color = Color(0xFFFFB4AA), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                )
+            }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ContextIcon(primary, fallback = "M", size = 46)
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .background(Brush.horizontalGradient(listOf(Color(0x18EA4335), Color(0x12191B20))))
+                .border(1.dp, Color(0x1FEA4335), RoundedCornerShape(18.dp))
+                .padding(horizontal = 11.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ContextIcon(primary, fallback = "M", size = 42)
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
                 BasicText(
                     text = primary.title,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
+                    style = TextStyle(color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
                 )
                 Spacer(Modifier.height(5.dp))
                 BasicText(
                     text = primary.preview,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(color = InkDim, fontSize = 11.3.sp, lineHeight = 13.sp, fontFamily = FontFamily.SansSerif)
+                    style = TextStyle(color = InkDim, fontSize = 11.2.sp, fontFamily = FontFamily.SansSerif)
                 )
             }
         }
         if (emails.size > 1) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                emails.drop(1).take(3).forEach { email ->
-                    Box(
-                        Modifier
-                            .weight(1f)
-                            .height(22.dp)
-                            .clip(RoundedCornerShape(99.dp))
-                            .background(Color(0x17191B20))
-                            .border(1.dp, Color(0x182A2C33), RoundedCornerShape(99.dp))
-                            .padding(horizontal = 8.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                emails.drop(1).take(2).forEach { email ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Box(Modifier.size(5.dp).clip(RoundedCornerShape(99.dp)).background(Color(0xFFEA4335).copy(alpha = 0.74f)))
+                        Spacer(Modifier.width(7.dp))
                         BasicText(
                             text = email.title,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            style = TextStyle(color = InkDim, fontSize = 9.5.sp, fontFamily = FontFamily.SansSerif)
+                            style = TextStyle(color = InkDim, fontSize = 10.4.sp, fontFamily = FontFamily.SansSerif)
                         )
                     }
                 }
@@ -331,13 +356,30 @@ private fun MapsWidgetCard(
             .fillMaxWidth()
             .fillMaxSize()
             .drawMapsSurface()
-            .border(1.dp, Color(0x2257C98A), RoundedCornerShape(24.dp))
+            .border(1.dp, Color(0x3057C98A), RoundedCornerShape(24.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ContextIcon(item, fallback = "G", size = 50)
-        Spacer(Modifier.width(13.dp))
+        Box(
+            modifier = Modifier
+                .size(86.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Brush.radialGradient(listOf(Color(0x2257C98A), Color(0xFF101318), Color(0xFF0A0B0E))))
+                .border(1.dp, Color(0x3357C98A), RoundedCornerShape(22.dp))
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val road = Color(0xFF2A2F36)
+                val roadLit = Color(0xFF57C98A)
+                drawLine(road, Offset(size.width * 0.14f, size.height * 0.24f), Offset(size.width * 0.86f, size.height * 0.72f), strokeWidth = 7.dp.toPx())
+                drawLine(road, Offset(size.width * 0.18f, size.height * 0.78f), Offset(size.width * 0.80f, size.height * 0.18f), strokeWidth = 5.dp.toPx())
+                drawLine(roadLit.copy(alpha = 0.82f), Offset(size.width * 0.14f, size.height * 0.24f), Offset(size.width * 0.55f, size.height * 0.51f), strokeWidth = 3.dp.toPx())
+                drawCircle(Color(0xFF0B1511), radius = 12.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
+                drawCircle(roadLit, radius = 7.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
+                drawCircle(Color.White.copy(alpha = 0.22f), radius = 2.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
+            }
+        }
+        Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
             LabelText("ON THE ROAD", GreenSoft)
             Spacer(Modifier.height(7.dp))
@@ -354,6 +396,17 @@ private fun MapsWidgetCard(
                 overflow = TextOverflow.Ellipsis,
                 style = TextStyle(color = InkDim, fontSize = 11.sp, lineHeight = 12.6.sp, fontFamily = FontFamily.SansSerif)
             )
+            Spacer(Modifier.height(9.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(6.dp).clip(RoundedCornerShape(99.dp)).background(GreenSoft))
+                Spacer(Modifier.width(7.dp))
+                BasicText(
+                    text = "Tap to resume route",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(color = GreenSoft.copy(alpha = 0.9f), fontSize = 10.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
+                )
+            }
         }
     }
 }
@@ -398,42 +451,41 @@ private fun RecentPeopleCard(
             .fillMaxSize()
             .drawPeopleSurface()
             .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(24.dp))
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 15.dp, vertical = 13.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Column(Modifier.weight(1f)) {
-                LabelText("RECENT PEOPLE", Color(0xFF5FD0C4))
-                Spacer(Modifier.height(3.dp))
-                BasicText(
-                    text = "Conversations from real contacts",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(color = InkDim, fontSize = 10.5.sp, fontFamily = FontFamily.SansSerif)
-                )
-            }
+            LabelText("RECENT PEOPLE", Color(0xFF5FD0C4))
+            Spacer(Modifier.width(8.dp))
+            Box(Modifier.height(1.dp).weight(1f).background(Color(0x1F5FD0C4)))
             if (people.isNotEmpty()) {
+                Spacer(Modifier.width(8.dp))
                 BasicText(
                     text = people.size.coerceAtMost(6).toString(),
                     maxLines = 1,
-                    style = TextStyle(color = Color(0xFF5FD0C4), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
+                    style = TextStyle(color = Color(0xFF5FD0C4), fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 )
             }
         }
         if (people.isEmpty()) {
-            Column(verticalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+            Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Row(horizontalArrangement = Arrangement.spacedBy((-8).dp)) {
+                    repeat(3) { index ->
+                        Box(
+                            Modifier
+                                .size(34.dp)
+                                .clip(RoundedCornerShape(99.dp))
+                                .background(Color(0x17191B20))
+                                .border(1.dp, Color(0x225FD0C4), RoundedCornerShape(99.dp))
+                        )
+                    }
+                }
+                Spacer(Modifier.height(9.dp))
                 BasicText(
                     text = "No recent people yet",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = TextStyle(color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
-                )
-                Spacer(Modifier.height(4.dp))
-                BasicText(
-                    text = "People who message you will collect here",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(color = InkDim, fontSize = 11.5.sp, fontFamily = FontFamily.SansSerif)
                 )
             }
         } else if (people.size == 1) {
@@ -443,7 +495,7 @@ private fun RecentPeopleCard(
                 onLongClick = { onPersonLongClick(people.first()) }
             )
         } else {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
                 people.take(3).forEach { person ->
                     RecentPersonChip(
                         person = person,
@@ -468,29 +520,29 @@ private fun RecentPersonWideCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(70.dp)
+            .height(82.dp)
             .clip(RoundedCornerShape(22.dp))
-            .background(Brush.horizontalGradient(listOf(accent.copy(alpha = 0.16f), Color(0x24191B20), Color(0x10191B20))))
-            .border(1.dp, accent.copy(alpha = 0.22f), RoundedCornerShape(22.dp))
+            .background(Brush.horizontalGradient(listOf(accent.copy(alpha = 0.20f), Color(0x2B191B20), Color(0x14191B20))))
+            .border(1.dp, accent.copy(alpha = 0.30f), RoundedCornerShape(22.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ProfileOrb(person, size = 42, fontSize = 13)
+        ProfileOrb(person, size = 54, fontSize = 15)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
             BasicText(
                 text = person.sender,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
+                style = TextStyle(color = Ink, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
             )
             Spacer(Modifier.height(4.dp))
             BasicText(
                 text = person.preview,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = InkDim, fontSize = 12.sp, fontFamily = FontFamily.SansSerif)
+                style = TextStyle(color = InkDim, fontSize = 11.4.sp, lineHeight = 13.sp, fontFamily = FontFamily.SansSerif)
             )
         }
         Spacer(Modifier.width(10.dp))
@@ -513,29 +565,22 @@ private fun RecentPersonChip(
 ) {
     Row(
         modifier = modifier
-            .height(62.dp)
+            .height(78.dp)
             .clip(RoundedCornerShape(20.dp))
-            .background(Brush.verticalGradient(listOf(Color(0x22191B20), Color(0x44101216))))
-            .border(1.dp, Color(0x2E8B8F99), RoundedCornerShape(20.dp))
+            .background(Brush.verticalGradient(listOf(Color(0x25191B20), Color(0x50101216))))
+            .border(1.dp, Color(person.color).copy(alpha = 0.22f), RoundedCornerShape(20.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 7.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ProfileOrb(person, size = 34, fontSize = 11)
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            ProfileOrb(person, size = 38, fontSize = 11)
+            Spacer(Modifier.height(7.dp))
             BasicText(
                 text = person.sender,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = Ink, fontSize = 12.2.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
-            )
-            Spacer(Modifier.height(3.dp))
-            BasicText(
-                text = person.preview,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = InkDim, fontSize = 9.2.sp, fontFamily = FontFamily.SansSerif)
+                style = TextStyle(color = Ink, fontSize = 11.4.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
             )
         }
     }

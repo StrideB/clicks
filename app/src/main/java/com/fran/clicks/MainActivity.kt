@@ -2012,13 +2012,64 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(12), 0, dp(8))
-            results.forEachIndexed { index, result ->
-                addView(searchResultRow(result, index == 0, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
-                    bottomMargin = dp(8)
+            setPadding(0, dp(12), 0, dp(10))
+            results.chunked(2).forEachIndexed { rowIndex, rowItems ->
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    rowItems.forEachIndexed { columnIndex, result ->
+                        val index = rowIndex * 2 + columnIndex
+                        addView(searchResultBentoCard(result, index == 0, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                            if (columnIndex > 0) marginStart = dp(10)
+                        })
+                    }
+                    repeat(2 - rowItems.size) {
+                        addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
+                    }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(104)).apply {
+                    bottomMargin = dp(10)
                 })
             }
         })
+    }
+
+    private fun searchResultBentoCard(result: SearchResult, isBest: Boolean, index: Int): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            alpha = 0f
+            scaleX = 0.94f
+            scaleY = 0.94f
+            translationY = dp(8).toFloat()
+            setPadding(dp(10), dp(9), dp(10), dp(8))
+            background = roundedPanel(if (isBest) 0xFF20242B.toInt() else 0xFF191C22.toInt(), dp(20), if (isBest) result.accent else Line)
+            postDelayed({
+                animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+            }, (index * 28L).coerceAtMost(240L))
+            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(if (result.kind == SearchKind.APP) 48 else 42), dp(if (result.kind == SearchKind.APP) 48 else 42)))
+            addView(TextView(context).apply {
+                text = highlightedLabel(result.title, query)
+                textSize = if (result.kind == SearchKind.APP) 12.5f else 13f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setTextColor(Ink)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                includeFontPadding = false
+                setPadding(0, dp(8), 0, 0)
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            if (result.kind != SearchKind.APP) {
+                addView(mono(result.subtitle.uppercase(Locale.US), 8f, InkDim).apply {
+                    letterSpacing = 0.06f
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, dp(4), 0, 0)
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+            setOnClickListener { haptic(this); openSearchResult(result) }
+        }
     }
 
     private fun searchResultRow(result: SearchResult, isBest: Boolean, index: Int): View {
@@ -5063,7 +5114,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
         }
         librarySearchResults().take(6).forEach { app ->
-            results.add(SearchResult(app.label, "App . ${app.packageName}", app.brandColor, SearchKind.APP, app.toPaneTarget()))
+            results.add(SearchResult(app.label, "Open app", app.brandColor, SearchKind.APP, app.toPaneTarget()))
         }
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
@@ -6652,10 +6703,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun clickWheelSize(): Int {
-        val dockBound = keyboardHeight() - dp(30)
-        val widthBound = resources.displayMetrics.widthPixels - dp(26)
-        val preferred = dp(246 + (keyboardSize * 12 / 100))
-        return preferred.coerceAtMost(dockBound).coerceAtMost(widthBound).coerceAtLeast(dp(228))
+        val dockBound = keyboardHeight() - dp(16)
+        val widthBound = resources.displayMetrics.widthPixels - dp(18)
+        val preferred = dp(272 + (keyboardSize * 16 / 100))
+        return preferred.coerceAtMost(dockBound).coerceAtMost(widthBound).coerceAtLeast(dp(246))
     }
 
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))

@@ -21,7 +21,7 @@ import java.security.SecureRandom
 //   2. Set Redirect URI to:  com.fran.clicks://spotify-callback
 //   3. Copy your Client ID into SPOTIFY_CLIENT_ID below
 // ─────────────────────────────────────────────────────────────────────────────
-const val SPOTIFY_CLIENT_ID = "YOUR_SPOTIFY_CLIENT_ID"
+const val SPOTIFY_CLIENT_ID = "90479c42b8dd4256b9d9fccebb6f279c"
 const val SPOTIFY_REDIRECT_URI = "com.fran.clicks://spotify-callback"
 private const val SPOTIFY_SCOPES =
     "user-read-playback-state user-modify-playback-state user-read-currently-playing"
