@@ -183,6 +183,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var spotifyCachedRecentArts = listOf<android.graphics.Bitmap?>()
     private var spotifyCachedPlaylists = listOf<SpotifyPlaylist>()
     private var spotifyCachedPlaylistArts = listOf<android.graphics.Bitmap?>()
+    private var spotifyCachedTopTracks = listOf<SpotifyTrack>()
+    private var spotifyCachedTopArts = listOf<android.graphics.Bitmap?>()
+    private var spotifyCachedLikedSongs = listOf<SpotifyTrack>()
+    private var spotifyCachedLikedArts = listOf<android.graphics.Bitmap?>()
     private var compactLibraryScrollRef: ScrollView? = null
     private var spotifyCompactOverlay: View? = null
     private val fallbackIconCache = android.util.LruCache<String, Drawable>(64)
@@ -2664,17 +2668,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun preloadSpotifyLibrary() {
         mediaUiScope.launch(Dispatchers.IO) {
             try {
-                val recentDeferred = async { spotifyApi.getRecentlyPlayed(limit = 10) }
-                val playlistsDeferred = async { spotifyApi.getPlaylists(limit = 50) }
-                val recentTracks = recentDeferred.await()
-                val playlists = playlistsDeferred.await()
                 coroutineScope {
-                    val recentArts = recentTracks.map { t -> async { t.albumArtUrl?.let { url -> runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull() } } }.awaitAll()
-                    val playlistArts = playlists.map { p -> async { p.imageUrl?.let { url -> runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull() } } }.awaitAll()
-                    spotifyCachedRecent = recentTracks
+                    val recentD = async { spotifyApi.getRecentlyPlayed(limit = 50) }
+                    val playlistsD = async { spotifyApi.getPlaylists(limit = 50) }
+                    val topD = async { spotifyApi.getTopTracks(limit = 50, timeRange = "long_term") }
+                    val likedD = async { spotifyApi.getLikedSongs(limit = 50) }
+                    val recent = recentD.await()
+                    val playlists = playlistsD.await()
+                    val top = topD.await()
+                    val liked = likedD.await()
+                    val recentArts = recent.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
+                    val playlistArts = playlists.map { p -> async { p.imageUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
+                    val topArts = top.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
+                    val likedArts = liked.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
+                    spotifyCachedRecent = recent
                     spotifyCachedRecentArts = recentArts
                     spotifyCachedPlaylists = playlists
                     spotifyCachedPlaylistArts = playlistArts
+                    spotifyCachedTopTracks = top
+                    spotifyCachedTopArts = topArts
+                    spotifyCachedLikedSongs = liked
+                    spotifyCachedLikedArts = likedArts
                 }
             } catch (_: Exception) {}
         }
@@ -2893,7 +2907,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(WheelWellView(context), FrameLayout.LayoutParams(wheelSize + dp(18), wheelSize + dp(18), Gravity.CENTER))
             addView(ClickWheelView(context).apply {
                 sourceLabel = if (spotifyAuth.isConnected) "LIBRARY" else "SOURCE"
-                onLibrary = if (spotifyAuth.isConnected) ({ haptic(this); showSpotifyFullLibrary(spotifyCachedRecent, spotifyCachedRecentArts, spotifyCachedPlaylists, spotifyCachedPlaylistArts) }) else null
+                onLibrary = if (spotifyAuth.isConnected) ({ haptic(this); showSpotifyFullLibrary() }) else null
                 onCenter = { haptic(this); mediaSessionSource.togglePlayPause() }
                 onLeft = { haptic(this); mediaSessionSource.skipToPrevious() }
                 onRight = { haptic(this); mediaSessionSource.skipToNext() }
@@ -3050,7 +3064,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             isClickable = true
             setOnClickListener {
                 haptic(this)
-                showSpotifyFullLibrary(spotifyCachedRecent, spotifyCachedRecentArts, spotifyCachedPlaylists, spotifyCachedPlaylistArts)
+                showSpotifyFullLibrary()
             }
         })
 
@@ -3250,13 +3264,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return container
     }
 
-    private fun showSpotifyFullLibrary(
-        recent: List<SpotifyTrack>, recentArts: List<android.graphics.Bitmap?>,
-        playlists: List<SpotifyPlaylist>, playlistArts: List<android.graphics.Bitmap?>
-    ) {
+    private fun showSpotifyFullLibrary() {
         val SpotifyGreen = 0xFF1ED760.toInt()
         val CardBg = 0xFF141720.toInt()
-        val CardStroke = 0xFF22262E.toInt()
         val screenH = resources.displayMetrics.heightPixels
         val statusBarH = run {
             val id = resources.getIdentifier("status_bar_height", "dimen", "android")
@@ -3264,10 +3274,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         // ── Scrim + panel ─────────────────────────────────────────────────────
-        val scrim = FrameLayout(this).apply {
-            setBackgroundColor(0x00000000)
-            isClickable = true
-        }
+        val scrim = FrameLayout(this).apply { setBackgroundColor(0x00000000); isClickable = true }
 
         var panelSwipeStartX = 0f; var panelSwipeStartY = 0f
         var panelDismiss: (() -> Unit)? = null
@@ -3291,19 +3298,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }.apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-                0xFF0F1215.toInt(), 0xFF090B0D.toInt()
-            )).apply { setStroke(dp(1), 0xFF1E2228.toInt()) }
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xFF0F1215.toInt(), 0xFF090B0D.toInt()))
+                .apply { setStroke(dp(1), 0xFF1E2228.toInt()) }
             setPadding(0, statusBarH, 0, 0)
             translationY = screenH.toFloat()
+            isClickable = true; isFocusable = true
         }
 
-        scrim.addView(panel, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            Gravity.BOTTOM
-        ))
         val decorView = window.decorView as FrameLayout
+        scrim.addView(panel, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         decorView.addView(scrim, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
 
         fun dismiss() {
@@ -3311,90 +3315,55 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 .setInterpolator(android.view.animation.AccelerateInterpolator(1.6f))
                 .withEndAction {
                     decorView.removeView(scrim)
-                    // If no pane is open and music is playing, show the now-playing pane
-                    if (openPane == null && ::mediaSessionSource.isInitialized && mediaSessionSource.nowPlaying.value != null) {
+                    if (openPane == null && ::mediaSessionSource.isInitialized && mediaSessionSource.nowPlaying.value != null)
                         openHere(musicTarget())
-                    }
                 }.start()
             scrim.animate().alpha(0f).setDuration(280).start()
         }
-
         panelDismiss = ::dismiss
         scrim.setOnClickListener { dismiss() }
-        // Block touches on the panel from reaching the scrim
-        panel.isClickable = true
-        panel.isFocusable = true
 
-        // ── Header: tabs + dismiss pill ───────────────────────────────────────
-        val tabLabels = listOf("RECENT", "PLAYLISTS", "SEARCH")
+        // ── Header row: tabs + dismiss pill ──────────────────────────────────
+        val tabLabels = listOf("TOP", "RECENT", "PLAYLISTS", "SEARCH")
         val tabViews = mutableListOf<TextView>()
         var activeTab = 0
 
         val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(20), dp(18), dp(14), dp(14))
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(18), dp(12), dp(14))
         }
-
-        tabLabels.forEachIndexed { i, label ->
-            val tv = mono(label, 9f, if (i == 0) SpotifyGreen else InkDim).apply {
+        tabLabels.forEachIndexed { i, lbl ->
+            val tv = mono(lbl, 9f, if (i == 0) SpotifyGreen else InkDim).apply {
                 letterSpacing = 0.12f
                 typeface = if (i == 0) Typeface.create("sans-serif", Typeface.BOLD) else Typeface.DEFAULT
-                if (i > 0) setPadding(dp(22), 0, 0, 0)
+                if (i > 0) setPadding(dp(20), 0, 0, 0)
                 isClickable = true
             }
-            tabViews.add(tv)
-            headerRow.addView(tv)
+            tabViews.add(tv); headerRow.addView(tv)
         }
-
-        // spacer
         headerRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-
-        // ↓ dismiss pill
         headerRow.addView(TextView(this).apply {
-            text = "↓"
-            textSize = 16f
-            setTextColor(InkDim)
-            gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                setColor(0xFF1A1D22.toInt()); cornerRadius = dp(20).toFloat()
-                setStroke(dp(1), 0xFF2A2E38.toInt())
-            }
-            setPadding(dp(14), dp(5), dp(14), dp(7))
-            isClickable = true
+            text = "↓"; textSize = 16f; setTextColor(InkDim); gravity = Gravity.CENTER
+            background = GradientDrawable().apply { setColor(0xFF1A1D22.toInt()); cornerRadius = dp(20).toFloat(); setStroke(dp(1), 0xFF2A2E38.toInt()) }
+            setPadding(dp(14), dp(5), dp(14), dp(7)); isClickable = true
             setOnClickListener { haptic(this); dismiss() }
         })
 
-        // ── Search field (shown only on SEARCH tab) ───────────────────────────
         val searchField = EditText(this).apply {
-            hint = "Search Spotify…"
-            textSize = 14f
-            setTextColor(Ink); setHintTextColor(InkDim)
-            setSingleLine()
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            hint = "Search Spotify…"; textSize = 14f; setTextColor(Ink); setHintTextColor(InkDim)
+            setSingleLine(); imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
             inputType = android.text.InputType.TYPE_CLASS_TEXT
-            background = GradientDrawable().apply {
-                setColor(0xFF1A1D22.toInt()); cornerRadius = dp(12).toFloat()
-                setStroke(dp(1), 0xFF2A2E36.toInt())
-            }
-            setPadding(dp(16), dp(10), dp(16), dp(10))
-            visibility = View.GONE
+            background = GradientDrawable().apply { setColor(0xFF1A1D22.toInt()); cornerRadius = dp(12).toFloat(); setStroke(dp(1), 0xFF2A2E36.toInt()) }
+            setPadding(dp(16), dp(10), dp(16), dp(10)); visibility = View.GONE
         }
         val searchWrap = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), 0, dp(16), dp(8))
+            orientation = LinearLayout.VERTICAL; setPadding(dp(16), 0, dp(16), dp(8))
             visibility = View.GONE
             addView(searchField, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
 
-        // ── Grid body ─────────────────────────────────────────────────────────
-        val scroll = ScrollView(this).apply {
-            isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
-        }
-        val body = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(4), dp(16), dp(32))
-        }
+        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(4), dp(16), dp(32)) }
         scroll.addView(body)
 
         panel.addView(headerRow, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -3402,25 +3371,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         panel.addView(searchWrap, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         panel.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // ── Card helpers ──────────────────────────────────────────────────────
+        // ── Card / row helpers ────────────────────────────────────────────────
         fun gridRow(vararg views: View) = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; weightSum = 3f
-            views.forEachIndexed { i, v ->
-                addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { if (i > 0) marginStart = dp(12) })
-            }
-            repeat(3 - views.size) { addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(12) }) }
+            views.forEachIndexed { i, v -> addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { if (i > 0) marginStart = dp(10) }) }
+            repeat(3 - views.size) { addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) }) }
         }
 
-        fun squareCard(art: android.graphics.Bitmap?, fallback: IntArray, title: String, sub: String, stroke: Int = CardStroke, onClick: () -> Unit): View =
+        fun squareCard(art: android.graphics.Bitmap?, fallback: IntArray, title: String, sub: String, stroke: Int = 0xFF22262E.toInt(), onClick: () -> Unit): View =
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; isClickable = true
                 background = GradientDrawable().apply { setColor(CardBg); cornerRadius = dp(16).toFloat(); setStroke(dp(1), stroke) }
                 setPadding(dp(10), dp(10), dp(10), dp(11))
                 setOnClickListener { haptic(this); onClick() }
-                val frame = object : FrameLayout(this@MainActivity) { override fun onMeasure(w: Int, h: Int) = super.onMeasure(w, w) }.also { f ->
-                    f.clipToOutline = true
-                    f.outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(10).toFloat()) } }
-                    f.addView(ImageView(this@MainActivity).apply {
+                val frame = object : FrameLayout(this@MainActivity) { override fun onMeasure(w: Int, h: Int) = super.onMeasure(w, w) }.apply {
+                    clipToOutline = true
+                    outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(10).toFloat()) } }
+                    addView(ImageView(this@MainActivity).apply {
                         scaleType = ImageView.ScaleType.CENTER_CROP
                         if (art != null) setImageBitmap(art) else background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, fallback).apply { cornerRadius = dp(10).toFloat() }
                     }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -3430,117 +3397,143 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(TextView(context).apply { text = sub; textSize = 10f; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTextColor(InkDim); setPadding(dp(2), dp(3), dp(2), 0) }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             }
 
-        fun populateGrid(items: List<Pair<String, String>>, arts: List<android.graphics.Bitmap?>, fallback: IntArray = intArrayOf(0xFF1A1D22.toInt(), 0xFF0D1014.toInt()), onClick: (Int) -> Unit) {
+        fun populateGrid(items: List<Pair<String, String>>, arts: List<android.graphics.Bitmap?>, fallback: IntArray = intArrayOf(0xFF1A1D22.toInt(), 0xFF0D1014.toInt()), stroke: Int = 0xFF22262E.toInt(), onClick: (Int) -> Unit) {
             items.chunked(3).forEachIndexed { rowIdx, row ->
-                val cards = row.mapIndexed { col, (t, s) -> squareCard(arts.getOrNull(rowIdx * 3 + col), fallback, t, s) { onClick(rowIdx * 3 + col) } }
+                val cards = row.mapIndexed { col, (t, s) -> squareCard(arts.getOrNull(rowIdx * 3 + col), fallback, t, s, stroke) { onClick(rowIdx * 3 + col) } }
                 body.addView(gridRow(*cards.toTypedArray()), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 body.addView(View(this@MainActivity), LinearLayout.LayoutParams.MATCH_PARENT, dp(12))
             }
         }
 
-        val personalizedKeys = listOf("discover weekly", "daily mix", "release radar", "on repeat", "repeat rewind", "time capsule", "your top songs", "wrapped")
-        fun isPersonalized(name: String) = personalizedKeys.any { name.lowercase().contains(it) }
+        fun trackRow(rank: Int?, art: android.graphics.Bitmap?, title: String, sub: String, badge: String = "", onClick: () -> Unit) =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(8), dp(16), dp(8)); isClickable = true
+                setOnClickListener { haptic(this); onClick() }
+                if (rank != null) {
+                    addView(TextView(this@MainActivity).apply {
+                        text = rank.toString(); textSize = 11f; setTextColor(InkDim)
+                        gravity = Gravity.CENTER; minWidth = dp(28)
+                    })
+                }
+                val thumb = FrameLayout(this@MainActivity).apply {
+                    clipToOutline = true
+                    outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(6).toFloat()) } }
+                }
+                thumb.addView(ImageView(this@MainActivity).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    if (art != null) setImageBitmap(art) else setBackgroundColor(0xFF1A1D22.toInt())
+                }, FrameLayout.LayoutParams(dp(44), dp(44)))
+                addView(thumb, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4); marginEnd = dp(12) })
+                val info = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                info.addView(TextView(this@MainActivity).apply { text = title; textSize = 13f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                info.addView(TextView(this@MainActivity).apply { text = sub; textSize = 11f; setTextColor(InkDim); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (badge.isNotBlank()) {
+                    addView(TextView(this@MainActivity).apply {
+                        text = badge; textSize = 9f; setTextColor(SpotifyGreen)
+                        background = GradientDrawable().apply { setColor(0x221ED760); cornerRadius = dp(10).toFloat() }
+                        setPadding(dp(6), dp(3), dp(6), dp(3))
+                    })
+                }
+            }
+
+        fun sectionLabel(text: String, color: Int = InkDim) =
+            mono(text, 9f, color).apply { letterSpacing = 0.18f; setPadding(dp(2), dp(6), 0, dp(10)) }
 
         // ── Playlist detail slide-in ──────────────────────────────────────────
         fun showPlaylistDetail(playlist: SpotifyPlaylist) {
             val detail = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setBackgroundColor(0xFF0B0E11.toInt())
+                orientation = LinearLayout.VERTICAL; setBackgroundColor(0xFF0B0E11.toInt())
                 translationX = panel.width.toFloat()
             }
-
-            val detailHeader = LinearLayout(this).apply {
+            val dh = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(4), dp(14), dp(16), dp(10))
             }
-            detailHeader.addView(TextView(this).apply {
-                text = "\u2039"; textSize = 26f; setTextColor(InkDim); setPadding(dp(10), 0, dp(10), 0)
-                isClickable = true
-                setOnClickListener {
-                    detail.animate().translationX(panel.width.toFloat()).setDuration(260)
-                        .setInterpolator(android.view.animation.AccelerateInterpolator(1.6f))
-                        .withEndAction { panel.removeView(detail) }.start()
-                }
+            dh.addView(TextView(this).apply {
+                text = "‹"; textSize = 26f; setTextColor(InkDim); setPadding(dp(10), 0, dp(10), 0); isClickable = true
+                setOnClickListener { detail.animate().translationX(panel.width.toFloat()).setDuration(260).setInterpolator(android.view.animation.AccelerateInterpolator(1.6f)).withEndAction { panel.removeView(detail) }.start() }
             })
-            detailHeader.addView(TextView(this).apply {
-                text = playlist.name; textSize = 15f
-                typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink)
-                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            dh.addView(TextView(this).apply {
+                text = playlist.name; textSize = 15f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
-            val actions = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL; setPadding(dp(16), dp(8), dp(16), dp(12))
-                gravity = Gravity.CENTER_VERTICAL
+            val acts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(16), dp(8), dp(16), dp(12)); gravity = Gravity.CENTER_VERTICAL }
+            fun aBtn(lbl: String, bg: Int, fg: Int, click: () -> Unit) = TextView(this).apply {
+                text = lbl; textSize = 12f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(fg); gravity = Gravity.CENTER
+                background = GradientDrawable().apply { setColor(bg); cornerRadius = dp(20).toFloat() }
+                setPadding(dp(18), dp(9), dp(18), dp(9)); isClickable = true; setOnClickListener { haptic(this); click() }
             }
-            fun actionBtn(label: String, bgColor: Int, txtColor: Int, onClick: () -> Unit) = TextView(this).apply {
-                text = label; textSize = 12f; typeface = Typeface.create("sans-serif", Typeface.BOLD)
-                setTextColor(txtColor); gravity = Gravity.CENTER
-                background = GradientDrawable().apply { setColor(bgColor); cornerRadius = dp(20).toFloat() }
-                setPadding(dp(18), dp(9), dp(18), dp(9)); isClickable = true
-                setOnClickListener { haptic(this); onClick() }
-            }
-            actions.addView(actionBtn("\u25b6  Play All", 0xFF1ED760.toInt(), 0xFF000000.toInt()) {
-                mediaUiScope.launch { spotifyApi.playContext(playlist.uri, 0) }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(10) })
-            actions.addView(actionBtn("\u21c4  Shuffle", 0xFF1A1D22.toInt(), Ink) {
-                mediaUiScope.launch { spotifyApi.setShuffle(true); spotifyApi.playContext(playlist.uri, 0) }
-            })
-
-            val trackScroll = ScrollView(this).apply {
-                isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
-            }
-            val trackBody = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(32))
-            }
-            trackScroll.addView(trackBody)
-            trackBody.addView(TextView(this).apply { text = "Loading\u2026"; textSize = 13f; setTextColor(InkDim); setPadding(dp(18), dp(12), 0, 0) })
-
-            detail.addView(detailHeader, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            acts.addView(aBtn("▶  Play All", SpotifyGreen, 0xFF000000.toInt()) { mediaUiScope.launch { spotifyApi.playContext(playlist.uri, 0) } },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(10) })
+            acts.addView(aBtn("⇄  Shuffle", 0xFF1A1D22.toInt(), Ink) { mediaUiScope.launch { spotifyApi.setShuffle(true); spotifyApi.playContext(playlist.uri, 0) } })
+            val ts = ScrollView(this).apply { isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }
+            val tb = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(32)) }
+            ts.addView(tb)
+            tb.addView(TextView(this).apply { text = "Loading tracks…"; textSize = 13f; setTextColor(InkDim); setPadding(dp(18), dp(12), 0, 0) })
+            detail.addView(dh, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             detail.addView(View(this).apply { setBackgroundColor(0x10FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
-            detail.addView(actions, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            detail.addView(acts, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             detail.addView(View(this).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
-            detail.addView(trackScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-
+            detail.addView(ts, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             panel.addView(detail, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            detail.animate().translationX(0f).setDuration(300)
-                .setInterpolator(android.view.animation.DecelerateInterpolator(2.0f)).start()
+            detail.animate().translationX(0f).setDuration(300).setInterpolator(android.view.animation.DecelerateInterpolator(2.0f)).start()
 
             mediaUiScope.launch {
-                val tracks = withContext(Dispatchers.IO) { spotifyApi.getPlaylistTracks(playlist.id, limit = 50) }
-                val arts2 = withContext(Dispatchers.IO) {
-                    coroutineScope { tracks.map { t -> async { t.albumArtUrl?.let { url -> runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull() } } }.awaitAll() }
-                }
-                trackBody.removeAllViews()
+                val tracks = withContext(Dispatchers.IO) { spotifyApi.getPlaylistTracks(playlist.id, limit = 100) }
+                val arts2 = withContext(Dispatchers.IO) { coroutineScope { tracks.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll() } }
+                tb.removeAllViews()
                 if (tracks.isEmpty()) {
-                    trackBody.addView(TextView(this@MainActivity).apply { text = "No tracks found"; textSize = 13f; setTextColor(InkDim); setPadding(dp(18), dp(12), 0, 0) })
+                    tb.addView(TextView(this@MainActivity).apply { text = "No tracks found"; textSize = 13f; setTextColor(InkDim); setPadding(dp(18), dp(12), 0, 0) })
                 } else {
                     tracks.forEachIndexed { idx2, track ->
-                        val row = LinearLayout(this@MainActivity).apply {
-                            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                            setPadding(dp(10), dp(10), dp(16), dp(10)); isClickable = true
-                            setOnClickListener { haptic(this); mediaUiScope.launch { spotifyApi.playContext(playlist.uri, idx2) } }
-                        }
-                        val thumbArt = arts2.getOrNull(idx2)
-                        val thumb = FrameLayout(this@MainActivity).apply {
-                            clipToOutline = true
-                            outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(6).toFloat()) } }
-                        }
-                        thumb.addView(ImageView(this@MainActivity).apply {
-                            scaleType = ImageView.ScaleType.CENTER_CROP
-                            if (thumbArt != null) setImageBitmap(thumbArt) else setBackgroundColor(0xFF1A1D22.toInt())
-                        }, FrameLayout.LayoutParams(dp(42), dp(42)))
-                        row.addView(thumb, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(12) })
-                        val info = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
-                        info.addView(TextView(this@MainActivity).apply { text = track.name; textSize = 13f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
-                        info.addView(TextView(this@MainActivity).apply { text = track.artist; textSize = 11f; setTextColor(InkDim); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
-                        row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                        trackBody.addView(row, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                        trackBody.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                        tb.addView(trackRow(idx2 + 1, arts2.getOrNull(idx2), track.name, track.artist) {
+                            mediaUiScope.launch { spotifyApi.playContext(playlist.uri, idx2) }
+                        })
+                        tb.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
                     }
                 }
             }
         }
 
+        // ── Track list detail (for TOP / RECENT / LIKED) ──────────────────────
+        fun showTrackListDetail(title: String, tracks: List<SpotifyTrack>, arts: List<android.graphics.Bitmap?>, showRank: Boolean = false) {
+            val detail = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setBackgroundColor(0xFF0B0E11.toInt())
+                translationX = panel.width.toFloat()
+            }
+            val dh = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(14), dp(16), dp(10))
+            }
+            dh.addView(TextView(this).apply {
+                text = "‹"; textSize = 26f; setTextColor(InkDim); setPadding(dp(10), 0, dp(10), 0); isClickable = true
+                setOnClickListener { detail.animate().translationX(panel.width.toFloat()).setDuration(260).setInterpolator(android.view.animation.AccelerateInterpolator(1.6f)).withEndAction { panel.removeView(detail) }.start() }
+            })
+            dh.addView(TextView(this).apply {
+                text = title; textSize = 15f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val ts = ScrollView(this).apply { isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }
+            val tb = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(32)) }
+            ts.addView(tb)
+            tracks.forEachIndexed { i, track ->
+                val badge = if (showRank) "#${i + 1}" else ""
+                tb.addView(trackRow(if (showRank) null else null, arts.getOrNull(i), track.name, track.artist, badge) {
+                    mediaUiScope.launch { spotifyApi.playTrack(track.uri) }
+                })
+                tb.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+            }
+            detail.addView(dh, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            detail.addView(View(this).apply { setBackgroundColor(0x10FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+            detail.addView(ts, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            panel.addView(detail, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            detail.animate().translationX(0f).setDuration(300).setInterpolator(android.view.animation.DecelerateInterpolator(2.0f)).start()
+        }
+
+        // ── Tab logic ─────────────────────────────────────────────────────────
+        val personalizedKeys = listOf("discover weekly", "daily mix", "release radar", "on repeat", "repeat rewind", "time capsule", "your top songs", "wrapped")
+        fun isPersonalized(name: String) = personalizedKeys.any { name.lowercase().contains(it) }
+
+        var searchJob: Job? = null
 
         fun selectTab(idx: Int) {
             activeTab = idx
@@ -3548,47 +3541,138 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 tv.setTextColor(if (i == idx) SpotifyGreen else InkDim)
                 tv.typeface = if (i == idx) Typeface.create("sans-serif", Typeface.BOLD) else Typeface.DEFAULT
             }
-            searchWrap.visibility = if (idx == 2) View.VISIBLE else View.GONE
+            searchWrap.visibility = if (idx == 3) View.VISIBLE else View.GONE
             body.removeAllViews()
+            scroll.scrollTo(0, 0)
+
             when (idx) {
-                0 -> { // RECENT
-                    if (recent.isEmpty()) {
-                        body.addView(TextView(this).apply { text = "Play something in Spotify to see it here"; textSize = 13f; setTextColor(InkDim); setPadding(dp(2), dp(12), 0, 0) })
+                0 -> { // TOP TRACKS
+                    val top = spotifyCachedTopTracks
+                    if (top.isEmpty()) {
+                        body.addView(TextView(this).apply { text = "Reconnect Spotify to load your top tracks"; textSize = 13f; setTextColor(InkDim); setPadding(dp(2), dp(12), 0, 0) })
                     } else {
-                        populateGrid(recent.map { it.name to it.artist }, recentArts) { i ->
-                            recent.getOrNull(i)?.let { t -> mediaUiScope.launch { spotifyApi.playTrack(t.uri) } }
+                        body.addView(sectionLabel("YOUR TOP TRACKS  •  ALL TIME", 0xFF8BE8FF.toInt()))
+                        // Show top 9 as a grid (most visual)
+                        val gridTracks = top.take(9)
+                        populateGrid(gridTracks.map { it.name to it.artist }, spotifyCachedTopArts.take(9),
+                            intArrayOf(0xFF1A2030.toInt(), 0xFF0A1020.toInt()), 0xFF1E3050.toInt()) { i ->
+                            mediaUiScope.launch { spotifyApi.playTrack(gridTracks[i].uri) }
+                        }
+                        // Show all as a list below
+                        body.addView(sectionLabel("ALL ${top.size} TRACKS"))
+                        top.forEachIndexed { i, track ->
+                            body.addView(trackRow(i + 1, spotifyCachedTopArts.getOrNull(i), track.name, track.artist,
+                                if (i < 3) "★" else "") {
+                                mediaUiScope.launch { spotifyApi.playTrack(track.uri) }
+                            })
+                            body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
                         }
                     }
                 }
-                1 -> { // PLAYLISTS
+                1 -> { // RECENT
+                    val recent = spotifyCachedRecent
+                    if (recent.isEmpty()) {
+                        body.addView(TextView(this).apply { text = "Play something in Spotify to see it here"; textSize = 13f; setTextColor(InkDim); setPadding(dp(2), dp(12), 0, 0) })
+                    } else {
+                        body.addView(sectionLabel("RECENTLY PLAYED"))
+                        recent.forEachIndexed { i, track ->
+                            body.addView(trackRow(null, spotifyCachedRecentArts.getOrNull(i), track.name, track.artist) {
+                                mediaUiScope.launch { spotifyApi.playTrack(track.uri) }
+                            })
+                            body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                        }
+                    }
+                }
+                2 -> { // PLAYLISTS
+                    val playlists = spotifyCachedPlaylists
+                    val liked = spotifyCachedLikedSongs
+
+                    // Liked songs virtual entry
+                    if (liked.isNotEmpty()) {
+                        body.addView(sectionLabel("LIBRARY"))
+                        body.addView(LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                            setPadding(dp(4), dp(10), dp(16), dp(10)); isClickable = true
+                            setOnClickListener { haptic(this); showTrackListDetail("Liked Songs", liked, spotifyCachedLikedArts) }
+                            val thumb = FrameLayout(this@MainActivity).apply {
+                                clipToOutline = true
+                                outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(6).toFloat()) } }
+                            }
+                            thumb.addView(View(this@MainActivity).apply { setBackgroundColor(SpotifyGreen) }, FrameLayout.LayoutParams(dp(44), dp(44)))
+                            thumb.addView(TextView(this@MainActivity).apply { text = "♥"; textSize = 20f; setTextColor(0xFF000000.toInt()); gravity = Gravity.CENTER }, FrameLayout.LayoutParams(dp(44), dp(44)))
+                            addView(thumb, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4); marginEnd = dp(12) })
+                            val info = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                            info.addView(TextView(this@MainActivity).apply { text = "Liked Songs"; textSize = 13f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink) })
+                            info.addView(TextView(this@MainActivity).apply { text = "${liked.size} songs"; textSize = 11f; setTextColor(InkDim) })
+                            addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                            addView(TextView(this@MainActivity).apply { text = "›"; textSize = 20f; setTextColor(InkDim) })
+                        })
+                        body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                    }
+
                     val personalized = playlists.indices.filter { isPersonalized(playlists[it].name) }
                     val mine = playlists.indices.filter { !isPersonalized(playlists[it].name) }
+
                     if (personalized.isNotEmpty()) {
-                        body.addView(mono("MADE FOR YOU", 9f, 0xFF8BE8FF.toInt()).apply { letterSpacing = 0.18f; setPadding(dp(2), dp(6), 0, dp(8)) })
-                        populateGrid(
-                            personalized.map { playlists[it].name to (playlists[it].ownerName.ifBlank { "Spotify" }) },
-                            personalized.map { playlistArts.getOrNull(it) },
-                            intArrayOf(0xFF1A2830.toInt(), 0xFF0A1018.toInt())
-                        ) { i -> personalized.getOrNull(i)?.let { idx2 -> showPlaylistDetail(playlists[idx2]) } }
+                        body.addView(sectionLabel("MADE FOR YOU", 0xFF8BE8FF.toInt()))
+                        personalized.forEach { pidx ->
+                            val p = playlists[pidx]; val art = spotifyCachedPlaylistArts.getOrNull(pidx)
+                            body.addView(LinearLayout(this).apply {
+                                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                                setPadding(dp(4), dp(10), dp(16), dp(10)); isClickable = true
+                                setOnClickListener { haptic(this); showPlaylistDetail(p) }
+                                val thumb = FrameLayout(this@MainActivity).apply {
+                                    clipToOutline = true
+                                    outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(6).toFloat()) } }
+                                }
+                                thumb.addView(if (art != null) ImageView(this@MainActivity).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setImageBitmap(art) }
+                                    else View(this@MainActivity).apply { setBackgroundColor(0xFF1A2830.toInt()) }, FrameLayout.LayoutParams(dp(44), dp(44)))
+                                addView(thumb, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4); marginEnd = dp(12) })
+                                val info = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                                info.addView(TextView(this@MainActivity).apply { text = p.name; textSize = 13f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                                info.addView(TextView(this@MainActivity).apply { text = p.ownerName.ifBlank { "Spotify" }; textSize = 11f; setTextColor(InkDim) })
+                                addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                                addView(TextView(this@MainActivity).apply { text = "›"; textSize = 20f; setTextColor(InkDim) })
+                            })
+                            body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                        }
                     }
                     if (mine.isNotEmpty()) {
-                        body.addView(mono("YOUR PLAYLISTS", 9f, InkDim).apply { letterSpacing = 0.18f; setPadding(dp(2), if (personalized.isNotEmpty()) dp(8) else dp(6), 0, dp(8)) })
-                        populateGrid(
-                            mine.map { playlists[it].name to (playlists[it].ownerName.ifBlank { "My playlist" }) },
-                            mine.map { playlistArts.getOrNull(it) }
-                        ) { i -> mine.getOrNull(i)?.let { idx2 -> showPlaylistDetail(playlists[idx2]) } }
+                        body.addView(sectionLabel("YOUR PLAYLISTS"))
+                        mine.forEach { pidx ->
+                            val p = playlists[pidx]; val art = spotifyCachedPlaylistArts.getOrNull(pidx)
+                            body.addView(LinearLayout(this).apply {
+                                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                                setPadding(dp(4), dp(10), dp(16), dp(10)); isClickable = true
+                                setOnClickListener { haptic(this); showPlaylistDetail(p) }
+                                val thumb = FrameLayout(this@MainActivity).apply {
+                                    clipToOutline = true
+                                    outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(6).toFloat()) } }
+                                }
+                                thumb.addView(if (art != null) ImageView(this@MainActivity).apply { scaleType = ImageView.ScaleType.CENTER_CROP; setImageBitmap(art) }
+                                    else View(this@MainActivity).apply { setBackgroundColor(0xFF1A1D22.toInt()) }, FrameLayout.LayoutParams(dp(44), dp(44)))
+                                addView(thumb, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(4); marginEnd = dp(12) })
+                                val info = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+                                info.addView(TextView(this@MainActivity).apply { text = p.name; textSize = 13f; typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                                info.addView(TextView(this@MainActivity).apply { text = p.ownerName.ifBlank { "My playlist" }; textSize = 11f; setTextColor(InkDim) })
+                                addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                                addView(TextView(this@MainActivity).apply { text = "›"; textSize = 20f; setTextColor(InkDim) })
+                            })
+                            body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                        }
                     }
-                    if (playlists.isEmpty()) {
+                    if (playlists.isEmpty() && liked.isEmpty()) {
                         body.addView(TextView(this).apply { text = "No playlists — reconnect Spotify to grant access"; textSize = 13f; setTextColor(InkDim); setPadding(dp(2), dp(12), 0, 0) })
                     }
                 }
-                2 -> searchField.requestFocus()
+                3 -> { // SEARCH
+                    searchField.requestFocus()
+                }
             }
         }
 
         tabViews.forEachIndexed { i, tv -> tv.setOnClickListener { selectTab(i) } }
 
-        var searchJob: Job? = null
         searchField.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
@@ -3598,31 +3682,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (q.length < 2) return
                 searchJob = mediaUiScope.launch {
                     delay(320)
-                    val tracks = withContext(Dispatchers.IO) { spotifyApi.search(q, limit = 12) }
-                    val arts = withContext(Dispatchers.IO) { coroutineScope { tracks.map { t -> async { t.albumArtUrl?.let { url -> runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull() } } }.awaitAll() } }
+                    val tracks = withContext(Dispatchers.IO) { spotifyApi.search(q, limit = 20) }
+                    val arts = withContext(Dispatchers.IO) { coroutineScope { tracks.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll() } }
                     if (tracks.isEmpty()) {
                         body.addView(TextView(this@MainActivity).apply { text = "No results for \"$q\""; textSize = 13f; setTextColor(InkDim); setPadding(dp(2), dp(12), 0, 0) })
                     } else {
-                        populateGrid(tracks.map { it.name to it.artist }, arts) { i ->
-                            tracks.getOrNull(i)?.let { t -> mediaUiScope.launch { spotifyApi.playTrack(t.uri) } }
+                        tracks.forEachIndexed { i, track ->
+                            body.addView(trackRow(null, arts.getOrNull(i), track.name, track.artist) {
+                                mediaUiScope.launch { spotifyApi.playTrack(track.uri) }
+                            })
+                            body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
                         }
                     }
                 }
             }
         })
 
-        // Show initial tab
         selectTab(0)
 
-        // ── Animate in ────────────────────────────────────────────────────────
         scrim.alpha = 0f
         scrim.animate().alpha(1f).setDuration(260).start()
-        panel.animate()
-            .translationY(0f)
-            .setDuration(420)
-            .setInterpolator(android.view.animation.DecelerateInterpolator(2.2f))
-            .start()
+        panel.animate().translationY(0f).setDuration(420)
+            .setInterpolator(android.view.animation.DecelerateInterpolator(2.2f)).start()
     }
+
+
 
     // Click wheel page inside pager — SOURCE button navigates back to library.
     private fun clickWheelDockPage(onLibraryTapped: () -> Unit): View {
