@@ -8047,8 +8047,76 @@ Reply format: ["word1","word2","word3"]"""
             flightViews = flightsD.await()
             passRefs = passesD.await()
             loaded = true
+            parsingFlights = geminiConfigured() && flightViews.isNotEmpty()
             renderTab()
+
+            // Enrich flight emails into structured itineraries via Gemini (best-effort).
+            if (parsingFlights) {
+                val parsed = withContext(Dispatchers.IO) {
+                    coroutineScope {
+                        flightViews.map { msg ->
+                            async { runCatching { fetchFlightSegments(msg) }.getOrDefault(emptyList()).map { it to msg } }
+                        }.awaitAll().flatten()
+                    }
+                }
+                if (travelOverlay != null) {
+                    // Keep only future/undated segments, sorted by date when parseable.
+                    itineraries = parsed
+                    parsingFlights = false
+                    renderTab()
+                }
+            }
         }
+    }
+
+    private fun flightSegmentCard(seg: FlightSegment, onClick: () -> Unit): View {
+        val accent = 0xFF5FD0C4.toInt()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xFF12151A.toInt()); cornerRadius = dp(14).toFloat(); setStroke(dp(1), 0xFF1E2A2C.toInt())
+            }
+            setPadding(dp(15), dp(13), dp(15), dp(13))
+            setOnClickListener { haptic(this); onClick() }
+            // Top line: airline + flight number, date on the right.
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = listOf(seg.airline, seg.flightNumber).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "Flight" }
+                    textSize = 12f; setTextColor(accent); typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (seg.date.isNotBlank()) addView(TextView(context).apply {
+                    text = seg.date; textSize = 11f; setTextColor(0xFF8B8F99.toInt())
+                })
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+            // Route line: FROM  ✈  TO with times underneath.
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                fun endpoint(code: String, time: String, alignEnd: Boolean) = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = if (alignEnd) Gravity.END else Gravity.START
+                    addView(TextView(context).apply {
+                        text = code.ifBlank { "—" }; textSize = 20f; setTextColor(Ink)
+                        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                    })
+                    addView(TextView(context).apply { text = time; textSize = 11f; setTextColor(0xFF8B8F99.toInt()) })
+                }
+                addView(endpoint(seg.from, seg.depart, false), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(TextView(context).apply {
+                    text = "✈"; textSize = 14f; setTextColor(0xFF6B7280.toInt()); gravity = Gravity.CENTER
+                }, LinearLayout.LayoutParams(dp(40), ViewGroup.LayoutParams.WRAP_CONTENT))
+                addView(endpoint(seg.to, seg.arrive, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            // Footer: confirmation + seat when present.
+            val footer = listOfNotNull(
+                seg.confirmation.takeIf { it.isNotBlank() }?.let { "Conf $it" },
+                seg.seat.takeIf { it.isNotBlank() }?.let { "Seat $it" }
+            ).joinToString("   ")
+            if (footer.isNotBlank()) addView(TextView(context).apply {
+                text = footer; textSize = 11f; setTextColor(0xFF6B7280.toInt())
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        }.also { it.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) } }
     }
 
     private var travelOverlayScrim: View? = null
