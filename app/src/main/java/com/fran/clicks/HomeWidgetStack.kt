@@ -27,7 +27,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -43,11 +46,13 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private val Ink = Color(0xFFF3F0E7)
-private val InkDim = Color(0xFF8B8F99)
-private val GreenSoft = Color(0xFF8FD694)
-private val Amber = Color(0xFFF5C451)
-private val Accent = Color(0xFFFF5A3C)
+private val Ink = Color(0xFFF5F7FA)
+private val InkDim = Color(0xFFA3ABB4)
+private val InkFaint = Color(0xFF646B74)
+private val GreenSoft = Color(0xFF28E06A)
+private val Amber = Color(0xFFE8B84B)
+private val Purple = Color(0xFFA071FF)
+private val Accent = Color(0xFFFF4B45)
 
 data class CalendarEvent(
     val eventId: Long,
@@ -229,7 +234,7 @@ private fun EmailWidgetCard(
                 Modifier
                     .size(30.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Brush.verticalGradient(listOf(Color(0xFFFFE4E0), Color(0xFFEA4335))))
+                    .domedSurface(Color(0xFFFFD8D4), Color(0xFFEA4335), 10)
                     .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center
             ) {
@@ -263,7 +268,7 @@ private fun EmailWidgetCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(18.dp))
-                .background(Brush.horizontalGradient(listOf(Color(0x18EA4335), Color(0x12191B20))))
+                .recessedTraySurface(Color(0xFFEA4335), 18)
                 .border(1.dp, Color(0x1FEA4335), RoundedCornerShape(18.dp))
                 .padding(horizontal = 11.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -418,7 +423,7 @@ private fun ContextIcon(item: ContextWidgetItem, fallback: String, size: Int) {
         Modifier
             .size(size.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Brush.radialGradient(listOf(accent.copy(alpha = 0.9f), accent.copy(alpha = 0.25f), Color(0xFF111318))))
+            .domedSurface(accent.copy(alpha = 0.95f), accent.copy(alpha = 0.42f), 16)
             .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(16.dp)),
         contentAlignment = Alignment.Center
     ) {
@@ -522,7 +527,7 @@ private fun RecentPersonWideCard(
             .fillMaxWidth()
             .height(82.dp)
             .clip(RoundedCornerShape(22.dp))
-            .background(Brush.horizontalGradient(listOf(accent.copy(alpha = 0.20f), Color(0x2B191B20), Color(0x14191B20))))
+            .recessedTraySurface(accent, 22)
             .border(1.dp, accent.copy(alpha = 0.30f), RoundedCornerShape(22.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp),
@@ -567,7 +572,7 @@ private fun RecentPersonChip(
         modifier = modifier
             .height(78.dp)
             .clip(RoundedCornerShape(20.dp))
-            .background(Brush.verticalGradient(listOf(Color(0x25191B20), Color(0x50101216))))
+            .recessedTraySurface(Color(person.color), 20)
             .border(1.dp, Color(person.color).copy(alpha = 0.22f), RoundedCornerShape(20.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 7.dp, vertical = 8.dp),
@@ -593,7 +598,7 @@ private fun ProfileOrb(person: RecentPerson, size: Int, fontSize: Int) {
         Modifier
             .size(size.dp)
             .clip(RoundedCornerShape(99.dp))
-            .background(accent.copy(alpha = 0.16f))
+            .domedSurface(accent.copy(alpha = 0.96f), Color(0xFF111318), 99)
             .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(99.dp)),
         contentAlignment = Alignment.Center
     ) {
@@ -659,7 +664,7 @@ private fun CalendarNowBlock(event: CalendarEvent?, hasPermission: Boolean, modi
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(18.dp))
-            .background(Brush.verticalGradient(listOf(accent.copy(alpha = 0.14f), Color(0x10191B20))))
+            .recessedTraySurface(accent, 18)
             .border(1.dp, accent.copy(alpha = 0.24f), RoundedCornerShape(18.dp))
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.SpaceBetween
@@ -715,7 +720,7 @@ private fun CalendarNextBlock(event: CalendarEvent?, hasPermission: Boolean, cou
                 .fillMaxWidth()
                 .weight(1f)
                 .clip(RoundedCornerShape(17.dp))
-                .background(Color(0x17191B20))
+                .recessedTraySurface(Amber, 17)
                 .border(1.dp, Color(0x202A2C33), RoundedCornerShape(17.dp))
                 .padding(horizontal = 11.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.Center
@@ -745,35 +750,100 @@ private fun CalendarNextBlock(event: CalendarEvent?, hasPermission: Boolean, cou
     }
 }
 
-private fun Modifier.drawCalendarSurface(): Modifier = this.background(
-    brush = Brush.verticalGradient(listOf(Color(0xF01C2027), Color(0xF20D0E11))),
-    shape = RoundedCornerShape(22.dp)
-)
+private fun Modifier.drawCalendarSurface(): Modifier = raisedGlassSurface(Amber, 22)
 
-private fun Modifier.drawNeutralSurface(): Modifier = this.background(
-    brush = Brush.verticalGradient(listOf(Color(0xF01A1D23), Color(0xF20D0E11))),
-    shape = RoundedCornerShape(22.dp)
-)
+private fun Modifier.drawNeutralSurface(): Modifier = raisedGlassSurface(GreenSoft, 22)
 
-private fun Modifier.drawPeopleSurface(): Modifier = this.background(
-    brush = Brush.verticalGradient(listOf(Color(0xEE1B1D23), Color(0xF3111216))),
-    shape = RoundedCornerShape(24.dp)
-)
+private fun Modifier.drawPeopleSurface(): Modifier = raisedGlassSurface(Purple, 24)
 
-private fun Modifier.drawEmailSurface(): Modifier = this.background(
-    brush = Brush.verticalGradient(listOf(Color(0xF11D2027), Color(0xF5111216))),
-    shape = RoundedCornerShape(24.dp)
-)
+private fun Modifier.drawEmailSurface(): Modifier = raisedGlassSurface(Color(0xFFEA4335), 24)
 
-private fun Modifier.drawNewsSurface(): Modifier = this.background(
-    brush = Brush.radialGradient(listOf(Color(0x263B82F6), Color(0xF014171D), Color(0xF50D0E11))),
-    shape = RoundedCornerShape(24.dp)
-)
+private fun Modifier.drawNewsSurface(): Modifier = raisedGlassSurface(Color(0xFF3B9DFF), 24)
 
-private fun Modifier.drawMapsSurface(): Modifier = this.background(
-    brush = Brush.radialGradient(listOf(Color(0x2457C98A), Color(0xF014171D), Color(0xF50D0E11))),
-    shape = RoundedCornerShape(24.dp)
-)
+private fun Modifier.drawMapsSurface(): Modifier = raisedGlassSurface(GreenSoft, 24)
+
+private fun Modifier.raisedGlassSurface(accent: Color, radiusDp: Int): Modifier = this.drawWithContent {
+    val radius = radiusDp.dp.toPx()
+    drawRoundRect(
+        brush = Brush.verticalGradient(
+            listOf(
+                Color(0xFF20232A),
+                Color(0xFF181B20),
+                Color(0xFF14161B)
+            )
+        ),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawCircle(
+        color = accent.copy(alpha = 0.16f),
+        radius = size.minDimension * 0.62f,
+        center = Offset(size.width * 0.08f, size.height * 0.45f)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(
+            listOf(Color.White.copy(alpha = 0.075f), Color.Transparent)
+        ),
+        size = Size(size.width, size.height * 0.38f),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(accent.copy(alpha = 0.96f), accent.copy(alpha = 0.58f))),
+        size = Size(4.dp.toPx(), size.height),
+        cornerRadius = CornerRadius(4.dp.toPx(), 4.dp.toPx())
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.08f),
+        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawContent()
+}
+
+private fun Modifier.recessedTraySurface(accent: Color, radiusDp: Int): Modifier = this.drawWithContent {
+    val radius = radiusDp.dp.toPx()
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color(0xFF0F1114), Color(0xFF15181D))),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        color = Color.Black.copy(alpha = 0.34f),
+        size = Size(size.width, size.height * 0.42f),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        color = accent.copy(alpha = 0.10f),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.04f),
+        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawContent()
+}
+
+private fun Modifier.domedSurface(light: Color, dark: Color, radiusDp: Int): Modifier = this.drawWithContent {
+    val radius = radiusDp.dp.toPx()
+    drawRoundRect(
+        brush = Brush.radialGradient(
+            colors = listOf(light, dark, Color(0xFF0B0D11)),
+            center = Offset(size.width * 0.36f, size.height * 0.30f),
+            radius = size.maxDimension * 0.92f
+        ),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        brush = Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.26f), Color.Transparent)),
+        size = Size(size.width, size.height * 0.45f),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.10f),
+        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawContent()
+}
 
 private fun calendarTimeParts(timeLabel: String?): Pair<String, String> {
     val clean = timeLabel?.trim().orEmpty()

@@ -128,6 +128,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var apps: List<AppEntry> = emptyList()
     private var keyboardSize = 0
     private var keyboardTheme = KEYBOARD_THEME_DEFAULT
+    private var keyboardPlacement = KEYBOARD_PLACEMENT_DOCKED
     private var hapticsEnabled = true
     private var keyboardSettingsOpen = false
     private var goKeyColor = Accent
@@ -184,6 +185,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val keyBounds = mutableMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
     private var numberPadOpen = false
+    private var symbolsOpen = false
     private lateinit var mediaSessionSource: MediaSessionSource
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var billingClient: com.android.billingclient.api.BillingClient? = null
@@ -296,6 +298,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appWidgetHost.startListening()
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
         keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, KEYBOARD_THEME_DEFAULT) ?: KEYBOARD_THEME_DEFAULT
+        keyboardPlacement = prefs().getString(KEYBOARD_PLACEMENT_PREF, KEYBOARD_PLACEMENT_DOCKED) ?: KEYBOARD_PLACEMENT_DOCKED
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
@@ -324,6 +327,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         liveRouter.start()
         loadGlideWords()
         render()
+        rootView.post { maybeShowKeyboardPlacementIntro() }
         refreshWeather(force = false)
         maybeRequestSmsPermission()
         mediaSessionSource.start()
@@ -653,6 +657,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    private fun maybeShowKeyboardPlacementIntro() {
+        if (prefs().getBoolean(KEYBOARD_PLACEMENT_INTRO_PREF, false)) return
+        prefs().edit().putBoolean(KEYBOARD_PLACEMENT_INTRO_PREF, true).apply()
+        AlertDialog.Builder(this)
+            .setTitle("Choose keyboard style")
+            .setMessage("Docked keeps the Clicks keyboard fixed at the bottom. Widget places it on the homescreen, with a DOCK key to return to the fixed layout.")
+            .setPositiveButton("Docked") { dialog, _ ->
+                dialog.dismiss()
+                setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
+            }
+            .setNegativeButton("Widget") { dialog, _ ->
+                dialog.dismiss()
+                setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
+            }
+            .show()
+    }
+
     private fun render() {
         keyViews.clear()
         keyBounds.clear()
@@ -667,9 +688,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // Typing display — lives between content and keyboard so gravity=BOTTOM on keyboard
-        // rows never clips it. Shows typed text + blinking cursor; hint text when idle.
-        hintBar = LinearLayout(this).apply {
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+            root.addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
+            keyboardDockView = FrameLayout(this).apply {
+                addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            }
+            root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, keyboardHeight())
+        } else {
+            keyboardDockView = FrameLayout(this)
+        }
+        setContentView(root)
+        updateClock()
+        renderHub()
+        renderRibbon()
+        openPane?.let { showPane(it, animate = false) }
+        if (libraryOpen) showLibrary(animate = false)
+        syncNowPlayingCardVisibility()
+        refreshNowPlayingCard()
+        root.post { captureKeyBounds() }
+    }
+
+    // Typing display — lives with whichever keyboard placement is active. Shows typed
+    // text + blinking cursor; hint text when idle.
+    private fun typingStripView(): LinearLayout {
+        return LinearLayout(this).apply {
+            hintBar = this
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = typingStripBackground()
@@ -695,21 +738,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 })
             }
         }
-        root.addView(hintBar, LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
-
-        keyboardDockView = FrameLayout(this).apply {
-            addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-        }
-        root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, keyboardHeight())
-        setContentView(root)
-        updateClock()
-        renderHub()
-        renderRibbon()
-        openPane?.let { showPane(it, animate = false) }
-        if (libraryOpen) showLibrary(animate = false)
-        syncNowPlayingCardVisibility()
-        refreshNowPlayingCard()
-        root.post { captureKeyBounds() }
     }
 
     private fun zeissCameraButton(): View {
@@ -1059,7 +1087,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 topMargin = dp(2)
                 bottomMargin = dp(2)
             })
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.1f))
+            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.22f else 1.1f))
+            if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                addView(homeKeyboardWidget(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, widgetKeyboardHeight()).apply {
+                    bottomMargin = dp(8)
+                })
+            }
             favoritesDockView = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -1086,6 +1119,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 true
             }
             homeTileViews[id] = this
+        }
+    }
+
+    private fun homeKeyboardWidget(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            background = homeKeyboardWidgetBackground()
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
+            addView(keyboard(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
     }
 
@@ -1313,24 +1358,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 haptic(this)
                 if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
             }
-            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x14191B20, 0x06191B20)).apply {
-                cornerRadius = dp(24).toFloat()
-            }
+            background = weatherHeaderBackground()
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL
                 weatherTempView = TextView(context).apply {
                     text = prefs().getString(WEATHER_TEMP_PREF, "--")
-                    textSize = 22f
-                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    textSize = 44f
+                    typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
                     setTextColor(Ink)
                     includeFontPadding = false
                 }
                 addView(weatherTempView)
                 weatherMetaView = TextView(context).apply {
                     text = prefs().getString(WEATHER_META_PREF, "Tap for local weather")
-                    textSize = 9.5f
-                    letterSpacing = 0.10f
+                    textSize = 10.6f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    letterSpacing = 0.22f
                     setTextColor(InkDim)
                     includeFontPadding = false
                     maxLines = 1
@@ -2845,6 +2889,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun refreshKeyboardDock() {
         if (!::keyboardDockView.isInitialized) return
+        if (keyboardDockView.parent == null) return
         keyViews.clear()
         keyBounds.clear()
         keyboardDockView.removeAllViews()
@@ -4643,7 +4688,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            if (numberPadOpen) {
+            if (symbolsOpen) {
+                addKeyRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
+                addKeyRow(listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"))
+                addKeyRow(listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(8))
+                addKeyRow(listOf("abc", "clicks", "space", "period", "enter"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(15))
+            } else if (numberPadOpen) {
                 addKeyRow(listOf("1", "2", "3"))
                 addKeyRow(listOf("4", "5", "6"))
                 addKeyRow(listOf("7", "8", "9"))
@@ -4681,6 +4731,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
             addView(keyboardThemeSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
+            addView(keyboardPlacementSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
 
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, 0)
@@ -4746,6 +4797,43 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
             }
         }
+    }
+
+    private fun keyboardPlacementSelector(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+            addView(mono("PLACE", 9f, InkDim).apply { letterSpacing = 0.12f },
+                LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT))
+            listOf(
+                "DOCKED" to KEYBOARD_PLACEMENT_DOCKED,
+                "WIDGET" to KEYBOARD_PLACEMENT_WIDGET
+            ).forEach { (label, value) ->
+                addView(TextView(context).apply {
+                    text = label
+                    gravity = Gravity.CENTER
+                    textSize = 9.2f
+                    letterSpacing = 0.08f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(if (keyboardPlacement == value) Ink else InkDim)
+                    background = if (keyboardPlacement == value) keyboardThemePillBackground(KEYBOARD_THEME_GOKEYS) else border(Line)
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        setKeyboardPlacement(value)
+                    }
+                }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
+            }
+        }
+    }
+
+    private fun setKeyboardPlacement(value: String) {
+        val safe = if (value == KEYBOARD_PLACEMENT_WIDGET) KEYBOARD_PLACEMENT_WIDGET else KEYBOARD_PLACEMENT_DOCKED
+        keyboardPlacement = safe
+        keyboardSettingsOpen = false
+        prefs().edit().putString(KEYBOARD_PLACEMENT_PREF, safe).apply()
+        render()
     }
 
     private fun settingToggle(label: String, enabled: Boolean, onClick: TextView.() -> Unit): View {
@@ -4914,6 +5002,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             // Long-press handlers remain; click listener no longer needed (handled in touch UP above)
             if (label == "enter") setOnLongClickListener { haptic(this); triggerGeminiSmartCompose(); true }
+            if (label == "123") setOnLongClickListener {
+                haptic(this)
+                symbolsOpen = true; numberPadOpen = false
+                render(); true
+            }
             if (isLetter) setOnLongClickListener { haptic(this); handleLetterLongPress(label.lowercase(Locale.US)); true }
         }.also { keyViews[label] = it }
     }
@@ -4924,6 +5017,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         "enter" -> "GO"
         "period" -> "."
         "shift" -> "↑"
+        "clicks" -> if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) "DOCK" else "clicks"
         "abc" -> "ABC"
         "123" -> "123"
         else -> if (label.length == 1) {
@@ -6057,8 +6151,15 @@ Reply format: ["word1","word2","word3"]"""
                 }
             }
             "123" -> { if (!libraryOpen) { numberPadOpen = true; query = ""; ensureContactsPermission(); render(); return } }
-            "abc" -> { if (!libraryOpen) { numberPadOpen = false; query = ""; render(); return } }
+            "abc" -> {
+                if (symbolsOpen) { symbolsOpen = false; render(); return }
+                if (!libraryOpen) { numberPadOpen = false; query = ""; render(); return }
+            }
             "clicks" -> {
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                    setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
+                    return
+                }
                 if (libraryOpen) {
                     if (query.isNotBlank()) { query = ""; refreshLibraryContent(); renderRibbon() }
                     else closeLibrary()
@@ -6106,8 +6207,9 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 pendingAutocorrectUndo = null
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
-                if (!libraryOpen && openPane == null) {
-                    // Auto-open library so search shows full-screen, not just the ribbon
+                if (!libraryOpen && openPane == null && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+                    // Auto-open library in docked mode so search shows full-screen results.
+                    // Widget mode keeps the homescreen intact while typing.
                     libraryOpen = true
                     keyboardSettingsOpen = false
                     showLibrary(animate = true)
@@ -6166,8 +6268,15 @@ Reply format: ["word1","word2","word3"]"""
                 suggestions = emptyList(); updateSuggestionBar()
             }
             "123" -> { numberPadOpen = true; ensureContactsPermission(); render(); return }
-            "abc" -> { numberPadOpen = false; render(); return }
-            "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; render(); return }
+            "abc" -> {
+                if (symbolsOpen) { symbolsOpen = false; render(); return }
+                numberPadOpen = false; render(); return
+            }
+            "clicks" -> {
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
+                else { keyboardSettingsOpen = !keyboardSettingsOpen; render() }
+                return
+            }
             "enter" -> postComposeBubble(pane)
             else -> {
                 pendingAutocorrectUndo = null
@@ -8478,6 +8587,51 @@ Reply format: ["word1","word2","word3"]"""
             stroke?.let { setStroke(dp(1), it) }
         }
 
+    private fun weatherHeaderBackground(): Drawable {
+        val body = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0xF020232A.toInt(),
+            0xF0181B20.toInt(),
+            0xF014161B.toInt()
+        )).apply {
+            cornerRadius = dp(26).toFloat()
+            setStroke(dp(1), 0x14FFFFFF)
+        }
+        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x12FFFFFF,
+            0x00FFFFFF
+        )).apply { cornerRadius = dp(26).toFloat() }
+        val lowerShade = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
+            0x66000000,
+            0x00000000
+        )).apply { cornerRadius = dp(26).toFloat() }
+        return LayerDrawable(arrayOf(body, sheen, lowerShade)).apply {
+            setLayerInset(1, dp(1), dp(1), dp(1), dp(42))
+            setLayerInset(2, dp(1), dp(38), dp(1), dp(1))
+        }
+    }
+
+    private fun homeKeyboardWidgetBackground(): Drawable {
+        val body = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0xF020232A.toInt(),
+            0xF014161B.toInt(),
+            0xF00B0C0F.toInt()
+        )).apply {
+            cornerRadius = dp(28).toFloat()
+            setStroke(dp(1), 0x18FFFFFF)
+        }
+        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x12FFFFFF,
+            0x00FFFFFF
+        )).apply { cornerRadius = dp(28).toFloat() }
+        return LayerDrawable(arrayOf(body, sheen)).apply {
+            setLayerInset(1, dp(1), dp(1), dp(1), dp(96))
+        }
+    }
+
+    private fun widgetKeyboardHeight(): Int {
+        return (keyboardHeight() + dp(44)).coerceIn(dp(250), dp(380))
+    }
+
     private fun recessedDockBackground(): Drawable {
         val pocket = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
             0xFF030405.toInt(),
@@ -9316,6 +9470,10 @@ Reply format: ["word1","word2","word3"]"""
         private const val KeyHighlight = 0xFF3A3E4A.toInt()
         private const val PREFS_NAME = "clicks"
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
+        private const val KEYBOARD_PLACEMENT_PREF = "keyboard_placement"
+        private const val KEYBOARD_PLACEMENT_INTRO_PREF = "keyboard_placement_intro_shown"
+        private const val KEYBOARD_PLACEMENT_DOCKED = "docked"
+        private const val KEYBOARD_PLACEMENT_WIDGET = "widget"
         private const val KEYBOARD_THEME_PREF = "keyboard_theme"
         private const val KEYBOARD_THEME_DEFAULT = "default"
         private const val KEYBOARD_THEME_CLICKS = "clicks"
