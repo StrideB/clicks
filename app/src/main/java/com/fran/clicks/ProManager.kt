@@ -15,6 +15,7 @@ enum class ProFeature(val label: String) {
     SPOTIFY_LIBRARY("Spotify library"),
     SKEUO_THEME("Skeuo keyboard theme"),
     AI_CHAT("AI chat"),
+    TRAVEL_SEARCH("Flights & boarding passes"),
 }
 
 object ProManager {

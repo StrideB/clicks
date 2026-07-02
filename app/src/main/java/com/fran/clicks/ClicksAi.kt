@@ -242,7 +242,9 @@ fun ClicksAiQueryFlow(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
     loading: Boolean = false,
+    askedActive: Boolean = false,
     calendarEvent: CalendarEvent? = null,
+    onAskedClick: () -> Unit = {},
     onJoin: (String) -> Unit = {},
     onOpenCalendar: (CalendarEvent) -> Unit = {}
 ) {
@@ -267,7 +269,7 @@ fun ClicksAiQueryFlow(
                 Spacer(Modifier.height(12.dp))
                 SectionLabel("ASKED")
                 Spacer(Modifier.height(6.dp))
-                PressedQueryField(query)
+                PressedQueryField(query, active = askedActive, onClick = onAskedClick)
                 Spacer(Modifier.height(16.dp))
                 SectionLabel(if (loading) "GEMINI IS THINKING" else "GEMINI", glowing = true)
                 Spacer(Modifier.height(8.dp))
@@ -334,17 +336,32 @@ private fun SectionLabel(text: String, glowing: Boolean = false) {
 }
 
 @Composable
-private fun PressedQueryField(query: String) {
+private fun PressedQueryField(
+    query: String,
+    active: Boolean,
+    onClick: () -> Unit
+) {
     Box(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
             .pressedInset()
+            .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
         BasicText(
-            query.ifBlank { "Ask Gemini" },
-            style = TextStyle(color = AiText, fontSize = 14.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold)
+            when {
+                query.isNotBlank() && active -> "$query|"
+                query.isNotBlank() -> query
+                active -> "Ask a follow-up…|"
+                else -> "Ask Gemini"
+            },
+            style = TextStyle(
+                color = if (query.isBlank() && active) AiTextDim else AiText,
+                fontSize = 14.sp,
+                lineHeight = 19.sp,
+                fontWeight = FontWeight.SemiBold
+            )
         )
     }
 }

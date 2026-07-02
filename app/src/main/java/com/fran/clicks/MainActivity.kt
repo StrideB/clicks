@@ -161,6 +161,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var iconPacksCache: List<IconPack>? = null
     private val iconPackMatchCache = mutableMapOf<String, IconPackIcon?>()
     private var composeText = ""
+    private var aiDraftText = ""
+    private var aiDraftActive = false
     private val chatLinesById = mutableMapOf<String, MutableList<ChatLine>>()
 
     private var shiftState = ShiftState.ONCE
@@ -186,11 +188,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
     private var numberPadOpen = false
     private var symbolsOpen = false
+    private var lastMusicSourcePackage: String? = null
+    private var lastMusicPlaying = false
     private lateinit var mediaSessionSource: MediaSessionSource
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var billingClient: com.android.billingclient.api.BillingClient? = null
     lateinit var spotifyAuth: SpotifyAuth
     lateinit var spotifyApi: SpotifyWebApi
+    lateinit var gmailAuth: GmailAuth
+    lateinit var gmailApi: GmailApi
+    lateinit var travelRepo: TravelRepository
     private var spotifyCachedRecent = listOf<SpotifyTrack>()
     private var spotifyCachedRecentArts = listOf<android.graphics.Bitmap?>()
     private var spotifyCachedPlaylists = listOf<SpotifyPlaylist>()
@@ -310,6 +317,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaSessionSource = MediaSessionSource(this)
         spotifyAuth = SpotifyAuth(this)
         spotifyApi = SpotifyWebApi(spotifyAuth)
+        gmailAuth = GmailAuth(this)
+        gmailApi = GmailApi(gmailAuth)
+        travelRepo = TravelRepository(gmailApi)
         if (spotifyAuth.isConnected) preloadSpotifyLibrary()
         initSpellChecker()
         hapticEngine = CustomHapticEngine(this)
@@ -335,6 +345,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             mediaSessionSource.nowPlaying.collect { info ->
                 syncNowPlayingCardVisibility()
                 refreshNowPlayingCard()
+                // If the active source app changed while the music pane is open, rebuild the
+                // dock so it can switch between the click wheel and simple transport controls.
+                val src = info?.sourcePackage
+                val sourceChanged = src != lastMusicSourcePackage
+                val playChanged = (info?.isPlaying == true) != lastMusicPlaying
+                lastMusicSourcePackage = src
+                lastMusicPlaying = info?.isPlaying == true
+                if (openPane?.kind == PaneKind.MUSIC) {
+                    // Source change can flip wheel↔simple; play-state change updates the
+                    // play/pause glyph on the simple / black transport docks.
+                    val simpleDock = musicTheme() == MUSIC_THEME_BLACK || activeMusicMode() == MusicMode.SIMPLE
+                    if (sourceChanged || (playChanged && simpleDock)) refreshKeyboardDock()
+                }
                 // Restart progress ticker when playback resumes (ticker stops itself when paused)
                 if (info?.isPlaying == true && musicProgressBar != null) {
                     musicProgressRunnable?.let { r ->
@@ -363,6 +386,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 } else {
                     Toast.makeText(this@MainActivity, "Spotify connection failed. Try again.", Toast.LENGTH_SHORT).show()
                 }
+            }
+        } else if (gmailAuth.isCallback(uri)) {
+            mediaUiScope.launch {
+                val ok = gmailAuth.handleCallback(uri)
+                Toast.makeText(
+                    this@MainActivity,
+                    if (ok) "Gmail connected!" else "Gmail connection failed. Try again.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(clicksSettingsTarget())
             }
         }
     }
@@ -430,6 +463,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 composeText += spoken
                 updateAutoCapState(); updateKeyLabels()
                 renderPaneContent(pane)
+            } else if (pane?.kind == PaneKind.AI) {
+                if (aiDraftText.isNotBlank() && !aiDraftText.endsWith(' ')) aiDraftText += " "
+                aiDraftText += spoken
+                aiDraftActive = true
+                renderPaneContent(pane)
             } else {
                 if (query.isNotBlank() && !query.endsWith(' ')) query += " "
                 query += spoken
@@ -469,6 +507,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onBackPressed() {
+        if (travelOverlay != null) { dismissTravelOverlay(); return }
         if (widgetPickerView != null) { closeWidgetPicker(); return }
         if (widgetBoardView != null) { closeWidgetBoard(); return }
         if (spotifyFullLibraryDismiss != null) { spotifyFullLibraryDismiss?.invoke(); return }
@@ -483,6 +522,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
         imm?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
         // Dismiss overlays in order
+        if (travelOverlay != null) dismissTravelOverlay()
         spotifyFullLibraryDismiss?.invoke()
         if (spotifyCompactOverlay != null) dismissCompactSpotifyLibrary()
         if (openPane != null) closePane()
@@ -1087,12 +1127,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 topMargin = dp(2)
                 bottomMargin = dp(2)
             })
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.22f else 1.1f))
-            if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
-                addView(homeKeyboardWidget(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, widgetKeyboardHeight()).apply {
-                    bottomMargin = dp(8)
-                })
-            }
+            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.42f else 1.1f))
             favoritesDockView = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -1102,8 +1137,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 background = recessedDockBackground()
             }
             addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(84)).apply {
-                bottomMargin = dp(2)
+                bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(8) else dp(2)
             })
+            if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                addView(homeKeyboardWidget(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, widgetKeyboardHeight()).apply {
+                    bottomMargin = dp(0)
+                })
+            }
         }
     }
 
@@ -1125,10 +1165,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun homeKeyboardWidget(): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            clipToPadding = false
+            clipChildren = true
+            clipToPadding = true
+            clipToOutline = true
             background = homeKeyboardWidgetBackground()
-            setPadding(dp(5), dp(5), dp(5), dp(5))
+            setPadding(dp(4), dp(4), dp(4), dp(0))
             addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
             addView(keyboard(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
@@ -1553,11 +1594,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             librarySwipeTriggered = true
                             closeLibrary(slideLeft = true)
                         }
-                        dx > 0 && openPane == null && spotifyAuth.isConnected && spotifyCompactOverlay == null -> {
+                        dx > 0 && openPane == null && activeMusicMode() != MusicMode.SIMPLE && spotifyCompactOverlay == null -> {
                             librarySwipeTriggered = true
                             showCompactSpotifyLibrary()
                         }
-                        dx > 0 && openPane == null && !spotifyAuth.isConnected -> {
+                        dx > 0 && openPane == null && activeMusicMode() == MusicMode.SIMPLE -> {
                             librarySwipeTriggered = true
                             performHomeGesture(gestureAction(GESTURE_RIGHT_PREF, GESTURE_NONE))
                         }
@@ -1595,7 +1636,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val dx = event.rawX - paneSwipeStartX
                 val dy = event.rawY - paneSwipeStartY
                 // Swipe right on music pane → slide in compact library
-                if (paneKind == PaneKind.MUSIC && dx > dp(60) && dx > abs(dy) * 1.4f && spotifyCompactOverlay == null && spotifyAuth.isConnected) {
+                if (paneKind == PaneKind.MUSIC && dx > dp(60) && dx > abs(dy) * 1.4f && spotifyCompactOverlay == null && activeMusicMode() != MusicMode.SIMPLE) {
                     paneSwipeTriggered = true
                     haptic(contentFrame)
                     showCompactSpotifyLibrary()
@@ -2482,6 +2523,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         SearchKind.CALENDAR -> "C"
                         SearchKind.AI -> "AI"
                         SearchKind.APP -> "A"
+                        SearchKind.TRAVEL -> "✈"
                     }
                     gravity = Gravity.CENTER
                     textSize = if (result.kind == SearchKind.AI) 11f else 14f
@@ -2881,9 +2923,75 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun dockedInputView(): View {
         return when (openPane?.kind) {
-            PaneKind.MUSIC -> if (musicTheme() == MUSIC_THEME_BLACK) musicBlackDock() else musicDockView()
+            PaneKind.MUSIC -> when {
+                musicTheme() == MUSIC_THEME_BLACK -> musicBlackDock()
+                // Click wheel is a Pro feature and only applies to a connected service
+                // whose account matches what's actually playing. Everything else
+                // (YouTube Music, podcasts, browser audio…) gets simple transport controls.
+                activeMusicMode() == MusicMode.SIMPLE -> simpleTransportDock()
+                else -> musicDockView()
+            }
             PaneKind.PHOTOS -> photoAlbumsDock()
             else -> keyboard()
+        }
+    }
+
+    private enum class MusicMode { SPOTIFY_FULL, APPLE_FULL, SIMPLE }
+
+    // Decides whether the full click-wheel experience applies. It requires Pro AND that the
+    // active media source matches a connected service. If the user is playing from anything
+    // that isn't their connected account, we fall back to a plain now-playing screen.
+    private fun activeMusicMode(): MusicMode {
+        if (!ProManager.isUnlocked(this)) return MusicMode.SIMPLE
+        val src = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value?.sourcePackage else null
+        val fromSpotify = src?.contains("spotify", ignoreCase = true) == true
+        val fromApple = src?.contains("apple", ignoreCase = true) == true
+        return when {
+            // Spotify connected → full wheel when playing from Spotify, or when nothing is
+            // playing (so the wheel can still browse the connected library).
+            spotifyAuth.isConnected && (src == null || fromSpotify) -> MusicMode.SPOTIFY_FULL
+            appleMusicConnected() && fromApple -> MusicMode.APPLE_FULL
+            else -> MusicMode.SIMPLE
+        }
+    }
+
+    // Apple Music account integration isn't built yet — placeholder so the branch above is
+    // ready the moment an Apple auth/library layer lands.
+    private fun appleMusicConnected(): Boolean = false
+
+    // Plain now-playing dock: source label + standard prev/play/next controls, no click wheel.
+    private fun simpleTransportDock(): View {
+        val info = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+        val playing = info?.isPlaying == true
+        return FrameLayout(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                0xFF101216.toInt(), 0xFF050506.toInt(), 0xFF000000.toInt()
+            )).apply { setStroke(dp(1), 0xFF20232A.toInt()) }
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                addView(TextView(context).apply {
+                    text = (info?.sourceApp ?: "Not playing").uppercase(Locale.US)
+                    textSize = 10f
+                    letterSpacing = 0.14f
+                    setTextColor(0xFF6B7280.toInt())
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    gravity = Gravity.CENTER
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(14) })
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    addView(musicBlackTransportButton("◀", accent = false) {
+                        haptic(this); mediaSessionSource.skipToPrevious()
+                    }, LinearLayout.LayoutParams(dp(60), dp(60)).apply { marginEnd = dp(22) })
+                    addView(musicBlackTransportButton(if (playing) "Ⅱ" else "▶", accent = true) {
+                        haptic(this); mediaSessionSource.togglePlayPause()
+                    }, LinearLayout.LayoutParams(dp(76), dp(76)))
+                    addView(musicBlackTransportButton("▶", accent = false) {
+                        haptic(this); mediaSessionSource.skipToNext()
+                    }, LinearLayout.LayoutParams(dp(60), dp(60)).apply { marginStart = dp(22) })
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER))
         }
     }
 
@@ -4754,8 +4862,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (symbolsOpen) {
                 addKeyRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
                 addKeyRow(listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"))
-                addKeyRow(listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(8))
-                addKeyRow(listOf("abc", "clicks", "space", "period", "enter"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(15))
+                addKeyRow(listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"), dp(8))
+                addKeyRow(listOf("abc", "clicks", "space", "period", "enter"), dp(15))
             } else if (numberPadOpen) {
                 addKeyRow(listOf("1", "2", "3"))
                 addKeyRow(listOf("4", "5", "6"))
@@ -4763,9 +4871,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow(listOf("abc", "0", "back", "enter"))
             } else {
                 addKeyRow("qwertyuiop".map { it.toString() })
-                addKeyRow("asdfghjkl".map { it.toString() }, if (keyboardTheme == KEYBOARD_THEME_GOKEYS) dp(26) else dp(18))
-                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(8))
-                addKeyRow(listOf("123", "clicks", "space", "period", "enter"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(15))
+                addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
+                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
+                addKeyRow(listOf("123", "clicks", "space", "period", "enter"), dp(15))
             }
         }
 
@@ -4928,21 +5036,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(horizontalInset, 0, horizontalInset, 0)
             labels.forEach { label ->
                 val weight = when (label) {
-                    "space" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 3.23f else 3.65f
-                    "enter" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.01f else if (numberPadOpen) 1f else 0.82f
-                    "period" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.0f else 0.86f
-                    "clicks" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.0f else 1.55f
-                    "123" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.0f else 1.02f
-                    "back", "shift" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.15f else 1.02f
+                    "space" -> 3.65f
+                    "enter" -> if (numberPadOpen) 1f else 0.82f
+                    "period" -> 0.86f
+                    "clicks" -> 1.55f
+                    "123" -> 1.02f
+                    "back", "shift" -> 1.02f
                     "abc" -> 1.02f
                     else -> 1f
                 }
-                if (label == "enter" && keyboardTheme != KEYBOARD_THEME_GOKEYS) {
+                if (label == "enter") {
                     addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
                         marginStart = dp(4)
                     })
-                } else if (label == "123" && keyboardTheme != KEYBOARD_THEME_GOKEYS) {
+                } else if (label == "123") {
                     addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
                         marginEnd = dp(4)
@@ -4973,7 +5081,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setTextColor(keyTextColor(label))
             isClickable = true
             val vInset = keyVerticalInset()
-            val needsInset = keyboardTheme == KEYBOARD_THEME_GOKEYS || (label != "enter" && label != "123")
+            val needsInset = label != "enter" && label != "123"
             fun idleBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyIdleBackground(label), 0, vInset, 0, vInset) else keyIdleBackground(label)
             fun pressedBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyPressedBackground(label), 0, vInset, 0, vInset) else keyPressedBackground(label)
             background = idleBg()
@@ -6178,6 +6286,7 @@ Reply format: ["word1","word2","word3"]"""
         }
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) { handleChatKey(label, pane); return }
+        if (pane?.kind == PaneKind.AI) { handleAiKey(label, pane); return }
 
         when (label) {
             "back" -> {
@@ -6308,6 +6417,61 @@ Reply format: ["word1","word2","word3"]"""
         renderRibbon()
     }
 
+    private fun handleAiKey(label: String, pane: PaneTarget) {
+        when (label) {
+            "back" -> {
+                pendingAutocorrectUndo = null
+                aiDraftText = aiDraftText.dropLast(1)
+                aiDraftActive = true
+            }
+            "space" -> {
+                aiDraftActive = true
+                val now = System.currentTimeMillis()
+                if (now - lastSpaceMs < 500 && aiDraftText.isNotEmpty() && aiDraftText.last() == ' ') {
+                    aiDraftText = aiDraftText.dropLast(1) + ". "
+                    shiftState = ShiftState.ONCE; updateKeyLabels()
+                } else if (!aiDraftText.endsWith(" ")) {
+                    aiDraftText += " "
+                }
+                lastSpaceMs = now
+            }
+            "period" -> {
+                aiDraftActive = true
+                aiDraftText = aiDraftText.trimEnd() + "."
+                shiftState = ShiftState.ONCE; updateKeyLabels()
+            }
+            "123" -> { numberPadOpen = true; ensureContactsPermission(); render(); return }
+            "abc" -> {
+                if (symbolsOpen) { symbolsOpen = false; render(); return }
+                numberPadOpen = false; render(); return
+            }
+            "clicks" -> {
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
+                else { keyboardSettingsOpen = !keyboardSettingsOpen; render() }
+                return
+            }
+            "enter" -> {
+                val prompt = aiDraftText.trim()
+                if (prompt.isNotBlank()) {
+                    aiDraftText = ""
+                    aiDraftActive = false
+                    query = ""
+                    askGemini(prompt)
+                    return
+                }
+            }
+            else -> {
+                val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
+                aiDraftText += char
+                aiDraftActive = true
+                pendingAutocorrectUndo = null
+                if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
+            }
+        }
+        renderPaneContent(pane)
+        renderRibbon()
+    }
+
     private fun scheduleLibraryRefresh() {
         libraryRefreshDebounce?.let { handler.removeCallbacks(it) }
         val r = Runnable { refreshLibraryContent() }
@@ -6380,6 +6544,13 @@ Reply format: ["word1","word2","word3"]"""
         if (pane?.kind == PaneKind.CHAT) {
             composeText = WordBoundaryDeleter.deleteWord(composeText)
             updateAutoCapState(); updateKeyLabels()
+            suggestions = emptyList(); updateSuggestionBar()
+            renderPaneContent(pane); renderRibbon()
+            return
+        }
+        if (pane?.kind == PaneKind.AI) {
+            aiDraftText = WordBoundaryDeleter.deleteWord(aiDraftText)
+            aiDraftActive = true
             suggestions = emptyList(); updateSuggestionBar()
             renderPaneContent(pane); renderRibbon()
             return
@@ -6567,7 +6738,7 @@ Reply format: ["word1","word2","word3"]"""
     private fun closePane() {
         val closing = paneView
         val closingPane = openPane
-        openPane = null; composeText = ""
+        openPane = null; composeText = ""; aiDraftText = ""; aiDraftActive = false
         shiftState = ShiftState.OFF; suggestions = emptyList()
         if (closingPane?.kind == PaneKind.PHOTOS) zeissButtonView?.animateShutterOpen()
         if (closingPane?.kind == PaneKind.MUSIC) hideMusicProgressFromHintBar()
@@ -6689,18 +6860,27 @@ Reply format: ["word1","word2","word3"]"""
             setContent {
                 val state = aiAnswersById[target.id] ?: AiAnswerState(target.preview, "Thinking...", true)
                 val configured = geminiConfigured()
+                val displayedQuery = if (aiDraftActive || aiDraftText.isNotBlank()) aiDraftText else state.prompt
                 val answer = if (configured) {
                     state.answer
                 } else {
                     "Add a **Gemini API key** in Clicks Settings to ask questions without leaving the launcher."
                 }
                 ClicksAiQueryFlow(
-                    query = state.prompt,
+                    query = displayedQuery,
                     answer = answer,
                     loading = configured && state.loading,
+                    askedActive = aiDraftActive || aiDraftText.isNotBlank(),
                     onClose = {
                         haptic(this@apply)
                         closePane()
+                    },
+                    onAskedClick = {
+                        haptic(this@apply)
+                        aiDraftText = ""
+                        aiDraftActive = true
+                        renderPaneContent(target)
+                        renderRibbon()
                     },
                     onJoin = { url ->
                         haptic(this@apply)
@@ -6821,6 +7001,7 @@ Reply format: ["word1","word2","word3"]"""
         parent.addView(integrationRow("Spotify", "com.spotify.music", SPOTIFY_INTEGRATION_PREF))
         parent.addView(integrationRow("Apple Music", "com.apple.android.music", APPLE_MUSIC_INTEGRATION_PREF))
         parent.addView(geminiIntegrationRow())
+        parent.addView(gmailIntegrationRow())
         parent.addView(nativeIntegrationRow("Notifications", isNotificationAccessEnabled(), "MESSAGE, EMAIL, NEWS, MAPS WIDGETS") {
             openNotificationAccessSettings()
         })
@@ -6849,6 +7030,36 @@ Reply format: ["word1","word2","word3"]"""
         }
         return integrationLikeRow("Gemini AI", state, if (enabled && configured) 0xFF8AB4F8.toInt() else InkDim) { anchor ->
             showGeminiMenu(anchor)
+        }
+    }
+
+    private fun gmailIntegrationRow(): View {
+        val connected = gmailAuth.isConnected
+        val state = when {
+            !gmailAuth.isConfigured() -> "SET UP"
+            connected -> "CONNECTED"
+            else -> "CONNECT"
+        }
+        return integrationLikeRow("Gmail", state, if (connected) Accent2 else InkDim) { anchor ->
+            if (!gmailAuth.isConfigured()) {
+                Toast.makeText(this, "Add your Gmail OAuth client ID to GmailAuth.kt first.", Toast.LENGTH_LONG).show()
+                return@integrationLikeRow
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Gmail")
+                .setMessage(if (connected)
+                    "Gmail is connected. Flights and boarding passes appear when you search \"flights\" or \"boarding pass\"."
+                else
+                    "Connect Gmail to search your inbox for flights and boarding passes. Read-only, on this device.")
+                .setPositiveButton(if (connected) "Reconnect" else "Connect") { _, _ -> gmailAuth.startOAuth(this) }
+                .apply {
+                    if (connected) setNeutralButton("Disconnect") { _, _ ->
+                        gmailAuth.disconnect()
+                        if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(clicksSettingsTarget())
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
         }
     }
 
@@ -7363,6 +7574,7 @@ Reply format: ["word1","word2","word3"]"""
         val pane = openPane
         val typedText = when {
             pane?.kind == PaneKind.CHAT -> composeText
+            pane?.kind == PaneKind.AI -> aiDraftText
             else -> query
         }
         val hint = when {
@@ -7370,6 +7582,7 @@ Reply format: ["word1","word2","word3"]"""
             keyboardSettingsOpen -> "KEYBOARD SETTINGS"
             numberPadOpen && typedText.isBlank() -> "TYPE NUMBER  ·  CONTACTS APPEAR ABOVE  ·  GO = DIAL"
             pane?.kind == PaneKind.CHAT && typedText.isBlank() -> "→ ${pane.name.uppercase(Locale.US)}"
+            pane?.kind == PaneKind.AI && typedText.isBlank() -> "ASK GEMINI  ·  TAP ASKED OR START TYPING"
             else -> "SEARCHING APPS  ·  CLICKS FOR SETTINGS"
         }
         if (typedText.isNotBlank() && !keyboardSettingsOpen) {
@@ -7663,6 +7876,13 @@ Reply format: ["word1","word2","word3"]"""
         librarySearchResults().take(6).forEach { app ->
             results.add(SearchResult(app.label, "Open app", app.brandColor, SearchKind.APP, app.toPaneTarget()))
         }
+        if (looksLikeTravelQuery(q)) {
+            val boarding = q.lowercase(Locale.US).contains("boarding") || q.lowercase(Locale.US).contains("pass")
+            results.add(0, SearchResult(
+                if (boarding) "Boarding passes" else "Flights & boarding passes",
+                "From your Gmail", 0xFF5FD0C4.toInt(), SearchKind.TRAVEL, null
+            ) { openTravelOverlay(startOnBoardingPasses = boarding) })
+        }
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
@@ -7679,6 +7899,243 @@ Reply format: ["word1","word2","word3"]"""
             lower.startsWith("ai ") ||
             lower.startsWith("gemini ") ||
             listOf("what ", "why ", "how ", "when ", "where ", "who ", "summarize ", "explain ", "draft ").any { lower.startsWith(it) }
+    }
+
+    private fun looksLikeTravelQuery(text: String): Boolean {
+        val lower = text.lowercase(Locale.US)
+        return listOf("flight", "flights", "boarding", "boarding pass", "trip", "trips", "travel", "itinerary")
+            .any { lower.contains(it) }
+    }
+
+    // ── Travel: flights & boarding passes from Gmail ─────────────────────────
+
+    private var travelOverlay: View? = null
+
+    fun openTravelOverlay(startOnBoardingPasses: Boolean) {
+        if (!requirePro(ProFeature.TRAVEL_SEARCH)) return
+        if (!gmailAuth.isConfigured()) {
+            Toast.makeText(this, "Add your Gmail OAuth client ID to GmailAuth.kt first.", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!gmailAuth.isConnected) {
+            AlertDialog.Builder(this)
+                .setTitle("Connect Gmail")
+                .setMessage("Search your inbox for flights and boarding passes. Clicks only reads flight-related emails, on your device.")
+                .setPositiveButton("Connect") { _, _ -> gmailAuth.startOAuth(this) }
+                .setNegativeButton("Cancel", null)
+                .show()
+            return
+        }
+        if (travelOverlay != null) return
+
+        val decor = window.decorView as FrameLayout
+        val screenH = resources.displayMetrics.heightPixels
+
+        val scrim = View(this).apply {
+            setBackgroundColor(0xCC000000.toInt()); alpha = 0f
+            setOnClickListener { dismissTravelOverlay() }
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF07080B.toInt())
+            translationY = screenH.toFloat()
+        }
+
+        // Header with two tabs.
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(18), dp(16), dp(10))
+        }
+        header.addView(TextView(this).apply {
+            text = "‹"; textSize = 24f; setTextColor(0xFF6B7280.toInt())
+            setPadding(0, 0, dp(14), 0)
+            setOnClickListener { haptic(this); dismissTravelOverlay() }
+        })
+        header.addView(TextView(this).apply {
+            text = "Travel"; textSize = 18f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(Ink)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        val content = FrameLayout(this)
+        val loading = TextView(this).apply {
+            text = "Searching your inbox…"; textSize = 13f; setTextColor(0xFF6B7280.toInt())
+            gravity = Gravity.CENTER
+        }
+        content.addView(loading, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        val tabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), 0, dp(12), dp(8))
+        }
+        var currentTab = if (startOnBoardingPasses) 1 else 0
+        var flightViews: List<GmailMessage> = emptyList()
+        var itineraries: List<Pair<FlightSegment, GmailMessage>> = emptyList()
+        var parsingFlights = false
+        var passRefs: List<BoardingPassRef> = emptyList()
+        var loaded = false
+
+        fun tabButton(label: String, index: Int, onTab: () -> Unit): TextView = TextView(this).apply {
+            text = label; textSize = 12f; gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+            val active = index == currentTab
+            setTextColor(if (active) 0xFF07080B.toInt() else 0xFFCED2DA.toInt())
+            background = GradientDrawable().apply {
+                setColor(if (active) 0xFF5FD0C4.toInt() else 0xFF161A20.toInt()); cornerRadius = dp(18).toFloat()
+            }
+            setOnClickListener { haptic(this); onTab() }
+        }
+
+        fun renderTab() {
+            content.removeAllViews()
+            if (!loaded) { content.addView(loading); return }
+            val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER }
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), dp(28)) }
+            if (currentTab == 0) {
+                when {
+                    itineraries.isNotEmpty() ->
+                        itineraries.forEach { (seg, msg) -> list.addView(flightSegmentCard(seg) { openEmail(msg) }) }
+                    parsingFlights && flightViews.isNotEmpty() -> {
+                        list.addView(travelEmpty("Reading your itineraries…"))
+                        flightViews.forEach { list.addView(travelCard("✈", it.subject, travelFrom(it.from), formatTravelDate(it.date)) { openEmail(it) }) }
+                    }
+                    flightViews.isEmpty() -> list.addView(travelEmpty("No flight emails found in the last year."))
+                    else -> flightViews.forEach { list.addView(travelCard("✈", it.subject, travelFrom(it.from), formatTravelDate(it.date)) { openEmail(it) }) }
+                }
+            } else {
+                if (passRefs.isEmpty()) list.addView(travelEmpty("No boarding passes found in the last 60 days."))
+                else passRefs.forEach { ref ->
+                    val hasPass = ref.passAttachment != null
+                    list.addView(travelCard(
+                        if (hasPass) "🎫" else "✉",
+                        ref.message.subject,
+                        if (hasPass) "Tap to open pass · ${ref.passAttachment!!.filename}" else travelFrom(ref.message.from),
+                        formatTravelDate(ref.message.date)
+                    ) { openBoardingPass(ref) })
+                }
+            }
+            scroll.addView(list)
+            content.addView(scroll)
+        }
+
+        fun rebuildTabs() {
+            tabRow.removeAllViews()
+            tabRow.addView(tabButton("FLIGHTS", 0) { currentTab = 0; rebuildTabsAndRender() }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(8) })
+            tabRow.addView(tabButton("BOARDING PASSES", 1) { currentTab = 1; rebuildTabsAndRender() })
+        }
+
+        // helper closures need to reference each other; use a holder
+        fun rebuildTabsAndRenderImpl() { rebuildTabs(); renderTab() }
+        rebuildTabsAndRenderRef = ::rebuildTabsAndRenderImpl
+        rebuildTabs()
+
+        panel.addView(header, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        panel.addView(tabRow, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        panel.addView(View(this).apply { setBackgroundColor(0x12FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        panel.addView(content, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        decor.addView(scrim, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        decor.addView(panel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, (screenH * 0.92f).toInt(), Gravity.BOTTOM))
+        travelOverlay = panel
+        scrim.animate().alpha(1f).setDuration(200).start()
+        panel.animate().translationY(0f).setDuration(300).setInterpolator(android.view.animation.DecelerateInterpolator(2f)).start()
+        travelOverlayScrim = scrim
+
+        mediaUiScope.launch {
+            val flightsD = async(Dispatchers.IO) { runCatching { travelRepo.findFlights() }.getOrDefault(emptyList()) }
+            val passesD = async(Dispatchers.IO) { runCatching { travelRepo.findBoardingPasses() }.getOrDefault(emptyList()) }
+            flightViews = flightsD.await()
+            passRefs = passesD.await()
+            loaded = true
+            renderTab()
+        }
+    }
+
+    private var travelOverlayScrim: View? = null
+    private var rebuildTabsAndRenderRef: (() -> Unit)? = null
+
+    private fun rebuildTabsAndRender() { rebuildTabsAndRenderRef?.invoke() }
+
+    fun dismissTravelOverlay() {
+        val panel = travelOverlay ?: return
+        travelOverlay = null
+        val decor = window.decorView as FrameLayout
+        val scrim = travelOverlayScrim
+        panel.animate().translationY(resources.displayMetrics.heightPixels.toFloat()).setDuration(280)
+            .withEndAction { decor.removeView(panel) }.start()
+        scrim?.animate()?.alpha(0f)?.setDuration(240)?.withEndAction { decor.removeView(scrim) }?.start()
+        travelOverlayScrim = null
+    }
+
+    private fun travelEmpty(msg: String): View = TextView(this).apply {
+        text = msg; textSize = 13f; setTextColor(0xFF6B7280.toInt()); setPadding(dp(6), dp(24), dp(6), 0)
+    }
+
+    private fun travelCard(icon: String, title: String, subtitle: String, date: String, onClick: () -> Unit): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply { setColor(0xFF12151A.toInt()); cornerRadius = dp(14).toFloat() }
+            setPadding(dp(14), dp(13), dp(14), dp(13))
+            setOnClickListener { haptic(this); onClick() }
+            addView(TextView(context).apply { text = icon; textSize = 20f; setPadding(0, 0, dp(12), 0) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(context).apply {
+                    text = title.ifBlank { "(no subject)" }; textSize = 14f; setTextColor(Ink)
+                    typeface = Typeface.create("sans-serif", Typeface.BOLD); maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                addView(TextView(context).apply {
+                    text = subtitle; textSize = 11f; setTextColor(0xFF8B8F99.toInt()); maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(context).apply { text = date; textSize = 10f; setTextColor(0xFF6B7280.toInt()) })
+        }.also { row ->
+            row.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
+        }
+    }
+
+    private fun travelFrom(from: String): String {
+        // "Delta Air Lines <noreply@delta.com>" → "Delta Air Lines"
+        val name = from.substringBefore('<').trim().trim('"')
+        return name.ifBlank { from.substringAfter('<').substringBefore('>').ifBlank { from } }
+    }
+
+    private fun formatTravelDate(epochMs: Long): String {
+        if (epochMs <= 0L) return ""
+        return java.text.SimpleDateFormat("MMM d", Locale.US).format(java.util.Date(epochMs))
+    }
+
+    private fun openEmail(msg: GmailMessage) {
+        // Open the message in Gmail on the web via a subject search (reliable without RFC id).
+        val url = "https://mail.google.com/mail/u/0/#search/" + Uri.encode(msg.subject.ifBlank { travelFrom(msg.from) })
+        startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser available")
+    }
+
+    private fun openBoardingPass(ref: BoardingPassRef) {
+        val pass = ref.passAttachment
+        if (pass == null) { openEmail(ref.message); return }
+        Toast.makeText(this, "Opening boarding pass…", Toast.LENGTH_SHORT).show()
+        mediaUiScope.launch {
+            val bytes = withContext(Dispatchers.IO) { gmailApi.attachmentBytes(pass.messageId, pass.attachmentId) }
+            if (bytes == null) { Toast.makeText(this@MainActivity, "Couldn't download the pass.", Toast.LENGTH_SHORT).show(); return@launch }
+            val file = withContext(Dispatchers.IO) {
+                val f = java.io.File(cacheDir, "passes").apply { mkdirs() }.let { java.io.File(it, pass.filename.ifBlank { "boardingpass" }) }
+                f.writeBytes(bytes); f
+            }
+            val uri = androidx.core.content.FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", file)
+            val mime = when {
+                pass.filename.endsWith(".pkpass", true) || pass.mimeType.contains("pkpass", true) -> "application/vnd.apple.pkpass"
+                pass.filename.endsWith(".pdf", true) || pass.mimeType == "application/pdf" -> "application/pdf"
+                else -> pass.mimeType.ifBlank { "*/*" }
+            }
+            val view = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mime)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startSafeIntent(view, "No app can open this pass (${mime}).")
+        }
     }
 
     private fun searchContactResults(q: String): List<SearchResult> {
@@ -7930,6 +8387,8 @@ Reply format: ["word1","word2","word3"]"""
     private fun askGemini(prompt: String) {
         if (!requirePro(ProFeature.AI_CHAT)) return
         val target = aiTarget(prompt)
+        aiDraftText = ""
+        aiDraftActive = false
         aiAnswersById[target.id] = AiAnswerState(prompt, if (geminiConfigured()) "Thinking..." else "Gemini needs an API key first.", geminiConfigured())
         openHere(target)
         if (!geminiConfigured()) return
@@ -7998,6 +8457,51 @@ Reply format: ["word1","word2","word3"]"""
             message = obj.optString("message", ""),
             answer = obj.optString("answer", "")
         )
+    }
+
+    // Extracts structured flight segments from one airline/itinerary email via Gemini.
+    private fun fetchFlightSegments(msg: GmailMessage): List<FlightSegment> {
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        if (key.isBlank()) return emptyList()
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(key, "UTF-8")}")
+        val emailText = (msg.subject + "\n" + msg.bodyText).take(6000)
+        val prompt = """Extract every flight segment from this airline email. Reply with ONLY a JSON array — no prose.
+Each element: {"airline","flightNumber","from","to","depart","arrive","date","confirmation","seat"}.
+Use IATA airport codes for "from"/"to" when present (else city name). "depart"/"arrive" are local times like "4:30 PM". "date" like "Jul 12". Use "" for any unknown field. If the email contains no flight, reply exactly [].
+
+Email:
+$emailText"""
+        val body = JSONObject()
+            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+            .put("generationConfig", JSONObject().put("temperature", 0.0).put("maxOutputTokens", 900).put("responseMimeType", "application/json"))
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; connectTimeout = 10_000; readTimeout = 20_000
+            setRequestProperty("Content-Type", "application/json"); doOutput = true
+        }
+        OutputStreamWriter(connection.outputStream).use { it.write(body.toString()) }
+        val raw = if (connection.responseCode in 200..299) connection.inputStream.bufferedReader().use { it.readText() }
+        else { connection.disconnect(); return emptyList() }
+        connection.disconnect()
+        val text = JSONObject(raw).optJSONArray("candidates")
+            ?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+            ?.optJSONObject(0)?.optString("text")?.trim().orEmpty()
+        val clean = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val start = clean.indexOf('['); val end = clean.lastIndexOf(']')
+        if (start < 0 || end <= start) return emptyList()
+        val arr = runCatching { JSONArray(clean.substring(start, end + 1)) }.getOrNull() ?: return emptyList()
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                add(FlightSegment(
+                    airline = o.optString("airline"), flightNumber = o.optString("flightNumber"),
+                    from = o.optString("from"), to = o.optString("to"),
+                    depart = o.optString("depart"), arrive = o.optString("arrive"),
+                    date = o.optString("date"), confirmation = o.optString("confirmation"),
+                    seat = o.optString("seat")
+                ))
+            }
+        }
     }
 
     private fun geminiActionPrompt(prompt: String): String {
@@ -9278,7 +9782,7 @@ Reply format: ["word1","word2","word3"]"""
             else -> intArrayOf(0xFF1F2127.toInt(), 0xFF0C0D10.toInt(), 0xFF030304.toInt())
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, colors).apply {
-            cornerRadius = if (keyboardTheme == KEYBOARD_THEME_GOKEYS) dp(22).toFloat() else 0f
+            cornerRadius = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET || keyboardTheme == KEYBOARD_THEME_GOKEYS) dp(22).toFloat() else 0f
             setStroke(dp(1), when (keyboardTheme) {
                 KEYBOARD_THEME_SKEUO -> 0x303B4250
                 KEYBOARD_THEME_GOKEYS -> 0x14FFFFFF
@@ -9481,8 +9985,7 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun keyVerticalInset(): Int {
-        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return dp(3 + keyboardSize * 2 / 100)
-        if (keyboardTheme == KEYBOARD_THEME_CLICKS) return dp(10 + keyboardSize * 5 / 100)
+        if (keyboardTheme == KEYBOARD_THEME_CLICKS || keyboardTheme == KEYBOARD_THEME_GOKEYS) return dp(10 + keyboardSize * 5 / 100)
         return dp(7 + keyboardSize * 4 / 100)
     }
 
@@ -9510,13 +10013,6 @@ Reply format: ["word1","word2","word3"]"""
     private fun keyboardBottomPadding() = dp(20)
 
     private fun keyTextSize(label: String): Float {
-        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) {
-            return when (label) {
-                "space", "123", "clicks", "period", "abc", "back", "shift" -> 11.2f + keyboardSize * 0.8f / 100f
-                "enter" -> 13.2f + keyboardSize * 0.8f / 100f
-                else -> 13.4f + keyboardSize * 1.0f / 100f
-            }
-        }
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
         val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "clicks", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
         val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "clicks", "enter", "back", "period", "abc" -> 1.5f; else -> 2.5f }
@@ -9729,7 +10225,14 @@ Reply format: ["word1","word2","word3"]"""
     private data class CalendarCommand(val title: String, val startMs: Long, val endMs: Long)
     private data class AiAnswerState(val prompt: String, val answer: String, val loading: Boolean)
     private data class SearchResult(val title: String, val subtitle: String, val accent: Int, val kind: SearchKind, val target: PaneTarget?, val action: (() -> Unit)? = null)
-    private enum class SearchKind { APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI }
+    private enum class SearchKind { APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI, TRAVEL }
+
+    data class FlightSegment(
+        val airline: String, val flightNumber: String,
+        val from: String, val to: String,
+        val depart: String, val arrive: String,
+        val date: String, val confirmation: String, val seat: String
+    )
     private data class WeatherSnapshot(val tempF: Int, val feelsLikeF: Int, val humidity: Int, val windMph: Int, val code: Int, val label: String)
     private data class WidgetSpec(val id: Int, val size: String)
     private data class WidgetGridSize(val columns: Int, val rows: Int)

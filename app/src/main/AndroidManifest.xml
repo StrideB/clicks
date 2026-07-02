@@ -20,6 +20,16 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/AppTheme">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <service
             android:name=".ClicksNotificationListener"
             android:exported="true"
@@ -45,6 +55,14 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="com.fran.clicks" android:host="spotify-callback" />
+            </intent-filter>
+            <!-- Gmail OAuth PKCE redirect. Replace the scheme below with the reversed form
+                 of your Google iOS OAuth client ID: com.googleusercontent.apps.<SUFFIX> -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.googleusercontent.apps.YOUR_IOS_CLIENT_ID" />
             </intent-filter>
         </activity>
     </application>
