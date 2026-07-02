@@ -6579,6 +6579,13 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun pane(target: PaneTarget): View {
+        if (target.kind == PaneKind.AI) {
+            return FrameLayout(this).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                tag = PANE_BODY_TAG
+                addView(aiPane(target), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
+        }
         if (target.kind == PaneKind.MUSIC || target.kind == PaneKind.PHOTOS) {
             return FrameLayout(this).apply {
                 setBackgroundColor(Panel)
@@ -6655,6 +6662,7 @@ Reply format: ["word1","word2","word3"]"""
     private fun paneBody(target: PaneTarget): View {
         if (target.kind == PaneKind.MUSIC) return musicPane()
         if (target.kind == PaneKind.PHOTOS) return photosPane()
+        if (target.kind == PaneKind.AI) return aiPane(target)
         return ScrollView(this).apply {
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
@@ -6663,7 +6671,7 @@ Reply format: ["word1","word2","word3"]"""
                     PaneKind.MAIL -> mailLines(target).forEach { addView(listRow(it.first, it.second)) }
                     PaneKind.MUSIC -> Unit
                     PaneKind.PHOTOS -> Unit
-                    PaneKind.AI -> aiPaneContent(this, target)
+                    PaneKind.AI -> Unit
                     PaneKind.SETTINGS -> settingsPaneContent(this)
                     PaneKind.LIST -> {
                         addView(listRow("Inbox", "now"))
@@ -6672,6 +6680,38 @@ Reply format: ["word1","word2","word3"]"""
                     }
                 }
             })
+        }
+    }
+
+    private fun aiPane(target: PaneTarget): View {
+        return ComposeView(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setContent {
+                val state = aiAnswersById[target.id] ?: AiAnswerState(target.preview, "Thinking...", true)
+                val configured = geminiConfigured()
+                val answer = if (configured) {
+                    state.answer
+                } else {
+                    "Add a **Gemini API key** in Clicks Settings to ask questions without leaving the launcher."
+                }
+                ClicksAiQueryFlow(
+                    query = state.prompt,
+                    answer = answer,
+                    loading = configured && state.loading,
+                    onClose = {
+                        haptic(this@apply)
+                        closePane()
+                    },
+                    onJoin = { url ->
+                        haptic(this@apply)
+                        startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "Meeting link isn't available")
+                    },
+                    onOpenCalendar = { event ->
+                        haptic(this@apply)
+                        openCalendarEventOrRequest(event)
+                    }
+                )
+            }
         }
     }
 
@@ -7184,6 +7224,12 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun renderPaneContent(target: PaneTarget) {
+        if (target.kind == PaneKind.AI) {
+            val existing = paneView as? ViewGroup ?: return
+            existing.removeAllViews()
+            existing.addView(aiPane(target), ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            return
+        }
         val existing = paneView as? LinearLayout ?: return
         existing.removeAllViews()
         existing.addView(paneBar(target), LinearLayout.LayoutParams.MATCH_PARENT, dp(48))
@@ -7888,12 +7934,144 @@ Reply format: ["word1","word2","word3"]"""
         openHere(target)
         if (!geminiConfigured()) return
         mediaUiScope.launch(Dispatchers.IO) {
-            val answer = runCatching { fetchGeminiAnswer(prompt) }
-                .getOrElse { "I couldn't reach Gemini: ${it.message ?: "network unavailable"}" }
+            // First ask Gemini to decide whether this is an executable launcher action.
+            val action = runCatching { fetchGeminiAction(prompt) }.getOrNull()
+            if (action != null && action.action.lowercase(Locale.US) != "answer") {
+                runOnUiThread {
+                    val confirmation = runGeminiAction(action)
+                    aiAnswersById[target.id] = AiAnswerState(prompt, confirmation, false)
+                    if (openPane?.id == target.id) renderPaneContent(target)
+                }
+                return@launch
+            }
+            // Plain question — answer in words (reuse the inline answer if Gemini already gave one).
+            val answer = action?.answer?.takeIf { it.isNotBlank() }
+                ?: runCatching { fetchGeminiAnswer(prompt) }
+                    .getOrElse { "I couldn't reach Gemini: ${it.message ?: "network unavailable"}" }
             runOnUiThread {
                 aiAnswersById[target.id] = AiAnswerState(prompt, answer, false)
                 if (openPane?.id == target.id) renderPaneContent(target)
             }
+        }
+    }
+
+    private data class GeminiAction(
+        val action: String,
+        val target: String = "",
+        val message: String = "",
+        val answer: String = ""
+    )
+
+    // Ask Gemini to classify a free-form request into a structured, executable action.
+    private fun fetchGeminiAction(prompt: String): GeminiAction {
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        if (key.isBlank()) return GeminiAction("answer", answer = "Gemini needs an API key first.")
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(key, "UTF-8")}")
+        val body = JSONObject()
+            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", geminiActionPrompt(prompt))))))
+            .put("generationConfig", JSONObject()
+                .put("temperature", 0.1)
+                .put("maxOutputTokens", 500)
+                .put("responseMimeType", "application/json"))
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; connectTimeout = 10_000; readTimeout = 15_000
+            setRequestProperty("Content-Type", "application/json"); doOutput = true
+        }
+        OutputStreamWriter(connection.outputStream).use { it.write(body.toString()) }
+        val raw = if (connection.responseCode in 200..299) {
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            throw IllegalStateException(error.ifBlank { "HTTP ${connection.responseCode}" })
+        }
+        val text = JSONObject(raw).optJSONArray("candidates")
+            ?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+            ?.optJSONObject(0)?.optString("text")?.trim().orEmpty()
+        // Strip markdown fences if the model added them despite the JSON mime type.
+        val clean = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+            .let { it.substring(it.indexOf('{').coerceAtLeast(0), (it.lastIndexOf('}') + 1).coerceAtLeast(1)) }
+        val obj = runCatching { JSONObject(clean) }.getOrElse { return GeminiAction("answer", answer = text.ifBlank { "Gemini returned no text." }) }
+        return GeminiAction(
+            action = obj.optString("action", "answer"),
+            target = obj.optString("target", ""),
+            message = obj.optString("message", ""),
+            answer = obj.optString("answer", "")
+        )
+    }
+
+    private fun geminiActionPrompt(prompt: String): String {
+        val appHints = apps.take(24).joinToString(", ") { it.label }
+        val eventHints = calendarEvents.take(4).joinToString("; ") { "${it.title} ${it.timeLabel}" }
+        val messageHints = messages.take(6).joinToString("; ") { "${it.sender}: ${it.preview}" }
+        return """
+            You are Clicks AI, an agent inside an Android launcher. Decide how to fulfil the user's request and reply with ONLY a JSON object — no markdown, no prose.
+
+            Allowed actions and their fields:
+            - {"action":"open_app","target":"<app name>"}  — launch an installed app
+            - {"action":"text","target":"<contact name>","message":"<sms body>"}  — draft a text message
+            - {"action":"call","target":"<contact name>"}  — start a phone call
+            - {"action":"email","target":"<contact name>","message":"<email body>"}  — draft an email
+            - {"action":"play","target":"<song or artist>"}  — play music
+            - {"action":"web","target":"<search query>"}  — search the web
+            - {"action":"maps","target":"<place or address>"}  — open maps
+            - {"action":"answer","answer":"<concise reply>"}  — just answer in words (default for questions)
+
+            Only pick an executable action when the user is clearly asking to DO something. Otherwise use "answer".
+            Prefer app names from this installed list when relevant: $appHints
+            Upcoming calendar: $eventHints
+            Recent notifications/messages: $messageHints
+
+            User request: "$prompt"
+        """.trimIndent()
+    }
+
+    // Executes a structured action on the UI thread; returns a short confirmation for the AI pane.
+    private fun runGeminiAction(a: GeminiAction): String {
+        val target = a.target.trim()
+        return when (a.action.lowercase(Locale.US)) {
+            "open_app" -> if (target.isNotBlank() && executeOpenCommand(target)) "Opening $target…"
+                else "I couldn't find an app called \"$target\"."
+            "play" -> if (target.isNotBlank() && executePlayCommand(target)) "Playing $target…"
+                else "Tell me what to play."
+            "web" -> {
+                if (target.isBlank()) return "What should I search for?"
+                startSafeIntent(Intent(Intent.ACTION_WEB_SEARCH).putExtra(android.app.SearchManager.QUERY, target), "No search app available")
+                "Searching the web for \"$target\"…"
+            }
+            "maps" -> {
+                if (target.isBlank()) return "Where to?"
+                startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(target)}")), "Maps isn't available here")
+                "Opening maps for $target…"
+            }
+            "call" -> {
+                if (target.isBlank()) return "Who should I call?"
+                if (!hasContactsPermission()) { ensureContactsPermission(); return "Grant contacts access, then try again." }
+                val contact = findPhoneContact(target, "call $target") ?: return "I couldn't find $target in your contacts."
+                startSafeIntent(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(contact.value)}")), "Phone isn't available here")
+                "Calling ${contact.name}…"
+            }
+            "text" -> {
+                if (target.isBlank()) return "Who should I text?"
+                if (!hasContactsPermission()) { ensureContactsPermission(); return "Grant contacts access, then try again." }
+                val contact = findPhoneContact(target, "text $target") ?: return "I couldn't find $target in your contacts."
+                startSafeIntent(
+                    Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(contact.value)}")).putExtra("sms_body", a.message),
+                    "Messages isn't available here")
+                if (a.message.isBlank()) "Opening a text to ${contact.name}…" else "Drafting a text to ${contact.name}: “${a.message}”"
+            }
+            "email" -> {
+                if (target.isBlank()) return "Who should I email?"
+                if (!hasContactsPermission()) { ensureContactsPermission(); return "Grant contacts access, then try again." }
+                val contact = findEmailContact(target, "email $target") ?: return "I couldn't find an email for $target."
+                startSafeIntent(
+                    Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${Uri.encode(contact.value)}"))
+                        .putExtra(Intent.EXTRA_SUBJECT, a.message.ifBlank { "Message from Clicks" })
+                        .putExtra(Intent.EXTRA_TEXT, a.message),
+                    "Email isn't available here")
+                "Drafting an email to ${contact.name}…"
+            }
+            else -> a.answer.ifBlank { "Done." }
         }
     }
 
@@ -8086,13 +8264,24 @@ Reply format: ["word1","word2","word3"]"""
             calendarPermissionLauncher.launch(android.Manifest.permission.READ_CALENDAR)
             return
         }
-        if (event != null) {
+        if (event != null && event.eventId > 0L) {
             val eventUri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, event.eventId)
             val eventIntent = Intent(Intent.ACTION_VIEW, eventUri).apply {
                 putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, event.beginMs)
                 putExtra(CalendarContract.EXTRA_EVENT_END_TIME, event.endMs)
             }
             runCatching { startActivity(eventIntent) }
+                .onFailure { openCalendarApp() }
+            return
+        }
+        if (event != null) {
+            val insertIntent = Intent(Intent.ACTION_INSERT).setData(CalendarContract.Events.CONTENT_URI).apply {
+                putExtra(CalendarContract.Events.TITLE, event.title)
+                putExtra(CalendarContract.Events.EVENT_LOCATION, event.location)
+                putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, event.beginMs)
+                putExtra(CalendarContract.EXTRA_EVENT_END_TIME, event.endMs)
+            }
+            runCatching { startActivity(insertIntent) }
                 .onFailure { openCalendarApp() }
             return
         }

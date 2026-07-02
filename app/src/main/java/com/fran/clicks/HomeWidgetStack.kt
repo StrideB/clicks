@@ -64,7 +64,9 @@ data class CalendarEvent(
     val timeLabel: String,
     val location: String,
     val beginMs: Long,
-    val endMs: Long
+    val endMs: Long,
+    val dayLabel: String = "",
+    val joinUrl: String? = null
 )
 
 data class RecentPerson(
