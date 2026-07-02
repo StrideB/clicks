@@ -24,7 +24,8 @@ import java.security.SecureRandom
 const val SPOTIFY_CLIENT_ID = "90479c42b8dd4256b9d9fccebb6f279c"
 const val SPOTIFY_REDIRECT_URI = "com.fran.clicks://spotify-callback"
 private const val SPOTIFY_SCOPES =
-    "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+    "user-read-playback-state user-modify-playback-state user-read-currently-playing " +
+    "user-read-recently-played playlist-read-private playlist-read-collaborative"
 
 enum class SpotifyConnectState { DISCONNECTED, CONNECTING, CONNECTED }
 
