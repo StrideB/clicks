@@ -241,7 +241,7 @@ fun MusicPlayer(
             }
     ) {
         if (playerTheme == NowPlayingTheme.MUSIC1) {
-            FullPaneAlbumArt(current.title, current.albumArt, appColor)
+            FullPaneAlbumArt(current.title, current.artist, current.albumArt, appColor)
         }
         when (playerTheme) {
             NowPlayingTheme.MUSIC1 -> MusicOneLayout(
@@ -319,23 +319,11 @@ private fun MusicOneLayout(
             .padding(horizontal = 18.dp)
     ) {
         val paneHeight = maxHeight
-        val bottomGap = responsiveMusicBottomGap(paneHeight)
         Box(
             Modifier
                 .align(Alignment.Center)
                 .size((paneHeight * 0.42f).clamped(188.dp, 244.dp))
-                .then(gestureModifier)
         )
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = bottomGap),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            NowPlayingMeta(title, artist, album)
-            Spacer(Modifier.height((paneHeight * 0.025f).clamped(10.dp, 18.dp)))
-            ClassicLineProgress(position, duration, appColor, onSeekTo)
-        }
     }
 }
 
@@ -664,7 +652,7 @@ private fun PortraitVinylDisc(
 }
 
 @Composable
-private fun FullPaneAlbumArt(title: String, albumArt: Bitmap?, appColor: Color) {
+private fun FullPaneAlbumArt(title: String, artist: String, albumArt: Bitmap?, appColor: Color) {
     Box(Modifier.fillMaxSize()) {
         if (albumArt != null) {
             Image(albumArt.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -690,6 +678,7 @@ private fun FullPaneAlbumArt(title: String, albumArt: Bitmap?, appColor: Color) 
                 )
             }
         }
+        // Dark vignette scrim
         Box(
             Modifier
                 .fillMaxSize()
@@ -697,12 +686,42 @@ private fun FullPaneAlbumArt(title: String, albumArt: Bitmap?, appColor: Color) 
                     Brush.verticalGradient(
                         listOf(
                             Color(0xCC16181D),
-                            Color(0x4416181D),
-                            Color(0xDD0D0E11)
+                            Color(0x2216181D),
+                            Color(0xEE0D0E11)
                         )
                     )
                 )
         )
+        // Track name + artist at bottom of album art
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp, vertical = 20.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            BasicText(
+                text = title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color.White,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            )
+            Spacer(Modifier.height(3.dp))
+            BasicText(
+                text = artist,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    color = Color.White.copy(alpha = 0.62f),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Normal
+                )
+            )
+        }
     }
 }
 

@@ -156,6 +156,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var paneSwipeStartX = 0f
     private var paneSwipeStartY = 0f
     private var paneSwipeTriggered = false
+    private var paneSwipeFromDock = false
     private var iconPacksCache: List<IconPack>? = null
     private val iconPackMatchCache = mutableMapOf<String, IconPackIcon?>()
     private var composeText = ""
@@ -165,11 +166,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastSpaceMs = 0L
     private var lastShiftTapMs = 0L
     private var suggestions: List<String> = emptyList()
+    // Autocorrect undo — stores what was replaced so backspace immediately after reverts it
+    private data class AutocorrectUndo(val original: String, val corrected: String)
+    private var pendingAutocorrectUndo: AutocorrectUndo? = null
+    // Cursor position within query/composeText (null = end)
+    private var cursorPos: Int? = null
+    // Gemini suggestions debounce
+    private var geminiSuggestJob: kotlinx.coroutines.Job? = null
     private var pendingTypeToDoCommand: String? = null
     private val aiAnswersById = mutableMapOf<String, AiAnswerState>()
     private var spellChecker: SpellCheckerSession? = null
     private val handler = Handler(Looper.getMainLooper())
     private var suggestDebounce: Runnable? = null
+    private var libraryRefreshDebounce: Runnable? = null
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -177,6 +186,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var numberPadOpen = false
     private lateinit var mediaSessionSource: MediaSessionSource
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var billingClient: com.android.billingclient.api.BillingClient? = null
     lateinit var spotifyAuth: SpotifyAuth
     lateinit var spotifyApi: SpotifyWebApi
     private var spotifyCachedRecent = listOf<SpotifyTrack>()
@@ -188,7 +198,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var spotifyCachedLikedSongs = listOf<SpotifyTrack>()
     private var spotifyCachedLikedArts = listOf<android.graphics.Bitmap?>()
     private var compactLibraryScrollRef: ScrollView? = null
+    private var compactLibraryTargetY = 0
+    private var volumeHudView: LinearLayout? = null
+    private var volumeHudFill: View? = null
+    private val volumeHudHideRunnable = Runnable { hideVolumeHud() }
     private var spotifyCompactOverlay: View? = null
+    private var spotifyFullLibraryDismiss: (() -> Unit)? = null
     private val fallbackIconCache = android.util.LruCache<String, Drawable>(64)
     private var lastAppsLoadMs = 0L
     private var lastHubLoadMs = 0L
@@ -224,6 +239,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var keyboardDockView: FrameLayout
     private lateinit var searchHintView: TextView
     private var zeissButtonView: ZeissCameraButtonView? = null
+    private lateinit var hintBar: LinearLayout
+    private var musicProgressBar: View? = null
+    private var musicProgressHandler: android.os.Handler? = null
+    private var musicProgressRunnable: Runnable? = null
     private var homeEditChipView: TextView? = null
     private var homeEditMode = false
     private var pendingTrashPhotoId: Long? = null
@@ -309,18 +328,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         maybeRequestSmsPermission()
         mediaSessionSource.start()
         mediaUiScope.launch {
-            mediaSessionSource.nowPlaying.collect {
+            mediaSessionSource.nowPlaying.collect { info ->
                 syncNowPlayingCardVisibility()
                 refreshNowPlayingCard()
-                // Do NOT rebuild the full dock on every track/pause change —
-                // that would reload the Spotify library on every event.
-                // The now-playing card refresh above is sufficient.
+                // Restart progress ticker when playback resumes (ticker stops itself when paused)
+                if (info?.isPlaying == true && musicProgressBar != null) {
+                    musicProgressRunnable?.let { r ->
+                        musicProgressHandler?.removeCallbacks(r)
+                        musicProgressHandler?.post(r)
+                    }
+                }
             }
         }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.hasCategory(Intent.CATEGORY_HOME)) {
+            dismissToHome()
+            return
+        }
         val uri = intent.data ?: return
         if (uri.scheme == "com.fran.clicks" && uri.host == "spotify-callback") {
             mediaUiScope.launch {
@@ -338,6 +365,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onResume() {
         super.onResume()
+        ensureBillingConnected()
         val now = System.currentTimeMillis()
         if (now - lastAppsLoadMs > 10_000) { apps = loadLaunchableApps(); lastAppsLoadMs = now }
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
@@ -361,6 +389,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaUiScope.cancel()
         spellChecker?.close()
         handler.removeCallbacksAndMessages(null)
+        billingClient?.endConnection()
+        billingClient = null
+    }
+
+    private fun ensureBillingConnected() {
+        val bc = billingClient ?: ProManager.buildBillingClient(this) { token ->
+            // Purchase verified — refresh any gated UI
+            Toast.makeText(this, "Clicks Pro unlocked. Welcome!", Toast.LENGTH_SHORT).show()
+            renderRibbon()
+        }.also { billingClient = it }
+
+        if (!bc.isReady) {
+            bc.startConnection(object : com.android.billingclient.api.BillingClientStateListener {
+                override fun onBillingSetupFinished(result: com.android.billingclient.api.BillingResult) {
+                    if (result.responseCode == com.android.billingclient.api.BillingClient.BillingResponseCode.OK) {
+                        mediaUiScope.launch(Dispatchers.IO) {
+                            ProManager.restorePurchases(bc, this@MainActivity)
+                        }
+                    }
+                }
+                override fun onBillingServiceDisconnected() { billingClient = null }
+            })
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -416,9 +467,163 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onBackPressed() {
         if (widgetPickerView != null) { closeWidgetPicker(); return }
         if (widgetBoardView != null) { closeWidgetBoard(); return }
+        if (spotifyFullLibraryDismiss != null) { spotifyFullLibraryDismiss?.invoke(); return }
+        if (spotifyCompactOverlay != null) { dismissCompactSpotifyLibrary(); return }
         if (libraryOpen) { closeLibrary(); return }
         if (openPane != null) { closePane(); return }
         super.onBackPressed()
+    }
+
+    private fun dismissToHome() {
+        // Hide soft keyboard first so it doesn't flash during transition
+        val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+        imm?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
+        // Dismiss overlays in order
+        spotifyFullLibraryDismiss?.invoke()
+        if (spotifyCompactOverlay != null) dismissCompactSpotifyLibrary()
+        if (openPane != null) closePane()
+    }
+
+    // ── Pro gate ─────────────────────────────────────────────────────────────
+
+    /** Returns true if the feature is accessible. If not, shows the upgrade sheet and returns false. */
+    fun requirePro(feature: ProFeature, onUnlocked: (() -> Unit)? = null): Boolean {
+        if (ProManager.isUnlocked(this)) { onUnlocked?.invoke(); return true }
+        showUpgradeSheet(feature, onUnlocked)
+        return false
+    }
+
+    private fun showUpgradeSheet(triggerFeature: ProFeature? = null, onPurchased: (() -> Unit)? = null) {
+        val decorView = window.decorView as FrameLayout
+        val screenH = resources.displayMetrics.heightPixels
+        val accent = 0xFF8AB4F8.toInt()   // Clicks blue
+
+        // Scrim
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x00000000)
+            isClickable = false
+        }
+
+        // Sheet
+        val sheet = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(0xFF0F1215.toInt())
+                cornerRadii = floatArrayOf(dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), dp(20).toFloat(), 0f, 0f, 0f, 0f)
+                setStroke(dp(1), 0xFF1E2330.toInt())
+            }
+            setPadding(dp(24), dp(20), dp(24), dp(36))
+            translationY = screenH.toFloat()
+        }
+
+        fun dismiss() {
+            sheet.animate().translationY(screenH.toFloat()).setDuration(280)
+                .setInterpolator(android.view.animation.AccelerateInterpolator(1.8f))
+                .withEndAction { decorView.removeView(scrim) }.start()
+            scrim.animate().alpha(0f).setDuration(220).start()
+        }
+
+        // Drag pill
+        sheet.addView(View(this).apply {
+            background = GradientDrawable().apply { setColor(0xFF2A2E38.toInt()); cornerRadius = dp(2).toFloat() }
+        }, LinearLayout.LayoutParams(dp(36), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(20) })
+
+        // Heading
+        sheet.addView(TextView(this).apply {
+            text = "Clicks Pro"
+            textSize = 22f; setTextColor(Ink)
+            typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+            includeFontPadding = false
+        })
+
+        // Trigger context — what they tried to use
+        if (triggerFeature != null) {
+            sheet.addView(TextView(this).apply {
+                text = "${triggerFeature.label} is a Pro feature."
+                textSize = 13f; setTextColor(0xFF8AB4F8.toInt())
+                setPadding(0, dp(4), 0, 0)
+            })
+        }
+
+        sheet.addView(View(this), LinearLayout.LayoutParams.MATCH_PARENT, dp(16))
+
+        // Feature bullets — what Pro includes
+        val bullets = listOf(
+            "Gemini AI keyboard suggestions",
+            "Full Spotify library & search",
+            "Smart autocorrect & compose",
+            "Premium keyboard themes",
+            "All future Pro features"
+        )
+        bullets.forEach { line ->
+            sheet.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(8))
+                addView(View(this@MainActivity).apply {
+                    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(accent) }
+                }, LinearLayout.LayoutParams(dp(5), dp(5)).apply { marginEnd = dp(10) })
+                addView(TextView(this@MainActivity).apply {
+                    text = line; textSize = 13.5f; setTextColor(0xFFCED2DA.toInt())
+                })
+            })
+        }
+
+        sheet.addView(View(this), LinearLayout.LayoutParams.MATCH_PARENT, dp(20))
+
+        // CTA button
+        sheet.addView(TextView(this).apply {
+            text = "Unlock Pro"
+            textSize = 15f; setTextColor(0xFF000000.toInt())
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(14).toFloat() }
+            setPadding(0, dp(16), 0, dp(16))
+            isClickable = true
+            setOnClickListener {
+                val bc = billingClient
+                if (bc == null || !bc.isReady) {
+                    Toast.makeText(this@MainActivity, "Store unavailable — try again shortly.", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                mediaUiScope.launch {
+                    val result = ProManager.launchBillingFlow(bc, this@MainActivity)
+                    if (result.responseCode == com.android.billingclient.api.BillingClient.BillingResponseCode.OK) {
+                        dismiss()
+                        onPurchased?.invoke()
+                    }
+                }
+            }
+        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        // Restore link
+        sheet.addView(TextView(this).apply {
+            text = "Restore purchase"
+            textSize = 11.5f; setTextColor(InkDim); gravity = Gravity.CENTER
+            setPadding(0, dp(14), 0, 0)
+            isClickable = true
+            setOnClickListener {
+                val bc = billingClient ?: return@setOnClickListener
+                mediaUiScope.launch(Dispatchers.IO) {
+                    val restored = ProManager.restorePurchases(bc, this@MainActivity)
+                    runOnUiThread {
+                        if (restored) { dismiss(); onPurchased?.invoke()
+                            Toast.makeText(this@MainActivity, "Pro restored.", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(this@MainActivity, "No purchase found.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        })
+
+        scrim.setOnClickListener { dismiss() }
+        scrim.addView(sheet, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        decorView.addView(scrim, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+        scrim.alpha = 0f
+        scrim.animate().alpha(1f).setDuration(200).start()
+        sheet.animate().translationY(0f).setDuration(340)
+            .setInterpolator(android.view.animation.DecelerateInterpolator(2f)).start()
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -464,7 +669,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         // Typing display — lives between content and keyboard so gravity=BOTTOM on keyboard
         // rows never clips it. Shows typed text + blinking cursor; hint text when idle.
-        val hintBar = LinearLayout(this).apply {
+        hintBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = typingStripBackground()
@@ -1337,19 +1542,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 paneSwipeStartX = event.rawX
                 paneSwipeStartY = event.rawY
                 paneSwipeTriggered = false
+                // A drag that starts on the dock is click-wheel input, not a pane swipe.
+                paneSwipeFromDock = isInsideKeyboardDock(event.rawX, event.rawY)
             }
             MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+                if (paneSwipeFromDock) return false
                 if (paneSwipeTriggered) return true
                 val dx = event.rawX - paneSwipeStartX
                 val dy = event.rawY - paneSwipeStartY
-                if (dy > dp(72) && dy > abs(dx) * 1.2f) {
+                // Swipe right on music pane → slide in compact library
+                if (paneKind == PaneKind.MUSIC && dx > dp(60) && dx > abs(dy) * 1.4f && spotifyCompactOverlay == null && spotifyAuth.isConnected) {
+                    paneSwipeTriggered = true
+                    haptic(contentFrame)
+                    showCompactSpotifyLibrary()
+                    return true
+                }
+                if (paneKind != PaneKind.MUSIC && dy > dp(72) && dy > abs(dx) * 1.2f) {
                     paneSwipeTriggered = true
                     haptic(contentFrame)
                     closePane()
                     return true
                 }
             }
-            MotionEvent.ACTION_CANCEL -> paneSwipeTriggered = false
+            MotionEvent.ACTION_CANCEL -> { paneSwipeTriggered = false; paneSwipeFromDock = false }
         }
         return false
     }
@@ -1362,6 +1577,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             rawX <= loc[0] + nowPlayingCardView.width &&
             rawY >= loc[1] &&
             rawY <= loc[1] + nowPlayingCardView.height
+    }
+
+    private fun isInsideKeyboardDock(rawX: Float, rawY: Float): Boolean {
+        if (!::keyboardDockView.isInitialized || keyboardDockView.height <= 0) return false
+        val loc = IntArray(2)
+        keyboardDockView.getLocationOnScreen(loc)
+        return rawX >= loc[0] &&
+            rawX <= loc[0] + keyboardDockView.width &&
+            rawY >= loc[1] &&
+            rawY <= loc[1] + keyboardDockView.height
     }
 
     private fun handleTypingStripGesture(event: MotionEvent): Boolean {
@@ -2659,6 +2884,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     haptic(this)
                     mediaSessionSource.openSourceApp()
                 }
+                onScroll = { steps ->
+                    mediaSessionSource.adjustVolume(steps)
+                    showVolumeHud()
+                }
             }, FrameLayout.LayoutParams(wheelSize, wheelSize, Gravity.CENTER))
         }
     }
@@ -2693,6 +2922,147 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             } catch (_: Exception) {}
         }
     }
+
+    // ── Compact playlist / track-list drill-down ─────────────────────────────
+
+    fun showCompactPlaylistDetail(playlist: SpotifyPlaylist) {
+        val overlay = spotifyCompactOverlay as? android.view.ViewGroup ?: return
+        val detail = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0A0C0F.toInt())
+            translationX = overlay.width.toFloat()
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(12), dp(14), dp(10))
+        }
+        header.addView(TextView(this).apply {
+            text = "‹"; textSize = 24f; setTextColor(0xFF6B7280.toInt())
+            setPadding(dp(10), 0, dp(10), 0)
+            setOnClickListener { haptic(this); closeCompactPlaylistDetail() }
+        })
+        header.addView(TextView(this).apply {
+            text = playlist.name; textSize = 14f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(0xFFF3F0E7.toInt()); maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        val actRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(4), dp(14), dp(10))
+        }
+        fun aBtn(lbl: String, bg: Int, fg: Int, click: () -> Unit) = TextView(this).apply {
+            text = lbl; textSize = 11f; gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif", Typeface.BOLD); setTextColor(fg)
+            background = GradientDrawable().apply { setColor(bg); cornerRadius = dp(18).toFloat() }
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            setOnClickListener { haptic(this); click() }
+        }
+        actRow.addView(aBtn("▶  Play All", 0xFF1ED760.toInt(), 0xFF000000.toInt()) {
+            mediaUiScope.launch { spotifyApi.playContext(playlist.uri, 0) }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(8) })
+        actRow.addView(aBtn("⇄  Shuffle", 0xFF1A1D22.toInt(), 0xFFCED2DA.toInt()) {
+            mediaUiScope.launch { spotifyApi.setShuffle(true); spotifyApi.playContext(playlist.uri, 0) }
+        })
+
+        val trackScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val trackList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(24))
+        }
+        trackList.addView(TextView(this).apply {
+            text = "Loading…"; textSize = 12f; setTextColor(0xFF6B7280.toInt())
+            setPadding(dp(16), dp(12), 0, 0)
+        })
+        trackScroll.addView(trackList)
+
+        detail.addView(header, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        detail.addView(View(this).apply { setBackgroundColor(0x12FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        detail.addView(actRow, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        detail.addView(View(this).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+        detail.addView(trackScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        overlay.addView(detail, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        detail.animate().translationX(0f).setDuration(280)
+            .setInterpolator(android.view.animation.DecelerateInterpolator(2f)).start()
+        compactDetailView = detail
+        compactLibraryScrollRef = trackScroll; compactLibraryTargetY = 0
+        compactSelectedView = null
+
+        mediaUiScope.launch {
+            val tracks = withContext(Dispatchers.IO) { spotifyApi.getPlaylistTracks(playlist.id, limit = 100) }
+            val arts = withContext(Dispatchers.IO) {
+                coroutineScope { tracks.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll() }
+            }
+            withContext(Dispatchers.Main) {
+                trackList.removeAllViews()
+                if (tracks.isEmpty()) {
+                    trackList.addView(TextView(this@MainActivity).apply {
+                        text = "No tracks found"; textSize = 12f; setTextColor(0xFF6B7280.toInt()); setPadding(dp(16), dp(12), 0, 0)
+                    })
+                } else {
+                    tracks.forEachIndexed { i, track ->
+                        trackList.addView(compactTrackRow(i + 1, arts.getOrNull(i), track.name, track.artist, track.popularity) {
+                            mediaUiScope.launch { spotifyApi.playContext(playlist.uri, i) }
+                        })
+                        if (i < tracks.lastIndex) trackList.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                    }
+                }
+            }
+        }
+    }
+
+    fun compactTrackRow(num: Int?, art: android.graphics.Bitmap?, title: String, artist: String, popularity: Int = 0, onClick: () -> Unit): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(56); setPadding(dp(8), dp(6), dp(8), dp(6))
+            setOnClickListener { haptic(this); popThenRun(this) { onClick() } }
+            if (num != null) {
+                addView(TextView(this@MainActivity).apply {
+                    text = "$num"; textSize = 10f; gravity = Gravity.CENTER
+                    setTextColor(0xFF4B5563.toInt()); minWidth = dp(28)
+                })
+            }
+            val thumb = ImageView(this@MainActivity).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                if (art != null) setImageBitmap(art) else setBackgroundColor(0xFF1A1D22.toInt())
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(4).toFloat()) }
+                }
+                clipToOutline = true
+            }
+            addView(thumb, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(10) })
+            val col = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+            col.addView(TextView(this@MainActivity).apply {
+                text = title; textSize = 12.5f; maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(0xFFF3F0E7.toInt())
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            })
+            val subRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            }
+            subRow.addView(TextView(this@MainActivity).apply {
+                text = artist; textSize = 10.5f; maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(0xFF6B7280.toInt())
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (popularity > 0) {
+                // Small popularity bar — Spotify doesn't share actual play counts
+                val barTrack = FrameLayout(this@MainActivity).apply {
+                    background = GradientDrawable().apply { setColor(0xFF1A1D22.toInt()); cornerRadius = dp(2).toFloat() }
+                }
+                val barFill = View(this@MainActivity).apply {
+                    background = GradientDrawable().apply { setColor(0xFF1ED760.toInt()); cornerRadius = dp(2).toFloat() }
+                }
+                barTrack.addView(barFill, FrameLayout.LayoutParams((dp(40) * popularity / 100f).toInt(), dp(3)))
+                barTrack.addView(View(this@MainActivity), FrameLayout.LayoutParams(dp(40), dp(3)))
+                subRow.addView(barTrack, LinearLayout.LayoutParams(dp(40), dp(3)).apply { marginStart = dp(8) })
+            }
+            col.addView(subRow, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
 
     // ── Compact Spotify overlay on contentFrame ───────────────────────────────
 
@@ -2730,14 +3100,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             translationX = contentFrame.width.toFloat()
         }
 
-        val tabLabels = listOf("RECENT", "PLAYLISTS", "SEARCH")
+        val tabLabels = listOf("TOP", "RECENT", "PLAYLISTS", "SEARCH")
         val tabViews = mutableListOf<TextView>()
         var activeTab = 0
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(10), dp(14), dp(8))
+            setPadding(dp(14), dp(8), dp(10), dp(4))
         }
         header.addView(ImageView(this).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(SpotifyGreen) }
@@ -2747,34 +3117,44 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         header.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         tabLabels.forEachIndexed { i, lbl ->
             val tv = mono(lbl, 8.5f, if (i == 0) SpotifyGreen else InkDim).apply {
-                letterSpacing = 0.10f; setPadding(dp(10), dp(3), 0, dp(3)); isClickable = true
+                letterSpacing = 0.10f; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(if (i == 0) 10 else 14), dp(12), dp(8), dp(12))
+                minimumHeight = dp(48); isClickable = true; isFocusable = false
             }
             tabViews.add(tv); header.addView(tv)
         }
 
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+            // Let pop-scale overshoot draw past row bounds instead of clipping.
+            clipChildren = false; clipToPadding = false
         }
         val body = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(4), dp(12), dp(12))
+            orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(4), dp(12), dp(24))
+            clipChildren = false; clipToPadding = false
         }
         scroll.addView(body)
-        compactLibraryScrollRef = scroll
+        compactLibraryScrollRef = scroll; compactLibraryTargetY = 0
+        compactMainScroll = scroll
 
         val searchField = EditText(this).apply {
-            hint = "Search Spotify…"; textSize = 12f; setTextColor(Ink); setHintTextColor(InkDim)
+            hint = "Search Spotify…"; textSize = 13f; setTextColor(Ink); setHintTextColor(InkDim)
             setSingleLine(); imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
             inputType = android.text.InputType.TYPE_CLASS_TEXT
             background = GradientDrawable().apply { setColor(0xFF1A1D22.toInt()); cornerRadius = dp(10).toFloat(); setStroke(dp(1), 0xFF2A2E36.toInt()) }
-            setPadding(dp(12), dp(7), dp(12), dp(7)); visibility = View.GONE
+            setPadding(dp(14), dp(9), dp(14), dp(9))
         }
         val searchWrap = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), dp(6))
+            orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(4), dp(12), dp(6))
             visibility = View.GONE; addView(searchField, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
 
+        val personalizedKeys = listOf("discover weekly", "daily mix", "release radar", "on repeat", "repeat rewind", "time capsule", "your top songs", "wrapped")
+        fun isPersonalized(name: String) = personalizedKeys.any { name.lowercase().contains(it) }
+
         fun gridRow(vararg views: View) = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; weightSum = 3f
+            clipChildren = false; clipToPadding = false
             views.forEachIndexed { i, v -> addView(v, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { if (i > 0) marginStart = dp(8) }) }
             repeat(3 - views.size) { addView(View(this@MainActivity), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(8) }) }
         }
@@ -2784,7 +3164,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.VERTICAL; isClickable = true
                 background = GradientDrawable().apply { setColor(CardBg); cornerRadius = dp(14).toFloat(); setStroke(dp(1), 0xFF22262E.toInt()) }
                 setPadding(dp(8), dp(8), dp(8), dp(9))
-                setOnClickListener { haptic(this); onClick() }
+                setOnClickListener { haptic(this); popThenRun(this) { onClick() } }
                 val frame = object : FrameLayout(this@MainActivity) { override fun onMeasure(w: Int, h: Int) = super.onMeasure(w, w) }.also { f ->
                     f.clipToOutline = true
                     f.outlineProvider = object : android.view.ViewOutlineProvider() { override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(8).toFloat()) } }
@@ -2798,7 +3178,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(TextView(context).apply { text = sub; textSize = 9.5f; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END; setTextColor(InkDim); setPadding(dp(2), dp(2), dp(2), 0) }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             }
 
-        fun populateGrid(items: List<Pair<String, String>>, arts: List<android.graphics.Bitmap?>, fallback: IntArray = intArrayOf(0xFF1A1D22.toInt(), 0xFF0D1014.toInt()), onClick: (Int) -> Unit) {
+        fun populateGrid(items: List<Pair<String, String>>, arts: List<android.graphics.Bitmap?>, fallback: IntArray = intArrayOf(0xFF1A1D22.toInt(), 0xFF0D1014.toInt()), accent: Int = 0, onClick: (Int) -> Unit) {
             items.chunked(3).forEachIndexed { rowIdx, row ->
                 val cards = row.mapIndexed { col, (t, s) -> squareCard(arts.getOrNull(rowIdx * 3 + col), fallback, t, s) { onClick(rowIdx * 3 + col) } }
                 body.addView(gridRow(*cards.toTypedArray()), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -2806,48 +3186,86 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        val personalizedKeys = listOf("discover weekly", "daily mix", "release radar", "on repeat", "repeat rewind", "time capsule", "your top songs", "wrapped")
-        fun isPersonalized(name: String) = personalizedKeys.any { name.lowercase().contains(it) }
+        fun sectionLabel(text: String, color: Int = InkDim) = mono(text, 8.5f, color).apply {
+            letterSpacing = 0.18f; setPadding(dp(2), dp(6), 0, dp(8))
+        }
 
         fun selectTab(idx: Int) {
             activeTab = idx
+            compactLibraryActiveTab = idx
             tabViews.forEachIndexed { i, tv ->
                 tv.setTextColor(if (i == idx) SpotifyGreen else InkDim)
                 tv.typeface = if (i == idx) Typeface.create("sans-serif", Typeface.BOLD) else Typeface.DEFAULT
             }
-            searchWrap.visibility = if (idx == 2) View.VISIBLE else View.GONE
-            body.removeAllViews()
+            searchWrap.visibility = if (idx == 3) View.VISIBLE else View.GONE
+            body.removeAllViews(); scroll.scrollTo(0, 0); compactLibraryTargetY = 0
             when (idx) {
-                0 -> {
-                    if (spotifyCachedRecent.isEmpty()) {
-                        body.addView(TextView(this).apply { text = "Play something to see it here"; textSize = 12f; setTextColor(InkDim); setPadding(dp(2), dp(8), 0, 0) })
+                0 -> { // TOP
+                    val top = spotifyCachedTopTracks
+                    if (top.isEmpty()) {
+                        body.addView(TextView(this).apply { text = "Reconnect Spotify to load your top tracks"; textSize = 12f; setTextColor(InkDim); setPadding(dp(2), dp(8), 0, 0) })
                     } else {
-                        populateGrid(spotifyCachedRecent.map { it.name to it.artist }, spotifyCachedRecentArts) { i ->
-                            spotifyCachedRecent.getOrNull(i)?.let { t -> mediaUiScope.launch { spotifyApi.playTrack(t.uri) } }
+                        body.addView(sectionLabel("YOUR TOP TRACKS  •  ALL TIME", 0xFF8BE8FF.toInt()))
+                        val grid = top.take(9)
+                        populateGrid(grid.map { it.name to it.artist }, spotifyCachedTopArts.take(9),
+                            intArrayOf(0xFF1A2030.toInt(), 0xFF0A1020.toInt())) { i ->
+                            mediaUiScope.launch { spotifyApi.playTrack(grid[i].uri) }
+                        }
+                        body.addView(sectionLabel("ALL ${top.size} TRACKS"))
+                        top.forEachIndexed { i, track ->
+                            body.addView(compactTrackRow(i + 1, spotifyCachedTopArts.getOrNull(i), track.name, track.artist, track.popularity) {
+                                mediaUiScope.launch { spotifyApi.playTrack(track.uri) }
+                            })
+                            if (i < top.lastIndex) body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
                         }
                     }
                 }
-                1 -> {
+                1 -> { // RECENT
+                    val recent = spotifyCachedRecent
+                    if (recent.isEmpty()) {
+                        body.addView(TextView(this).apply { text = "Play something in Spotify to see it here"; textSize = 12f; setTextColor(InkDim); setPadding(dp(2), dp(8), 0, 0) })
+                    } else {
+                        body.addView(sectionLabel("RECENTLY PLAYED"))
+                        populateGrid(recent.map { it.name to it.artist }, spotifyCachedRecentArts) { i ->
+                            recent.getOrNull(i)?.let { t -> mediaUiScope.launch { spotifyApi.playTrack(t.uri) } }
+                        }
+                    }
+                }
+                2 -> { // PLAYLISTS
+                    val liked = spotifyCachedLikedSongs
+                    if (liked.isNotEmpty()) {
+                        body.addView(compactTrackRow(null, null, "Liked Songs", "${liked.size} songs") {
+                            showCompactPlaylistDetail(SpotifyPlaylist("liked", "Liked Songs", "", liked.size, null, "liked"))
+                        })
+                        body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+                    }
                     val personalized = spotifyCachedPlaylists.indices.filter { isPersonalized(spotifyCachedPlaylists[it].name) }
                     val mine = spotifyCachedPlaylists.indices.filter { !isPersonalized(spotifyCachedPlaylists[it].name) }
                     if (personalized.isNotEmpty()) {
-                        body.addView(mono("MADE FOR YOU", 9f, 0xFF8BE8FF.toInt()).apply { letterSpacing = 0.18f; setPadding(dp(2), dp(4), 0, dp(6)) })
+                        body.addView(sectionLabel("MADE FOR YOU", 0xFF8BE8FF.toInt()))
                         populateGrid(personalized.map { spotifyCachedPlaylists[it].name to spotifyCachedPlaylists[it].ownerName.ifBlank { "Spotify" } },
                             personalized.map { spotifyCachedPlaylistArts.getOrNull(it) }, intArrayOf(0xFF1A2830.toInt(), 0xFF0A1018.toInt())
-                        ) { i -> personalized.getOrNull(i)?.let { idx2 -> mediaUiScope.launch { spotifyApi.playContext(spotifyCachedPlaylists[idx2].uri) } } }
+                        ) { i -> personalized.getOrNull(i)?.let { idx2 -> showCompactPlaylistDetail(spotifyCachedPlaylists[idx2]) } }
                     }
                     if (mine.isNotEmpty()) {
-                        body.addView(mono("YOUR PLAYLISTS", 9f, InkDim).apply { letterSpacing = 0.18f; setPadding(dp(2), if (personalized.isNotEmpty()) dp(8) else dp(4), 0, dp(6)) })
+                        body.addView(sectionLabel("YOUR PLAYLISTS"))
                         populateGrid(mine.map { spotifyCachedPlaylists[it].name to spotifyCachedPlaylists[it].ownerName.ifBlank { "My playlist" } },
                             mine.map { spotifyCachedPlaylistArts.getOrNull(it) }
-                        ) { i -> mine.getOrNull(i)?.let { idx2 -> mediaUiScope.launch { spotifyApi.playContext(spotifyCachedPlaylists[idx2].uri) } } }
+                        ) { i -> mine.getOrNull(i)?.let { idx2 -> showCompactPlaylistDetail(spotifyCachedPlaylists[idx2]) } }
                     }
                 }
-                2 -> searchField.requestFocus()
+                3 -> { // SEARCH
+                    searchField.requestFocus()
+                    searchField.postDelayed({
+                        val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                        imm?.showSoftInput(searchField, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    }, 120)
+                }
             }
         }
 
         tabViews.forEachIndexed { i, tv -> tv.setOnClickListener { selectTab(i) } }
+        compactLibrarySelectTab = { idx -> selectTab(idx) }
 
         var searchJob: Job? = null
         searchField.addTextChangedListener(object : android.text.TextWatcher {
@@ -2858,14 +3276,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 searchJob?.cancel(); body.removeAllViews()
                 if (q.length < 2) return
                 searchJob = mediaUiScope.launch {
-                    delay(320)
-                    val tracks = withContext(Dispatchers.IO) { spotifyApi.search(q, limit = 12) }
+                    delay(280)
+                    val tracks = withContext(Dispatchers.IO) { spotifyApi.search(q, limit = 20) }
                     val arts = withContext(Dispatchers.IO) { coroutineScope { tracks.map { t -> async { t.albumArtUrl?.let { url -> runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull() } } }.awaitAll() } }
+                    body.removeAllViews()
                     if (tracks.isEmpty()) {
-                        body.addView(TextView(this@MainActivity).apply { text = "No results"; textSize = 12f; setTextColor(InkDim); setPadding(dp(2), dp(8), 0, 0) })
+                        body.addView(TextView(this@MainActivity).apply { text = "No results for \"$q\""; textSize = 12f; setTextColor(InkDim); setPadding(dp(4), dp(10), 0, 0) })
                     } else {
-                        populateGrid(tracks.map { it.name to it.artist }, arts) { i ->
-                            tracks.getOrNull(i)?.let { t -> mediaUiScope.launch { spotifyApi.playTrack(t.uri) } }
+                        tracks.forEachIndexed { i, track ->
+                            body.addView(compactTrackRow(null, arts.getOrNull(i), track.name, track.artist, track.popularity) {
+                                mediaUiScope.launch { spotifyApi.playTrack(track.uri) }
+                            })
+                            if (i < tracks.lastIndex) body.addView(View(this@MainActivity).apply { setBackgroundColor(0x08FFFFFF) }, LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
                         }
                     }
                 }
@@ -2889,13 +3311,296 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     fun dismissCompactSpotifyLibrary() {
         val overlay = spotifyCompactOverlay ?: return
         spotifyCompactOverlay = null
-        compactLibraryScrollRef = null
-        overlay.animate().translationX(contentFrame.width.toFloat()).setDuration(320)
+        compactLibraryScrollRef = null; compactLibraryTargetY = 0; compactOverscroll = 0f
+        compactSelectedView = null
+        compactLibrarySelectTab = null; compactLibraryActiveTab = 0
+        compactDetailView = null; compactMainScroll = null
+        val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+        imm?.hideSoftInputFromWindow(overlay.windowToken, 0)
+        overlay.animate().translationX(contentFrame.width.toFloat()).setDuration(280)
             .setInterpolator(android.view.animation.AccelerateInterpolator(1.8f))
             .withEndAction { contentFrame.removeView(overlay) }.start()
     }
 
+    fun showSpotifySearchOverlay() {
+        if (!spotifyAuth.isConnected) return
+        // If compact library isn't open yet, open it first then add search on top
+        if (spotifyCompactOverlay == null) showCompactSpotifyLibrary()
+
+        val parent = spotifyCompactOverlay ?: return
+
+        // Check if search overlay already exists
+        if (parent.findViewWithTag<View>("search_overlay") != null) return
+
+        val searchOverlay = LinearLayout(this).apply {
+            tag = "search_overlay"
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xF5101215.toInt())
+            translationY = -parent.height.toFloat().coerceAtLeast(dp(400).toFloat())
+        }
+
+        val searchField = EditText(this).apply {
+            hint = "Search Spotify…"
+            textSize = 15f
+            setTextColor(0xFFF3F0E7.toInt())
+            setHintTextColor(0xFF6B7280.toInt())
+            setSingleLine()
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            background = GradientDrawable().apply {
+                setColor(0xFF1A1D22.toInt())
+                cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), 0xFF2E333B.toInt())
+            }
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+
+        val resultsScroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+        }
+        val resultsList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(16))
+        }
+        resultsScroll.addView(resultsList, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(10), dp(16), dp(10))
+        }
+        val dismissBtn = TextView(this).apply {
+            text = "✕"
+            textSize = 16f
+            setTextColor(0xFF8B8F99.toInt())
+            setPadding(dp(8), dp(4), dp(4), dp(4))
+            setOnClickListener {
+                haptic(this)
+                searchOverlay.animate().translationY(-searchOverlay.height.toFloat())
+                    .setDuration(260).withEndAction { (parent as? android.view.ViewGroup)?.removeView(searchOverlay) }.start()
+                // Hide soft keyboard
+                val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                imm?.hideSoftInputFromWindow(searchField.windowToken, 0)
+            }
+        }
+        headerRow.addView(searchField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        headerRow.addView(dismissBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        searchOverlay.addView(headerRow, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        searchOverlay.addView(resultsScroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        (parent as? android.view.ViewGroup)?.addView(searchOverlay,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        // Register as scroll ref so click wheel navigates results
+        compactLibraryScrollRef = resultsScroll; compactLibraryTargetY = 0
+
+        // Animate in from top
+        searchOverlay.post {
+            searchOverlay.translationY = -searchOverlay.height.toFloat()
+            searchOverlay.animate().translationY(0f).setDuration(300)
+                .setInterpolator(android.view.animation.DecelerateInterpolator(2f)).start()
+        }
+
+        // Auto-focus and show keyboard
+        searchField.requestFocus()
+        searchField.postDelayed({
+            val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+            imm?.showSoftInput(searchField, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }, 180)
+
+        fun buildResultRow(track: SpotifyTrack, art: android.graphics.Bitmap?, idx: Int): View =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(52)
+                setPadding(dp(14), dp(6), dp(14), dp(6))
+                setBackgroundColor(if (idx % 2 == 0) 0x00000000 else 0x08FFFFFF)
+                setOnClickListener {
+                    haptic(this)
+                    mediaUiScope.launch { spotifyApi.playTrack(track.uri) }
+                }
+                val thumb = ImageView(this@MainActivity).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    if (art != null) setImageBitmap(art)
+                    else setBackgroundColor(0xFF1A1D22.toInt())
+                    outlineProvider = object : android.view.ViewOutlineProvider() {
+                        override fun getOutline(v: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(4).toFloat()) }
+                    }
+                    clipToOutline = true
+                }
+                addView(thumb, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(12) })
+                val col = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                col.addView(TextView(this@MainActivity).apply {
+                    text = track.name; textSize = 13f; maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(0xFFF3F0E7.toInt())
+                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                })
+                col.addView(TextView(this@MainActivity).apply {
+                    text = track.artist; textSize = 11f; maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(0xFF8B8F99.toInt())
+                })
+                addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }
+
+        var searchJob: Job? = null
+        searchField.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val q = s?.toString()?.trim() ?: ""
+                searchJob?.cancel()
+                resultsList.removeAllViews()
+                if (q.length < 2) return
+                searchJob = mediaUiScope.launch {
+                    delay(260)
+                    val tracks = spotifyApi.search(q, limit = 20)
+                    val arts = tracks.map { t ->
+                        t.albumArtUrl?.let { url -> runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull() }
+                    }
+                    withContext(Dispatchers.Main) {
+                        resultsList.removeAllViews()
+                        if (tracks.isEmpty()) {
+                            resultsList.addView(TextView(this@MainActivity).apply {
+                                text = "No results for \"$q\""; textSize = 12f
+                                setTextColor(0xFF6B7280.toInt()); setPadding(dp(14), dp(12), 0, 0)
+                            })
+                        } else {
+                            tracks.forEachIndexed { i, t -> resultsList.addView(buildResultRow(t, arts.getOrNull(i), i)) }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
     // ── Music dock: library pager + click wheel ──────────────────────────────
+
+    // ── iPod-style wheel selection over the compact library ──────────────────
+    // Rotation moves a highlighted row/card instead of scrolling the page; the
+    // center button activates it. Selectable items are discovered by walking
+    // the active scroll container, so tab switches, playlist drill-down, and
+    // search results all work without registration bookkeeping.
+    private var compactSelectedView: View? = null
+    // Bridge to the overlay's local selectTab() so the wheel's press-and-hold
+    // ‹‹/›› can page through TOP / RECENT / PLAYLISTS / SEARCH.
+    private var compactLibrarySelectTab: ((Int) -> Unit)? = null
+    private var compactLibraryActiveTab = 0
+    // Playlist/folder drill-down state: LIBRARY acts as back while one is open,
+    // and the wheel's scroll target is restored to the main list on close.
+    private var compactDetailView: View? = null
+    private var compactMainScroll: ScrollView? = null
+
+    private fun closeCompactPlaylistDetail(): Boolean {
+        val detail = compactDetailView ?: return false
+        compactDetailView = null
+        val slideOut = (spotifyCompactOverlay?.width ?: detail.width).toFloat()
+        detail.animate().translationX(slideOut).setDuration(240)
+            .setInterpolator(android.view.animation.AccelerateInterpolator(1.8f))
+            .withEndAction { (detail.parent as? ViewGroup)?.removeView(detail) }.start()
+        compactLibraryScrollRef = compactMainScroll
+        compactLibraryTargetY = compactMainScroll?.scrollY ?: 0
+        compactSelectedView = null
+        compactOverscroll = 0f
+        return true
+    }
+
+    private fun compactLibraryTabStep(delta: Int): Boolean {
+        val select = compactLibrarySelectTab ?: return false
+        val next = (compactLibraryActiveTab + delta).coerceIn(0, 3)
+        if (next == compactLibraryActiveTab) return false
+        select(next)
+        return true
+    }
+
+    private fun compactSelectableItems(): List<View> {
+        val root = compactLibraryScrollRef?.getChildAt(0) as? ViewGroup ?: return emptyList()
+        val out = mutableListOf<View>()
+        fun walk(vg: ViewGroup) {
+            for (i in 0 until vg.childCount) {
+                val c = vg.getChildAt(i)
+                if (c.visibility != View.VISIBLE) continue
+                if (c.isClickable) out.add(c) else if (c is ViewGroup) walk(c)
+            }
+        }
+        walk(root)
+        return out
+    }
+
+    private fun compactItemTop(v: View): Int {
+        val content = compactLibraryScrollRef?.getChildAt(0) ?: return 0
+        var y = 0
+        var cur: View = v
+        while (cur !== content) {
+            y += cur.top
+            cur = cur.parent as? View ?: break
+        }
+        return y
+    }
+
+    private fun firstVisibleCompactIndex(sv: ScrollView, items: List<View>): Int {
+        items.forEachIndexed { i, v ->
+            if (compactItemTop(v) + v.height > sv.scrollY + dp(4)) return i
+        }
+        return 0
+    }
+
+    private fun setCompactSelection(items: List<View>, idx: Int) {
+        val v = items.getOrNull(idx) ?: return
+        if (compactSelectedView !== v) {
+            compactSelectedView?.foreground = null
+            compactSelectedView = v
+            v.foreground = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setStroke(dp(2), 0xFF1ED760.toInt())
+                setColor(0x141ED760)
+            }
+        }
+        scrollCompactSelectionIntoView(v)
+    }
+
+    private fun scrollCompactSelectionIntoView(v: View) {
+        val sv = compactLibraryScrollRef ?: return
+        val content = sv.getChildAt(0) ?: return
+        val top = compactItemTop(v)
+        val bottom = top + v.height
+        val margin = dp(10)
+        val cur = sv.scrollY
+        var next = cur
+        if (top < cur + margin) next = top - margin
+        else if (bottom > cur + sv.height - margin) next = bottom - sv.height + margin
+        val maxY = (content.height - sv.height).coerceAtLeast(0)
+        next = next.coerceIn(0, maxY)
+        compactLibraryTargetY = next
+        if (next != cur) sv.smoothScrollTo(0, next)
+    }
+
+    // Elastic edge stretch: wheel ticks past the list edge translate the library
+    // content with diminishing resistance, then spring back on release.
+    private var compactOverscroll = 0f
+
+    private fun applyCompactOverscroll(sv: ScrollView, overflowPx: Int) {
+        val child = sv.getChildAt(0) ?: return
+        val max = dp(48).toFloat()
+        child.animate().cancel()
+        val resistance = 1f - (kotlin.math.abs(compactOverscroll) / max).coerceIn(0f, 1f)
+        compactOverscroll = (compactOverscroll - overflowPx * 0.45f * resistance).coerceIn(-max, max)
+        child.translationY = compactOverscroll
+    }
+
+    private fun releaseCompactOverscroll() {
+        if (compactOverscroll == 0f) return
+        compactOverscroll = 0f
+        val child = compactLibraryScrollRef?.getChildAt(0) ?: return
+        child.animate().translationY(0f).setDuration(320)
+            .setInterpolator(android.view.animation.OvershootInterpolator(1.2f))
+            .start()
+    }
 
     private fun musicDockView(): View {
         val wheelBg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
@@ -2907,16 +3612,71 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(WheelWellView(context), FrameLayout.LayoutParams(wheelSize + dp(18), wheelSize + dp(18), Gravity.CENTER))
             addView(ClickWheelView(context).apply {
                 sourceLabel = if (spotifyAuth.isConnected) "LIBRARY" else "SOURCE"
-                onLibrary = if (spotifyAuth.isConnected) ({ haptic(this); showSpotifyFullLibrary() }) else null
-                onCenter = { haptic(this); mediaSessionSource.togglePlayPause() }
+                onLibrary = if (spotifyAuth.isConnected) ({
+                    haptic(this)
+                    if (spotifyCompactOverlay != null) {
+                        // Inside a playlist/folder → LIBRARY steps back first;
+                        // at the top level it dismisses the overlay.
+                        if (!closeCompactPlaylistDetail()) dismissCompactSpotifyLibrary()
+                    } else {
+                        // Single tap → compact library
+                        showCompactSpotifyLibrary()
+                    }
+                }) else null
+                // Press-and-hold LIBRARY → full-screen library.
+                onLongLibrary = if (spotifyAuth.isConnected) ({ showSpotifyFullLibrary() }) else null
+                // Press-and-hold OK → search.
+                onLongCenter = if (spotifyAuth.isConnected) ({ showSpotifySearchOverlay() }) else null
+                onCenter = {
+                    haptic(this)
+                    val sel = compactSelectedView
+                    if (compactLibraryScrollRef != null && sel != null && sel.isAttachedToWindow) sel.performClick()
+                    else mediaSessionSource.togglePlayPause()
+                }
                 onLeft = { haptic(this); mediaSessionSource.skipToPrevious() }
                 onRight = { haptic(this); mediaSessionSource.skipToNext() }
                 onBottom = { haptic(this); mediaSessionSource.togglePlayPause() }
+                // Press-and-hold ‹‹/›› pages through library tabs — only while
+                // the compact library is open; elsewhere a hold stays a skip.
+                onLongLeft = {
+                    if (spotifyCompactOverlay != null) { compactLibraryTabStep(-1); true } else false
+                }
+                onLongRight = {
+                    if (spotifyCompactOverlay != null) { compactLibraryTabStep(1); true } else false
+                }
+                // Flywheel glide only makes sense on the library list — a seek
+                // that keeps drifting after finger-up would feel broken.
+                flingAllowed = { compactLibraryScrollRef != null }
+                onScrollEnd = { releaseCompactOverscroll() }
                 onScroll = { steps ->
                     val sv = compactLibraryScrollRef
                     if (sv != null) {
-                        haptic(this)
-                        sv.smoothScrollBy(0, steps * dp(52))
+                        val items = compactSelectableItems()
+                        if (items.isNotEmpty()) {
+                            val curIdx = items.indexOf(compactSelectedView)
+                            // No selection yet → start from the first visible item.
+                            val target = if (curIdx >= 0) curIdx + steps
+                                         else firstVisibleCompactIndex(sv, items) + if (steps > 0) steps - 1 else steps
+                            val clamped = target.coerceIn(0, items.lastIndex)
+                            if (target != clamped) {
+                                // Pushed past the list edge: stretch, and kill any
+                                // glide now so the spring-back doesn't wait for
+                                // leftover momentum to decay.
+                                applyCompactOverscroll(sv, (target - clamped) * dp(56))
+                                cancelFling()
+                            } else if (compactOverscroll != 0f) {
+                                releaseCompactOverscroll()
+                            }
+                            setCompactSelection(items, clamped)
+                        }
+                    } else {
+                        val info = mediaSessionSource.nowPlaying.value
+                        if (info != null && info.durationMs > 0) {
+                            val elapsed = android.os.SystemClock.elapsedRealtime() - info.lastUpdateElapsedMs
+                            val pos = if (info.isPlaying) (info.positionMs + elapsed).coerceAtMost(info.durationMs) else info.positionMs
+                            val seekMs = (pos + steps * 8_000L).coerceIn(0L, info.durationMs)
+                            mediaSessionSource.seekTo(seekMs)
+                        }
                     }
                 }
             }, FrameLayout.LayoutParams(wheelSize, wheelSize, Gravity.CENTER))
@@ -3075,8 +3835,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         tabLabels.forEachIndexed { i, label ->
             val tv = mono(label, 8.5f, if (i == 0) SpotifyGreen else InkDim).apply {
                 letterSpacing = 0.10f
-                setPadding(dp(10), dp(3), 0, dp(3))
-                isClickable = true
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(14), dp(12), dp(8), dp(12))
+                minimumHeight = dp(48)
+                isClickable = true; isFocusable = false
             }
             tabViews.add(tv)
             header.addView(tv)
@@ -3211,6 +3973,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 2 -> { // SEARCH
                     searchField.requestFocus()
+                    searchField.postDelayed({
+                        val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                        imm?.showSoftInput(searchField, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    }, 120)
                 }
             }
         }
@@ -3265,6 +4031,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun showSpotifyFullLibrary() {
+        if (!requirePro(ProFeature.SPOTIFY_LIBRARY)) return
         val SpotifyGreen = 0xFF1ED760.toInt()
         val CardBg = 0xFF141720.toInt()
         val screenH = resources.displayMetrics.heightPixels
@@ -3277,22 +4044,48 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val scrim = FrameLayout(this).apply { setBackgroundColor(0x00000000); isClickable = true }
 
         var panelSwipeStartX = 0f; var panelSwipeStartY = 0f
+        var panelSwipeConsumed = false
         var panelDismiss: (() -> Unit)? = null
+        var panelSelectTab: ((Int) -> Unit)? = null
+        var panelActiveTab: (() -> Int)? = null
         val panel = object : LinearLayout(this) {
             override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
                 when (ev.action) {
-                    MotionEvent.ACTION_DOWN -> { panelSwipeStartX = ev.rawX; panelSwipeStartY = ev.rawY }
+                    MotionEvent.ACTION_DOWN -> {
+                        panelSwipeStartX = ev.rawX; panelSwipeStartY = ev.rawY; panelSwipeConsumed = false
+                    }
                     MotionEvent.ACTION_MOVE -> {
                         val dx = ev.rawX - panelSwipeStartX; val dy = ev.rawY - panelSwipeStartY
-                        if (dx < -dp(36) && kotlin.math.abs(dy) < kotlin.math.abs(dx) * 0.6f) return true
+                        val adx = kotlin.math.abs(dx); val ady = kotlin.math.abs(dy)
+                        // Intercept horizontal swipes (tab change) or long downward swipes (dismiss)
+                        if (!panelSwipeConsumed && adx > dp(28) && adx > ady * 1.2f) return true
+                        if (!panelSwipeConsumed && dy > dp(120) && ady > adx * 1.4f) return true
                     }
                 }
                 return false
             }
             override fun onTouchEvent(ev: MotionEvent): Boolean {
-                if (ev.action == MotionEvent.ACTION_UP) {
+                if (ev.action == MotionEvent.ACTION_UP && !panelSwipeConsumed) {
                     val dx = ev.rawX - panelSwipeStartX; val dy = ev.rawY - panelSwipeStartY
-                    if (dx < -dp(36) && kotlin.math.abs(dy) < kotlin.math.abs(dx) * 0.6f) panelDismiss?.invoke()
+                    val adx = kotlin.math.abs(dx); val ady = kotlin.math.abs(dy)
+                    when {
+                        // Long swipe down → dismiss
+                        dy > dp(120) && ady > adx * 1.4f -> { panelSwipeConsumed = true; panelDismiss?.invoke() }
+                        // Swipe right → next tab
+                        dx > dp(28) && adx > ady * 1.2f -> {
+                            panelSwipeConsumed = true
+                            val cur = panelActiveTab?.invoke() ?: 0
+                            val next = (cur + 1).coerceAtMost(3)
+                            if (next != cur) { haptic(this); panelSelectTab?.invoke(next) }
+                        }
+                        // Swipe left → previous tab
+                        dx < -dp(28) && adx > ady * 1.2f -> {
+                            panelSwipeConsumed = true
+                            val cur = panelActiveTab?.invoke() ?: 0
+                            val prev = (cur - 1).coerceAtLeast(0)
+                            if (prev != cur) { haptic(this); panelSelectTab?.invoke(prev) }
+                        }
+                    }
                 }
                 return true
             }
@@ -3311,17 +4104,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         decorView.addView(scrim, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
 
         fun dismiss() {
-            panel.animate().translationY(screenH.toFloat()).setDuration(340)
-                .setInterpolator(android.view.animation.AccelerateInterpolator(1.6f))
-                .withEndAction {
-                    decorView.removeView(scrim)
-                    if (openPane == null && ::mediaSessionSource.isInitialized && mediaSessionSource.nowPlaying.value != null)
-                        openHere(musicTarget())
-                }.start()
-            scrim.animate().alpha(0f).setDuration(280).start()
+            spotifyFullLibraryDismiss = null
+            panel.animate().translationY(screenH.toFloat()).setDuration(300)
+                .setInterpolator(android.view.animation.AccelerateInterpolator(1.8f))
+                .withEndAction { decorView.removeView(scrim) }.start()
+            scrim.animate().alpha(0f).setDuration(240).start()
         }
         panelDismiss = ::dismiss
-        scrim.setOnClickListener { dismiss() }
+        spotifyFullLibraryDismiss = ::dismiss
 
         // ── Header row: tabs + dismiss pill ──────────────────────────────────
         val tabLabels = listOf("TOP", "RECENT", "PLAYLISTS", "SEARCH")
@@ -3330,14 +4120,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(18), dp(12), dp(14))
+            setPadding(dp(14), dp(10), dp(12), dp(4))
         }
         tabLabels.forEachIndexed { i, lbl ->
-            val tv = mono(lbl, 9f, if (i == 0) SpotifyGreen else InkDim).apply {
+            val tv = mono(lbl, 9.5f, if (i == 0) SpotifyGreen else InkDim).apply {
                 letterSpacing = 0.12f
+                gravity = Gravity.CENTER_VERTICAL
                 typeface = if (i == 0) Typeface.create("sans-serif", Typeface.BOLD) else Typeface.DEFAULT
-                if (i > 0) setPadding(dp(20), 0, 0, 0)
-                isClickable = true
+                // Large touch target — 48dp min height, generous horizontal padding
+                setPadding(dp(if (i == 0) 4 else 18), dp(14), dp(12), dp(14))
+                minimumHeight = dp(48)
+                isClickable = true; isFocusable = false
             }
             tabViews.add(tv); headerRow.addView(tv)
         }
@@ -3667,11 +4460,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 3 -> { // SEARCH
                     searchField.requestFocus()
+                    searchField.postDelayed({
+                        val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                        imm?.showSoftInput(searchField, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                    }, 120)
                 }
             }
         }
 
         tabViews.forEachIndexed { i, tv -> tv.setOnClickListener { selectTab(i) } }
+        panelSelectTab = ::selectTab
+        panelActiveTab = { activeTab }
 
         searchField.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
@@ -3723,6 +4522,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 onLeft = { haptic(this); mediaSessionSource.skipToPrevious() }
                 onRight = { haptic(this); mediaSessionSource.skipToNext() }
                 onBottom = { haptic(this); mediaSessionSource.togglePlayPause() }
+                onScroll = { steps ->
+                    mediaSessionSource.adjustVolume(steps)
+                    showVolumeHud()
+                }
             }, FrameLayout.LayoutParams(wheelSize, wheelSize, Gravity.CENTER))
         }
     }
@@ -3847,9 +4650,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow(listOf("abc", "0", "back", "enter"))
             } else {
                 addKeyRow("qwertyuiop".map { it.toString() })
-                addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
-                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
-                addKeyRow(listOf("123", "clicks", "space", "period", "enter"), dp(15))
+                addKeyRow("asdfghjkl".map { it.toString() }, if (keyboardTheme == KEYBOARD_THEME_GOKEYS) dp(26) else dp(18))
+                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(8))
+                addKeyRow(listOf("123", "clicks", "space", "period", "enter"), if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 0 else dp(15))
             }
         }
 
@@ -3920,7 +4723,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             listOf(
                 "DEFAULT" to KEYBOARD_THEME_DEFAULT,
                 "CLICKS" to KEYBOARD_THEME_CLICKS,
-                "SKEUO" to KEYBOARD_THEME_SKEUO
+                "SKEUO" to KEYBOARD_THEME_SKEUO,
+                "GOKEYS" to KEYBOARD_THEME_GOKEYS
             ).forEach { (label, value) ->
                 addView(TextView(context).apply {
                     text = label
@@ -3932,10 +4736,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     background = if (keyboardTheme == value) keyboardThemePillBackground(value) else border(Line)
                     isClickable = true
                     setOnClickListener {
+                        if (value == KEYBOARD_THEME_SKEUO && !ProManager.isUnlocked(this@MainActivity)) {
+                            showUpgradeSheet(ProFeature.SKEUO_THEME); return@setOnClickListener
+                        }
                         keyboardTheme = value
                         prefs().edit().putString(KEYBOARD_THEME_PREF, value).apply()
-                        haptic(this)
-                        render()
+                        haptic(this); render()
                     }
                 }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
             }
@@ -3971,20 +4777,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(horizontalInset, 0, horizontalInset, 0)
             labels.forEach { label ->
                 val weight = when (label) {
-                    "space" -> 3.65f
-                    "enter" -> if (numberPadOpen) 1f else 0.82f
-                    "period" -> 0.86f
-                    "clicks" -> 1.55f
-                    "123" -> 1.02f
-                    "back", "shift", "abc" -> 1.02f
+                    "space" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 3.23f else 3.65f
+                    "enter" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.01f else if (numberPadOpen) 1f else 0.82f
+                    "period" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.0f else 0.86f
+                    "clicks" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.0f else 1.55f
+                    "123" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.0f else 1.02f
+                    "back", "shift" -> if (keyboardTheme == KEYBOARD_THEME_GOKEYS) 1.15f else 1.02f
+                    "abc" -> 1.02f
                     else -> 1f
                 }
-                if (label == "enter") {
+                if (label == "enter" && keyboardTheme != KEYBOARD_THEME_GOKEYS) {
                     addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
                         marginStart = dp(4)
                     })
-                } else if (label == "123") {
+                } else if (label == "123" && keyboardTheme != KEYBOARD_THEME_GOKEYS) {
                     addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
                         marginEnd = dp(4)
@@ -4015,7 +4822,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setTextColor(keyTextColor(label))
             isClickable = true
             val vInset = keyVerticalInset()
-            val needsInset = label != "enter" && label != "123"
+            val needsInset = keyboardTheme == KEYBOARD_THEME_GOKEYS || (label != "enter" && label != "123")
             fun idleBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyIdleBackground(label), 0, vInset, 0, vInset) else keyIdleBackground(label)
             fun pressedBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyPressedBackground(label), 0, vInset, 0, vInset) else keyPressedBackground(label)
             background = idleBg()
@@ -4034,11 +4841,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 deleteRunnable = null
             }
 
+            var spaceCursorLastX = 0f
+            var spaceCursorMoved = false
+            val cursorStepPx = dp(8).toFloat()
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         touchDownX = event.x; touchDownY = event.y
+                        spaceCursorLastX = event.rawX; spaceCursorMoved = false
                         v.background = pressedBg()
+                        KeyPhysicsRegistry.activeSprings[v]?.cancel()
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = dp(2).toFloat()
                         keyHaptic(label)
                         keyPreviewManager.show(v, label)
@@ -4055,13 +4867,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             deleteHandler?.postDelayed(deleteRunnable!!, 380L)
                         }
                     }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (label == "space" && !libraryOpen) {
+                            val delta = event.rawX - spaceCursorLastX
+                            if (Math.abs(delta) >= cursorStepPx) {
+                                spaceCursorMoved = true
+                                val pane = openPane
+                                val text = if (pane?.kind == PaneKind.CHAT) composeText else query
+                                val len = text.length
+                                val pos = cursorPos ?: len
+                                val newPos = (pos + if (delta > 0) 1 else -1).coerceIn(0, len)
+                                cursorPos = if (newPos == len) null else newPos
+                                spaceCursorLastX = event.rawX
+                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                renderRibbon()
+                            }
+                        }
+                    }
                     MotionEvent.ACTION_UP -> {
                         v.background = idleBg()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = 0f
+                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.animateSpringReturn(dp(2).toFloat())
                         if (label == "back") {
                             cancelRepeat()
                             if (deleteRepeating) { deleteRepeating = false; return@setOnTouchListener true }
                         }
+                        if (label == "space" && spaceCursorMoved) { spaceCursorMoved = false; return@setOnTouchListener true }
                         val flick = flickDetector.classify(touchDownX, touchDownY, event.x, event.y)
                         if (flick == FlickDirection.UP) {
                             val prediction = (keyViews[label] as? DynamicFlickKeyView)?.upWordHint
@@ -4071,19 +4901,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                                 return@setOnTouchListener true
                             }
                         }
+                        // Fire key action here since we consume the event (return true below)
+                        if (label == "shift") handleShiftTap() else handleKey(label)
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         v.background = idleBg()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = 0f
-                        cancelRepeat(); deleteRepeating = false
+                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.animateSpringReturn(dp(2).toFloat())
+                        cancelRepeat(); deleteRepeating = false; spaceCursorMoved = false
                     }
                 }
-                false
+                true  // consume all key touches so they don't bubble to pane swipe handler
             }
-            setOnClickListener {
-                if (label == "shift") handleShiftTap() else handleKey(label)
-            }
-            if (label == "enter") setOnLongClickListener { haptic(this); startVoiceInput(); true }
+            // Long-press handlers remain; click listener no longer needed (handled in touch UP above)
+            if (label == "enter") setOnLongClickListener { haptic(this); triggerGeminiSmartCompose(); true }
             if (isLetter) setOnLongClickListener { haptic(this); handleLetterLongPress(label.lowercase(Locale.US)); true }
         }.also { keyViews[label] = it }
     }
@@ -4097,6 +4927,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         "abc" -> "ABC"
         "123" -> "123"
         else -> if (label.length == 1) {
+            if (keyboardTheme == KEYBOARD_THEME_GOKEYS && label[0].isLetter()) label.lowercase(Locale.US)
+            else
             if (numberPadOpen || shiftState == ShiftState.OFF) label else label.uppercase(Locale.US)
         } else label
     }
@@ -4142,13 +4974,132 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             spellChecker?.getSuggestions(TextInfo(word), 5)
         }
         suggestDebounce = r
-        handler.postDelayed(r, 160)
+        handler.postDelayed(r, 80)
     }
 
     private fun currentWordInCompose(): String {
         val text = (if (openPane?.kind == PaneKind.CHAT) composeText else query).trimEnd()
         val lastSpace = text.lastIndexOf(' ')
         return if (lastSpace < 0) text else text.substring(lastSpace + 1)
+    }
+
+    // ── Autocorrect ──────────────────────────────────────────────────────────
+
+    private fun tryAutocorrect() {
+        val word = currentWordInCompose().trimEnd()
+        if (word.length < 2) return
+        val top = predictionEngine.getSuggestions(word, 1).firstOrNull() ?: return
+        if (top.equals(word, ignoreCase = true)) return
+        // Only correct if edit distance is 1 (one transposition/substitution) — avoids aggressive changes
+        if (editDistance(word, top) > 1) return
+        pendingAutocorrectUndo = AutocorrectUndo(word, top)
+        if (openPane?.kind == PaneKind.CHAT) {
+            composeText = composeText.dropLast(word.length) + top + " "
+        } else {
+            query = query.dropLast(word.length) + top + " "
+        }
+    }
+
+    private fun editDistance(a: String, b: String): Int {
+        val dp = Array(a.length + 1) { IntArray(b.length + 1) }
+        for (i in 0..a.length) dp[i][0] = i
+        for (j in 0..b.length) dp[0][j] = j
+        for (i in 1..a.length) for (j in 1..b.length) {
+            dp[i][j] = if (a[i-1].lowercaseChar() == b[j-1].lowercaseChar()) dp[i-1][j-1]
+                        else 1 + minOf(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
+        }
+        return dp[a.length][b.length]
+    }
+
+    // ── Gemini keyboard suggestions ──────────────────────────────────────────
+
+    private fun scheduleGeminiSuggestions() {
+        if (!geminiConfigured() || !ProManager.isUnlocked(this)) return
+        geminiSuggestJob?.cancel()
+        geminiSuggestJob = mediaUiScope.launch {
+            delay(220)
+            val context = if (openPane?.kind == PaneKind.CHAT) composeText else query
+            if (context.isBlank()) return@launch
+            val result = runCatching {
+                withContext(Dispatchers.IO) { fetchGeminiSuggestions(context) }
+            }.getOrNull() ?: return@launch
+            if (result.isNotEmpty()) {
+                suggestions = result
+                updateSuggestionBar()
+            }
+        }
+    }
+
+    private fun fetchGeminiSuggestions(context: String): List<String> {
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        if (key.isBlank()) return emptyList()
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+        val prompt = """You are a keyboard autocomplete engine. Given this text the user is typing, reply with exactly 3 next-word predictions as a JSON array of strings. Nothing else — no explanation, just the array.
+Text: "$context"
+Reply format: ["word1","word2","word3"]"""
+        val url = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/${java.net.URLEncoder.encode(model, "UTF-8")}:generateContent?key=${java.net.URLEncoder.encode(key, "UTF-8")}")
+        val body = org.json.JSONObject()
+            .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", org.json.JSONArray().put(org.json.JSONObject().put("text", prompt)))))
+            .put("generationConfig", org.json.JSONObject().put("temperature", 0.2).put("maxOutputTokens", 24))
+        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "POST"; connectTimeout = 6_000; readTimeout = 8_000
+            setRequestProperty("Content-Type", "application/json"); doOutput = true
+        }
+        java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+        if (conn.responseCode !in 200..299) return emptyList()
+        val raw = conn.inputStream.bufferedReader().use { it.readText() }
+        val text = org.json.JSONObject(raw)
+            .optJSONArray("candidates")?.optJSONObject(0)
+            ?.optJSONObject("content")?.optJSONArray("parts")
+            ?.optJSONObject(0)?.optString("text")?.trim() ?: return emptyList()
+        // Parse ["word1","word2","word3"]
+        val match = Regex(""""\s*([^"]+)\s*"""").findAll(text)
+        return match.map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.take(3).toList()
+    }
+
+    // ── Gemini smart compose ─────────────────────────────────────────────────
+
+    fun triggerGeminiSmartCompose() {
+        if (!requirePro(ProFeature.GEMINI_SMART_COMPOSE)) return
+        if (!geminiConfigured()) { Toast.makeText(this, "Add a Gemini API key in Settings.", Toast.LENGTH_SHORT).show(); return }
+        val context = if (openPane?.kind == PaneKind.CHAT) composeText else query
+        if (context.isBlank()) return
+        mediaUiScope.launch {
+            val completion = runCatching {
+                withContext(Dispatchers.IO) { fetchGeminiCompletion(context) }
+            }.getOrNull() ?: return@launch
+            if (completion.isNotBlank()) {
+                if (openPane?.kind == PaneKind.CHAT) {
+                    composeText = composeText.trimEnd() + " " + completion
+                    renderPaneContent(openPane!!)
+                } else {
+                    query = query.trimEnd() + " " + completion
+                }
+                renderRibbon()
+            }
+        }
+    }
+
+    private fun fetchGeminiCompletion(context: String): String {
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        if (key.isBlank()) return ""
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+        val prompt = "Continue this text naturally in one short sentence, no quotes, no explanation:\n\"$context\""
+        val url = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/${java.net.URLEncoder.encode(model, "UTF-8")}:generateContent?key=${java.net.URLEncoder.encode(key, "UTF-8")}")
+        val body = org.json.JSONObject()
+            .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", org.json.JSONArray().put(org.json.JSONObject().put("text", prompt)))))
+            .put("generationConfig", org.json.JSONObject().put("temperature", 0.7).put("maxOutputTokens", 60))
+        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "POST"; connectTimeout = 8_000; readTimeout = 15_000
+            setRequestProperty("Content-Type", "application/json"); doOutput = true
+        }
+        java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+        if (conn.responseCode !in 200..299) return ""
+        val raw = conn.inputStream.bufferedReader().use { it.readText() }
+        return org.json.JSONObject(raw)
+            .optJSONArray("candidates")?.optJSONObject(0)
+            ?.optJSONObject("content")?.optJSONArray("parts")
+            ?.optJSONObject(0)?.optString("text")?.trim() ?: ""
     }
 
     // ── Shift ────────────────────────────────────────────────────────────────
@@ -4526,7 +5477,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         var onTop: (() -> Unit)? = null
         var onBottom: (() -> Unit)? = null
         var onLibrary: (() -> Unit)? = null
+        var onLongLibrary: (() -> Unit)? = null
+        // Long-press on ‹‹ / ›› zones. Return true to consume (suppresses the
+        // normal tap action on release), false to fall through to a plain tap.
+        var onLongLeft: (() -> Boolean)? = null
+        var onLongRight: (() -> Boolean)? = null
+        var onLongCenter: (() -> Unit)? = null
         var onScroll: ((steps: Int) -> Unit)? = null
+        private val longPressHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        private var longPressRunnable: Runnable? = null
+        private var longPressFired = false
         var sourceLabel: String = "SOURCE"
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textAlign = Paint.Align.CENTER
@@ -4538,6 +5498,79 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private var ringAccum = 0.0
         private val ringStepDeg = 10.0
         private var touchDownX = 0f; private var touchDownY = 0f
+        // Only the finger that started the gesture drives the wheel; a second
+        // resting thumb would otherwise make the angle jump wildly.
+        private var activePointerId = MotionEvent.INVALID_POINTER_ID
+        private var multiTouchLost = false
+        // Flywheel: EMA-smoothed angular velocity in degrees per ms, sampled
+        // from move events and decayed after a fast release. The decay loop is
+        // driven by Choreographer vsync with real frame deltas, so the glide
+        // speed and friction feel identical on 60/90/120Hz panels.
+        var flingAllowed: (() -> Boolean)? = null
+        var onScrollEnd: (() -> Unit)? = null
+        private var ringVelocity = 0.0
+        private var lastMoveTimeMs = 0L
+        private var lastTickMs = 0L
+        private var flinging = false
+        private var flingLastFrameNanos = 0L
+        private val flingCallback = object : android.view.Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (!flinging) return
+                if (flingLastFrameNanos == 0L) {
+                    flingLastFrameNanos = frameTimeNanos
+                    android.view.Choreographer.getInstance().postFrameCallback(this)
+                    return
+                }
+                val dtMs = (frameTimeNanos - flingLastFrameNanos) / 1_000_000.0
+                flingLastFrameNanos = frameTimeNanos
+                ringVelocity *= Math.pow(0.94, dtMs / 16.0)
+                if (kotlin.math.abs(ringVelocity) < 0.02) {
+                    flinging = false
+                    flingLastFrameNanos = 0L
+                    onScrollEnd?.invoke()
+                    return
+                }
+                ringAccum += ringVelocity * dtMs
+                val steps = (ringAccum / ringStepDeg).toInt()
+                if (steps != 0) {
+                    ringAccum -= steps * ringStepDeg
+                    wheelTick()
+                    onScroll?.invoke(steps)
+                }
+                android.view.Choreographer.getInstance().postFrameCallback(this)
+            }
+        }
+
+        init {
+            setLayerType(LAYER_TYPE_HARDWARE, null)
+        }
+
+        private fun startFling() {
+            flinging = true
+            flingLastFrameNanos = 0L
+            android.view.Choreographer.getInstance().postFrameCallback(flingCallback)
+        }
+
+        private fun stopFling() {
+            flinging = false
+            flingLastFrameNanos = 0L
+            android.view.Choreographer.getInstance().removeFrameCallback(flingCallback)
+        }
+
+        // For consumers that hit a hard boundary (list edge): kill leftover
+        // momentum immediately and fire the end-of-scroll signal now instead
+        // of letting the glide decay against the edge.
+        fun cancelFling() {
+            if (!flinging) return
+            stopFling()
+            onScrollEnd?.invoke()
+        }
+
+        override fun onDetachedFromWindow() {
+            super.onDetachedFromWindow()
+            stopFling()
+            longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
+        }
         private var outerRadialShader: android.graphics.RadialGradient? = null
         private var faceLinearShader: android.graphics.LinearGradient? = null
         private var centerShaderNormal: android.graphics.RadialGradient? = null
@@ -4565,9 +5598,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 floatArrayOf(0f, 0.64f, 1f), Shader.TileMode.CLAMP
             )
             centerShaderPressed = android.graphics.RadialGradient(
-                cx, cy + dp(3).toFloat(), inner * 1.14f,
-                intArrayOf(0xFF20242B.toInt(), 0xFF10141A.toInt(), 0xFF050609.toInt()),
-                floatArrayOf(0f, 0.64f, 1f), Shader.TileMode.CLAMP
+                cx, cy + dp(4).toFloat(), inner * 1.18f,
+                intArrayOf(0xFF191D23.toInt(), 0xFF0D1015.toInt(), 0xFF030407.toInt()),
+                floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP
             )
             glintShader = android.graphics.RadialGradient(
                 cx - outer * 0.28f, cy - outer * 0.32f, outer * 0.95f,
@@ -4603,8 +5636,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             paint.shader = null
 
             pressedZone?.takeIf { it != WheelZone.CENTER }?.let { zone ->
-                paint.style = Paint.Style.FILL
-                paint.color = 0x33000000
                 val start = when (zone) {
                     WheelZone.TOP -> 225f
                     WheelZone.RIGHT -> 315f
@@ -4613,7 +5644,48 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     WheelZone.CENTER -> 0f
                 }
                 val pressedR = outer * 0.94f
+                val midAngle = Math.toRadians((start + 45.0))
+                val shadowDx = kotlin.math.cos(midAngle).toFloat()
+                val shadowDy = kotlin.math.sin(midAngle).toFloat()
+
+                // Base depression: darker fill for the pressed sector
+                paint.style = Paint.Style.FILL
+                paint.color = 0x55000000
                 canvas.drawArc(cx - pressedR, cy - pressedR, cx + pressedR, cy + pressedR, start, 90f, true, paint)
+
+                // Inner shadow: a radial gradient centred on the midpoint of the arc,
+                // making the area look sunken away from the light source
+                val shadowCx = cx + shadowDx * outer * 0.70f
+                val shadowCy = cy + shadowDy * outer * 0.70f
+                paint.shader = android.graphics.RadialGradient(
+                    shadowCx, shadowCy, outer * 0.55f,
+                    intArrayOf(0x00000000, 0x22000000, 0x55000000),
+                    floatArrayOf(0f, 0.5f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+                canvas.drawArc(cx - pressedR, cy - pressedR, cx + pressedR, cy + pressedR, start, 90f, true, paint)
+                paint.shader = null
+
+                // Bright rim at the outer edge of the pressed arc (the rim catches light
+                // as the surface tilts away, making it look physically raised/hinged at the edge)
+                paint.style = Paint.Style.STROKE
+                val density = resources.displayMetrics.density
+                paint.strokeWidth = density * 1.5f
+                paint.color = 0x18FFFFFF
+                canvas.drawArc(cx - pressedR * 0.968f, cy - pressedR * 0.968f,
+                    cx + pressedR * 0.968f, cy + pressedR * 0.968f, start + 2f, 86f, false, paint)
+
+                // Inner shadow lip where the button meets the ring — dark concave crease
+                val lipR = outer * 0.405f
+                paint.strokeWidth = density * 2.5f
+                paint.color = 0x44000000
+                canvas.drawArc(cx - lipR, cy - lipR, cx + lipR, cy + lipR, start, 90f, false, paint)
+
+                // Thin highlight just inside that crease (light catching the far edge of the well)
+                val hlR = outer * 0.415f
+                paint.strokeWidth = density * 1f
+                paint.color = 0x10FFFFFF
+                canvas.drawArc(cx - hlR, cy - hlR, cx + hlR, cy + hlR, start + 5f, 80f, false, paint)
             }
 
             paint.style = Paint.Style.STROKE
@@ -4624,15 +5696,32 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             paint.color = 0xEE010203.toInt()
             canvas.drawCircle(cx, cy, outer * 0.966f, paint)
 
-            val centerOffY = cy + dp(if (centerPressed) 3 else 0)
+            val centerOffY = cy + dp(if (centerPressed) 4 else 0)
+            // Shadow beneath the center button (deeper when pressed)
+            if (centerPressed) {
+                paint.style = Paint.Style.FILL
+                paint.shader = android.graphics.RadialGradient(
+                    cx, cy + dp(6).toFloat(), inner * 1.1f,
+                    intArrayOf(0x55000000, 0x00000000),
+                    floatArrayOf(0f, 1f), Shader.TileMode.CLAMP
+                )
+                canvas.drawCircle(cx, cy + dp(5).toFloat(), inner * 1.06f, paint)
+                paint.shader = null
+            }
             paint.style = Paint.Style.FILL
             paint.shader = if (centerPressed) centerShaderPressed else centerShaderNormal
             canvas.drawCircle(cx, centerOffY, inner, paint)
             paint.shader = null
             paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(2).toFloat()
-            paint.color = if (centerPressed) 0xFF080A0E.toInt() else 0xBB000000.toInt()
+            paint.strokeWidth = (if (centerPressed) 2.5f else 2f) * resources.displayMetrics.density
+            paint.color = if (centerPressed) 0xFF040507.toInt() else 0xBB000000.toInt()
             canvas.drawCircle(cx, centerOffY, inner, paint)
+            // Pressed: inner shadow ring (concave well lip)
+            if (centerPressed) {
+                paint.strokeWidth = resources.displayMetrics.density
+                paint.color = 0x28FFFFFF
+                canvas.drawCircle(cx, centerOffY, inner - dp(2), paint)
+            }
             paint.strokeWidth = dp(1).toFloat()
             paint.color = 0x12FFFFFF
             canvas.drawCircle(cx, centerOffY, inner - dp(2), paint)
@@ -4642,38 +5731,106 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             canvas.drawCircle(cx, cy, outer * 0.94f, paint)
             paint.shader = null
 
-            paint.textSize = dp(11).toFloat()
-            paint.color = 0xFFE2E5EA.toInt()
-            canvas.drawText(sourceLabel, cx, cy - outer * 0.62f, paint)
-            paint.textSize = dp(18).toFloat()
-            canvas.drawText("‹‹", cx - outer * 0.62f, cy + dp(6), paint)
-            canvas.drawText("››", cx + outer * 0.62f, cy + dp(6), paint)
-            paint.textSize = dp(14).toFloat()
-            canvas.drawText("▶ Ⅱ", cx, cy + outer * 0.67f, paint)
+            // ── Glyphs carved straight into the wheel face — no background
+            // wells. Deep deboss: a strong shadow cast down from the cut's
+            // upper edge, a muted sunken face, and light catching the lower
+            // edge of the carving. Pressed glyphs sink another pixel.
+            val den = resources.displayMetrics.density
+            fun engraved(text: String, x: Float, y: Float, sizePx: Float, pressed: Boolean) {
+                paint.style = Paint.Style.FILL
+                paint.textSize = sizePx
+                val sink = if (pressed) den else 0f
+                // Bright lower-edge catch first, so the face draws over it.
+                paint.color = 0x3CFFFFFF
+                canvas.drawText(text, x, y + sink + den * 1.3f, paint)
+                // Sunken face with a deep soft shadow from the upper lip.
+                paint.color = if (pressed) 0xFF666D77.toInt() else 0xFF7A828C.toInt()
+                paint.setShadowLayer(den * 2.4f, 0f, -den * 1.4f, 0xE6000000.toInt())
+                canvas.drawText(text, x, y + sink, paint)
+                // Second tighter shadow pass to harden the top of the cut.
+                paint.setShadowLayer(den * 0.9f, 0f, -den * 0.7f, 0x99000000.toInt())
+                canvas.drawText(text, x, y + sink, paint)
+                paint.clearShadowLayer()
+            }
+
+            engraved(sourceLabel, cx, cy - outer * 0.62f, dp(11).toFloat(), pressedZone == WheelZone.TOP)
+            engraved("‹‹", cx - outer * 0.62f, cy + dp(6), dp(18).toFloat(), pressedZone == WheelZone.LEFT)
+            engraved("››", cx + outer * 0.62f, cy + dp(6), dp(18).toFloat(), pressedZone == WheelZone.RIGHT)
+            engraved("▶ Ⅱ", cx, cy + outer * 0.67f, dp(14).toFloat(), pressedZone == WheelZone.BOTTOM)
+
+            // OK stamped into the center button's metal: muted face with a soft
+            // shadow cast down onto the letters from the cut's upper edge.
+            val centerSunk = pressedZone == WheelZone.CENTER
+            paint.style = Paint.Style.FILL
             paint.textSize = dp(13).toFloat()
-            paint.color = 0xFFF3F0E7.toInt()
-            canvas.drawText("OK", cx, cy + dp(if (pressedZone == WheelZone.CENTER) 8 else 5), paint)
+            paint.color = if (centerSunk) 0xFF767D87.toInt() else 0xFF8A919B.toInt()
+            paint.setShadowLayer(den * 1.6f, 0f, -den * 0.9f, 0xB8000000.toInt())
+            canvas.drawText("OK", cx, cy + dp(if (centerSunk) 7 else 5), paint)
+            paint.clearShadowLayer()
+            paint.color = 0x16FFFFFF
+            canvas.drawText("OK", cx, cy + dp(if (centerSunk) 8 else 6), paint)
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
             val cx = width / 2f; val cy = height / 2f
             val outer = minOf(width, height) * 0.47f
-            val dx = event.x - cx; val dy = event.y - cy
-            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
-            val inRing = dist >= outer * 0.36f && dist <= outer * 1.08f
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    // Keep pagers/scroll parents from stealing the gesture mid-rotation.
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    stopFling()
+                    activePointerId = event.getPointerId(0)
+                    multiTouchLost = false
+                    val dx = event.x - cx; val dy = event.y - cy
                     touchDownX = event.x; touchDownY = event.y
-                    ringDragging = false; ringAccum = 0.0
+                    ringDragging = false; ringAccum = 0.0; longPressFired = false
+                    ringVelocity = 0.0; lastMoveTimeMs = event.eventTime
                     pressedZone = zoneFor(event.x, event.y)
-                    if (inRing) {
+                    val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                    if (dist >= outer * 0.36f && dist <= outer * 1.08f) {
                         ringLastAngle = Math.toDegrees(atan2(dy, dx).toDouble())
+                    }
+                    // Long-press detection: LIBRARY (TOP) plus ‹‹/›› zones.
+                    val downZone = pressedZone
+                    val longCb: (() -> Boolean)? = when (downZone) {
+                        WheelZone.TOP -> onLongLibrary?.let { cb -> ({ cb(); true }) }
+                        WheelZone.LEFT -> onLongLeft
+                        WheelZone.RIGHT -> onLongRight
+                        WheelZone.CENTER -> onLongCenter?.let { cb -> ({ cb(); true }) }
+                        else -> null
+                    }
+                    if (longCb != null) {
+                        val r = Runnable {
+                            if (pressedZone == downZone && !ringDragging && longCb()) {
+                                longPressFired = true
+                                pressedZone = null; invalidate()
+                                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                            }
+                        }
+                        longPressRunnable = r
+                        longPressHandler.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
                     }
                     invalidate()
                     return true
                 }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    if (event.getPointerId(event.actionIndex) == activePointerId) {
+                        // The driving finger left while another still rests on the
+                        // screen — end the gesture instead of jumping to the thumb.
+                        multiTouchLost = true
+                        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
+                        if (pressedZone != null) { pressedZone = null; invalidate() }
+                    }
+                }
                 MotionEvent.ACTION_MOVE -> {
+                    if (multiTouchLost) return true
+                    val idx = event.findPointerIndex(activePointerId)
+                    if (idx == -1) return true
+                    val x = event.getX(idx); val y = event.getY(idx)
+                    val dx = x - cx; val dy = y - cy
+                    val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                    val inRing = dist >= outer * 0.36f && dist <= outer * 1.08f
                     if (inRing && onScroll != null) {
                         val angle = Math.toDegrees(atan2(dy, dx).toDouble())
                         var delta = angle - ringLastAngle
@@ -4681,27 +5838,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         if (delta < -180) delta += 360
                         ringAccum += delta
                         ringLastAngle = angle
+                        val dt = (event.eventTime - lastMoveTimeMs).coerceAtLeast(1L)
+                        lastMoveTimeMs = event.eventTime
+                        ringVelocity = ringVelocity * 0.7 + (delta / dt) * 0.3
                         val steps = (ringAccum / ringStepDeg).toInt()
                         if (steps != 0) {
                             ringAccum -= steps * ringStepDeg
                             ringDragging = true
+                            if (pressedZone != null) { pressedZone = null; invalidate() }
+                            wheelTick()
                             onScroll!!.invoke(steps)
                         }
+                    } else {
+                        ringVelocity = 0.0
+                        lastMoveTimeMs = event.eventTime
                     }
-                    val mdx = event.x - touchDownX; val mdy = event.y - touchDownY
-                    if (!ringDragging && kotlin.math.sqrt(mdx * mdx + mdy * mdy) > dp(18)) ringDragging = true
+                    val mdx = x - touchDownX; val mdy = y - touchDownY
+                    if (!ringDragging && kotlin.math.sqrt(mdx * mdx + mdy * mdy) > dp(18)) {
+                        ringDragging = true
+                        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
+                        if (pressedZone != null) { pressedZone = null; invalidate() }
+                    }
                 }
                 MotionEvent.ACTION_UP -> {
+                    longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
                     val zone = pressedZone
                     pressedZone = null
                     invalidate()
                     performClick()
-                    if (!ringDragging) handleZone(zone ?: zoneFor(event.x, event.y))
-                    ringDragging = false
+                    if (!ringDragging && !longPressFired && !multiTouchLost) handleZone(zone ?: zoneFor(event.x, event.y))
+                    // Fast release on the ring → let the flywheel glide the list.
+                    if (ringDragging && !multiTouchLost && kotlin.math.abs(ringVelocity) > 0.25 && flingAllowed?.invoke() == true) {
+                        ringVelocity = ringVelocity.coerceIn(-1.2, 1.2)
+                        startFling()
+                    } else if (ringDragging) {
+                        onScrollEnd?.invoke()
+                    }
+                    ringDragging = false; longPressFired = false; multiTouchLost = false
+                    activePointerId = MotionEvent.INVALID_POINTER_ID
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    pressedZone = null; ringDragging = false
+                    longPressRunnable?.let { longPressHandler.removeCallbacks(it) }; longPressRunnable = null
+                    if (ringDragging) onScrollEnd?.invoke()
+                    pressedZone = null; ringDragging = false; longPressFired = false; multiTouchLost = false
+                    activePointerId = MotionEvent.INVALID_POINTER_ID
+                    ringVelocity = 0.0
                     invalidate()
                     return true
                 }
@@ -4712,6 +5894,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         override fun performClick(): Boolean {
             super.performClick()
             return true
+        }
+
+        // Authentic per-detent feedback: haptic tick + soft key click per step,
+        // throttled so fast spins/flings don't saturate the vibrator.
+        private fun wheelTick() {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (now - lastTickMs < 30) return
+            lastTickMs = now
+            if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            playSoundEffect(android.view.SoundEffectConstants.CLICK)
         }
 
         private fun zoneFor(x: Float, y: Float): WheelZone {
@@ -4746,6 +5938,59 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private enum class WheelZone { CENTER, LEFT, RIGHT, TOP, BOTTOM }
 
+    // ── Transient volume HUD (iPod-style) shown while the wheel adjusts volume ─
+
+    private fun showVolumeHud() {
+        val frac = mediaSessionSource.volumeFraction() ?: return
+        val decor = window.decorView as FrameLayout
+        val trackWidth = dp(180)
+        if (volumeHudView == null) {
+            val fill = View(this).apply {
+                background = GradientDrawable().apply { setColor(Accent); cornerRadius = dp(3).toFloat() }
+            }
+            val track = FrameLayout(this).apply {
+                background = GradientDrawable().apply { setColor(0xFF23272F.toInt()); cornerRadius = dp(3).toFloat() }
+                addView(fill, FrameLayout.LayoutParams(0, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
+            val hud = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                background = GradientDrawable().apply {
+                    setColor(0xF00B0D10.toInt()); cornerRadius = dp(14).toFloat(); setStroke(dp(1), 0xFF23272F.toInt())
+                }
+                setPadding(dp(18), dp(11), dp(18), dp(13))
+                elevation = dp(12).toFloat()
+                alpha = 0f
+                addView(mono("VOLUME", 9f, InkDim).apply { letterSpacing = 0.2f })
+                addView(track, LinearLayout.LayoutParams(trackWidth, dp(6)).apply { topMargin = dp(9) })
+            }
+            decor.addView(hud, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            ).apply { topMargin = dp(72) })
+            volumeHudView = hud
+            volumeHudFill = fill
+        }
+        volumeHudFill?.let {
+            it.layoutParams = FrameLayout.LayoutParams((trackWidth * frac).toInt(), FrameLayout.LayoutParams.MATCH_PARENT)
+            it.requestLayout()
+        }
+        volumeHudView?.let { hud ->
+            hud.animate().alpha(1f).setDuration(120).start()
+            hud.removeCallbacks(volumeHudHideRunnable)
+            hud.postDelayed(volumeHudHideRunnable, 1100)
+        }
+    }
+
+    private fun hideVolumeHud() {
+        val hud = volumeHudView ?: return
+        volumeHudView = null
+        volumeHudFill = null
+        hud.animate().alpha(0f).setDuration(260).withEndAction {
+            (window.decorView as FrameLayout).removeView(hud)
+        }.start()
+    }
+
     // ── Key handling ─────────────────────────────────────────────────────────
 
     private fun handleKey(label: String) {
@@ -4758,11 +6003,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         when (label) {
             "back" -> {
-                query = query.dropLast(1)
-                if (libraryOpen && query.isEmpty()) { closeLibrary(); return }
+                // Undo autocorrect: if last action was a correction, restore original word
+                val undo = pendingAutocorrectUndo
+                if (undo != null && !libraryOpen) {
+                    pendingAutocorrectUndo = null
+                    query = query.dropLast(undo.corrected.length + 1) + undo.original  // strip "corrected " and restore
+                    if (openPane?.kind == PaneKind.CHAT) {
+                        composeText = composeText.dropLast(undo.corrected.length + 1) + undo.original
+                    }
+                    renderRibbon(); return
+                }
+                pendingAutocorrectUndo = null
+                val pos = cursorPos
+                if (pos != null && pos > 0) {
+                    query = query.removeRange(pos - 1, pos)
+                    cursorPos = pos - 1
+                } else {
+                    cursorPos = null
+                    query = query.dropLast(1)
+                }
+                if (libraryOpen && query.isEmpty()) {
+                    libraryRefreshDebounce?.let { handler.removeCallbacks(it) }; libraryRefreshDebounce = null
+                    closeLibrary(); return
+                }
                 if (!libraryOpen) scheduleSpellCheck()
             }
             "space" -> {
+                pendingAutocorrectUndo = null
                 if (libraryOpen) {
                     if (query.isNotBlank()) query += " "
                 } else {
@@ -4773,15 +6040,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     } else {
                         val words = query.trimEnd().split(" ")
                         if (words.size >= 2) ngramRepo.recordWord(words.last(), words[words.size - 2])
-                        query += " "
+                        tryAutocorrect()  // autocorrect current word before adding space
+                        if (!query.endsWith(" ")) query += " "  // tryAutocorrect may have already appended the space
                         suggestions = emptyList(); updateSuggestionBar()
                     }
                     lastSpaceMs = System.currentTimeMillis()
                 }
             }
             "period" -> {
+                pendingAutocorrectUndo = null
                 if (libraryOpen) { if (query.isNotBlank()) query += "." }
-                else { query += "."; suggestions = emptyList(); updateSuggestionBar() }
+                else {
+                    tryAutocorrect()
+                    query = query.trimEnd() + "."
+                    suggestions = emptyList(); updateSuggestionBar()
+                }
             }
             "123" -> { if (!libraryOpen) { numberPadOpen = true; query = ""; ensureContactsPermission(); render(); return } }
             "abc" -> { if (!libraryOpen) { numberPadOpen = false; query = ""; render(); return } }
@@ -4812,7 +6085,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
-                query += char
+                val insertAt = cursorPos
+                if (insertAt != null) {
+                    query = query.substring(0, insertAt) + char + query.substring(insertAt)
+                    cursorPos = insertAt + 1
+                } else {
+                    query += char
+                }
+                // Secret dev unlock code
+                if (query == "devpro!!") {
+                    query = ""
+                    if (ProManager.isDev(this)) {
+                        ProManager.deactivateDev(this)
+                        Toast.makeText(this, "Dev Pro deactivated", Toast.LENGTH_SHORT).show()
+                    } else {
+                        ProManager.activateDev(this)
+                        Toast.makeText(this, "Dev Pro activated ✓", Toast.LENGTH_SHORT).show()
+                    }
+                    renderRibbon(); return
+                }
+                pendingAutocorrectUndo = null
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
                 if (!libraryOpen && openPane == null) {
                     // Auto-open library so search shows full-screen, not just the ribbon
@@ -4821,34 +6113,55 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     showLibrary(animate = true)
                     syncNowPlayingCardVisibility()
                     refreshNowPlayingCard()
+                } else if (!libraryOpen) {
+                    scheduleGeminiSuggestions()
                 }
             }
         }
-        if (libraryOpen) refreshLibraryContent()
+        if (libraryOpen) scheduleLibraryRefresh()
         renderRibbon()
+    }
+
+    private fun scheduleLibraryRefresh() {
+        libraryRefreshDebounce?.let { handler.removeCallbacks(it) }
+        val r = Runnable { refreshLibraryContent() }
+        libraryRefreshDebounce = r
+        // Instant refresh for ≤2 chars (first letters feel snappy), debounce longer queries
+        handler.postDelayed(r, if (query.length <= 2) 0L else 120L)
     }
 
     private fun handleChatKey(label: String, pane: PaneTarget) {
         when (label) {
             "back" -> {
+                val undo = pendingAutocorrectUndo
+                if (undo != null) {
+                    pendingAutocorrectUndo = null
+                    composeText = composeText.dropLast(undo.corrected.length + 1) + undo.original
+                    updateAutoCapState(); updateKeyLabels(); return
+                }
+                pendingAutocorrectUndo = null
                 composeText = composeText.dropLast(1)
                 updateAutoCapState(); updateKeyLabels(); scheduleSpellCheck()
             }
             "space" -> {
+                pendingAutocorrectUndo = null
                 val now = System.currentTimeMillis()
                 if (now - lastSpaceMs < 500 && composeText.isNotEmpty() && composeText.last() == ' ') {
                     composeText = composeText.dropLast(1) + ". "
                     shiftState = ShiftState.ONCE; updateKeyLabels()
                     suggestions = emptyList(); updateSuggestionBar()
                 } else {
-                    composeText += " "
+                    tryAutocorrect()
+                    if (!composeText.endsWith(" ")) composeText += " "
                     suggestions = emptyList(); updateSuggestionBar()
                     updateAutoCapState(); updateKeyLabels()
                 }
                 lastSpaceMs = now
             }
             "period" -> {
-                composeText += "."
+                pendingAutocorrectUndo = null
+                tryAutocorrect()
+                composeText = composeText.trimEnd() + "."
                 shiftState = ShiftState.ONCE; updateKeyLabels()
                 suggestions = emptyList(); updateSuggestionBar()
             }
@@ -4857,10 +6170,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "clicks" -> { keyboardSettingsOpen = !keyboardSettingsOpen; render(); return }
             "enter" -> postComposeBubble(pane)
             else -> {
+                pendingAutocorrectUndo = null
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 composeText += char
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
                 scheduleSpellCheck()
+                scheduleGeminiSuggestions()
             }
         }
         renderPaneContent(pane)
@@ -4941,6 +6256,119 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             contentFrame.addView(p, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             if (animate) p.post { p.translationY = p.height.toFloat(); p.animate().translationY(0f).setDuration(340).start() }
         }
+        if (target.kind == PaneKind.MUSIC) showMusicProgressInHintBar()
+        else hideMusicProgressFromHintBar()
+    }
+
+    // ── Music progress bar in hint bar ────────────────────────────────────────
+
+    private fun showMusicProgressInHintBar() {
+        if (!::hintBar.isInitialized) return
+        for (i in 0 until hintBar.childCount) hintBar.getChildAt(i).visibility = View.GONE
+
+        val trackNameView = TextView(this).apply {
+            textSize = 9.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            letterSpacing = 0.04f
+            setTextColor(0xFFCED2DA.toInt())
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), 0, dp(8), 0)
+        }
+
+        val timeText = TextView(this).apply {
+            textSize = 8.5f
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            setTextColor(0xFF6B7280.toInt())
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, dp(14), 0)
+            minWidth = dp(36)
+        }
+
+        // Scrubber bar — tappable/draggable, lives at the very bottom of the hintBar
+        val scrubTrack = View(this).apply { setBackgroundColor(0xFF1E2229.toInt()) }
+        val scrubFill = View(this).apply { setBackgroundColor(0xFF1ED760.toInt()) }
+        val scrubContainer = FrameLayout(this).apply {
+            addView(scrubTrack, FrameLayout.LayoutParams.MATCH_PARENT, dp(2))
+            addView(scrubFill, FrameLayout.LayoutParams(0, dp(2)))
+            setOnTouchListener { v, event ->
+                val info = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+                val dur = info?.durationMs ?: 0L
+                if (dur > 0 && (event.action == android.view.MotionEvent.ACTION_DOWN || event.action == android.view.MotionEvent.ACTION_MOVE)) {
+                    val fraction = (event.x / v.width.toFloat()).coerceIn(0f, 1f)
+                    mediaSessionSource.seekTo((dur * fraction).toLong())
+                }
+                true
+            }
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+        }
+        row.addView(trackNameView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        row.addView(timeText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+
+        val overlay = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT)
+        }
+        overlay.addView(row, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        overlay.addView(scrubContainer, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(2), Gravity.BOTTOM))
+
+        hintBar.addView(overlay)
+        musicProgressBar = overlay
+
+        fun updateProgress() {
+            if (!::mediaSessionSource.isInitialized) return
+            val info = mediaSessionSource.nowPlaying.value ?: return
+            val elapsed = android.os.SystemClock.elapsedRealtime() - info.lastUpdateElapsedMs
+            val pos = if (info.isPlaying) (info.positionMs + elapsed).coerceAtMost(info.durationMs) else info.positionMs
+            val dur = info.durationMs.takeIf { it > 0 } ?: return
+
+            trackNameView.text = info.title
+
+            val remaining = ((dur - pos) / 1000L).coerceAtLeast(0)
+            val m = remaining / 60; val s = remaining % 60
+            timeText.text = "-${m}:${s.toString().padStart(2, '0')}"
+
+            val fraction = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+            val accent = if (info.appIconColor != 0) info.appIconColor else 0xFF1ED760.toInt()
+            scrubFill.setBackgroundColor(accent)
+            scrubTrack.post {
+                val totalW = scrubTrack.width
+                if (totalW > 0) {
+                    scrubFill.layoutParams = FrameLayout.LayoutParams((totalW * fraction).toInt(), dp(2))
+                    scrubFill.requestLayout()
+                }
+            }
+        }
+
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val runnable = object : Runnable {
+            override fun run() {
+                if (musicProgressBar == null) return
+                updateProgress()
+                val playing = (if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value?.isPlaying else null) ?: false
+                if (playing) handler.postDelayed(this, 1000)
+                // when paused: don't reschedule — nowPlaying collect will restart us on resume
+            }
+        }
+        musicProgressHandler = handler
+        musicProgressRunnable = runnable
+        handler.post(runnable)
+    }
+
+    private fun hideMusicProgressFromHintBar() {
+        if (!::hintBar.isInitialized) return
+        musicProgressHandler?.removeCallbacks(musicProgressRunnable ?: return)
+        musicProgressHandler = null; musicProgressRunnable = null
+        // Remove progress overlay
+        musicProgressBar?.let { hintBar.removeView(it) }
+        musicProgressBar = null
+        // Restore original children visibility
+        for (i in 0 until hintBar.childCount) hintBar.getChildAt(i).visibility = View.VISIBLE
     }
 
     private fun closePane() {
@@ -4949,6 +6377,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         openPane = null; composeText = ""
         shiftState = ShiftState.OFF; suggestions = emptyList()
         if (closingPane?.kind == PaneKind.PHOTOS) zeissButtonView?.animateShutterOpen()
+        if (closingPane?.kind == PaneKind.MUSIC) hideMusicProgressFromHintBar()
         updateKeyLabels(); updateSuggestionBar(); renderRibbon(); refreshKeyboardDock(); syncNowPlayingCardVisibility(); refreshNowPlayingCard()
         if (closing == null) return
         closing.animate().translationY(closing.height.toFloat()).setDuration(220).withEndAction {
@@ -6260,6 +7689,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun askGemini(prompt: String) {
+        if (!requirePro(ProFeature.AI_CHAT)) return
         val target = aiTarget(prompt)
         aiAnswersById[target.id] = AiAnswerState(prompt, if (geminiConfigured()) "Thinking..." else "Gemini needs an API key first.", geminiConfigured())
         openHere(target)
@@ -6672,60 +8102,88 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun openContextItem(item: ContextWidgetItem, clearAfterOpen: Boolean) {
-        ClicksNotificationListener.notificationIntents[item.key]?.let { pending ->
-            runCatching { pending.send() }
-                .onSuccess {
-                    if (clearAfterOpen) clearHandledContextItem(item)
-                    return
-                }
-        }
-        openContextItemApp(item)
+        deliverNotificationIntent(
+            key = item.key,
+            fallback = { openContextItemApp(item) },
+            afterOpen = { if (clearAfterOpen) clearHandledContextItem(item) }
+        )
     }
 
-    private fun openContextItemApp(item: ContextWidgetItem) {
+    private fun openContextItemApp(item: ContextWidgetItem): Boolean {
         item.packageName.takeIf { it.isNotBlank() }?.let { pkg ->
             packageManager.getLaunchIntentForPackage(pkg)?.let {
-                startSafeIntent(it, "App isn't available here")
-                return
+                return runCatching { startActivity(it) }
+                    .onFailure { Toast.makeText(this, "App isn't available here", Toast.LENGTH_SHORT).show() }
+                    .isSuccess
             }
         }
         Toast.makeText(this, "App isn't available here", Toast.LENGTH_SHORT).show()
+        return false
     }
 
     private fun openRecentPerson(person: RecentPerson) {
-        ClicksNotificationListener.notificationIntents[person.key]?.let { pending ->
-            runCatching { pending.send() }
-                .onSuccess {
-                    clearHandledConversation(person)
-                    return
-                }
-        }
+        deliverNotificationIntent(
+            key = person.key,
+            fallback = { openRecentConversationFallback(person) },
+            afterOpen = { clearHandledConversation(person) }
+        )
+    }
+
+    private fun openRecentConversationFallback(person: RecentPerson): Boolean {
         val message = messages.firstOrNull {
             it.sender == person.sender && it.packageName == person.packageName
         } ?: messages.firstOrNull { it.sender == person.sender }
-        if (message != null) {
-            message.packageName.takeIf { it.isNotBlank() }?.let { pkg ->
-                packageManager.getLaunchIntentForPackage(pkg)?.let {
-                    startSafeIntent(it, "Conversation isn't available here")
-                    clearHandledConversation(person)
-                    return
-                }
+        val packageName = message?.packageName?.takeIf { it.isNotBlank() } ?: person.packageName.takeIf { it.isNotBlank() }
+        packageName?.let { pkg ->
+            packageManager.getLaunchIntentForPackage(pkg)?.let {
+                return runCatching { startActivity(it) }
+                    .onFailure { Toast.makeText(this, "Conversation isn't available here", Toast.LENGTH_SHORT).show() }
+                    .isSuccess
             }
-            openHere(message.toPaneTarget())
-            clearHandledConversation(person)
-        } else {
-            Toast.makeText(this, "No recent conversation found", Toast.LENGTH_SHORT).show()
         }
+        if (message != null) {
+            openHere(message.toPaneTarget())
+            return true
+        }
+        Toast.makeText(this, "No recent conversation found", Toast.LENGTH_SHORT).show()
+        return false
     }
 
-    private fun openRecentPersonApp(person: RecentPerson) {
+    private fun openRecentPersonApp(person: RecentPerson): Boolean {
         person.packageName.takeIf { it.isNotBlank() }?.let { pkg ->
             packageManager.getLaunchIntentForPackage(pkg)?.let {
-                startSafeIntent(it, "App isn't available here")
-                return
+                return runCatching { startActivity(it) }
+                    .onFailure { Toast.makeText(this, "App isn't available here", Toast.LENGTH_SHORT).show() }
+                    .isSuccess
             }
         }
         Toast.makeText(this, "App isn't available here", Toast.LENGTH_SHORT).show()
+        return false
+    }
+
+    private fun deliverNotificationIntent(key: String, fallback: () -> Boolean, afterOpen: () -> Unit) {
+        val pending = ClicksNotificationListener.notificationIntents[key]
+        if (pending == null) {
+            if (fallback()) afterOpen()
+            return
+        }
+        val sent = runCatching {
+            pending.send(
+                this,
+                0,
+                Intent().addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            )
+        }.isSuccess
+        if (!sent) {
+            if (fallback()) afterOpen()
+            return
+        }
+        handler.postDelayed({
+            if (window.decorView.hasWindowFocus()) {
+                fallback()
+            }
+            afterOpen()
+        }, 650)
     }
 
     private fun clearHandledConversation(person: RecentPerson) {
@@ -7385,15 +8843,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val colors = when (keyboardTheme) {
             KEYBOARD_THEME_SKEUO -> intArrayOf(0xFF24262D.toInt(), 0xFF101116.toInt(), 0xFF050506.toInt())
             KEYBOARD_THEME_CLICKS -> intArrayOf(0xFF1A1C21.toInt(), 0xFF111318.toInt(), 0xFF08090C.toInt(), 0xFF030304.toInt())
+            KEYBOARD_THEME_GOKEYS -> intArrayOf(0xFF15171B.toInt(), 0xFF101115.toInt(), 0xFF0B0C0F.toInt())
             else -> intArrayOf(0xFF1F2127.toInt(), 0xFF0C0D10.toInt(), 0xFF030304.toInt())
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, colors).apply {
-            cornerRadius = 0f
-            setStroke(dp(1), if (keyboardTheme == KEYBOARD_THEME_SKEUO) 0x303B4250 else 0x181B20)
+            cornerRadius = if (keyboardTheme == KEYBOARD_THEME_GOKEYS) dp(22).toFloat() else 0f
+            setStroke(dp(1), when (keyboardTheme) {
+                KEYBOARD_THEME_SKEUO -> 0x303B4250
+                KEYBOARD_THEME_GOKEYS -> 0x14FFFFFF
+                else -> 0x181B20
+            })
         }
     }
 
     private fun keyIdleBackground(label: String): Drawable? {
+        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = false)
         if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false)
         if (label == "123") return themed123KeyBackground(pressed = false)
         return when (keyboardTheme) {
@@ -7404,12 +8868,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyPressedBackground(label: String): Drawable {
+        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = true)
         if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true)
         if (label == "123") return themed123KeyBackground(pressed = true)
         return when (keyboardTheme) {
             KEYBOARD_THEME_CLICKS -> physicalKeyBackground(pressed = true, premium = false, fn = isFnKey(label))
             KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = true, premium = true, fn = isFnKey(label))
             else -> keyBackground(KeyHighlight)
+        }
+    }
+
+    private fun goKeysKeyBackground(label: String, pressed: Boolean): Drawable {
+        val isGo = label == "enter"
+        val radius = dp(if (isGo) 9 else 6).toFloat()
+        if (isGo) {
+            return GradientDrawable().apply {
+                setColor(if (pressed) 0xFFE35C16.toInt() else 0xFFFF7A2A.toInt())
+                cornerRadius = radius
+                setStroke(dp(1), if (pressed) 0xFFE35C16.toInt() else 0xFFFF8A43.toInt())
+            }
+        }
+        return GradientDrawable().apply {
+            setColor(if (pressed) 0xFF1A1D22.toInt() else 0xFF22262D.toInt())
+            cornerRadius = radius
+            setStroke(dp(1), if (pressed) 0xFF16191E.toInt() else 0xFF2E333B.toInt())
         }
     }
 
@@ -7545,6 +9027,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val accent = when (value) {
             KEYBOARD_THEME_CLICKS -> Accent2
             KEYBOARD_THEME_SKEUO -> 0xFF8FD694.toInt()
+            KEYBOARD_THEME_GOKEYS -> 0xFFF2691E.toInt()
             else -> Accent
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(accent), accent)).apply {
@@ -7567,11 +9050,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyVerticalInset(): Int {
+        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return dp(3 + keyboardSize * 2 / 100)
         if (keyboardTheme == KEYBOARD_THEME_CLICKS) return dp(10 + keyboardSize * 5 / 100)
         return dp(7 + keyboardSize * 4 / 100)
     }
 
     private fun keyHorizontalInset(): Int {
+        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return dp(1)
         return dp(1)
     }
 
@@ -7594,17 +9079,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun keyboardBottomPadding() = dp(20)
 
     private fun keyTextSize(label: String): Float {
+        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) {
+            return when (label) {
+                "space", "123", "clicks", "period", "abc", "back", "shift" -> 11.2f + keyboardSize * 0.8f / 100f
+                "enter" -> 13.2f + keyboardSize * 0.8f / 100f
+                else -> 13.4f + keyboardSize * 1.0f / 100f
+            }
+        }
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
         val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "clicks", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
         val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "clicks", "enter", "back", "period", "abc" -> 1.5f; else -> 2.5f }
         return base + (keyboardSize * growth / 100f)
     }
 
-    private fun keyTextColor(label: String) = when (label) {
-        "enter" -> 0xFF180A06.toInt()
-        "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF7D8078.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> Accent }
-        "123", "clicks", "back", "period", "abc" -> 0xFF7D8078.toInt()
-        else -> Ink
+    private fun keyTextColor(label: String) = if (keyboardTheme == KEYBOARD_THEME_GOKEYS) {
+        when (label) {
+            "enter" -> 0xFFFFFFFF.toInt()
+            "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF9AA1AB.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> 0xFFF2691E.toInt() }
+            "123", "clicks", "back", "period", "abc", "space" -> 0xFF9AA1AB.toInt()
+            else -> 0xFFF3F5F8.toInt()
+        }
+    } else when (label) {
+            "enter" -> 0xFF180A06.toInt()
+            "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF7D8078.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> Accent }
+            "123", "clicks", "back", "period", "abc" -> 0xFF7D8078.toInt()
+            else -> Ink
     }
 
     private fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -7612,6 +9111,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun haptic(view: View) {
         if (!hapticsEnabled) return
         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    // Pop-select micro-interaction: quick press-in, fire the action, then an
+    // overshoot spring back to rest. Scale-only, so neighbours never reflow.
+    private fun popThenRun(view: View, action: () -> Unit) {
+        view.animate().cancel()
+        view.animate().scaleX(0.93f).scaleY(0.93f).setDuration(85)
+            .withEndAction {
+                action()
+                view.animate().scaleX(1f).scaleY(1f).setDuration(240)
+                    .setInterpolator(android.view.animation.OvershootInterpolator(3f))
+                    .start()
+            }
+            .start()
     }
 
     private fun keyHaptic(label: String) {
@@ -7807,6 +9320,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val KEYBOARD_THEME_DEFAULT = "default"
         private const val KEYBOARD_THEME_CLICKS = "clicks"
         private const val KEYBOARD_THEME_SKEUO = "skeuo"
+        private const val KEYBOARD_THEME_GOKEYS = "gokeys"
         private const val MUSIC_THEME_PREF = "music_theme"
         private const val MUSIC_THEME_MUSIC1 = "music1"
         private const val MUSIC_THEME_BLACK = "music_black"

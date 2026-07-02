@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
+import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
@@ -85,6 +86,30 @@ class MediaSessionSource(private val context: Context) {
 
     fun seekTo(positionMs: Long) {
         controller?.transportControls?.seekTo(positionMs)
+    }
+
+    // Routes through the active session so remote playback (e.g. Spotify Connect)
+    // is adjusted, not just the local stream. Steps are capped per gesture tick.
+    fun adjustVolume(steps: Int) {
+        if (steps == 0) return
+        val direction = if (steps > 0) AudioManager.ADJUST_RAISE else AudioManager.ADJUST_LOWER
+        val repeats = minOf(kotlin.math.abs(steps), 3)
+        val current = controller
+        if (current != null) {
+            repeat(repeats) { runCatching { current.adjustVolume(direction, 0) } }
+        } else {
+            val audio = context.getSystemService(AudioManager::class.java) ?: return
+            repeat(repeats) { runCatching { audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0) } }
+        }
+    }
+
+    fun volumeFraction(): Float? {
+        controller?.playbackInfo?.let { info ->
+            if (info.maxVolume > 0) return info.currentVolume.toFloat() / info.maxVolume
+        }
+        val audio = context.getSystemService(AudioManager::class.java) ?: return null
+        val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        return if (max > 0) audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max else null
     }
 
     fun openSourceApp() {
