@@ -1739,11 +1739,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun widgetBoard(): View {
         return WidgetBoardFrame(this).apply {
-            setBackgroundColor(0x99070A0E.toInt())
+            background = widgetBoardScrimBackground()
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(18), systemStatusBarHeight() + dp(12), dp(18), dp(18))
-                addView(widgetBoardHeader(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)))
+                clipChildren = false
+                clipToPadding = false
+                setPadding(dp(16), systemStatusBarHeight() + dp(12), dp(16), dp(18))
+                addView(widgetBoardHeader(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)))
                 addView(widgetGridScroll(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
@@ -1789,7 +1791,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(context).apply {
                     text = "Widgets"
-                    textSize = 25f
+                    textSize = 24f
                     typeface = Typeface.DEFAULT_BOLD
                     includeFontPadding = false
                     setTextColor(Ink)
@@ -1802,7 +1804,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(mono("SWIPE DOWN", 8.5f, InkDim).apply {
                 gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
                 letterSpacing = 0.14f
-            }, LinearLayout.LayoutParams(dp(108), ViewGroup.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.MATCH_PARENT))
         }
     }
 
@@ -1822,26 +1824,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun widgetGridScroll(): View {
         return ScrollView(this).apply {
+            clipToPadding = false
             isFillViewport = true
             addView(GridLayout(context).apply {
-                columnCount = 2
-                setPadding(0, dp(12), 0, dp(26))
+                columnCount = WIDGET_BOARD_COLUMNS
+                clipChildren = false
+                clipToPadding = false
+                setPadding(0, dp(14), 0, dp(30))
                 val widgets = savedWidgetSpecs()
                 if (widgets.isEmpty()) {
                     addView(emptyWidgetHint(), GridLayout.LayoutParams().apply {
                         width = GridLayout.LayoutParams.MATCH_PARENT
                         height = dp(240)
-                        columnSpec = GridLayout.spec(0, 2)
+                        columnSpec = GridLayout.spec(0, WIDGET_BOARD_COLUMNS)
                         setMargins(0, dp(26), 0, 0)
                     })
                 } else {
                     widgets.forEach { spec ->
                         val span = widgetColumnSpan(spec.size)
                         addView(widgetTile(spec), GridLayout.LayoutParams().apply {
-                            width = if (span == 2) resources.displayMetrics.widthPixels - dp(46) else (resources.displayMetrics.widthPixels - dp(58)) / 2
+                            width = widgetTileWidth(span)
                             height = widgetTileHeight(spec.size)
                             columnSpec = GridLayout.spec(GridLayout.UNDEFINED, span)
-                            setMargins(dp(5), dp(6), dp(5), dp(6))
+                            setMargins(dp(4), dp(5), dp(4), dp(7))
                         })
                     }
                 }
@@ -1877,6 +1882,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun widgetTile(spec: WidgetSpec): View {
         val widgetId = spec.id
         val info = runCatching { appWidgetManager.getAppWidgetInfo(widgetId) }.getOrNull()
+        val title = info?.loadLabel(packageManager)?.ifBlank { "Widget" } ?: "Widget"
         val hostView = if (info != null) {
             appWidgetHost.createView(this, widgetId, info).apply {
                 setAppWidget(widgetId, info)
@@ -1884,8 +1890,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         } else null
         return FrameLayout(this).apply {
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            clipChildren = true
+            clipToPadding = true
+            setPadding(dp(7), dp(28), dp(7), dp(7))
             background = widgetTileBackground()
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(mono(title.uppercase(Locale.US), 8f, InkDim).apply {
+                    letterSpacing = 0.12f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                addView(mono("${widgetColumnSpan(spec.size)}x${parseWidgetGridSize(spec.size).rows}", 8f, Accent2).apply {
+                    gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
+                    letterSpacing = 0.08f
+                }, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.MATCH_PARENT))
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(22), Gravity.TOP).apply {
+                leftMargin = dp(10); rightMargin = dp(10); topMargin = dp(5)
+            })
             if (hostView != null) {
                 addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             } else {
@@ -1894,7 +1917,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             setOnLongClickListener {
                 haptic(this)
-                showWidgetOptions(widgetId)
+                showWidgetOptions(spec)
                 true
             }
         }
@@ -1904,27 +1927,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val board = widgetBoardView as? ViewGroup ?: return
         closeWidgetPicker()
         val picker = FrameLayout(this).apply {
-            setBackgroundColor(0xEE050608.toInt())
+            setBackgroundColor(0x66000000)
+            isClickable = true
+            setOnClickListener { closeWidgetPicker() }
             addView(LinearLayout(context).apply {
+                isClickable = true
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(18), systemStatusBarHeight() + dp(12), dp(18), dp(18))
+                background = widgetPickerSheetBackground()
+                elevation = dp(18).toFloat()
+                setPadding(dp(16), dp(14), dp(16), dp(16))
                 addView(LinearLayout(context).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     orientation = LinearLayout.HORIZONTAL
-                    addView(widgetCircleButton("×") {
-                        haptic(this)
-                        closeWidgetPicker()
-                    }, LinearLayout.LayoutParams(dp(42), dp(42)))
                     addView(TextView(context).apply {
-                        text = "Add Widget"
-                        textSize = 25f
+                        text = "Add widget"
+                        textSize = 22f
                         typeface = Typeface.DEFAULT_BOLD
                         includeFontPadding = false
                         setTextColor(Ink)
-                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(14) })
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(50)))
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                    addView(mono("TAP OUTSIDE", 8f, InkDim).apply {
+                        gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
+                        letterSpacing = 0.12f
+                    }, LinearLayout.LayoutParams(dp(88), ViewGroup.LayoutParams.MATCH_PARENT))
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(42)))
+                addView(mono("Choose a widget. It will land on the board as a clean resizable card.", 9f, InkDim).apply {
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, 0, 0, dp(8))
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(28))
                 addView(widgetProviderList(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, (resources.displayMetrics.heightPixels * 0.72f).toInt(), Gravity.BOTTOM).apply {
+                leftMargin = dp(10)
+                rightMargin = dp(10)
+                bottomMargin = dp(10)
+            })
         }
         widgetPickerView = picker
         board.addView(picker, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -1938,15 +1975,34 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun widgetProviderList(): View {
         return ScrollView(this).apply {
+            clipToPadding = false
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(12), 0, dp(28))
-                installedWidgetProviders().forEach { provider ->
-                    addView(widgetProviderRow(provider), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(76)).apply {
-                        bottomMargin = dp(8)
-                    })
+                setPadding(0, dp(6), 0, dp(20))
+                val providersByApp = installedWidgetProviders().groupBy { provider ->
+                    runCatching {
+                        val appInfo = packageManager.getApplicationInfo(provider.provider.packageName, 0)
+                        packageManager.getApplicationLabel(appInfo).toString()
+                    }.getOrDefault(provider.provider.packageName)
+                }.toSortedMap(collator)
+                providersByApp.forEach { (appLabel, providers) ->
+                    addView(mono(appLabel.uppercase(Locale.US), 8.4f, InkDim).apply {
+                        letterSpacing = 0.14f
+                        setPadding(dp(3), dp(12), 0, dp(7))
+                    }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+                    addView(GridLayout(context).apply {
+                        columnCount = 2
+                        providers.forEach { provider ->
+                            addView(widgetProviderCard(provider, appLabel), GridLayout.LayoutParams().apply {
+                                width = (resources.displayMetrics.widthPixels - dp(64)) / 2
+                                height = dp(126)
+                                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1)
+                                setMargins(dp(4), dp(4), dp(4), dp(7))
+                            })
+                        }
+                    }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 }
-                if (childCount == 0) {
+                if (providersByApp.isEmpty()) {
                     addView(mono("NO WIDGETS AVAILABLE ON THIS DEVICE", 10f, InkDim).apply {
                         gravity = Gravity.CENTER
                         letterSpacing = 0.12f
@@ -1956,42 +2012,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun widgetProviderRow(provider: AppWidgetProviderInfo): View {
+    private fun widgetProviderCard(provider: AppWidgetProviderInfo, appLabel: String): View {
         val label = provider.loadLabel(packageManager).ifBlank { "Widget" }
-        val appLabel = runCatching {
-            val appInfo = packageManager.getApplicationInfo(provider.provider.packageName, 0)
-            packageManager.getApplicationLabel(appInfo).toString()
-        }.getOrDefault(provider.provider.packageName)
         val icon = runCatching { provider.loadIcon(this, resources.displayMetrics.densityDpi) }.getOrNull()
         return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(8), dp(14), dp(8))
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(12), dp(11), dp(12), dp(10))
             background = widgetProviderRowBackground()
             isClickable = true
-            addView(ImageView(context).apply {
-                setImageDrawable(icon ?: packageManager.getApplicationIcon(provider.provider.packageName))
-                scaleType = ImageView.ScaleType.FIT_CENTER
-            }, LinearLayout.LayoutParams(dp(42), dp(42)))
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(TextView(context).apply {
-                    text = label
-                    textSize = 14.5f
-                    typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(Ink)
-                    includeFontPadding = false
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                })
-                addView(mono(appLabel.uppercase(Locale.US), 8.5f, InkDim).apply {
-                    letterSpacing = 0.10f
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                })
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(12) })
-            addView(mono("+", 20f, Accent2).apply { gravity = Gravity.CENTER })
+            addView(FrameLayout(context).apply {
+                background = dockIconButtonBackground()
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                addView(ImageView(context).apply {
+                    setImageDrawable(icon ?: packageManager.getApplicationIcon(provider.provider.packageName))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(dp(44), dp(44)))
+            addView(TextView(context).apply {
+                text = label
+                textSize = 13.2f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Ink)
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, dp(9), 0, 0)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(mono("ADD", 8.4f, Accent2).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.14f
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(18)))
             setOnClickListener {
                 haptic(this)
                 closeWidgetPicker()
@@ -2048,7 +2100,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun saveWidgetId(widgetId: Int) {
-        val next = savedWidgetSpecs().filterNot { it.id == widgetId } + WidgetSpec(widgetId, WIDGET_SIZE_LARGE)
+        val next = savedWidgetSpecs().filterNot { it.id == widgetId } + WidgetSpec(widgetId, widgetSizeString(4, 3))
         saveWidgetSpecs(next)
     }
 
@@ -2087,17 +2139,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         prefs().edit().putString(WIDGET_IDS_PREF, json.toString()).apply()
     }
 
-    private fun showWidgetOptions(widgetId: Int) {
-        val labels = arrayOf("Compact", "Wide", "Tall", "Large", "Remove")
+    private fun showWidgetOptions(spec: WidgetSpec) {
+        val size = parseWidgetGridSize(spec.size)
+        val labels = arrayOf(
+            "Wider",
+            "Narrower",
+            "Taller",
+            "Shorter",
+            "Compact 2x2",
+            "Wide 4x2",
+            "Large 4x3",
+            "Remove"
+        )
         AlertDialog.Builder(this)
-            .setTitle("Widget")
+            .setTitle("Widget ${size.columns}x${size.rows}")
             .setItems(labels) { dialog, which ->
                 when (labels[which]) {
-                    "Compact" -> resizeWidget(widgetId, WIDGET_SIZE_COMPACT)
-                    "Wide" -> resizeWidget(widgetId, WIDGET_SIZE_WIDE)
-                    "Tall" -> resizeWidget(widgetId, WIDGET_SIZE_TALL)
-                    "Large" -> resizeWidget(widgetId, WIDGET_SIZE_LARGE)
-                    "Remove" -> confirmRemoveWidget(widgetId)
+                    "Wider" -> resizeWidget(spec.id, widgetSizeString((size.columns + 1).coerceAtMost(WIDGET_BOARD_COLUMNS), size.rows))
+                    "Narrower" -> resizeWidget(spec.id, widgetSizeString((size.columns - 1).coerceAtLeast(1), size.rows))
+                    "Taller" -> resizeWidget(spec.id, widgetSizeString(size.columns, (size.rows + 1).coerceAtMost(6)))
+                    "Shorter" -> resizeWidget(spec.id, widgetSizeString(size.columns, (size.rows - 1).coerceAtLeast(1)))
+                    "Compact 2x2" -> resizeWidget(spec.id, widgetSizeString(2, 2))
+                    "Wide 4x2" -> resizeWidget(spec.id, widgetSizeString(4, 2))
+                    "Large 4x3" -> resizeWidget(spec.id, widgetSizeString(4, 3))
+                    "Remove" -> confirmRemoveWidget(spec.id)
                 }
                 dialog.dismiss()
             }
@@ -2130,47 +2195,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun normalizeWidgetSize(size: String): String {
-        return when (size) {
-            WIDGET_SIZE_COMPACT, WIDGET_SIZE_WIDE, WIDGET_SIZE_TALL, WIDGET_SIZE_LARGE -> size
-            else -> WIDGET_SIZE_LARGE
+        return when {
+            size.matches(Regex("c[1-4]r[1-6]")) -> size
+            size == WIDGET_SIZE_COMPACT -> widgetSizeString(2, 2)
+            size == WIDGET_SIZE_WIDE -> widgetSizeString(4, 2)
+            size == WIDGET_SIZE_TALL -> widgetSizeString(2, 4)
+            size == WIDGET_SIZE_LARGE -> widgetSizeString(4, 3)
+            else -> widgetSizeString(4, 3)
         }
     }
 
-    private fun widgetColumnSpan(size: String): Int = when (normalizeWidgetSize(size)) {
-        WIDGET_SIZE_COMPACT, WIDGET_SIZE_TALL -> 1
-        else -> 2
+    private fun widgetSizeString(columns: Int, rows: Int) =
+        "c${columns.coerceIn(1, WIDGET_BOARD_COLUMNS)}r${rows.coerceIn(1, 6)}"
+
+    private fun parseWidgetGridSize(size: String): WidgetGridSize {
+        val clean = normalizeWidgetSize(size)
+        val match = Regex("c([1-4])r([1-6])").matchEntire(clean)
+        val columns = match?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 4
+        val rows = match?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 3
+        return WidgetGridSize(columns.coerceIn(1, WIDGET_BOARD_COLUMNS), rows.coerceIn(1, 6))
     }
 
-    private fun widgetTileHeight(size: String): Int = when (normalizeWidgetSize(size)) {
-        WIDGET_SIZE_COMPACT -> dp(170)
-        WIDGET_SIZE_WIDE -> dp(220)
-        WIDGET_SIZE_TALL -> dp(310)
-        else -> dp(330)
+    private fun widgetColumnSpan(size: String): Int = parseWidgetGridSize(size).columns
+
+    private fun widgetTileHeight(size: String): Int = dp(78 + parseWidgetGridSize(size).rows * 72)
+
+    private fun widgetTileWidth(span: Int): Int {
+        val available = resources.displayMetrics.widthPixels - dp(40)
+        val gutter = dp(8)
+        val cell = (available - gutter * (WIDGET_BOARD_COLUMNS - 1)) / WIDGET_BOARD_COLUMNS
+        return cell * span.coerceIn(1, WIDGET_BOARD_COLUMNS) + gutter * (span.coerceIn(1, WIDGET_BOARD_COLUMNS) - 1)
     }
 
-    private fun widgetMinWidthDp(size: String): Int = when (widgetColumnSpan(size)) {
-        1 -> 140
-        else -> 320
-    }
+    private fun widgetMinWidthDp(size: String): Int = parseWidgetGridSize(size).columns * 78
 
-    private fun widgetMaxWidthDp(size: String): Int = when (widgetColumnSpan(size)) {
-        1 -> 300
-        else -> 680
-    }
+    private fun widgetMaxWidthDp(size: String): Int = parseWidgetGridSize(size).columns * 132
 
-    private fun widgetMinHeightDp(size: String): Int = when (normalizeWidgetSize(size)) {
-        WIDGET_SIZE_COMPACT -> 120
-        WIDGET_SIZE_WIDE -> 140
-        WIDGET_SIZE_TALL -> 250
-        else -> 260
-    }
+    private fun widgetMinHeightDp(size: String): Int = parseWidgetGridSize(size).rows * 72
 
-    private fun widgetMaxHeightDp(size: String): Int = when (normalizeWidgetSize(size)) {
-        WIDGET_SIZE_COMPACT -> 180
-        WIDGET_SIZE_WIDE -> 240
-        WIDGET_SIZE_TALL -> 360
-        else -> 390
-    }
+    private fun widgetMaxHeightDp(size: String): Int = parseWidgetGridSize(size).rows * 112
 
     private fun refreshWidgetBoard() {
         val old = widgetBoardView ?: return
@@ -4932,6 +4995,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             var spaceCursorLastX = 0f
             var spaceCursorMoved = false
             val cursorStepPx = dp(8).toFloat()
+            // Manual long-press: the OnTouchListener consumes events (returns true), so the
+            // View's built-in long-click detection never runs. Detect it ourselves.
+            val longPressAction: (() -> Unit)? = when {
+                label == "enter" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
+                label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
+                isLetter -> { -> haptic(this@apply); handleLetterLongPress(label.lowercase(Locale.US)) }
+                else -> null
+            }
+            val longPressHandler = if (longPressAction != null) android.os.Handler(android.os.Looper.getMainLooper()) else null
+            var longPressRunnable: Runnable? = null
+            var longPressFired = false
+            val touchSlop = android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop
+            fun cancelLongPress() {
+                longPressRunnable?.let { longPressHandler?.removeCallbacks(it) }
+                longPressRunnable = null
+            }
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -4942,6 +5021,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = dp(2).toFloat()
                         keyHaptic(label)
                         keyPreviewManager.show(v, label)
+                        if (longPressAction != null) {
+                            longPressFired = false
+                            val r = Runnable { longPressFired = true; longPressAction() }
+                            longPressRunnable = r
+                            longPressHandler?.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                        }
                         if (label == "back") {
                             deleteRepeating = false
                             deleteRunnable = object : Runnable {
@@ -4956,6 +5041,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         }
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        if (longPressRunnable != null &&
+                            (Math.abs(event.x - touchDownX) > touchSlop || Math.abs(event.y - touchDownY) > touchSlop)) {
+                            cancelLongPress()
+                        }
                         if (label == "space" && !libraryOpen) {
                             val delta = event.rawX - spaceCursorLastX
                             if (Math.abs(delta) >= cursorStepPx) {
@@ -4975,6 +5064,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     MotionEvent.ACTION_UP -> {
                         v.background = idleBg()
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.animateSpringReturn(dp(2).toFloat())
+                        cancelLongPress()
+                        if (longPressFired) { longPressFired = false; return@setOnTouchListener true }
                         if (label == "back") {
                             cancelRepeat()
                             if (deleteRepeating) { deleteRepeating = false; return@setOnTouchListener true }
@@ -4996,18 +5087,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         v.background = idleBg()
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.animateSpringReturn(dp(2).toFloat())
                         cancelRepeat(); deleteRepeating = false; spaceCursorMoved = false
+                        cancelLongPress(); longPressFired = false
                     }
                 }
                 true  // consume all key touches so they don't bubble to pane swipe handler
             }
-            // Long-press handlers remain; click listener no longer needed (handled in touch UP above)
-            if (label == "enter") setOnLongClickListener { haptic(this); triggerGeminiSmartCompose(); true }
-            if (label == "123") setOnLongClickListener {
-                haptic(this)
-                symbolsOpen = true; numberPadOpen = false
-                render(); true
-            }
-            if (isLetter) setOnLongClickListener { haptic(this); handleLetterLongPress(label.lowercase(Locale.US)); true }
         }.also { keyViews[label] = it }
     }
 
@@ -8712,48 +8796,80 @@ Reply format: ["word1","word2","word3"]"""
         }
     }
 
+    private fun widgetBoardScrimBackground(): Drawable {
+        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0xD0070A0E.toInt(),
+            0xF0040508.toInt()
+        ))
+    }
+
     private fun widgetTileBackground(): Drawable {
         val pocket = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFF0A0C10.toInt(),
-            0xFF11141A.toInt(),
-            0xFF08090C.toInt()
+            0xF020232A.toInt(),
+            0xF014171D.toInt(),
+            0xF00A0B0F.toInt()
         )).apply {
-            cornerRadius = dp(22).toFloat()
-            setStroke(dp(1), 0xFF252A33.toInt())
+            cornerRadius = dp(24).toFloat()
+            setStroke(dp(1), 0x22FFFFFF)
         }
         val innerShade = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x77000000,
+            0x12FFFFFF,
             0x00000000
-        )).apply { cornerRadius = dp(22).toFloat() }
-        return LayerDrawable(arrayOf(pocket, innerShade)).apply {
+        )).apply { cornerRadius = dp(24).toFloat() }
+        val lowerShade = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
+            0x66000000,
+            0x00000000
+        )).apply { cornerRadius = dp(24).toFloat() }
+        return LayerDrawable(arrayOf(pocket, innerShade, lowerShade)).apply {
+            setLayerInset(1, dp(1), dp(1), dp(1), dp(74))
+            setLayerInset(2, dp(1), dp(80), dp(1), dp(1))
+        }
+    }
+
+    private fun widgetPickerSheetBackground(): Drawable {
+        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0xFA20232A.toInt(),
+            0xFA12151A.toInt(),
+            0xFA08090D.toInt()
+        )).apply {
+            cornerRadius = dp(28).toFloat()
+            setStroke(dp(1), 0x22FFFFFF)
+        }
+        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            0x14FFFFFF,
+            0x00FFFFFF
+        )).apply { cornerRadius = dp(28).toFloat() }
+        return LayerDrawable(arrayOf(base, sheen)).apply {
             setLayerInset(1, dp(1), dp(1), dp(1), dp(96))
         }
     }
 
     private fun widgetEmptyBackground(): Drawable {
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x3316181D,
-            0x14000000
+            0xBB20232A.toInt(),
+            0xAA111419.toInt(),
+            0x9908090D.toInt()
         )).apply {
             cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), 0x332A2C33)
+            setStroke(dp(1), 0x24FFFFFF)
         }
     }
 
     private fun widgetProviderRowBackground(): Drawable {
         val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xEE16181D.toInt(),
-            0xEE0C0E12.toInt()
+            0xF01D2027.toInt(),
+            0xF013151A.toInt(),
+            0xF00B0C10.toInt()
         )).apply {
-            cornerRadius = dp(18).toFloat()
-            setStroke(dp(1), 0x332A2C33)
+            cornerRadius = dp(22).toFloat()
+            setStroke(dp(1), 0x18FFFFFF)
         }
         val top = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
             0x12FFFFFF,
             0x00FFFFFF
-        )).apply { cornerRadius = dp(18).toFloat() }
+        )).apply { cornerRadius = dp(22).toFloat() }
         return LayerDrawable(arrayOf(base, top)).apply {
-            setLayerInset(1, dp(1), dp(1), dp(1), dp(45))
+            setLayerInset(1, dp(1), dp(1), dp(1), dp(54))
         }
     }
 
@@ -9455,6 +9571,7 @@ Reply format: ["word1","word2","word3"]"""
     private enum class SearchKind { APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI }
     private data class WeatherSnapshot(val tempF: Int, val feelsLikeF: Int, val humidity: Int, val windMph: Int, val code: Int, val label: String)
     private data class WidgetSpec(val id: Int, val size: String)
+    private data class WidgetGridSize(val columns: Int, val rows: Int)
 
     companion object {
         private const val Screen = 0xFF0D0E11.toInt()
@@ -9505,6 +9622,7 @@ Reply format: ["word1","word2","word3"]"""
         private const val WIDGET_BIND_REQUEST_CODE = 501
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502
         private const val WIDGET_IDS_PREF = "widget_board_ids"
+        private const val WIDGET_BOARD_COLUMNS = 4
         private const val WIDGET_SIZE_COMPACT = "compact"
         private const val WIDGET_SIZE_WIDE = "wide"
         private const val WIDGET_SIZE_TALL = "tall"
