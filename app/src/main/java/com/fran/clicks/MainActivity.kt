@@ -5381,6 +5381,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
             addView(keyboardThemeSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
             addView(keyboardPlacementSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
+            addView(launcherThemeModeSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
 
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, 0)
@@ -5487,6 +5488,43 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     setOnClickListener {
                         haptic(this)
                         setKeyboardPlacement(value)
+                    }
+                }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
+            }
+        }
+    }
+
+    private fun launcherThemeModeSelector(): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+            addView(mono("LOOK", 9f, activeNeuTokens.inkDim).apply { letterSpacing = 0.12f },
+                LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT))
+            listOf(
+                "DARK" to THEME_MODE_DARK,
+                "LIGHT" to THEME_MODE_LIGHT,
+                "SYSTEM" to THEME_MODE_SYSTEM
+            ).forEach { (label, value) ->
+                addView(TextView(context).apply {
+                    text = label
+                    gravity = Gravity.CENTER
+                    textSize = 9.2f
+                    letterSpacing = 0.08f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(if (themeMode == value) activeNeuTokens.ink else activeNeuTokens.inkDim)
+                    background = if (themeMode == value) {
+                        Neu.drawable(activeNeuTokens, dp(10).toFloat(), NeuLevel.PRESSED_SM)
+                    } else {
+                        Neu.drawable(activeNeuTokens, dp(10).toFloat(), NeuLevel.RAISED_SM)
+                    }
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        themeMode = value
+                        prefs().edit().putString(THEME_MODE_PREF, value).apply()
+                        applyTheme()
+                        render()
                     }
                 }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
             }
