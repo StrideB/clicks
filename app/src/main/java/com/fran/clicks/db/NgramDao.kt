@@ -29,6 +29,22 @@ interface NgramDao {
     @Query("SELECT COUNT(*) FROM ngrams")
     suspend fun wordCount(): Int
 
+    /**
+     * Bound table growth: delete the [overflow] least-useful rows, ranked lowest [NgramEntry.count]
+     * first and then stalest by [NgramEntry.lastUsed]. Because suggest() orders by count DESC and
+     * only ever returns a prefix's top rows, the low-count rows removed here are never a currently
+     * visible prediction — so pruning can't shift what the user sees. This is the read side of the
+     * lastUsed column, which was written on every increment but previously never consulted.
+     */
+    @Query(
+        """
+        DELETE FROM ngrams WHERE (prefix, word) IN (
+            SELECT prefix, word FROM ngrams ORDER BY count ASC, lastUsed ASC LIMIT :overflow
+        )
+        """
+    )
+    suspend fun pruneLeastUseful(overflow: Int)
+
     @Transaction
     suspend fun seedBatch(entries: List<NgramEntry>) {
         insertAllIgnore(entries)
