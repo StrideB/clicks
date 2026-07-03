@@ -96,6 +96,7 @@ import com.fran.clicks.keyboard.SmsSeedingCoordinator
 import com.fran.clicks.keyboard.SpatialScorer
 import com.fran.clicks.keyboard.WordBoundaryDeleter
 import com.fran.clicks.db.NgramRepository
+import com.fran.clicks.db.WidgetPersistenceRepository
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
@@ -157,8 +158,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var categoryFolderView: View? = null
     private var widgetBoardView: View? = null
     private var widgetPickerView: View? = null
+    private var widgetPickerListHost: FrameLayout? = null
+    private var widgetPickerQuery = ""
+    private val widgetPickerExpandedApps = mutableSetOf<String>()
     private lateinit var appWidgetManager: AppWidgetManager
     private lateinit var appWidgetHost: AppWidgetHost
+    private lateinit var widgetPersistenceRepository: WidgetPersistenceRepository
+    private var widgetSpecsCache: List<WidgetSpec>? = null
     private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
     private var pendingWidgetProvider: AppWidgetProviderInfo? = null
     private var librarySwipeStartX = 0f
@@ -370,6 +376,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         appWidgetHost.startListening()
+        widgetPersistenceRepository = WidgetPersistenceRepository(this)
+        widgetSpecsCache = loadWidgetSpecsFromStore()
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
         appIconSize = prefs().getInt(APP_ICON_SIZE_PREF, 0)
         keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, KEYBOARD_THEME_DEFAULT) ?: KEYBOARD_THEME_DEFAULT
@@ -2621,10 +2629,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private inner class WidgetCellCanvas(context: Context) : FrameLayout(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val rect = RectF()
+        private val snapAnchor = GridSnappingAnchorView(context)
 
         init {
             setWillNotDraw(false)
             background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.PRESSED_SM)
+            addView(snapAnchor, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -2646,6 +2656,90 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             rect.set(0f, dp(4).toFloat(), width.toFloat(), height - dp(4).toFloat())
             canvas.drawRoundRect(rect, dp(22).toFloat(), dp(22).toFloat(), paint)
             paint.style = Paint.Style.FILL
+        }
+
+        fun showSnapAnchor(spec: WidgetSpec, valid: Boolean) {
+            val metrics = widgetBoardMetrics()
+            snapAnchor.updateAnchorPosition(
+                paddingLeft + metrics.leftForCell(spec.cellX),
+                paddingTop + metrics.topForCell(spec.cellY),
+                metrics.widthForSpan(spec.spanX),
+                metrics.heightForSpan(spec.spanY),
+                valid
+            )
+        }
+
+        fun clearSnapAnchor() {
+            snapAnchor.clearAnchor()
+        }
+    }
+
+    private inner class GridSnappingAnchorView(context: Context) : View(context) {
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+        private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val bounds = RectF()
+        private var validDrop = true
+
+        fun updateAnchorPosition(leftPx: Int, topPx: Int, widthPx: Int, heightPx: Int, isValidDrop: Boolean) {
+            validDrop = isValidDrop
+            val inset = dp(5).toFloat()
+            bounds.set(
+                leftPx + inset,
+                topPx + inset,
+                leftPx + widthPx - inset,
+                topPx + heightPx - inset
+            )
+            visibility = View.VISIBLE
+            invalidate()
+        }
+
+        fun clearAnchor() {
+            bounds.setEmpty()
+            visibility = View.GONE
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (bounds.isEmpty) return
+            val radius = dp(22).toFloat()
+            val accent = if (validDrop) Accent2 else 0xFFFF5D5D.toInt()
+            val tokens = activeNeuTokens
+
+            glowPaint.shader = RadialGradient(
+                bounds.centerX(),
+                bounds.centerY(),
+                bounds.width().coerceAtLeast(bounds.height()),
+                intArrayOf(adjustAlpha(accent, 0.20f), Color.TRANSPARENT),
+                floatArrayOf(0f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(bounds, radius, radius, glowPaint)
+            glowPaint.shader = null
+
+            fillPaint.shader = android.graphics.LinearGradient(
+                0f,
+                bounds.top,
+                0f,
+                bounds.bottom,
+                intArrayOf(
+                    adjustAlpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.56f else 0.26f),
+                    adjustAlpha(tokens.base, if (tokens.mode == NeuMode.LIGHT) 0.78f else 0.68f),
+                    adjustAlpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.42f else 0.72f)
+                ),
+                floatArrayOf(0f, 0.44f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(bounds, radius, radius, fillPaint)
+            fillPaint.shader = null
+
+            strokePaint.strokeWidth = dp(2).toFloat()
+            strokePaint.color = adjustAlpha(accent, if (validDrop) 0.82f else 0.92f)
+            canvas.drawRoundRect(bounds, radius, radius, strokePaint)
+            strokePaint.strokeWidth = dp(1).toFloat()
+            strokePaint.color = adjustAlpha(if (tokens.mode == NeuMode.LIGHT) Color.WHITE else tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.40f else 0.18f)
+            canvas.drawRoundRect(RectF(bounds.left + dp(2), bounds.top + dp(2), bounds.right - dp(2), bounds.bottom - dp(2)), radius - dp(2), radius - dp(2), strokePaint)
         }
     }
 
@@ -2814,24 +2908,86 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     showWidgetOptions(spec)
                 }
                 setOnLongClickListener {
-                    (parent as? ResizableWidgetContainer)?.enterEditMode()
+                    (parent as? ResizableWidgetContainer)?.showQuickMenu()
                     true
                 }
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(22), Gravity.TOP).apply {
                 leftMargin = dp(10); rightMargin = dp(10); topMargin = dp(5)
             })
             setOnLongClickListener {
-                enterEditMode()
+                showQuickMenu()
                 true
             }
         }
     }
+
+    private fun showWidgetQuickMenu(anchor: View, spec: WidgetSpec, onResize: () -> Unit) {
+        val itemHeight = dp(44)
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED)
+            elevation = dp(18).toFloat()
+            addView(widgetQuickMenuItem("Resize", 0xFF8FD694.toInt()), LinearLayout.LayoutParams(dp(178), itemHeight))
+            addView(widgetQuickMenuDivider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                leftMargin = dp(10)
+                rightMargin = dp(10)
+            })
+            addView(widgetQuickMenuItem("Remove", 0xFFFF6B6B.toInt()), LinearLayout.LayoutParams(dp(178), itemHeight))
+        }
+        val popup = PopupWindow(menu, dp(194), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+            elevation = dp(18).toFloat()
+            setBackgroundDrawable(GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+            animationStyle = android.R.style.Animation_Dialog
+        }
+        menu.childrenList().forEach { child ->
+            child.setOnClickListener {
+                popup.dismiss()
+                when ((it as? TextView)?.text?.toString()) {
+                    "Resize" -> onResize()
+                    "Remove" -> confirmRemoveWidget(spec.id)
+                }
+            }
+        }
+        haptic(anchor)
+        popup.showAsDropDown(anchor, dp(12), -anchor.height - dp(6), Gravity.TOP or Gravity.START)
+    }
+
+    private fun widgetQuickMenuItem(label: String, accent: Int): TextView {
+        return TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER_VERTICAL
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            includeFontPadding = false
+            setTextColor(if (label == "Remove") accent else activeNeuTokens.ink)
+            setPadding(dp(14), 0, dp(14), 0)
+            background = Neu.drawable(activeNeuTokens, dp(13).toFloat(), NeuLevel.PRESSED_SM)
+            compoundDrawablePadding = dp(9)
+            val dot = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(adjustAlpha(accent, 0.92f))
+                setSize(dp(10), dp(10))
+            }
+            setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null)
+        }
+    }
+
+    private fun widgetQuickMenuDivider(): View {
+        return View(this).apply {
+            setBackgroundColor(adjustAlpha(activeNeuTokens.inkFaint, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.20f else 0.16f))
+        }
+    }
+
+    private fun ViewGroup.childrenList(): List<View> = (0 until childCount).map { getChildAt(it) }.filterIsInstance<TextView>()
 
     private inner class ResizableWidgetContainer(context: Context, private var spec: WidgetSpec) : FrameLayout(context) {
         private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private var editing = false
         private var moving = false
         private var resizing = false
+        private var previewSpec: WidgetSpec? = null
         private var downRawX = 0f
         private var downRawY = 0f
         private var startCellX = 0
@@ -2853,6 +3009,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             editing = true
             haptic(this)
             invalidate()
+        }
+
+        fun showQuickMenu() {
+            showWidgetQuickMenu(this, spec) {
+                enterEditMode()
+            }
         }
 
         override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
@@ -2897,7 +3059,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     moving = editing && !resizing
                     if (resizing || moving) {
                         parent?.requestDisallowInterceptTouchEvent(true)
-                        animate().scaleX(0.992f).scaleY(0.992f).setDuration(80).start()
+                        bringToFront()
+                        (parent as? WidgetCellCanvas)?.showSnapAnchor(spec, true)
+                        animate().alpha(0.76f).scaleX(0.985f).scaleY(0.985f).translationZ(dp(10).toFloat()).setDuration(80).start()
                         return true
                     }
                 }
@@ -2911,37 +3075,68 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             .coerceIn(0, WIDGET_BOARD_COLUMNS - spec.spanX)
                         val nextCellY = (startCellY + kotlin.math.round(dy / (metrics.cellHeight + metrics.gutter)).toInt())
                             .coerceIn(0, WIDGET_BOARD_MAX_ROWS - spec.spanY)
-                        val left = metrics.leftForCell(nextCellX)
-                        val top = metrics.topForCell(nextCellY)
-                        (layoutParams as? FrameLayout.LayoutParams)?.let {
-                            it.leftMargin = left
-                            it.topMargin = top
-                            layoutParams = it
-                        }
-                        spec = spec.copy(cellX = nextCellX, cellY = nextCellY)
+                        val next = spec.copy(cellX = nextCellX, cellY = nextCellY)
+                        previewSpec = next
+                        translationX = dx
+                        translationY = dy
+                        (parent as? WidgetCellCanvas)?.showSnapAnchor(next, isWidgetDropValid(next, savedWidgetSpecs().filterNot { it.id == spec.id }))
                     } else if (resizing) {
                         val nextSpanX = (startSpanX + kotlin.math.round(dx / (metrics.cellWidth + metrics.gutter)).toInt())
                             .coerceIn(spec.minSpanX, WIDGET_BOARD_COLUMNS - spec.cellX)
                         val nextSpanY = (startSpanY + kotlin.math.round(dy / (metrics.cellHeight + metrics.gutter)).toInt())
                             .coerceIn(spec.minSpanY, WIDGET_BOARD_MAX_ROWS - spec.cellY)
+                        val next = spec.copy(spanX = nextSpanX, spanY = nextSpanY)
                         (layoutParams as? FrameLayout.LayoutParams)?.let {
                             it.width = metrics.widthForSpan(nextSpanX)
                             it.height = metrics.heightForSpan(nextSpanY)
                             layoutParams = it
                         }
-                        spec = spec.copy(spanX = nextSpanX, spanY = nextSpanY)
+                        spec = next
+                        previewSpec = next
+                        (parent as? WidgetCellCanvas)?.showSnapAnchor(next, isWidgetDropValid(next, savedWidgetSpecs().filterNot { it.id == spec.id }))
                         updateHostedWidgetSize()
                     }
                     return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (moving || resizing) {
-                        animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                        val candidate = previewSpec ?: spec
+                        val existing = savedWidgetSpecs().filterNot { it.id == candidate.id }
+                        val finalSpec = if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                            candidate.copy(cellX = startCellX, cellY = startCellY, spanX = startSpanX, spanY = startSpanY)
+                        } else {
+                            resolveWidgetPlacement(candidate, existing)
+                        }
+                        val metrics = widgetBoardMetrics()
+                        (layoutParams as? FrameLayout.LayoutParams)?.let {
+                            val visualLeft = it.leftMargin + translationX
+                            val visualTop = it.topMargin + translationY
+                            it.width = metrics.widthForSpan(finalSpec.spanX)
+                            it.height = metrics.heightForSpan(finalSpec.spanY)
+                            it.leftMargin = metrics.leftForCell(finalSpec.cellX)
+                            it.topMargin = metrics.topForCell(finalSpec.cellY)
+                            layoutParams = it
+                            translationX = visualLeft - it.leftMargin
+                            translationY = visualTop - it.topMargin
+                        }
+                        spec = finalSpec
+                        animate()
+                            .alpha(1f)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .translationX(0f)
+                            .translationY(0f)
+                            .translationZ(0f)
+                            .setDuration(240)
+                            .setInterpolator(android.view.animation.OvershootInterpolator(0.82f))
+                            .start()
                         saveWidgetSpec(spec)
                         updateHostedWidgetSize()
                         moving = false
                         resizing = false
                         editing = false
+                        previewSpec = null
+                        (parent as? WidgetCellCanvas)?.clearSnapAnchor()
                         invalidate()
                         parent?.requestDisallowInterceptTouchEvent(false)
                         return true
@@ -2965,6 +3160,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun showWidgetPicker() {
         val board = widgetBoardView as? ViewGroup ?: return
         closeWidgetPicker()
+        widgetPickerQuery = ""
         val picker = FrameLayout(this).apply {
             setBackgroundColor(0x66000000)
             isClickable = true
@@ -2995,7 +3191,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     setPadding(0, 0, 0, dp(8))
                 }, LinearLayout.LayoutParams.MATCH_PARENT, dp(28))
-                addView(widgetProviderList(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+                addView(widgetPickerSearchField(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply {
+                    bottomMargin = dp(12)
+                })
+                addView(FrameLayout(context).also { widgetPickerListHost = it }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, (resources.displayMetrics.heightPixels * 0.72f).toInt(), Gravity.BOTTOM).apply {
                 leftMargin = dp(10)
                 rightMargin = dp(10)
@@ -3004,42 +3203,87 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         widgetPickerView = picker
         board.addView(picker, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        rebuildWidgetProviderList()
     }
 
     private fun closeWidgetPicker() {
         val picker = widgetPickerView ?: return
         widgetPickerView = null
+        widgetPickerListHost = null
+        widgetPickerQuery = ""
         (picker.parent as? ViewGroup)?.removeView(picker)
     }
 
-    private fun widgetProviderList(): View {
+    private fun widgetPickerSearchField(): EditText {
+        return EditText(this).apply {
+            setSingleLine(true)
+            hint = "Search widgets"
+            textSize = 14f
+            includeFontPadding = false
+            setTextColor(activeNeuTokens.ink)
+            setHintTextColor(activeNeuTokens.inkFaint)
+            background = Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.PRESSED_SM)
+            setPadding(dp(16), 0, dp(16), 0)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    widgetPickerQuery = s?.toString().orEmpty()
+                    rebuildWidgetProviderList()
+                }
+                override fun afterTextChanged(s: Editable?) = Unit
+            })
+        }
+    }
+
+    private fun rebuildWidgetProviderList() {
+        val host = widgetPickerListHost ?: return
+        host.removeAllViews()
+        host.addView(widgetProviderList(widgetPickerQuery), FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        ))
+    }
+
+    private fun widgetProviderList(filter: String = ""): View {
         return ScrollView(this).apply {
             clipToPadding = false
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, dp(6), 0, dp(20))
+                val cleanFilter = filter.trim().lowercase(Locale.US)
                 val providersByApp = installedWidgetProviders().groupBy { provider ->
                     runCatching {
                         val appInfo = packageManager.getApplicationInfo(provider.provider.packageName, 0)
                         packageManager.getApplicationLabel(appInfo).toString()
                     }.getOrDefault(provider.provider.packageName)
+                }.mapValues { (_, providers) ->
+                    if (cleanFilter.isBlank()) providers else providers.filter { provider ->
+                        provider.loadLabel(packageManager).lowercase(Locale.US).contains(cleanFilter)
+                    }
+                }.filter { (appLabel, providers) ->
+                    providers.isNotEmpty() || appLabel.lowercase(Locale.US).contains(cleanFilter)
                 }.toSortedMap(collator)
+                if (widgetPickerExpandedApps.isEmpty() && cleanFilter.isBlank()) {
+                    providersByApp.keys.firstOrNull()?.let { widgetPickerExpandedApps.add(it) }
+                }
                 providersByApp.forEach { (appLabel, providers) ->
-                    addView(mono(appLabel.uppercase(Locale.US), 8.4f, InkDim).apply {
-                        letterSpacing = 0.14f
-                        setPadding(dp(3), dp(12), 0, dp(7))
-                    }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-                    addView(GridLayout(context).apply {
-                        columnCount = 2
-                        providers.forEach { provider ->
-                            addView(widgetProviderCard(provider, appLabel), GridLayout.LayoutParams().apply {
-                                width = (resources.displayMetrics.widthPixels - dp(64)) / 2
-                                height = dp(126)
-                                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1)
-                                setMargins(dp(4), dp(4), dp(4), dp(7))
-                            })
-                        }
-                    }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    val expanded = cleanFilter.isNotBlank() || appLabel in widgetPickerExpandedApps
+                    addView(widgetProviderGroupHeader(appLabel, providers, expanded), LinearLayout.LayoutParams.MATCH_PARENT, dp(58))
+                    if (expanded) {
+                        addView(GridLayout(context).apply {
+                            columnCount = 2
+                            setPadding(0, 0, 0, dp(7))
+                            providers.forEach { provider ->
+                                addView(widgetProviderCard(provider, appLabel), GridLayout.LayoutParams().apply {
+                                    width = (resources.displayMetrics.widthPixels - dp(64)) / 2
+                                    height = dp(126)
+                                    columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1)
+                                    setMargins(dp(4), dp(4), dp(4), dp(7))
+                                })
+                            }
+                        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    }
                 }
                 if (providersByApp.isEmpty()) {
                     addView(mono("NO WIDGETS AVAILABLE ON THIS DEVICE", 10f, InkDim).apply {
@@ -3048,6 +3292,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }, LinearLayout.LayoutParams.MATCH_PARENT, dp(180))
                 }
             })
+        }
+    }
+
+    private fun widgetProviderGroupHeader(appLabel: String, providers: List<AppWidgetProviderInfo>, expanded: Boolean): View {
+        val packageName = providers.firstOrNull()?.provider?.packageName
+        val icon = packageName?.let { runCatching { packageManager.getApplicationIcon(it) }.getOrNull() }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), if (expanded) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
+            isClickable = true
+            addView(FrameLayout(context).apply {
+                background = dockIconButtonBackground()
+                setPadding(dp(7), dp(7), dp(7), dp(7))
+                addView(ImageView(context).apply {
+                    if (icon != null) setImageDrawable(icon)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(dp(38), dp(38)))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = appLabel
+                    textSize = 14f
+                    typeface = Typeface.DEFAULT_BOLD
+                    includeFontPadding = false
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(activeNeuTokens.ink)
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+                addView(mono("${providers.size} WIDGET${if (providers.size == 1) "" else "S"}", 8f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.12f
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { marginStart = dp(10) })
+            addView(mono(if (expanded) "−" else "+", 17f, activeNeuTokens.inkDim).apply {
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(dp(32), ViewGroup.LayoutParams.MATCH_PARENT))
+            setOnClickListener {
+                haptic(this)
+                if (expanded) widgetPickerExpandedApps.remove(appLabel) else widgetPickerExpandedApps.add(appLabel)
+                rebuildWidgetProviderList()
+            }
         }
     }
 
@@ -3145,6 +3435,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun savedWidgetSpecs(): List<WidgetSpec> {
+        widgetSpecsCache?.let { return it }
+        return loadWidgetSpecsFromStore().also { widgetSpecsCache = it }
+    }
+
+    private fun loadWidgetSpecsFromStore(): List<WidgetSpec> {
+        val roomSpecs = if (::widgetPersistenceRepository.isInitialized) {
+            runCatching { widgetPersistenceRepository.loadBlocking() }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        if (roomSpecs.isNotEmpty()) return roomSpecs
+        val legacy = loadWidgetSpecsFromPrefs()
+        if (legacy.isNotEmpty() && ::widgetPersistenceRepository.isInitialized) {
+            mediaUiScope.launch { widgetPersistenceRepository.replaceAll(legacy) }
+        }
+        return legacy
+    }
+
+    private fun loadWidgetSpecsFromPrefs(): List<WidgetSpec> {
         val raw = prefs().getString(WIDGET_IDS_PREF, "[]") ?: "[]"
         return runCatching {
             val json = JSONArray(raw)
@@ -3189,8 +3498,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun saveWidgetSpecs(specs: List<WidgetSpec>) {
+        val safeSpecs = specs.map { spec ->
+            val spanX = spec.spanX.coerceIn(spec.minSpanX, WIDGET_BOARD_COLUMNS)
+            val spanY = spec.spanY.coerceIn(spec.minSpanY, WIDGET_BOARD_MAX_ROWS)
+            spec.copy(
+                cellX = spec.cellX.coerceIn(0, WIDGET_BOARD_COLUMNS - spanX),
+                cellY = spec.cellY.coerceIn(0, WIDGET_BOARD_MAX_ROWS - spanY),
+                spanX = spanX,
+                spanY = spanY,
+                minSpanX = spec.minSpanX.coerceIn(1, WIDGET_BOARD_COLUMNS),
+                minSpanY = spec.minSpanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS)
+            )
+        }
+        widgetSpecsCache = safeSpecs
         val json = JSONArray()
-        specs.forEach { spec ->
+        safeSpecs.forEach { spec ->
             json.put(JSONObject().apply {
                 put("id", spec.id)
                 put("cellX", spec.cellX.coerceIn(0, WIDGET_BOARD_COLUMNS - spec.spanX.coerceIn(1, WIDGET_BOARD_COLUMNS)))
@@ -3202,6 +3524,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             })
         }
         prefs().edit().putString(WIDGET_IDS_PREF, json.toString()).apply()
+        if (::widgetPersistenceRepository.isInitialized) {
+            mediaUiScope.launch { widgetPersistenceRepository.replaceAll(safeSpecs) }
+        }
     }
 
     private fun showWidgetOptions(spec: WidgetSpec) {
@@ -3298,6 +3623,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             left.cellX + left.spanX > right.cellX &&
             left.cellY < right.cellY + right.spanY &&
             left.cellY + left.spanY > right.cellY
+    }
+
+    private fun isWidgetDropValid(target: WidgetSpec, existing: List<WidgetSpec>): Boolean {
+        val inBounds = target.cellX >= 0 &&
+            target.cellY >= 0 &&
+            target.cellX + target.spanX <= WIDGET_BOARD_COLUMNS &&
+            target.cellY + target.spanY <= WIDGET_BOARD_MAX_ROWS
+        return inBounds && existing.none { widgetsOverlap(it, target) }
     }
 
     private fun confirmRemoveWidget(widgetId: Int) {
@@ -6256,11 +6589,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            // Suggestion strip — standard placement at the top of the keyboard.
             if (showSuggestionStrip()) addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
             if (symbolsOpen) {
                 addKeyRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
                 addKeyRow(listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"))
                 addKeyRow(listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"), dp(8))
+                // FEATURE (disabled): strip just above the space row — thumb-height, closer to the
+                // fingers. Uncomment this (and remove the top placement above) to move it down.
+                // if (showSuggestionStrip()) addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
                 addKeyRow(listOf("abc", "clicks", "space", "period", "enter"), dp(15))
             } else if (numberPadOpen) {
                 addKeyRow(listOf("1", "2", "3"))
@@ -6271,6 +6608,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow("qwertyuiop".map { it.toString() })
                 addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
                 addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
+                // FEATURE (disabled): strip just above the space row — thumb-height. See note above.
+                // if (showSuggestionStrip()) addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
                 addKeyRow(listOf("123", "clicks", "space", "period", "enter"), dp(15))
             }
         }
@@ -8191,6 +8530,7 @@ Reply format: ["word1","word2","word3"]"""
                     syncNowPlayingCardVisibility()
                     refreshNowPlayingCard()
                 } else if (!libraryOpen) {
+                    scheduleSpellCheck()   // feed the suggestion strip (completions + app-color) in widget search
                     scheduleGeminiSuggestions()
                 }
             }
@@ -12209,21 +12549,113 @@ $emailText"""
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val side = dp(6).toFloat()
-            rect.set(side, dp(8).toFloat(), width - side, height - dp(8).toFloat())
-            paint.shader = android.graphics.LinearGradient(
-                0f, rect.top, 0f, rect.bottom,
-                intArrayOf(0xFF030405.toInt(), 0xFF0B0E12.toInt(), 0xFF020203.toInt()),
-                floatArrayOf(0f, 0.42f, 1f),
+            if (width <= 0 || height <= 0) return
+            val light = activeNeuTokens.mode == NeuMode.LIGHT
+            val side = dp(4).toFloat()
+            val top = dp(3).toFloat()
+            val bottom = dp(3).toFloat()
+            val radius = dp(24).toFloat()
+
+            // Outer shadow: the keyboard has lifted out, leaving a precise molded recess.
+            rect.set(side, top + dp(5), width - side, height - bottom + dp(2))
+            paint.shader = android.graphics.RadialGradient(
+                width / 2f,
+                height * 0.55f,
+                width * 0.72f,
+                intArrayOf(
+                    adjustAlpha(0xFF000000.toInt(), if (light) 0.22f else 0.62f),
+                    adjustAlpha(0xFF000000.toInt(), if (light) 0.10f else 0.32f),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.58f, 1f),
                 Shader.TileMode.CLAMP
             )
-            canvas.drawRoundRect(rect, dp(22).toFloat(), dp(22).toFloat(), paint)
+            canvas.drawRoundRect(rect, radius, radius, paint)
+
+            rect.set(side, top, width - side, height - bottom)
+            paint.shader = android.graphics.LinearGradient(
+                0f, rect.top, 0f, rect.bottom,
+                if (light) intArrayOf(
+                    0xFFD8DDE5.toInt(),
+                    0xFFECEFF4.toInt(),
+                    0xFFC1C8D3.toInt()
+                ) else intArrayOf(
+                    0xFF030405.toInt(),
+                    0xFF0A0D11.toInt(),
+                    0xFF151920.toInt(),
+                    0xFF020203.toInt()
+                ),
+                if (light) floatArrayOf(0f, 0.46f, 1f) else floatArrayOf(0f, 0.30f, 0.58f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            paint.shader = null
+
+            // Inner bevels sell the "hole" rather than a blank strip.
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(if (light) 0xFFFFFFFF.toInt() else 0xFF9DA6B4.toInt(), if (light) 0.54f else 0.12f + glow * 0.18f)
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            paint.color = adjustAlpha(0xFF000000.toInt(), if (light) 0.16f else 0.72f)
+            canvas.drawRoundRect(RectF(rect.left + dp(2), rect.top + dp(3), rect.right - dp(2), rect.bottom - dp(1)), radius - dp(3), radius - dp(3), paint)
+            paint.style = Paint.Style.FILL
+
+            val inner = RectF(rect.left + dp(8), rect.top + dp(8), rect.right - dp(8), rect.bottom - dp(8))
+            paint.shader = android.graphics.LinearGradient(
+                0f, inner.top, 0f, inner.bottom,
+                if (light) intArrayOf(0xFFC7CDD7.toInt(), 0xFFE0E4EA.toInt(), 0xFFB4BCC8.toInt())
+                else intArrayOf(0xFF010102.toInt(), 0xFF07090D.toInt(), 0xFF10141A.toInt(), 0xFF010102.toInt()),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(inner, dp(20).toFloat(), dp(20).toFloat(), paint)
+            paint.shader = null
+
+            val stripChannel = RectF(inner.left + dp(6), inner.top + dp(6), inner.right - dp(6), inner.top + dp(36))
+            paint.shader = android.graphics.LinearGradient(
+                0f, stripChannel.top, 0f, stripChannel.bottom,
+                if (light) intArrayOf(0xFFB8C0CB.toInt(), 0xFFE8EBF0.toInt(), 0xFFCBD1DA.toInt())
+                else intArrayOf(0xFF010102.toInt(), 0xFF10151C.toInt(), 0xFF030405.toInt()),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(stripChannel, dp(13).toFloat(), dp(13).toFloat(), paint)
             paint.shader = null
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(1).toFloat()
-            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.08f + glow * 0.16f)
-            canvas.drawRoundRect(rect, dp(22).toFloat(), dp(22).toFloat(), paint)
+            paint.color = adjustAlpha(if (light) 0xFFFFFFFF.toInt() else 0xFFFFFFFF.toInt(), if (light) 0.42f else 0.08f)
+            canvas.drawRoundRect(stripChannel, dp(13).toFloat(), dp(13).toFloat(), paint)
+            paint.color = adjustAlpha(0xFF000000.toInt(), if (light) 0.12f else 0.52f)
+            canvas.drawLine(stripChannel.left + dp(10), stripChannel.bottom - dp(1), stripChannel.right - dp(10), stripChannel.bottom - dp(1), paint)
             paint.style = Paint.Style.FILL
+
+            val keyWellTop = stripChannel.bottom + dp(8)
+            val keyWellBottom = inner.bottom - dp(26)
+            val rowCount = 4
+            val rowGap = dp(6).toFloat()
+            val rowHeight = ((keyWellBottom - keyWellTop) - rowGap * (rowCount - 1)) / rowCount
+            repeat(rowCount) { row ->
+                val inset = dp(8 + row * 5).toFloat()
+                val y = keyWellTop + row * (rowHeight + rowGap)
+                val rowRect = RectF(inner.left + inset, y, inner.right - inset, y + rowHeight)
+                paint.shader = android.graphics.LinearGradient(
+                    0f, rowRect.top, 0f, rowRect.bottom,
+                    if (light) intArrayOf(0xFFB7BEC9.toInt(), 0xFFDDE2EA.toInt(), 0xFFAAB3C0.toInt())
+                    else intArrayOf(0xFF020304.toInt(), 0xFF0C1016.toInt(), 0xFF010102.toInt()),
+                    null,
+                    Shader.TileMode.CLAMP
+                )
+                canvas.drawRoundRect(rowRect, dp(11).toFloat(), dp(11).toFloat(), paint)
+                paint.shader = null
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = dp(1).toFloat()
+                paint.color = adjustAlpha(if (light) 0xFFFFFFFF.toInt() else 0xFF96A0AE.toInt(), if (light) 0.35f else 0.07f)
+                canvas.drawRoundRect(rowRect, dp(11).toFloat(), dp(11).toFloat(), paint)
+                paint.color = adjustAlpha(0xFF000000.toInt(), if (light) 0.11f else 0.58f)
+                canvas.drawLine(rowRect.left + dp(8), rowRect.bottom, rowRect.right - dp(8), rowRect.bottom, paint)
+                paint.style = Paint.Style.FILL
+            }
+
             val stripWidth = (width * 0.42f).coerceAtMost(dp(178).toFloat())
             val stripHeight = dp(13).toFloat()
             val stripLeft = width / 2f - stripWidth / 2f
@@ -12234,15 +12666,16 @@ $emailText"""
                 strip.top,
                 0f,
                 strip.bottom,
-                intArrayOf(0xFF050608.toInt(), 0xFF15191E.toInt(), 0xFF030304.toInt()),
-                floatArrayOf(0f, 0.42f, 1f),
+                if (light) intArrayOf(0xFFB2BBC7.toInt(), 0xFFE6EAF0.toInt(), 0xFFA6B0BD.toInt())
+                else intArrayOf(0xFF050608.toInt(), 0xFF15191E.toInt(), 0xFF030304.toInt()),
+                if (light) null else floatArrayOf(0f, 0.42f, 1f),
                 Shader.TileMode.CLAMP
             )
             canvas.drawRoundRect(strip, stripHeight / 2f, stripHeight / 2f, paint)
             paint.shader = null
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(1).toFloat()
-            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.08f + glow * 0.2f)
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), if (light) 0.34f else 0.08f + glow * 0.2f)
             canvas.drawRoundRect(strip, stripHeight / 2f, stripHeight / 2f, paint)
             paint.style = Paint.Style.FILL
             val contactColor = if (glow > 0.05f) 0xFF9AF5AE.toInt() else 0xFF57606B.toInt()

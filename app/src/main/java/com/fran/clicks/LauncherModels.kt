@@ -34,5 +34,13 @@ internal data class FlightSegment(
     val date: String, val confirmation: String, val seat: String
 )
 internal data class WeatherSnapshot(val tempF: Int, val feelsLikeF: Int, val humidity: Int, val windMph: Int, val code: Int, val label: String)
-internal data class WidgetSpec(val id: Int, val size: String)
+data class WidgetSpec(
+    val id: Int,
+    val cellX: Int,
+    val cellY: Int,
+    val spanX: Int,
+    val spanY: Int,
+    val minSpanX: Int = 1,
+    val minSpanY: Int = 1
+)
 internal data class WidgetGridSize(val columns: Int, val rows: Int)
