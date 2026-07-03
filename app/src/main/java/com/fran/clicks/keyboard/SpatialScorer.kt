@@ -4,12 +4,15 @@ import android.graphics.Rect
 import kotlin.math.exp
 
 /**
- * Gaussian spatial model: computes probability that a touch belongs to each key,
- * rather than using hard hit-box boundaries. Adapts sigma to actual key dimensions.
+ * Gaussian spatial model: computes probability that a touch belongs to each key, rather than using
+ * hard hit-box boundaries. Adapts sigma to actual key dimensions.
  *
- * It also learns this user's systematic touch bias online: if taps consistently land a few px
- * low/left of the visual centers, [recordTap] shifts a running offset so future taps are scored as
- * if re-centered. That shrinks the "dead zone / near-miss" feeling without moving a single pixel.
+ * It learns this user's touch bias online at two levels:
+ *  - a global offset (fast prior that covers keys with little data), and
+ *  - a per-key offset (where the user actually lands for each individual key).
+ * [recordTap] nudges both from confident taps; [bestKey] scores against the learned "effective"
+ * centers. This shrinks the near-miss / dead-zone feeling and handles a single oddly-placed key
+ * that a single global offset can't. State survives sessions via [exportState] / [importState].
  */
 class SpatialScorer {
 
@@ -19,9 +22,10 @@ class SpatialScorer {
     private var sigmaX = 45.0
     private var sigmaY = 55.0
 
-    // Learned systematic offset (device px) between where this user taps and the key centers.
+    // Global fallback bias (device px) and per-key learned offsets from the geometric center.
     private var offsetX = 0.0
     private var offsetY = 0.0
+    private val keyOffset = HashMap<String, DoubleArray>()   // label -> [dx, dy]
 
     fun setKeys(bounds: Map<String, Rect>) {
         keys = bounds.entries.mapNotNull { (label, rect) ->
@@ -34,24 +38,23 @@ class SpatialScorer {
         if (heights.isNotEmpty()) sigmaY = heights.average() * 0.44
     }
 
-    fun setLearnedOffset(x: Double, y: Double) { offsetX = x; offsetY = y }
-    fun learnedOffsetX(): Double = offsetX
-    fun learnedOffsetY(): Double = offsetY
+    private fun effOffset(label: String): DoubleArray {
+        val o = keyOffset[label] ?: return doubleArrayOf(offsetX, offsetY)
+        return o
+    }
 
     /**
-     * Returns the best-matching key label for the given raw screen coordinates. The learned bias is
-     * subtracted first, so a user who habitually taps off-center still resolves to the right key.
-     * With [letterOnly] the winner is chosen among letter keys only (used for tap snapping).
+     * Returns the best-matching key label for the given raw screen coordinates, scored against each
+     * key's learned effective center. With [letterOnly] the winner is chosen among letter keys only.
      */
     fun bestKey(rawX: Float, rawY: Float, bigramWeights: Map<Char, Double> = emptyMap(), letterOnly: Boolean = false): String? {
-        val ax = rawX - offsetX
-        val ay = rawY - offsetY
         var bestLabel: String? = null
         var bestScore = -1.0
         for (key in keys) {
             if (letterOnly && (key.label.length != 1 || !key.label[0].isLetter())) continue
-            val dx = ax - key.cx
-            val dy = ay - key.cy
+            val off = effOffset(key.label)
+            val dx = rawX - (key.cx + off[0])
+            val dy = rawY - (key.cy + off[1])
             val spatialProb = exp(-((dx * dx) / (2 * sigmaX * sigmaX) + (dy * dy) / (2 * sigmaY * sigmaY)))
             val langWeight = if (key.label.length == 1) bigramWeights[key.label[0]] ?: 1.0 else 1.0
             val score = spatialProb * langWeight
@@ -61,40 +64,76 @@ class SpatialScorer {
     }
 
     /**
-     * Learn from a confident letter tap: nudge the running offset toward this tap's displacement
-     * from the letter key it clearly belongs to. Ambiguous taps near a boundary are ignored, so the
-     * model tracks systematic bias, not noise. The offset is clamped so one stray tap can't skew it.
+     * Learn from a confident letter tap: nudge the tapped key's per-key offset (and the global
+     * prior) toward the tap's displacement from that key's geometric center. Ambiguous taps near a
+     * boundary are ignored so the model tracks systematic bias, not noise; offsets are clamped so
+     * one stray tap can't skew the layout.
      */
     fun recordTap(rawX: Float, rawY: Float) {
         if (keys.isEmpty()) return
-        val ax = rawX - offsetX
-        val ay = rawY - offsetY
         var best: KeyPoint? = null
         var bestProb = -1.0
         for (key in keys) {
             if (key.label.length != 1 || !key.label[0].isLetter()) continue
-            val dx = ax - key.cx
-            val dy = ay - key.cy
+            val off = effOffset(key.label)
+            val dx = rawX - (key.cx + off[0])
+            val dy = rawY - (key.cy + off[1])
             val p = exp(-((dx * dx) / (2 * sigmaX * sigmaX) + (dy * dy) / (2 * sigmaY * sigmaY)))
             if (p > bestProb) { bestProb = p; best = key }
         }
         val k = best ?: return
         if (bestProb < 0.55) return   // ambiguous / outlier tap — don't learn from it
-        offsetX += LEARN_RATE * ((rawX - k.cx) - offsetX)
-        offsetY += LEARN_RATE * ((rawY - k.cy) - offsetY)
-        offsetX = offsetX.coerceIn(-sigmaX * 1.6, sigmaX * 1.6)
-        offsetY = offsetY.coerceIn(-sigmaY * 1.6, sigmaY * 1.6)
+        val maxX = sigmaX * 1.6
+        val maxY = sigmaY * 1.6
+        val arr = keyOffset.getOrPut(k.label) { doubleArrayOf(offsetX, offsetY) }
+        arr[0] = (arr[0] + LEARN_RATE * ((rawX - k.cx) - arr[0])).coerceIn(-maxX, maxX)
+        arr[1] = (arr[1] + LEARN_RATE * ((rawY - k.cy) - arr[1])).coerceIn(-maxY, maxY)
+        // Global prior updates slower; it only backfills keys the user hasn't hit much yet.
+        offsetX = (offsetX + GLOBAL_RATE * ((rawX - k.cx) - offsetX)).coerceIn(-maxX, maxX)
+        offsetY = (offsetY + GLOBAL_RATE * ((rawY - k.cy) - offsetY)).coerceIn(-maxY, maxY)
     }
 
     /** Spatial probability for a specific key — used by the swipe classifier. */
     fun probability(rawX: Float, rawY: Float, keyLabel: String): Double {
         val key = keys.firstOrNull { it.label == keyLabel } ?: return 0.0
-        val dx = (rawX - offsetX) - key.cx
-        val dy = (rawY - offsetY) - key.cy
+        val off = effOffset(key.label)
+        val dx = rawX - (key.cx + off[0])
+        val dy = rawY - (key.cy + off[1])
         return exp(-((dx * dx) / (2 * sigmaX * sigmaX) + (dy * dy) / (2 * sigmaY * sigmaY)))
     }
 
+    /** Serialize learned state: "gx,gy|label:dx,dy;label:dx,dy;...". Safe to persist in prefs. */
+    fun exportState(): String {
+        val sb = StringBuilder()
+        sb.append(offsetX).append(',').append(offsetY).append('|')
+        for ((label, o) in keyOffset) {
+            if (label.length != 1) continue
+            sb.append(label).append(':').append(o[0]).append(',').append(o[1]).append(';')
+        }
+        return sb.toString()
+    }
+
+    /** Restore state produced by [exportState]. Malformed input is ignored. */
+    fun importState(state: String) {
+        if (state.isBlank()) return
+        runCatching {
+            val parts = state.split('|')
+            val g = parts[0].split(',')
+            offsetX = g[0].toDouble(); offsetY = g[1].toDouble()
+            keyOffset.clear()
+            if (parts.size > 1) {
+                for (entry in parts[1].split(';')) {
+                    if (entry.isBlank()) continue
+                    val kv = entry.split(':')
+                    val dxy = kv[1].split(',')
+                    keyOffset[kv[0]] = doubleArrayOf(dxy[0].toDouble(), dxy[1].toDouble())
+                }
+            }
+        }
+    }
+
     companion object {
-        private const val LEARN_RATE = 0.05
+        private const val LEARN_RATE = 0.06
+        private const val GLOBAL_RATE = 0.02
     }
 }
