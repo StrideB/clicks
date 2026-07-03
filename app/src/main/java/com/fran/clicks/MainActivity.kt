@@ -2185,12 +2185,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             closeLibrary(slideLeft = true)
                             return true
                         }
-                        dx > 0 && openPane == null && activeMusicMode() != MusicMode.SIMPLE && spotifyCompactOverlay == null -> {
-                            librarySwipeTriggered = true
-                            showCompactSpotifyLibrary()
-                            return true
-                        }
-                        dx > 0 && openPane == null && activeMusicMode() == MusicMode.SIMPLE -> {
+                        dx > 0 && openPane == null -> {
                             librarySwipeTriggered = true
                             performHomeGesture(gestureAction(GESTURE_RIGHT_PREF, GESTURE_NONE))
                             return true
@@ -6457,16 +6452,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun tryAutocorrect() {
         val word = currentWordInCompose().trimEnd()
         if (word.length < 2) return
-        // Context-aware correction first: given the preceding word, prefer the candidate the user
-        // actually types next (fixes homophone-style slips). Falls back to the original top-
-        // suggestion behavior when it declines. Either way the edit-distance<=1 guard below still
-        // bounds how aggressive an applied correction can be, so this never over-corrects.
+        // bestCorrection is already Damerau-aware (a transposition like teh→the or an adjacent-key
+        // slip counts as ~1 edit) and confidence-bounded, so trust its result directly. Only the
+        // looser getSuggestions fallback — which can return a longer completion — needs the plain
+        // edit-distance<=1 guard to avoid over-correcting. Applying that guard to bestCorrection was
+        // the bug: plain Levenshtein scores a transposition as 2, so common typos were never fixed.
         val context = ngramRepo.cachedNextWords(previousWordInCompose())
-        val top = predictionEngine.bestCorrection(word, context)
-            ?: predictionEngine.getSuggestions(word, 1).firstOrNull() ?: return
+        val top = predictionEngine.bestCorrection(word, context) ?: run {
+            val g = predictionEngine.getSuggestions(word, 1).firstOrNull() ?: return
+            if (editDistance(word, g) > 1) return
+            g
+        }
         if (top.equals(word, ignoreCase = true)) return
-        // Only correct if edit distance is 1 (one transposition/substitution) — avoids aggressive changes
-        if (editDistance(word, top) > 1) return
         pendingAutocorrectUndo = AutocorrectUndo(word, top)
         if (openPane?.kind == PaneKind.CHAT) {
             composeText = composeText.dropLast(word.length) + top + " "
