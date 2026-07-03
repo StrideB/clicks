@@ -5,13 +5,19 @@ or to pick back up later. Three independent workstreams live here.
 
 _Last updated: 2026-07-03._
 
+## Current status
+- **hardening** — DONE, merged to `main` (4 commits: Room migration, n-gram prune, thread-safe notifications, Gemini hardening).
+- **neumorphic-redesign** — round 1 DONE, merged (token system, appearance selector, chrome + widget-stack reskin). **Round 2 polish (`round2-polish-prompt.md`) is the current next step** — fixes carved-surface rendering, music card regression, proportions, and the empty gap under the keyboard.
+- **keyboard-swap** — NOT started yet.
+
 ## Contents
 
 ```
 docs/
 ├── neumorphic-redesign/     ← reskin the whole homescreen + Dark/Light/System theme
-│   ├── codex-build-prompt.md      (task scope, theme setting, constraints, commits)
+│   ├── codex-build-prompt.md      (round-1 task scope, theme setting, constraints, commits) — DONE
 │   ├── design-spec.md             (CODE-LEVEL design bible: tokens, shadows, per-widget specs)
+│   ├── round2-polish-prompt.md    (ROUND 2: self-contained polish pass w/ exact code — NEXT)
 │   ├── prototype-home-full-stack.html      (PRIMARY reference — full widget stack, dark+light)
 │   ├── prototype-all-screens.html          (home/search/library/music/themes)
 │   ├── prototype-music.html                (music widget, real vs redesign)
@@ -45,25 +51,41 @@ two design features; run anytime.
 
 ## Recommended run order (these touch overlapping files)
 
-All three modify `MainActivity.kt` and/or `HomeWidgetStack.kt`, so run them sequentially and commit
-between each to avoid merge pain:
+All modify `MainActivity.kt` and/or `HomeWidgetStack.kt`, so run sequentially and commit between each
+to avoid merge pain. hardening + neumorphic round 1 are already merged; remaining order:
 
-1. **hardening** first — pure cleanup, smallest surface, makes the later work safer (and may extract
-   pieces out of MainActivity that the next steps benefit from).
-2. **neumorphic-redesign** — the big visual reskin of home chrome + widget stack + theme system.
-3. **keyboard-swap** — layers the detach/swap interaction onto the (now reskinned) Widget-mode keyboard.
+1. ~~**hardening**~~ — DONE (merged).
+2. ~~**neumorphic-redesign** round 1~~ — DONE (merged).
+3. **neumorphic-redesign round 2** (`round2-polish-prompt.md`) — NEXT. Self-contained; carries exact
+   code for the carved-surface fix (Fix 1) and the shadow-inset cap (Fix 6), plus the keyboard
+   bottom-gap fix (Fix 8). Run it, rebuild the APK, eyeball against `prototype-home-full-stack.html`.
+4. **keyboard-swap** — LAST. Layers the detach/swap interaction onto the (now reskinned) Widget-mode
+   keyboard, so it should see the finished neumorphic keyboard rather than fight it.
 
-Rationale: hardening is behavior-neutral so it rebases cleanly; the reskin changes how surfaces are
-drawn; the keyboard-swap builds on the keyboard that the reskin restyles. Doing them in this order
-means each later prompt sees the previous one's result instead of fighting it.
+Kickoff line for round 2 (run Codex in the repo):
+> Read docs/neumorphic-redesign/round2-polish-prompt.md and apply all 8 fixes. Use the exact code it
+> provides for Fix 1 and Fix 6. Verify against docs/neumorphic-redesign/prototype-home-full-stack.html
+> and the final checklist.
 
 ## Files each workstream touches (for conflict awareness)
 - **hardening:** `db/NgramDatabase.kt`, `db/NgramDao.kt`, `db/NgramEntry.kt`, `ClicksNotificationListener.kt`, `MainActivity.kt` (Gemini fns + extraction), `app/build.gradle.kts`.
-- **neumorphic-redesign:** new theme/`Neu` helper files, `MainActivity.kt` (home chrome, keyboard, dock, settings selector), `HomeWidgetStack.kt` (all cards), prefs (`THEME_MODE_PREF`).
+- **neumorphic-redesign (r1 + r2):** `Neu.kt`, `LauncherModels.kt`, `MainActivity.kt` (home chrome, keyboard, dock, settings selector, bottom-gap fix), `HomeWidgetStack.kt` (all cards), prefs (`THEME_MODE_PREF`).
 - **keyboard-swap:** `MainActivity.kt` (DOCK key handling, `homeKeyboardWidget()`), new `WidgetKeyboardSwapController`, prefs (`KEYBOARD_THEME_PREF` commit-on-seat).
+
+## Round-2 audit findings (why round 2 exists)
+Verified against the merged code on `main`. Round 1 landed the token system, selector, and reskin
+correctly, but these gaps remain — all addressed in `round2-polish-prompt.md`:
+- Compose `Modifier.neu` PRESSED path draws offset strokes → carved wells look like outlines, not inset.
+- Every carved surface flattened to `PRESSED_SM`; deep surfaces (album well, calendar blocks, tray) need `PRESSED`.
+- Music card regressed to the old 76dp tray — lost the 82dp well, 2×2 grid, and progress groove.
+- Semantic colors re-hardcoded as hex instead of `Neu.*` tokens (inconsistent across light/dark).
+- Tall-hero proportions not applied; cards kept old fixed sizes, content top-clustered.
+- Large empty gap below the keyboard pushes it too high.
 
 ## Open questions parked
 - Neumorphism on Android is render-heavy (dual blur shadows). If 60fps suffers, fall back to the
   layered-GradientDrawable approach (less soft, much cheaper). Watch on the Vivo device.
+- Round 2's `Modifier.neu` replacement is a blind (uncompiled) translation — tune stroke width/alpha
+  until Compose carved wells match the View drawable.
 - keyboard-swap: exact hold threshold so hold-to-detach and tap-to-dock never misfire.
 - Whether Widget-mode "select" should be a plain tap or a deliberate Install affordance.
