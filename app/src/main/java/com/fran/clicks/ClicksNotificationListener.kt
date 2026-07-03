@@ -10,6 +10,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Collections
 import kotlin.math.abs
 
 class ClicksNotificationListener : NotificationListenerService() {
@@ -19,8 +20,12 @@ class ClicksNotificationListener : NotificationListenerService() {
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
-        notificationAvatars.values.forEach { runCatching { it.recycle() } }
-        notificationAvatars.clear()
+        // Iterating a synchronizedMap needs the lock held for the whole sweep, else a concurrent
+        // post could mutate it mid-iteration and throw ConcurrentModificationException.
+        synchronized(notificationAvatars) {
+            notificationAvatars.values.forEach { runCatching { it.recycle() } }
+            notificationAvatars.clear()
+        }
         notificationIntents.clear()
     }
 
@@ -37,11 +42,15 @@ class ClicksNotificationListener : NotificationListenerService() {
 
         sbn.notification.contentIntent?.let { notificationIntents[sbn.key] = it }
         notificationAvatar(sbn.notification)?.let { newBitmap ->
-            if (notificationAvatars.size >= MAX_AVATARS) {
-                val evict = notificationAvatars.keys.firstOrNull()
-                if (evict != null) notificationAvatars.remove(evict)?.let { runCatching { it.recycle() } }
+            // Atomic size-check + FIFO evict + put: without the lock, two posts could each see
+            // size < MAX, both put, and overflow the cap — or evict the same key twice.
+            synchronized(notificationAvatars) {
+                if (notificationAvatars.size >= MAX_AVATARS) {
+                    val evict = notificationAvatars.keys.firstOrNull()
+                    if (evict != null) notificationAvatars.remove(evict)?.let { runCatching { it.recycle() } }
+                }
+                notificationAvatars[sbn.key] = newBitmap
             }
-            notificationAvatars[sbn.key] = newBitmap
         }
 
         val item = JSONObject()
@@ -168,8 +177,18 @@ class ClicksNotificationListener : NotificationListenerService() {
         private const val MAX_MESSAGES = 12
         private const val MAX_AVATARS = 20
         private val DIRECT_OPEN_KINDS = setOf(HUB_KIND_EMAIL, HUB_KIND_NEWS, HUB_KIND_MAPS)
-        val notificationIntents = mutableMapOf<String, PendingIntent>()
-        val notificationAvatars = mutableMapOf<String, Bitmap>()
+        // Shared between the listener service (writer) and MainActivity (reader). Wrapped in a
+        // synchronized LinkedHashMap so per-op access is safe AND insertion order is preserved,
+        // which the avatar FIFO eviction below relies on. Reads in MainActivity are single-key
+        // get/remove (atomic here); the service's compound size-check-evict-put and the
+        // clear-and-recycle sweep are guarded with synchronized(notificationAvatars) blocks.
+        // TODO: These process-lifetime static maps are still a leak vector (bitmaps outlive any
+        //       Activity). A lifecycle-scoped holder would be more robust, but that changes
+        //       ownership/behavior, so it's out of scope for this thread-safety-only fix.
+        val notificationIntents: MutableMap<String, PendingIntent> =
+            Collections.synchronizedMap(LinkedHashMap())
+        val notificationAvatars: MutableMap<String, Bitmap> =
+            Collections.synchronizedMap(LinkedHashMap())
 
         private val MESSAGE_PACKAGES = setOf(
             "com.google.android.apps.messaging",
