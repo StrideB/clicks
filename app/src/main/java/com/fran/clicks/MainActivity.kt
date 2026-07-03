@@ -10146,7 +10146,12 @@ Reply format: ["word1","word2","word3"]"""
     private fun launchExternalIntent(intent: Intent, packageName: String) {
         if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
             if (!prepareDockedExternalMode()) return
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
+            intent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
+                    Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+            )
             val options = dockedExternalActivityOptions()
             if (options != null) {
                 runCatching {
