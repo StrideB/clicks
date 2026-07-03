@@ -130,6 +130,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sqrt
 
@@ -178,6 +179,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var libraryDragStartedOpen = false
     private var libraryDragVertical = false
     private var libraryDragHapticStage = 0
+    private var libraryDragTouchX = 0f
+    private var libraryGridLiquidBackdrop: LiquidGridBackdropView? = null
+    private var libraryGridBlurView: View? = null
+    private var libraryGridScrollView: GridFishEyeScrollView? = null
     private var stripSwipeStartX = 0f
     private var stripSwipeStartY = 0f
     private var stripSwipeTriggered = false
@@ -304,6 +309,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var wordlistFrequencies: Map<String, Float> = emptyMap()
     private lateinit var weatherIconView: AnimatedWeatherIconView
     private var weatherAmbientView: WeatherAmbientView? = null
+    private var weatherDripView: WeatherDripView? = null
     private lateinit var weatherTempView: TextView
     private lateinit var weatherMetaView: TextView
     private lateinit var weatherFeelsView: TextView
@@ -1359,6 +1365,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(weatherAmbientView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            weatherDripView = WeatherDripView(context)
+            addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            weatherDripView?.refresh()
         }
     }
 
@@ -2257,6 +2266,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (!inContent) return false
                 val dx = event.rawX - librarySwipeStartX
                 val dy = event.rawY - librarySwipeStartY
+                libraryDragTouchX = event.rawX
                 if (librarySwipeBlockedByWidget) {
                     val wantsSideLibraryDrag = sideLibraryEnabled && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f &&
                         ((dx < 0 && !libraryOpen && openPane == null) || (dx > 0 && libraryOpen))
@@ -2501,6 +2511,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         libraryDragStartedOpen = startedOpen
         libraryDragVertical = vertical
         libraryDragHapticStage = 0
+        libraryDragTouchX = librarySwipeStartX
         if (!startedOpen) {
             query = ""
             keyboardSettingsOpen = false
@@ -2514,6 +2525,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
             contentFrame.addView(overlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             scheduleLibraryPopulate(24L)
+            updateLibraryGridDragEffects(0f, libraryDragTouchX)
             libraryDragHaptic(1)
         } else {
             libraryView?.apply {
@@ -2546,6 +2558,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else if (!libraryDragStartedOpen) {
             overlay.alpha = ((if (activeNeuTokens.mode == NeuMode.LIGHT) 0.90f else 0.86f) + progress * 0.08f).coerceAtMost(0.98f)
         }
+        updateLibraryGridDragEffects(progress, libraryDragTouchX)
         val stage = when {
             progress > 0.78f -> 3
             progress > 0.42f -> 2
@@ -2588,6 +2601,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     overlay.translationX = 0f
                     overlay.translationY = 0f
                     overlay.setLayerType(View.LAYER_TYPE_NONE, null)
+                    updateLibraryGridDragEffects(1f, libraryDragTouchX)
                     refreshLibraryContent()
                     renderRibbon()
                     syncNowPlayingCardVisibility()
@@ -2609,6 +2623,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     overlay.translationX = 0f
                     overlay.translationY = 0f
                     overlay.setLayerType(View.LAYER_TYPE_NONE, null)
+                    updateLibraryGridDragEffects(0f, libraryDragTouchX)
                     renderRibbon()
                     syncNowPlayingCardVisibility()
                     refreshNowPlayingCard()
@@ -3939,6 +3954,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun fillLibraryContent(area: FrameLayout) {
         area.removeAllViews()
+        libraryGridLiquidBackdrop = null
+        libraryGridBlurView = null
+        libraryGridScrollView = null
         if (query.isNotBlank()) {
             libraryView?.alpha = 1f
         }
@@ -3953,6 +3971,37 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
         libraryPopulateRunnable = null
         fillLibraryContent(area)
+    }
+
+    private fun updateLibraryGridDragEffects(progress: Float, touchX: Float) {
+        if (!libraryGridMode || query.isNotBlank()) return
+        val p = progress.coerceIn(0f, 1f)
+        libraryGridLiquidBackdrop?.updateDragProgress(p, touchX)
+        libraryGridBlurView?.alpha = (0.72f * p).coerceIn(0f, 0.72f)
+        libraryGridScrollView?.let { scroll ->
+            scroll.translationY = dp(30).toFloat() * (1f - p)
+            val scale = 0.965f + p * 0.035f
+            scroll.scaleX = scale
+            scroll.scaleY = scale
+            scroll.applyFishEye()
+        }
+    }
+
+    private fun libraryGridFrostBackground(): Drawable {
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        val base = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            if (light) {
+                intArrayOf(0xDDECEEF2.toInt(), 0xBFE3E6EC.toInt(), 0x99D8DDE6.toInt())
+            } else {
+                intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.42f), adjustAlpha(activeNeuTokens.base, 0.46f), adjustAlpha(activeNeuTokens.baseLo, 0.58f))
+            }
+        )
+        val glow = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(adjustAlpha(activeNeuTokens.baseHi, if (light) 0.46f else 0.16f), Color.TRANSPARENT, adjustAlpha(activeNeuTokens.baseLo, if (light) 0.16f else 0.28f))
+        )
+        return LayerDrawable(arrayOf(base, glow))
     }
 
     private fun libraryHeader(): View = LinearLayout(this).apply {
@@ -4850,19 +4899,51 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun libraryGrid(): View = ScrollView(this).apply {
+        val plainGrid = this
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(12), 0, dp(8))
-            addView(tileGrid(apps.map { it.toLibraryApp() }, 4))
+            addView(tileGrid(apps.map { it.toLibraryApp() }, 4, gridPhysics = true))
         })
+    }.let { plainScroll ->
+        FrameLayout(this).apply {
+            val liquid = LiquidGridBackdropView(context).apply {
+                updateTokens(activeNeuTokens)
+            }
+            val blur = View(context).apply {
+                alpha = if (libraryOpen) 0.72f else 0f
+                background = libraryGridFrostBackground()
+            }
+            val scroll = GridFishEyeScrollView(context).apply {
+                isVerticalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                clipToPadding = false
+                addView((plainScroll as ScrollView).getChildAt(0).also { plainScroll.removeView(it) })
+                setPadding(0, 0, 0, dp(8))
+            }
+            libraryGridLiquidBackdrop = liquid
+            libraryGridBlurView = blur
+            libraryGridScrollView = scroll
+            addView(liquid, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            addView(blur, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            addView(scroll, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            post {
+                val progress = if (libraryOpen) 1f else 0f
+                updateLibraryGridDragEffects(progress, width * 0.5f)
+                scroll.applyFishEye()
+            }
+        }
     }
 
-    private fun tileGrid(items: List<LibraryApp>, columns: Int): View = LinearLayout(this).apply {
+    private fun tileGrid(items: List<LibraryApp>, columns: Int, gridPhysics: Boolean = false): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
+        var tileIndex = 0
         items.chunked(columns).forEach { rowItems ->
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                rowItems.forEach { app -> addView(appTile(app), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)) }
+                rowItems.forEach { app ->
+                    addView(appTile(app, gridPhysics, tileIndex++), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                }
                 repeat(columns - rowItems.size) { addView(View(context), LinearLayout.LayoutParams(0, 1, 1f)) }
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, appTileRowHeight()).apply {
                 bottomMargin = dp(if (libraryGridMode) 20 else 4)
@@ -4870,11 +4951,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun appTile(app: LibraryApp): View {
+    private fun appTile(app: LibraryApp, gridPhysics: Boolean = false, index: Int = 0): View {
         val target = app.target
         return LinearLayout(this).apply {
+            if (gridPhysics) tag = GRID_APP_TILE_TAG
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; isClickable = true
             setPadding(dp(3), dp(4), dp(3), dp(2))
+            if (gridPhysics) {
+                alpha = 0f
+                translationY = dp(16).toFloat()
+                postDelayed({
+                    animate().alpha(1f).translationY(0f).setDuration(210).setInterpolator(DecelerateInterpolator(1.7f)).start()
+                }, (index * 10L).coerceAtMost(220L))
+            }
             val iconFrame = appLibraryIconFrameSize()
             addView(FrameLayout(context).apply {
                 elevation = dp(3).toFloat(); background = libraryIconButtonBackground(13, Line)
@@ -4911,6 +5000,112 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             setOnLongClickListener { haptic(this); showIconMenu(this, app); true }
+        }
+    }
+
+    private inner class LiquidGridBackdropView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(1).toFloat()
+        }
+        private val path = Path()
+        private var progress = 0f
+        private var pullX = 0f
+        private var tokens = activeNeuTokens
+
+        init {
+            setWillNotDraw(false)
+        }
+
+        fun updateTokens(next: NeuTokens) {
+            tokens = next
+            invalidate()
+        }
+
+        fun updateDragProgress(nextProgress: Float, touchX: Float) {
+            progress = nextProgress.coerceIn(0f, 1f)
+            pullX = touchX.takeIf { it > 0f } ?: width * 0.5f
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (width <= 0 || height <= 0 || progress <= 0f) return
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val top = h * (1f - progress)
+            val stretch = dp(72).toFloat() * progress * (1f - progress * 0.22f)
+            path.reset()
+            path.moveTo(0f, h)
+            path.lineTo(0f, top)
+            path.cubicTo(
+                pullX * 0.42f,
+                top,
+                pullX,
+                top - stretch,
+                pullX + (w - pullX) * 0.58f,
+                top
+            )
+            path.lineTo(w, top)
+            path.lineTo(w, h)
+            path.close()
+            paint.shader = android.graphics.LinearGradient(
+                0f,
+                top,
+                0f,
+                h,
+                intArrayOf(
+                    adjustAlpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.88f else 0.62f),
+                    adjustAlpha(tokens.base, if (tokens.mode == NeuMode.LIGHT) 0.94f else 0.78f),
+                    adjustAlpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.78f else 0.9f)
+                ),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawPath(path, paint)
+            paint.shader = null
+            rimPaint.color = adjustAlpha(if (tokens.mode == NeuMode.LIGHT) Color.WHITE else tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.42f else 0.18f)
+            canvas.drawPath(path, rimPaint)
+        }
+    }
+
+    private inner class GridFishEyeScrollView(context: Context) : ScrollView(context) {
+        override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+            super.onScrollChanged(l, t, oldl, oldt)
+            applyFishEye()
+        }
+
+        fun applyFishEye() {
+            val midY = height / 2f
+            val radius = (height * 0.62f).coerceAtLeast(dp(1).toFloat())
+            val loc = IntArray(2)
+            getLocationOnScreen(loc)
+            applyFishEyeToChildren(this, loc[1].toFloat(), midY, radius)
+        }
+
+        private fun applyFishEyeToChildren(view: View, originY: Float, midY: Float, radius: Float) {
+            if (view.tag == GRID_APP_TILE_TAG) {
+                val childLoc = IntArray(2)
+                view.getLocationOnScreen(childLoc)
+                val childMid = childLoc[1] - originY + view.height / 2f
+                val distance = abs(midY - childMid)
+                val wave = if (distance < radius) {
+                    cos((distance / radius) * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
+                val scale = 0.91f + wave * 0.105f
+                view.scaleX = scale
+                view.scaleY = scale
+                view.translationX = dp(8).toFloat() * wave
+                view.alpha = 0.74f + wave * 0.26f
+                view.translationZ = dp(4).toFloat() * wave
+                return
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) applyFishEyeToChildren(view.getChildAt(i), originY, midY, radius)
+            }
         }
     }
 
@@ -12174,6 +12369,7 @@ $emailText"""
         weatherIconView.setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
         weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
         weatherAmbientView?.setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = false)
+        weatherDripView?.refresh()
         refreshNowPlayingCard()
     }
 
@@ -12224,6 +12420,7 @@ $emailText"""
                 if (weatherChanged) {
                     weatherIconView.playLivePhotoBurst()
                     weatherAmbientView?.setWeather(result.code, activeNeuTokens.mode, animate = animatedWeatherEnabled())
+                    weatherDripView?.refresh()
                     refreshNowPlayingCard()
                 }
             }
@@ -12499,19 +12696,97 @@ $emailText"""
     }
 
     private fun libraryCategories(): List<LibraryCategory> {
-        val signature = apps.joinToString("|") { it.componentName.flattenToShortString() }
+        val signature = listOf(
+            apps.joinToString("|") { it.componentName.flattenToShortString() },
+            categoryContextBucket(),
+            prefs().getString(APP_USAGE_PREF, "{}").orEmpty(),
+            prefs().getString(APP_LAST_LAUNCH_PREF, "{}").orEmpty()
+        ).joinToString("::")
         if (signature == libraryCategoriesCacheSignature) return libraryCategoriesCache
         val grouped = apps.map { it.toLibraryApp() }.groupBy { app -> categoryNameFor(app.target.packageName) }
         val preferredOrder = listOf("Social", "Music & Audio", "Video", "Photos", "Maps", "Productivity", "Games", "News", "Tools", "Other")
-        val categories = preferredOrder.mapNotNull { name ->
+        val baseCategories = preferredOrder.mapNotNull { name ->
             grouped[name]?.takeIf { it.isNotEmpty() }?.let { LibraryCategory(name, categoryAccent(name), it) }
         } + grouped.keys
             .filterNot { it in preferredOrder }
             .sortedWith(collator)
             .mapNotNull { name -> grouped[name]?.takeIf { it.isNotEmpty() }?.let { LibraryCategory(name, categoryAccent(name), it) } }
+        val categories = baseCategories.sortedWith(
+            compareByDescending<LibraryCategory> { contextualCategoryScore(it.name, preferredOrder.indexOf(it.name).takeIf { index -> index >= 0 } ?: preferredOrder.size) }
+                .thenBy { preferredOrder.indexOf(it.name).takeIf { index -> index >= 0 } ?: preferredOrder.size }
+                .thenBy { it.name }
+        )
         libraryCategoriesCacheSignature = signature
         libraryCategoriesCache = categories
         return categories
+    }
+
+    private fun categoryContextBucket(): String {
+        val now = java.util.Calendar.getInstance()
+        val hour = now.get(java.util.Calendar.HOUR_OF_DAY)
+        val day = now.get(java.util.Calendar.DAY_OF_WEEK)
+        val weekday = day !in setOf(java.util.Calendar.SATURDAY, java.util.Calendar.SUNDAY)
+        return when {
+            hour in 7..11 && weekday -> "weekday_morning"
+            hour in 18..23 -> "evening"
+            hour in 0..5 -> "late_night"
+            else -> "neutral"
+        }
+    }
+
+    private fun contextualCategoryScore(name: String, orderIndex: Int): Int {
+        val basePriority = (100 - orderIndex).coerceAtLeast(0)
+        return when (categoryContextBucket()) {
+            "weekday_morning" -> basePriority + when (name) {
+                "Productivity", "Tools", "News", "Maps" -> 100
+                else -> 0
+            }
+            "evening" -> basePriority + when (name) {
+                "Music & Audio", "Video", "Social", "Games", "Photos" -> 100
+                else -> 0
+            }
+            "late_night" -> basePriority + when (name) {
+                "Tools", "Productivity", "News" -> -50
+                else -> 0
+            }
+            else -> basePriority
+        }
+    }
+
+    private fun splitCategoryApps(apps: List<LibraryApp>): Pair<List<LibraryApp>, List<LibraryApp>> {
+        val launches = appLastLaunches()
+        val cutoff = System.currentTimeMillis() - 30L * 24L * 60L * 60L * 1000L
+        return apps.partition { app ->
+            val packageName = app.target.packageName
+            val lastLaunch = packageName?.let { launches[it] } ?: 0L
+            lastLaunch == 0L || lastLaunch >= cutoff
+        }
+    }
+
+    private fun maxLaunchesForCategory(apps: List<LibraryApp>): Int {
+        val usage = appUsageCounts()
+        return apps.maxOfOrNull { app -> app.target.packageName?.let { usage[it] } ?: 0 } ?: 0
+    }
+
+    private fun categoryUsageRatio(app: LibraryApp, maxLaunches: Int): Float {
+        if (maxLaunches <= 0) return 0.5f
+        val count = app.target.packageName?.let { appUsageCounts()[it] } ?: 0
+        return (count.toFloat() / maxLaunches.toFloat()).coerceIn(0f, 1f)
+    }
+
+    private fun applyCategoryUsageScale(app: LibraryApp, maxLaunches: Int, labelView: TextView?, iconView: ImageView) {
+        val ratio = categoryUsageRatio(app, maxLaunches)
+        val scale = 0.85f + ratio * 0.30f
+        iconView.scaleX = scale
+        iconView.scaleY = scale
+        labelView?.let { label ->
+            if (maxLaunches > 0 && ratio < 0.15f) {
+                label.visibility = View.GONE
+            } else {
+                label.visibility = View.VISIBLE
+                label.textSize = 10f + ratio * 4f
+            }
+        }
     }
 
     private fun categoryNameFor(packageName: String?): String {
@@ -14370,6 +14645,108 @@ $emailText"""
         }
     }
 
+    private fun weatherIsRainy(): Boolean {
+        val c = prefs().getInt(WEATHER_CODE_PREF, 0)
+        return c in intArrayOf(51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99)
+    }
+
+    private fun weatherDripRate(): Float = when (prefs().getInt(WEATHER_CODE_PREF, 0)) {
+        55, 57, 65, 67, 82, 99 -> 7f
+        53, 63, 81, 96 -> 4.5f
+        else -> 2.4f
+    }
+
+    private class DripDrop(var x: Float, var edgeY: Float, var y: Float, var grow: Float,
+                           var r: Float, var vy: Float, var released: Boolean, var a: Float)
+
+    // Foreground overlay that lets rain "wet" the widgets: droplets bead up along a widget's bottom
+    // edge, swell, then release and fall off. Active only on rainy codes + Animated Weather; passes
+    // touches straight through and pauses when off-screen.
+    private inner class WeatherDripView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val drips = ArrayList<DripDrop>()
+        private val edgeBuf = ArrayList<FloatArray>()
+        private var running = false
+        private var lastFrame = 0L
+        private var spawnAcc = 0f
+        private val rnd = java.util.Random()
+
+        fun refresh() {
+            val active = weatherIsRainy() && animatedWeatherEnabled() && homeWidgetStackVisible()
+            if (active) {
+                if (!running) { running = true; lastFrame = 0L; postInvalidateOnAnimation() }
+            } else {
+                running = false; drips.clear(); invalidate()
+            }
+        }
+
+        override fun onVisibilityAggregated(isVisible: Boolean) {
+            super.onVisibilityAggregated(isVisible)
+            if (isVisible) refresh() else running = false
+        }
+
+        override fun onDetachedFromWindow() { running = false; super.onDetachedFromWindow() }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean = false   // never consume touches
+
+        private fun collectEdges() {
+            edgeBuf.clear()
+            val my = IntArray(2); getLocationInWindow(my)
+            val loc = IntArray(2)
+            val views = ArrayList<View>()
+            if (::nowPlayingCardView.isInitialized) views.add(nowPlayingCardView)
+            if (::favoritesDockView.isInitialized) views.add(favoritesDockView)
+            for (v in views) {
+                if (v.width <= 0 || v.height <= 0 || !v.isShown) continue
+                v.getLocationInWindow(loc)
+                val left = (loc[0] - my[0]).toFloat()
+                edgeBuf.add(floatArrayOf(left, left + v.width, (loc[1] - my[1] + v.height).toFloat()))
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (!running) return
+            val now = System.currentTimeMillis()
+            val dt = if (lastFrame == 0L) 0.016f else ((now - lastFrame) / 1000f).coerceIn(0f, 0.05f)
+            lastFrame = now
+            val d = resources.displayMetrics.density
+            collectEdges()
+            if (edgeBuf.isNotEmpty()) {
+                spawnAcc += dt * weatherDripRate()
+                while (spawnAcc >= 1f) {
+                    spawnAcc -= 1f
+                    val e = edgeBuf[rnd.nextInt(edgeBuf.size)]
+                    val x = e[0] + rnd.nextFloat() * (e[1] - e[0])
+                    drips.add(DripDrop(x, e[2], e[2], 0f, (2.2f + rnd.nextFloat() * 1.8f) * d, 0f, false, 0.5f + rnd.nextFloat() * 0.28f))
+                }
+            }
+            val color = 0xFF6FA8CC.toInt()
+            val h = height.toFloat()
+            paint.style = Paint.Style.FILL
+            val iter = drips.iterator()
+            while (iter.hasNext()) {
+                val drop = iter.next()
+                if (!drop.released) {
+                    drop.grow += dt
+                    val t = (drop.grow / 0.9f).coerceIn(0f, 1f)
+                    val rr = drop.r * (0.45f + 0.55f * t)
+                    paint.color = adjustAlpha(color, drop.a)
+                    canvas.drawCircle(drop.x, drop.edgeY + rr * 0.7f, rr, paint)
+                    if (drop.grow >= 0.9f) { drop.released = true; drop.y = drop.edgeY + rr; drop.vy = 24f * d }
+                } else {
+                    drop.vy += 950f * d * dt
+                    drop.y += drop.vy * dt
+                    drop.a -= dt * 0.45f
+                    if (drop.a <= 0f || drop.y - drop.r > h) { iter.remove(); continue }
+                    paint.color = adjustAlpha(color, drop.a)
+                    canvas.drawCircle(drop.x, drop.y, drop.r * 0.8f, paint)
+                }
+            }
+            postInvalidateOnAnimation()
+        }
+    }
+
     private fun isWeatherNight(): Boolean {
         val hour = LocalTime.now().hour
         return hour < 6 || hour >= 19
@@ -14532,6 +14909,7 @@ $emailText"""
         private const val HAPTICS_PREF = "haptics"
         private const val KBD_TILT_LIGHT_PREF = "kbd_tilt_light"
         private const val LIBRARY_GRID_MODE_PREF = "library_grid_mode"
+        private const val GRID_APP_TILE_TAG = "grid_app_tile"
         private const val GO_KEY_COLOR_PREF = "go_key_color"
         private const val FAVORITE_APPS_PREF = "favorite_apps"
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
@@ -14540,6 +14918,7 @@ $emailText"""
         private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
         private const val DOCK_APP_LIMIT = 5
         private const val APP_USAGE_PREF = "app_usage_counts"
+        private const val APP_LAST_LAUNCH_PREF = "app_last_launch_times"
         private const val WEATHER_TEMP_PREF = "weather_temp"
         private const val WEATHER_META_PREF = "weather_meta"
         private const val WEATHER_FEELS_PREF = "weather_feels"
