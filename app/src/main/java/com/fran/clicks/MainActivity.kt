@@ -2122,6 +2122,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && widgetSwapState != WidgetKeyboardSwapState.SEATED
     }
 
+    private var librarySwipeFromKeyboard = false
+
     private fun handleLibrarySwipe(event: MotionEvent): Boolean {
         if (widgetKeyboardSwapActive()) {
             librarySwipeTriggered = false
@@ -2141,6 +2143,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val upOpensLibrary = gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS) == GESTURE_LIBRARY
         val sideLibraryEnabled = !upOpensLibrary
 
+        // A gesture that starts on the keyboard (docked dock or widget keyboard module) is typing /
+        // glide, not a launcher swipe — ignore it so widget-mode glides don't open the library or
+        // widget board.
+        if (event.actionMasked != MotionEvent.ACTION_DOWN && librarySwipeFromKeyboard) return false
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 librarySwipeStartX = event.rawX
@@ -2150,6 +2157,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 libraryDragVertical = false
                 libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
+                librarySwipeFromKeyboard = isInsideKeyboard(event.rawX, event.rawY)
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!inContent) return false
@@ -2311,6 +2319,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             rawX <= loc[0] + nowPlayingCardView.width &&
             rawY >= loc[1] &&
             rawY <= loc[1] + nowPlayingCardView.height
+    }
+
+    // True if the touch is over EITHER keyboard surface — the docked dock or the in-home widget
+    // keyboard module. In widget mode the keyboard lives inside contentFrame, so launcher-swipe
+    // handlers must exclude it explicitly (the docked dock is already below contentFrame).
+    private fun isInsideKeyboard(rawX: Float, rawY: Float): Boolean {
+        if (isInsideKeyboardDock(rawX, rawY)) return true
+        val m = widgetKeyboardModule ?: return false
+        if (m.height <= 0 || m.visibility != View.VISIBLE) return false
+        val loc = IntArray(2)
+        m.getLocationOnScreen(loc)
+        return rawX >= loc[0] && rawX <= loc[0] + m.width && rawY >= loc[1] && rawY <= loc[1] + m.height
     }
 
     private fun isInsideKeyboardDock(rawX: Float, rawY: Float): Boolean {
