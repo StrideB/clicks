@@ -15,9 +15,18 @@ class ClicksImeService : InputMethodService() {
     private var shifted = false
     private var deckView: LinearLayout? = null
 
+    override fun onEvaluateInputViewShown(): Boolean {
+        return KeyboardSettings.isDocked(this)
+    }
+
     override fun onCreateInputView(): View {
         shifted = false
         return buildKeyboard().also { deckView = it }
+    }
+
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        updateInputViewShown()
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {

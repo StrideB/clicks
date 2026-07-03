@@ -10148,7 +10148,7 @@ Reply format: ["word1","word2","word3"]"""
             if (!prepareDockedExternalMode()) return
             intent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_NO_ANIMATION
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
             )
             startActivity(intent)
         } else {
