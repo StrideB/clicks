@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clicks Home, Full Widget Stack Redesign</title>
+<style>
+  .dark{
+    --base:#181b21; --base-hi:#20242c; --base-lo:#0e1014;
+    --ink:#e8ebef; --ink-dim:#899099; --ink-faint:#565d66;
+    --raised:-5px -5px 11px var(--base-hi),6px 6px 14px var(--base-lo);
+    --raised-sm:-3px -3px 7px var(--base-hi),4px 4px 9px var(--base-lo);
+    --pressed:inset -4px -4px 9px var(--base-hi),inset 5px 5px 11px var(--base-lo);
+    --pressed-sm:inset -2px -2px 5px var(--base-hi),inset 3px 3px 7px var(--base-lo);
+  }
+  .light{
+    --base:#eceef2; --base-hi:#ffffff; --base-lo:#d3d7de;
+    --ink:#3a3f47; --ink-dim:#828892; --ink-faint:#a8adb6;
+    --raised:-4px -4px 12px var(--base-hi),5px 5px 13px var(--base-lo);
+    --raised-sm:-2px -2px 6px var(--base-hi),3px 3px 8px var(--base-lo);
+    --pressed:inset -3px -3px 8px var(--base-hi),inset 4px 4px 9px var(--base-lo);
+    --pressed-sm:inset -2px -2px 4px var(--base-hi),inset 2px 2px 5px var(--base-lo);
+  }
+  :root{ --green:#28E06A; --accent:#FF4B45; --amber:#E8B84B; --blue:#3B9DFF; --teal:#5FD0C4; --orange:#FF8A4C; --purple:#A071FF; }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{min-height:100%;background:radial-gradient(1100px 760px at 50% -10%,#1a1f27,#0d1015 62%);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#e8ebef;-webkit-font-smoothing:antialiased;}
+  .wrap{min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:22px;padding:30px 20px 80px;}
+  .title{text-align:center;}
+  .title .k{font-family:ui-monospace,monospace;font-size:10px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;}
+  .title h1{font-size:19px;font-weight:600;margin-top:6px;}
+  .title p{font-size:12.5px;color:#899099;margin-top:6px;max-width:600px;line-height:1.5;}
+  .controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:center;background:#181b21;border-radius:14px;padding:9px 12px;box-shadow:0 8px 20px rgba(0,0,0,.4);}
+  .controls .lbl{font-family:ui-monospace,monospace;font-size:8.5px;letter-spacing:1.5px;color:#565d66;}
+  .seg{display:flex;gap:5px;padding:4px;border-radius:11px;background:#14171b;flex-wrap:wrap;}
+  .segbtn{font-size:11px;color:#899099;background:transparent;border:none;border-radius:8px;padding:6px 11px;cursor:pointer;transition:.12s;}
+  .segbtn.active{color:#e8ebef;background:#20242c;}
+
+  .row{display:flex;gap:34px;flex-wrap:wrap;justify-content:center;align-items:flex-start;}
+  .col{display:flex;flex-direction:column;align-items:center;gap:12px;}
+  .cap{font-family:ui-monospace,monospace;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;}
+  .cap.d{color:var(--green);} .cap.l{color:#5c95ff;}
+
+  .phone{width:310px;height:690px;border-radius:46px;padding:12px;}
+  .phone.dark{background:#181b21;box-shadow:var(--raised),0 26px 54px rgba(0,0,0,.4);}
+  .phone.light{background:#eceef2;box-shadow:var(--raised),0 26px 54px rgba(0,0,0,.4);}
+  .screen{position:relative;width:100%;height:100%;border-radius:36px;overflow:hidden;display:flex;flex-direction:column;background:var(--base);box-shadow:var(--pressed);}
+  .sb{display:flex;justify-content:space-between;padding:12px 22px 4px;font-size:11px;flex:0 0 auto;color:var(--ink);}
+  .sb .dots{letter-spacing:1px;color:var(--ink-dim);}
+  .home{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:6px 13px 0;gap:9px;}
+
+  /* weather */
+  .weather{display:flex;align-items:center;gap:12px;padding:6px 4px 2px;flex:0 0 auto;}
+  .wsun{width:38px;height:38px;border-radius:50%;background:var(--base);box-shadow:var(--raised-sm);position:relative;flex:0 0 auto;}
+  .wsun::after{content:"";position:absolute;inset:10px;border-radius:50%;background:var(--amber);opacity:.9;}
+  .wtemp{font-size:25px;font-weight:300;letter-spacing:-1px;}
+  .wcond{font-size:8px;letter-spacing:1.5px;font-family:ui-monospace,monospace;color:var(--ink-faint);margin-top:2px;}
+  .wmeta{margin-left:auto;text-align:right;font-size:10px;color:var(--ink-dim);line-height:1.5;}
+
+  /* widget stack viewport (vertical pager) — the TALL hero of the homescreen */
+  .stack{flex:1 1 auto;min-height:0;position:relative;margin:2px 0;}
+  .wcard{position:absolute;inset:0;border-radius:22px;background:var(--base);box-shadow:var(--raised);padding:16px 17px;
+    display:flex;flex-direction:column;opacity:0;transform:translateY(14px);transition:opacity .32s,transform .32s;pointer-events:none;}
+  .wcard.active{opacity:1;transform:translateY(0);pointer-events:auto;}
+  .wlabel{font-family:ui-monospace,monospace;font-size:8.5px;letter-spacing:1.5px;}
+  .wtitle{font-size:16px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .wsub{font-size:11px;color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+  .chip-ic{width:46px;height:46px;border-radius:13px;background:var(--base);box-shadow:var(--pressed-sm);display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+  .chip-ic .glyph{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#0c1310;background:var(--chip);}
+  .chip-ic.mono .glyph{background:var(--base);box-shadow:var(--raised-sm);color:var(--chip);}
+
+  .topline{display:flex;align-items:center;gap:8px;flex:0 0 auto;}
+  .count{margin-left:auto;font-family:ui-monospace,monospace;font-size:9px;color:var(--ink-dim);background:var(--base);border-radius:7px;padding:2px 7px;box-shadow:var(--pressed-sm);}
+  .mainrow{display:flex;align-items:center;gap:14px;flex:1 1 auto;}
+  .tray{border-radius:14px;background:var(--base);box-shadow:var(--pressed-sm);padding:12px 13px;display:flex;align-items:center;gap:11px;flex:0 0 auto;}
+  .subrows{display:flex;flex-direction:column;gap:9px;margin-top:12px;flex:0 0 auto;}
+  .subrow{display:flex;align-items:center;gap:8px;}
+  .subrow .dot{width:5px;height:5px;border-radius:50%;background:var(--chip);flex:0 0 auto;opacity:.7;}
+  .subrow .tx{font-size:10.5px;color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+  /* music */
+  .m-art{width:82px;height:82px;border-radius:18px;background:var(--base);box-shadow:var(--pressed-sm);padding:6px;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:5px;flex:0 0 auto;}
+  .m-art i{border-radius:7px;background:var(--base);box-shadow:var(--raised-sm);}
+  .m-prog{height:7px;border-radius:99px;background:var(--base);box-shadow:var(--pressed-sm);margin-top:12px;position:relative;overflow:hidden;}
+  .m-prog .fill{position:absolute;left:0;top:0;bottom:0;width:44%;border-radius:99px;background:var(--green);opacity:.7;}
+  .eq{display:flex;gap:3px;align-items:flex-end;height:20px;flex:0 0 auto;}
+  .eq span{width:3px;border-radius:2px;background:var(--green);opacity:.85;animation:eq 1s ease-in-out infinite;}
+  @keyframes eq{0%,100%{height:6px}50%{height:20px}}
+
+  /* calendar (two carved blocks) — fill full height */
+  .cal{display:flex;gap:11px;flex:1 1 auto;}
+  .cblk{flex:1;border-radius:16px;background:var(--base);box-shadow:var(--pressed-sm);padding:14px 13px;display:flex;flex-direction:column;justify-content:space-between;}
+
+  /* maps mini-diagram */
+  .m-map{width:88px;height:88px;border-radius:18px;background:var(--base);box-shadow:var(--pressed-sm);position:relative;overflow:hidden;flex:0 0 auto;}
+  .m-map .rd{position:absolute;height:5px;border-radius:2px;background:var(--ink-faint);opacity:.4;}
+  .m-map .rd.lit{background:var(--green);opacity:.8;height:4px;}
+  .m-map .pin{position:absolute;width:11px;height:11px;border-radius:50%;background:var(--green);left:50%;top:52%;transform:translate(-50%,-50%);box-shadow:0 0 0 3px var(--base);}
+
+  /* people chips — fill height */
+  .people{display:flex;gap:10px;flex:1 1 auto;align-items:stretch;}
+  .pchip{flex:1;border-radius:16px;background:var(--base);box-shadow:var(--pressed-sm);padding:14px 6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;}
+  .orb{width:46px;height:46px;border-radius:50%;background:var(--base);box-shadow:var(--raised-sm);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:var(--chip);}
+  .pname{font-size:11px;color:var(--ink);font-weight:600;}
+
+  /* dots indicator */
+  .dots-v{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:5px;}
+  .dots-v b{width:5px;height:5px;border-radius:99px;background:var(--ink-faint);opacity:.5;transition:.2s;display:block;}
+  .dots-v b.on{background:var(--green);opacity:1;height:16px;}
+
+  /* dock + keyboard (compact, static) */
+  .dock{display:flex;justify-content:space-between;padding:9px 14px;background:var(--base);border-radius:19px;flex:0 0 auto;box-shadow:var(--pressed-sm);}
+  .dapp{width:38px;height:38px;border-radius:50%;background:var(--base);box-shadow:var(--raised-sm);display:flex;align-items:center;justify-content:center;}
+  .dapp .glyph{width:20px;height:20px;border-radius:50%;background:var(--chip);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#0c1310;}
+  .kb{flex:0 0 auto;background:var(--base);border-radius:16px 16px 0 0;padding:7px;box-shadow:var(--raised),0 -6px 14px rgba(0,0,0,.2);margin-top:2px;}
+  .krow{display:flex;gap:3px;justify-content:center;margin-bottom:3px;}
+  .krow.ind{padding:0 12px;}
+  .key{flex:1 1 0;min-width:0;height:20px;border-radius:6px;background:var(--base);box-shadow:var(--raised-sm);font-size:8.5px;color:var(--ink-dim);display:flex;align-items:center;justify-content:center;}
+  .key.wide{flex:1.5 1 0;}.key.sp{flex:4 1 0;}
+  .key.go{color:var(--accent);}.key.dock{color:var(--green);}
+
+  .note{font-size:12px;color:#899099;max-width:640px;text-align:center;line-height:1.6;}
+  .note b{color:#c7ccd3;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title">
+    <div class="k">Clicks · Home + Full Widget Stack</div>
+    <h1>Every contextual widget, redesigned</h1>
+    <p>The full widget stack from your launcher: music, maps driving, email, recent people, Google News, and calendar. Each appears only when it has content and sorts by recency, just like the real HomeWidgetStack. Page through them below.</p>
+  </div>
+
+  <div class="controls">
+    <span class="lbl">SHOW</span>
+    <div class="seg" id="segW">
+      <button class="segbtn active" data-w="music">Music</button>
+      <button class="segbtn" data-w="maps">Maps</button>
+      <button class="segbtn" data-w="email">Email</button>
+      <button class="segbtn" data-w="people">People</button>
+      <button class="segbtn" data-w="news">News</button>
+      <button class="segbtn" data-w="calendar">Calendar</button>
+    </div>
+  </div>
+
+  <div class="row" id="row"></div>
+
+  <div class="note"><b>Stack logic mirrored from the repo:</b> Music shows only while media plays · Email/People/News only when notifications exist · Maps only during active navigation · Calendar is always the floor. Cards sort by most-recent. Tapping opens the real notification/action.</div>
+</div>
+
+<script>
+/* build one phone for a given theme; renders all widget cards, one active */
+function buildPhone(theme){
+  return `
+  <div class="col">
+    <div class="cap ${theme==='dark'?'d':'l'}">Neumorphic · ${theme}</div>
+    <div class="phone ${theme}">
+      <div class="screen">
+        <div class="sb"><span>8:00</span><span class="dots">◈ ▲ ⌖ ▾ 48%</span></div>
+        <div class="home">
+          <div class="weather">
+            <div class="wsun"></div>
+            <div><div class="wtemp">78°</div><div class="wcond">CLEAR</div></div>
+            <div class="wmeta">Feels 88°<br>91% RH · 3 mph</div>
+          </div>
+          <div class="stack" data-stack>
+            ${cardMusic()}
+            ${cardMaps()}
+            ${cardEmail()}
+            ${cardPeople()}
+            ${cardNews()}
+            ${cardCalendar()}
+            <div class="dots-v" data-dots></div>
+          </div>
+          <div class="dock">
+            ${['#54A9EB C','#28E06A S','#FF4B45 ♥','#3B9DFF T','#8FD694 ≡'].map(x=>{const[c,g]=x.split(' ');return `<div class="dapp"><span class="glyph" style="--chip:${c}">${g}</span></div>`;}).join('')}
+          </div>
+          <div class="kb">
+            <div class="krow">${'qwertyuiop'.split('').map(c=>`<div class="key">${c}</div>`).join('')}</div>
+            <div class="krow ind">${'asdfghjkl'.split('').map(c=>`<div class="key">${c}</div>`).join('')}</div>
+            <div class="krow"><div class="key wide">↑</div>${'zxcvbnm'.split('').map(c=>`<div class="key">${c}</div>`).join('')}<div class="key wide">⌫</div></div>
+            <div class="krow"><div class="key wide">123</div><div class="key dock">DOCK</div><div class="key sp">space</div><div class="key">.</div><div class="key go wide">GO</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function cardMusic(){return `<div class="wcard" data-card="music">
+  <div class="topline"><span class="wlabel" style="color:var(--green)">NOW PLAYING</span></div>
+  <div class="mainrow">
+    <div class="m-art"><i></i><i></i><i></i><i></i></div>
+    <div style="flex:1;min-width:0">
+      <div class="wtitle">We Still Don't Trust…</div>
+      <div class="wsub">Future, Metro Boomin, The Week…</div>
+      <div class="m-prog"><div class="fill"></div></div>
+    </div>
+  </div>
+  <div class="eq" style="margin-top:6px"><span style="animation-delay:0s"></span><span style="animation-delay:.12s"></span><span style="animation-delay:.26s"></span><span style="animation-delay:.08s"></span><span style="animation-delay:.2s"></span><span style="animation-delay:.32s"></span></div>
+</div>`;}
+
+function cardMaps(){return `<div class="wcard" data-card="maps">
+  <div class="topline"><span class="wlabel" style="color:var(--green)">ON THE ROAD</span></div>
+  <div class="mainrow">
+    <div class="m-map">
+      <div class="rd" style="left:8px;top:44px;width:48px;transform:rotate(-24deg)"></div>
+      <div class="rd" style="left:14px;top:20px;width:40px;transform:rotate(30deg)"></div>
+      <div class="rd lit" style="left:10px;top:40px;width:30px;transform:rotate(-24deg)"></div>
+      <div class="pin"></div>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div class="wtitle">12 min · Home</div>
+      <div class="wsub">4.2 mi · via I-35 N · light traffic</div>
+      <div class="subrow" style="margin-top:8px"><span class="dot" style="--chip:var(--green)"></span><span class="tx" style="color:var(--green)">Tap to resume route</span></div>
+    </div>
+  </div>
+</div>`;}
+
+function cardEmail(){return `<div class="wcard" data-card="email">
+  <div class="topline"><div class="chip-ic mono" style="--chip:var(--accent);width:30px;height:30px"><span class="glyph" style="width:30px;height:30px;border-radius:10px">M</span></div><span class="wlabel" style="color:var(--accent);margin-left:8px">INBOX</span><span class="count">6</span></div>
+  <div class="tray" style="margin-top:10px">
+    <div class="chip-ic" style="--chip:var(--accent)"><span class="glyph">S</span></div>
+    <div style="flex:1;min-width:0"><div class="wtitle">Sarah Chen</div><div class="wsub">Re: Q3 launch timeline — can we…</div></div>
+  </div>
+  <div class="subrows">
+    <div class="subrow"><span class="dot" style="--chip:var(--accent)"></span><span class="tx">AWS · Your invoice is ready</span></div>
+    <div class="subrow"><span class="dot" style="--chip:var(--accent)"></span><span class="tx">Figma · 3 new comments on Home v4</span></div>
+  </div>
+</div>`;}
+
+function cardPeople(){return `<div class="wcard" data-card="people">
+  <div class="topline"><span class="wlabel" style="color:var(--teal)">RECENT PEOPLE</span><span class="count">3</span></div>
+  <div class="people">
+    <div class="pchip"><div class="orb" style="--chip:var(--orange)">CR</div><div class="pname">Carla</div></div>
+    <div class="pchip"><div class="orb" style="--chip:var(--teal)">MK</div><div class="pname">Marcus</div></div>
+    <div class="pchip"><div class="orb" style="--chip:var(--purple)">DV</div><div class="pname">Dev grp</div></div>
+  </div>
+</div>`;}
+
+function cardNews(){return `<div class="wcard" data-card="news">
+  <div class="topline"><span class="wlabel" style="color:var(--blue)">GOOGLE NEWS</span></div>
+  <div class="mainrow">
+    <div class="chip-ic mono" style="--chip:var(--blue);width:50px;height:50px"><span class="glyph" style="width:32px;height:32px">N</span></div>
+    <div style="flex:1;min-width:0">
+      <div class="wtitle">Markets rally on rate news</div>
+      <div class="wsub" style="white-space:normal;line-height:1.4">S&amp;P 500 closes at record high as Fed signals a pause into Q4…</div>
+    </div>
+  </div>
+</div>`;}
+
+function cardCalendar(){return `<div class="wcard active" data-card="calendar">
+  <div class="cal">
+    <div class="cblk"><span class="wlabel" style="color:var(--accent)">RIGHT NOW</span><div><div class="wtitle" style="white-space:normal;font-size:14px">Independence Day</div><div class="wsub">Until 8:00 pm</div></div></div>
+    <div class="cblk"><div class="topline"><span class="wlabel" style="color:var(--amber)">UP NEXT</span><span class="count" style="padding:1px 5px">+3</span></div><div><div class="wtitle" style="white-space:normal;font-size:13px">Post-Open Confirm</div><div class="wsub">9:45 am</div></div></div>
+  </div>
+</div>`;}
+
+document.getElementById('row').innerHTML = buildPhone('dark') + buildPhone('light');
+
+/* wire the stack pager + dots for both phones */
+const CARDS=['music','maps','email','people','news','calendar'];
+function showWidget(w){
+  document.querySelectorAll('[data-stack]').forEach(stack=>{
+    stack.querySelectorAll('.wcard').forEach(c=>c.classList.toggle('active', c.dataset.card===w));
+    const dots=stack.querySelector('[data-dots]');
+    dots.innerHTML=CARDS.map(c=>`<b class="${c===w?'on':''}"></b>`).join('');
+  });
+}
+document.getElementById('segW').addEventListener('click',e=>{
+  const b=e.target.closest('.segbtn');if(!b)return;
+  document.querySelectorAll('#segW .segbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  showWidget(b.dataset.w);
+});
+showWidget('music');
+document.querySelectorAll('#segW .segbtn').forEach(x=>x.classList.remove('active'));
+document.querySelector('#segW .segbtn[data-w="music"]').classList.add('active');
+</script>
+</body>
+</html>

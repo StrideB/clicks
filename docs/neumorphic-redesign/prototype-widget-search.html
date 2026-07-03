@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clicks Widget Search, Neumorphic Keyboard Mesh</title>
+<style>
+  :root{
+    /* Dark neumorphism: ONE continuous base color. Depth = dual soft shadows only. */
+    --base:#181b21;             /* the single surface color everything is extruded from */
+    --base-hi:#1f232a;          /* top-left light shadow */
+    --base-lo:#0f1116;          /* bottom-right dark shadow */
+    --ink:#e8ebef; --ink-dim:#899099; --ink-faint:#565d66;
+    --accent:#FF4B45; --green:#28E06A; --blue:#3B9DFF; --purple:#A071FF; --amber:#E8B84B;
+    /* neumorphic shadow presets */
+    --raised: -5px -5px 11px var(--base-hi), 6px 6px 14px var(--base-lo);
+    --raised-sm: -3px -3px 7px var(--base-hi), 4px 4px 9px var(--base-lo);
+    --pressed: inset -4px -4px 9px var(--base-hi), inset 5px 5px 11px var(--base-lo);
+    --pressed-sm: inset -2px -2px 5px var(--base-hi), inset 3px 3px 7px var(--base-lo);
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;background:var(--base);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;overflow:hidden;}
+  .stage{height:100%;display:grid;grid-template-columns:300px auto;align-items:center;justify-content:center;gap:44px;padding:24px 40px 64px;}
+  @media(max-width:820px){.stage{grid-template-columns:1fr;justify-items:center;gap:16px;overflow-y:auto;padding:16px 12px 60px;}.side{max-width:420px;}}
+
+  /* ---- control panel (neumorphic raised) ---- */
+  .panel{width:300px;background:var(--base);border-radius:24px;padding:22px;box-shadow:var(--raised);}
+  .kicker{font-family:ui-monospace,"SF Mono",monospace;font-size:9.5px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;}
+  .panel h1{font-size:15px;margin:5px 0 3px;}
+  .panel p{font-size:12px;line-height:1.55;color:var(--ink-dim);}
+  .divider{height:14px;}
+  .step{display:flex;gap:11px;padding:7px 0;align-items:center;}
+  .step .n{flex:0 0 auto;width:26px;height:26px;border-radius:50%;background:var(--base);color:var(--ink-dim);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:var(--raised-sm);}
+  .step .t{font-size:12px;line-height:1.45;color:var(--ink-dim);}
+  .step .t b{color:var(--ink);font-weight:600;}
+  .hintrow{display:flex;gap:10px;margin-top:16px;}
+  .btn-lite{flex:1;font-family:ui-monospace,monospace;font-size:10px;letter-spacing:1px;color:var(--ink-dim);background:var(--base);border:none;border-radius:12px;padding:11px;cursor:pointer;box-shadow:var(--raised-sm);transition:box-shadow .12s,color .12s;}
+  .btn-lite:hover{color:var(--ink);}
+  .btn-lite:active{box-shadow:var(--pressed-sm);color:var(--ink);}
+
+  /* ---- phone (neumorphic body extruded from same base) ---- */
+  .phone-wrap{justify-self:center;}
+  .phone{position:relative;width:326px;height:688px;border-radius:48px;background:var(--base);padding:13px;box-shadow:var(--raised), 0 30px 60px rgba(0,0,0,.45);}
+  .screen{position:relative;width:100%;height:100%;border-radius:36px;background:var(--base);overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--pressed);}
+  .notch{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:90px;height:20px;background:var(--base-lo);border-radius:0 0 13px 13px;z-index:60;box-shadow:inset 0 -2px 4px rgba(0,0,0,.5);}
+  .statusbar{display:flex;justify-content:space-between;padding:13px 24px 4px;font-size:12px;flex:0 0 auto;z-index:5;}
+  .statusbar .dots{letter-spacing:2px;color:var(--ink-dim);}
+
+  .home{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:6px 16px 0;position:relative;}
+  .weather{display:flex;align-items:center;gap:13px;padding:10px 4px 6px;flex:0 0 auto;transition:opacity .3s;}
+  .wsun{width:44px;height:44px;border-radius:50%;background:var(--base);flex:0 0 auto;box-shadow:var(--raised-sm);position:relative;}
+  .wsun::after{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--amber);opacity:.85;}
+  .wtemp{font-size:28px;font-weight:300;letter-spacing:-1px;}
+  .wmeta{font-size:10.5px;color:var(--ink-dim);line-height:1.4;margin-left:auto;text-align:right;}
+
+  .content-region{flex:1 1 auto;min-height:0;position:relative;display:flex;flex-direction:column;padding:8px 0;}
+
+  /* idle context — raised neumorphic card */
+  .ctx{position:absolute;inset:0;display:flex;align-items:center;transition:opacity .3s,transform .35s;}
+  .widget-card{width:100%;border-radius:22px;padding:15px 16px;background:var(--base);box-shadow:var(--raised);display:flex;align-items:center;gap:14px;}
+  .art{width:58px;height:58px;border-radius:16px;background:var(--base);display:flex;align-items:center;justify-content:center;flex:0 0 auto;box-shadow:var(--pressed-sm);}
+  .art .disc{width:26px;height:26px;border-radius:50%;background:var(--green);opacity:.9;}
+  .wc-label{font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1.5px;color:var(--green);}
+  .wc-title{font-size:15px;font-weight:600;margin-top:5px;}
+  .wc-sub{font-size:10.5px;color:var(--ink-dim);margin-top:3px;}
+  .eq{display:flex;gap:3px;align-items:flex-end;margin-top:9px;height:16px;}
+  .eq span{width:3px;border-radius:2px;background:var(--green);opacity:.8;animation:eq 1s ease-in-out infinite;}
+  @keyframes eq{0%,100%{height:5px}50%{height:15px}}
+
+  /* ==== results card: slides up FROM BEHIND the keyboard, clamped above it ==== */
+  /* clip layer sits ABOVE the content region but BELOW the keyboard; it hard-bounds the card */
+  .results-clip{position:absolute;left:14px;right:14px;z-index:10;overflow:hidden;pointer-events:none;border-radius:24px;}
+  .results-card{position:absolute;left:0;right:0;bottom:0;pointer-events:auto;border-radius:24px;background:var(--base);box-shadow:var(--raised);
+    display:flex;flex-direction:column;overflow:hidden;transform:translateY(101%);will-change:transform;touch-action:none;max-height:100%;}
+  .results-card.animate{transition:transform .44s cubic-bezier(.2,1,.32,1);}
+  .results-card.dragging{transition:none;}
+  /* grab handle — neumorphic pressed groove */
+  .grab{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:5px;padding:11px 0 8px;cursor:grab;}
+  .grab:active{cursor:grabbing;}
+  .grab .bar{width:44px;height:6px;border-radius:99px;background:var(--base);box-shadow:var(--pressed-sm);transition:width .15s;}
+  .grab.armed .bar{width:60px;}
+  .grab .glabel{font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1.5px;color:var(--ink-faint);transition:color .15s;}
+  .grab.armed .glabel{color:var(--green);}
+  .res-head{display:flex;align-items:center;gap:8px;padding:2px 16px 6px;flex:0 0 auto;}
+  .res-head .rl{font-family:ui-monospace,monospace;font-size:8.5px;letter-spacing:1.6px;color:var(--ink-faint);}
+  .res-head .count{margin-left:auto;font-family:ui-monospace,monospace;font-size:9px;color:var(--ink-dim);background:var(--base);border-radius:7px;padding:3px 8px;box-shadow:var(--pressed-sm);}
+  .res-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:11px;padding:4px 16px 16px;}
+  .res-scroll::-webkit-scrollbar{width:0;}
+
+  /* neumorphic result row: raised from the SAME base, monochrome, NO spine, NO edge color */
+  .rrow{display:flex;align-items:center;gap:13px;padding:11px 13px;border-radius:16px;cursor:pointer;flex:0 0 auto;
+    background:var(--base);box-shadow:var(--raised-sm);opacity:0;transform:translateY(10px);animation:rowin .34s forwards;transition:box-shadow .12s,transform .08s;}
+  @keyframes rowin{to{opacity:1;transform:translateY(0);}}
+  .rrow:active{box-shadow:var(--pressed-sm);transform:translateY(1px);}
+  /* icon = pressed neumorphic well with a color chip (the ONLY color, centered, no edge light) */
+  .ricon{width:42px;height:42px;border-radius:13px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:17px;
+    color:var(--chip,#0c1310);background:var(--base);box-shadow:var(--pressed-sm);position:relative;}
+  .ricon .glyph{width:28px;height:28px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:var(--chip,#5FD0C4);}
+  .rrow.cmd .ricon .glyph{background:var(--base);color:var(--green);box-shadow:var(--raised-sm);}
+  .rrow.web .ricon .glyph{background:var(--base);color:var(--blue);box-shadow:var(--raised-sm);}
+  .rrow.ai  .ricon .glyph{background:var(--base);color:var(--purple);box-shadow:var(--raised-sm);}
+  .rmeta{flex:1;min-width:0;}
+  .rtitle{font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .rtitle .hl{color:var(--green);}
+  .rsub{font-size:10.5px;color:var(--ink-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .rkind{font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1px;color:var(--ink-faint);background:var(--base);border-radius:6px;padding:3px 7px;flex:0 0 auto;text-transform:uppercase;box-shadow:var(--pressed-sm);}
+
+  /* stashed pill (neumorphic raised) */
+  .stash-pill{position:absolute;left:50%;transform:translateX(-50%) translateY(8px);z-index:9;display:flex;align-items:center;gap:9px;padding:9px 15px;border-radius:99px;cursor:pointer;
+    background:var(--base);box-shadow:var(--raised-sm);opacity:0;pointer-events:none;transition:opacity .28s,transform .28s;}
+  .stash-pill.show{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0);}
+  .stash-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex:0 0 auto;}
+  .stash-pill .txt{font-size:11px;color:var(--ink);white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis;}
+  .stash-pill .txt b{color:var(--ink-dim);font-weight:500;}
+  .stash-pill .up{font-family:ui-monospace,monospace;font-size:9px;color:var(--ink-faint);}
+
+  /* favorites dock (neumorphic pressed tray with raised caps) */
+  .fav-dock{display:flex;justify-content:center;gap:13px;padding:11px 16px;border-radius:22px;flex:0 0 auto;margin-bottom:4px;background:var(--base);box-shadow:var(--pressed-sm);transition:opacity .3s;}
+  .fav{width:42px;height:42px;border-radius:13px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:var(--chip);background:var(--base);box-shadow:var(--raised-sm);position:relative;}
+  .fav .glyph{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:var(--chip);color:#0c1310;}
+
+  /* ==== keyboard: fixed physical fixture, sits ABOVE results (z), never covered ==== */
+  .kb-shell{border-radius:20px 20px 14px 14px;flex:0 0 auto;position:relative;z-index:30;margin-top:8px;background:var(--base);box-shadow:var(--raised), 0 -8px 20px rgba(15,17,22,.6);}
+  .strip{height:36px;display:flex;align-items:center;padding:0 15px;gap:9px;margin:8px 8px 0;border-radius:12px;background:var(--base);box-shadow:var(--pressed-sm);}
+  .strip .q{font-size:14px;color:var(--ink);white-space:nowrap;overflow:hidden;}
+  .strip .ph{color:var(--ink-dim);}
+  .strip .caret{width:2px;height:15px;background:var(--green);animation:blink 1s steps(1) infinite;flex:0 0 auto;}
+  @keyframes blink{50%{opacity:0;}}
+  .strip .clear{margin-left:auto;font-family:ui-monospace,monospace;font-size:9px;color:var(--ink-faint);cursor:pointer;flex:0 0 auto;}
+  .keys{padding:9px 8px;display:flex;flex-direction:column;gap:6px;}
+  .krow{display:flex;flex-direction:row;gap:5px;justify-content:center;width:100%;}
+  .krow.indent{padding:0 16px;}
+  .key{flex:1 1 0;min-width:0;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--ink);user-select:none;cursor:pointer;
+    background:var(--base);box-shadow:var(--raised-sm);transition:box-shadow .05s,transform .05s;}
+  .key:active{box-shadow:var(--pressed-sm);transform:translateY(1px);}
+  .key.wide{flex:1.6 1 0;}
+  .key.space{flex:4 1 0;color:var(--ink-dim);font-size:10px;letter-spacing:2px;}
+  .key.accent{color:var(--accent);font-weight:700;}
+  .key.dock{color:var(--green);font-family:ui-monospace,monospace;font-size:10px;letter-spacing:1px;font-weight:700;}
+
+  .navstub{display:flex;justify-content:center;padding:7px 0 10px;flex:0 0 auto;}
+  .navstub i{width:104px;height:5px;border-radius:99px;background:var(--base);box-shadow:var(--pressed-sm);}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="side">
+    <div class="panel">
+      <div class="kicker">Widget Search · Keyboard Mesh</div>
+      <h1>Big screen, real keyboard</h1>
+      <p>The keyboard is a fixed fixture, it never moves and is never covered. Results slide up from behind it into the screen above.</p>
+      <div class="divider"></div>
+      <div class="step"><div class="n">1</div><div class="t"><b>Type</b> — results rise from behind the keyboard, filling the screen above it.</div></div>
+      <div class="step"><div class="n">2</div><div class="t"><b>Keyboard stays put</b> and fully visible, always. Results never cover it.</div></div>
+      <div class="step"><div class="n">3</div><div class="t"><b>Grab &amp; drag down</b> to stash the card back behind the keyboard, query kept.</div></div>
+      <div class="hintrow">
+        <button class="btn-lite" id="demoType">▶ DEMO "ca"</button>
+        <button class="btn-lite" id="clearBtn">CLEAR</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="phone-wrap">
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>9:41</span><span class="dots">▂▃▄ ᯤ 84%</span></div>
+        <div class="home" id="home">
+          <div class="weather" id="weather">
+            <div class="wsun"></div><div><div class="wtemp">72°</div></div>
+            <div class="wmeta">Feels 74° · 41%<br>Wind 6 mph · Clear</div>
+          </div>
+
+          <div class="content-region" id="contentRegion">
+            <div class="ctx" id="ctx">
+              <div class="widget-card">
+                <div class="art"><div class="disc"></div></div>
+                <div style="flex:1;min-width:0">
+                  <div class="wc-label">NOW PLAYING</div>
+                  <div class="wc-title">Midnight City</div>
+                  <div class="wc-sub">M83 · Spotify</div>
+                  <div class="eq"><span style="animation-delay:0s"></span><span style="animation-delay:.15s"></span><span style="animation-delay:.3s"></span><span style="animation-delay:.1s"></span><span style="animation-delay:.25s"></span><span style="animation-delay:.05s"></span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- stashed pill -->
+            <div class="stash-pill" id="stashPill"><span class="dot"></span><span class="txt" id="stashTxt"></span><span class="up">▲ tap</span></div>
+
+            <!-- clip layer bounds the card to the region above the keyboard; card starts hidden BELOW (behind kb) -->
+            <div class="results-clip" id="clip">
+              <div class="results-card" id="card">
+                <div class="grab" id="grab"><div class="bar"></div><div class="glabel" id="glabel">DRAG DOWN TO STASH</div></div>
+                <div class="res-head"><span class="rl">RESULTS</span><span class="count" id="count">0</span></div>
+                <div class="res-scroll" id="scroll"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="fav-dock" id="favDock">
+            <div class="fav" style="--chip:#5FD0C4"><span class="glyph">M</span></div>
+            <div class="fav" style="--chip:#54A9EB"><span class="glyph">P</span></div>
+            <div class="fav" style="--chip:#F5C451"><span class="glyph">C</span></div>
+            <div class="fav" style="--chip:#FF5A3C"><span class="glyph">S</span></div>
+            <div class="fav" style="--chip:#C4B5FF"><span class="glyph">G</span></div>
+          </div>
+
+          <div class="kb-shell" id="kbShell">
+            <div class="strip">
+              <span class="q" id="qView"><span class="ph">Type to search…</span></span>
+              <span class="caret" id="caret" style="display:none"></span>
+              <span class="clear" id="stripClear" style="display:none">clear</span>
+            </div>
+            <div class="keys" id="keys"></div>
+          </div>
+        </div>
+        <div class="navstub"><i></i></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const INDEX=[
+  {t:'Calendar',s:'Google · productivity',kind:'app',chip:'#F5C451',key:'ca'},
+  {t:'Camera',s:'System app',kind:'app',chip:'#8FD694',key:'ca'},
+  {t:'Calculator',s:'System app',kind:'app',chip:'#54A9EB',key:'ca'},
+  {t:'Carla Ruiz',s:'Call · Contacts',kind:'contact',key:'ca',cmd:true,icon:'✆'},
+  {t:'Spotify',s:'Music',kind:'app',chip:'#28E06A',key:'sp'},
+  {t:'Settings',s:'System app',kind:'app',chip:'#9aa2ab',key:'se'},
+  {t:'Messages',s:'Google',kind:'app',chip:'#5FD0C4',key:'me'},
+  {t:'Maps',s:'Navigation',kind:'app',chip:'#8FD694',key:'ma'},
+  {t:'New calendar event',s:'Command · type-to-do',kind:'cmd',key:'ca',cmd:true,icon:'＋'},
+  {t:'Ask Gemini',s:'AI answer',kind:'ai',key:'ca',ai:true,icon:'✦'},
+  {t:'Search web',s:'Open in browser',kind:'web',key:'',web:true,icon:'⌕'},
+];
+const KEY_ROWS=[['q','w','e','r','t','y','u','i','o','p'],['a','s','d','f','g','h','j','k','l'],['sh','z','x','c','v','b','n','m','bk']];
+let query='',stashed=false;
+
+const keys=document.getElementById('keys');
+KEY_ROWS.forEach((row,ri)=>{
+  const r=document.createElement('div');r.className='krow'+(ri===1?' indent':'');
+  row.forEach(k=>{
+    const el=document.createElement('div');
+    if(k==='sh'){el.className='key wide';el.textContent='↑';}
+    else if(k==='bk'){el.className='key wide';el.textContent='⌫';el.dataset.act='back';}
+    else{el.className='key';el.textContent=k;el.dataset.ch=k;}
+    r.appendChild(el);
+  });
+  keys.appendChild(r);
+});
+const fr=document.createElement('div');fr.className='krow';
+fr.innerHTML='<div class="key dock wide">DOCK</div><div class="key">123</div><div class="key space" data-act="space">space</div><div class="key">.</div><div class="key accent wide">GO</div>';
+keys.appendChild(fr);
+
+keys.addEventListener('click',e=>{
+  const k=e.target.closest('.key');if(!k)return;
+  if(k.dataset.ch)query+=k.dataset.ch;
+  else if(k.dataset.act==='back')query=query.slice(0,-1);
+  else if(k.dataset.act==='space')query+=' ';
+  stashed=false;update();
+});
+document.getElementById('stripClear').onclick=()=>{query='';stashed=false;update();};
+document.getElementById('clearBtn').onclick=()=>{query='';stashed=false;update();};
+document.getElementById('demoType').onclick=()=>{stashed=false;typeSeq('ca');};
+function typeSeq(str){query='';update();let i=0;const iv=setInterval(()=>{query+=str[i++];update();if(i>=str.length)clearInterval(iv);},240);}
+
+const qView=document.getElementById('qView'),caret=document.getElementById('caret'),stripClear=document.getElementById('stripClear');
+const clip=document.getElementById('clip'),card=document.getElementById('card'),grab=document.getElementById('grab'),glabel=document.getElementById('glabel');
+const stashPill=document.getElementById('stashPill'),stashTxt=document.getElementById('stashTxt'),ctx=document.getElementById('ctx');
+
+/* clip layer spans from just under the weather header down to the top of the keyboard.
+   The card lives inside it; hidden state = translateY(101%) so it sits fully below the
+   clip's bottom edge — i.e. BEHIND the keyboard, which overlaps it (higher z-index). */
+function layoutClip(){
+  const home=document.getElementById('home');
+  const weather=document.getElementById('weather');
+  const kb=document.getElementById('kbShell');
+  const top = weather.offsetTop + weather.offsetHeight + 6;
+  const bottom = kb.offsetTop - 6;                 // hard floor = keyboard top edge
+  clip.style.top = top+'px';
+  clip.style.height = Math.max(60,(bottom-top))+'px';
+}
+window.addEventListener('resize',()=>{layoutClip();});
+
+function matches(){const q=query.trim().toLowerCase();if(!q)return[];return INDEX.filter(x=>x.t.toLowerCase().includes(q)||(x.key&&q.startsWith(x.key))||x.web);}
+function rowHtml(x,i){
+  const cls=['rrow'];if(x.cmd)cls.push('cmd');if(x.web)cls.push('web');if(x.ai)cls.push('ai');
+  const glyph=x.icon?x.icon:x.t[0].toUpperCase();const q=query.trim().toLowerCase();let title=x.t;
+  if(x.ai)title=`Ask Gemini: "${query.trim()}"`;
+  else{const li=x.t.toLowerCase().indexOf(q);if(q&&li>=0)title=x.t.slice(0,li)+'<span class="hl">'+x.t.slice(li,li+q.length)+'</span>'+x.t.slice(li+q.length);}
+  return `<div class="${cls.join(' ')}" style="--chip:${x.chip||'#5FD0C4'};animation-delay:${i*26}ms">
+    <div class="ricon"><span class="glyph">${glyph}</span></div>
+    <div class="rmeta"><div class="rtitle">${title}</div><div class="rsub">${x.s}</div></div>
+    <div class="rkind">${x.kind}</div></div>`;
+}
+
+function seat(){ card.classList.add('animate');card.classList.remove('dragging');card.style.transform='translateY(0)';stashPill.classList.remove('show');ctx.style.opacity='0';ctx.style.transform='translateY(-10px)'; }
+function hideFully(){ card.classList.add('animate');card.style.transform='translateY(101%)';stashPill.classList.remove('show');ctx.style.opacity='';ctx.style.transform=''; }
+function stash(){ stashed=true;card.classList.add('animate');card.style.transform='translateY(101%)';stashTxt.innerHTML=`<b>"</b>${query.trim()}<b>"</b> · ${matches().length}`;stashPill.classList.add('show');ctx.style.opacity='';ctx.style.transform=''; }
+
+function update(){
+  if(query){qView.innerHTML=query.replace(/ /g,'&nbsp;');caret.style.display='';stripClear.style.display='';}
+  else{qView.innerHTML='<span class="ph">Type to search…</span>';caret.style.display='none';stripClear.style.display='none';}
+  layoutClip();
+  const res=matches();const has=res.length>0&&query.trim().length>0;
+  if(has){document.getElementById('scroll').innerHTML=res.map(rowHtml).join('');document.getElementById('count').textContent=res.length;}
+  if(!has){hideFully();return;}
+  if(stashed){stash();}else{seat();}
+}
+stashPill.onclick=()=>{stashed=false;update();};
+
+/* grab-and-stash drag (down only into the keyboard) */
+let dragging=false,startY=0,curY=0,H=0;
+function onDown(e){
+  if(card.style.transform==='translateY(101%)')return;
+  dragging=true;startY=(e.touches?e.touches[0]:e).clientY;curY=0;H=card.offsetHeight;
+  card.classList.add('dragging');card.classList.remove('animate');
+}
+function onMove(e){
+  if(!dragging)return;
+  const y=(e.touches?e.touches[0]:e).clientY;let dy=y-startY;if(dy<0)dy*=0.22;
+  curY=dy;const pct=Math.min(1,Math.max(0,dy)/H);
+  card.style.transform=`translateY(${pct*101}%)`;
+  const armed=pct>0.4;grab.classList.toggle('armed',armed);glabel.textContent=armed?'RELEASE TO STASH':'DRAG DOWN TO STASH';
+}
+function onUp(){
+  if(!dragging)return;dragging=false;grab.classList.remove('armed');glabel.textContent='DRAG DOWN TO STASH';
+  const pct=Math.min(1,Math.max(0,curY)/H);
+  if(pct>0.4)stash();else seat();
+}
+grab.addEventListener('mousedown',onDown);grab.addEventListener('touchstart',onDown,{passive:true});
+window.addEventListener('mousemove',onMove);window.addEventListener('touchmove',onMove,{passive:true});
+window.addEventListener('mouseup',onUp);window.addEventListener('touchend',onUp);
+
+requestAnimationFrame(()=>{layoutClip();update();});
+</script>
+</body>
+</html>

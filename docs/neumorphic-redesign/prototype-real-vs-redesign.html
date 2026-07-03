@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clicks Launcher, Neumorphic Redesign</title>
+<style>
+  :root{
+    --base:#181b21; --base-hi:#20242c; --base-lo:#0e1014;
+    --ink:#e8ebef; --ink-dim:#899099; --ink-faint:#565d66;
+    --accent:#FF4B45; --green:#28E06A; --blue:#3B9DFF; --purple:#A071FF; --amber:#E8B84B; --teal:#5FD0C4;
+    --raised:-5px -5px 11px var(--base-hi),6px 6px 14px var(--base-lo);
+    --raised-sm:-3px -3px 7px var(--base-hi),4px 4px 9px var(--base-lo);
+    --pressed:inset -4px -4px 9px var(--base-hi),inset 5px 5px 11px var(--base-lo);
+    --pressed-sm:inset -2px -2px 5px var(--base-hi),inset 3px 3px 7px var(--base-lo);
+  }
+  body.light{
+    --base:#eceef2; --base-hi:#ffffff; --base-lo:#d3d7de;
+    --ink:#3a3f47; --ink-dim:#828892; --ink-faint:#a8adb6;
+    --raised:-4px -4px 12px var(--base-hi),5px 5px 13px var(--base-lo);
+    --raised-sm:-2px -2px 6px var(--base-hi),3px 3px 8px var(--base-lo);
+    --pressed:inset -3px -3px 8px var(--base-hi),inset 4px 4px 9px var(--base-lo);
+    --pressed-sm:inset -2px -2px 4px var(--base-hi),inset 2px 2px 5px var(--base-lo);
+  }
+  body.soft{ --accent:#e58a86; --green:#8fd6a8; --blue:#93b8e0; --purple:#b6a3e0; --amber:#dcc890; --teal:#a3d2cc; }
+  body.soft .glyph{color:#1c2028;} body.light .glyph{color:#20242b;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;background:#101216;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;overflow:hidden;transition:background .3s;}
+  .stage{height:100%;display:flex;align-items:center;justify-content:center;gap:34px;padding:20px 30px 60px;flex-wrap:wrap;overflow-y:auto;}
+
+  .col{display:flex;flex-direction:column;align-items:center;gap:12px;}
+  .col .cap{font-family:ui-monospace,monospace;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-faint);}
+  .col .cap.now{color:var(--ink-dim);}
+  .col .cap.new{color:var(--green);}
+
+  .controls{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:100;display:flex;gap:10px;align-items:center;
+    background:var(--base);border-radius:16px;padding:8px 10px;box-shadow:var(--raised-sm);}
+  .controls .seg{display:flex;gap:5px;padding:4px;border-radius:11px;box-shadow:var(--pressed-sm);}
+  .controls .segbtn{font-size:11px;color:var(--ink-dim);background:transparent;border:none;border-radius:8px;padding:6px 11px;cursor:pointer;transition:.14s;}
+  .controls .segbtn.active{color:var(--ink);box-shadow:var(--raised-sm);}
+  .controls .lbl{font-family:ui-monospace,monospace;font-size:8.5px;letter-spacing:1.5px;color:var(--ink-faint);}
+
+  /* phone frames */
+  .phone{position:relative;width:300px;height:640px;border-radius:44px;padding:11px;}
+  .phone.real{background:#0c0e12;box-shadow:0 0 0 2px #05070b,0 26px 54px rgba(0,0,0,.6);}
+  .phone.neu{background:var(--base);box-shadow:var(--raised),0 26px 54px rgba(0,0,0,.4);}
+  .screen{position:relative;width:100%;height:100%;border-radius:34px;overflow:hidden;display:flex;flex-direction:column;}
+  .phone.real .screen{background:#000;}
+  .phone.neu .screen{background:var(--base);box-shadow:var(--pressed);}
+  .sb{display:flex;justify-content:space-between;padding:11px 20px 2px;font-size:11px;flex:0 0 auto;}
+  .phone.real .sb{color:#e8ebef;}
+  .sb .dots{letter-spacing:1px;opacity:.7;}
+  .home{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;padding:6px 12px 0;gap:9px;}
+
+  /* ===== REAL launcher (from screenshot) ===== */
+  .r-card{background:#1c1f26;border-radius:18px;padding:12px 14px;flex:0 0 auto;}
+  .r-weather{display:flex;align-items:center;gap:10px;}
+  .r-temp{font-size:26px;font-weight:300;color:#fff;line-height:1;}
+  .r-cond{font-size:9px;letter-spacing:1px;color:#9aa2ab;margin-top:3px;}
+  .r-feels{flex:1;text-align:center;font-size:10px;color:#9aa2ab;line-height:1.5;}
+  .r-sun{width:38px;height:38px;border-radius:50%;background:#f5c451;flex:0 0 auto;}
+  .r-cal{display:flex;gap:9px;}
+  .r-now,.r-next{flex:1;background:#15181d;border-radius:13px;padding:9px 10px;}
+  .r-lbl{font-family:ui-monospace,monospace;font-size:7.5px;letter-spacing:1px;}
+  .r-lbl.red{color:#FF4B45;}.r-lbl.tan{color:#E8B84B;}
+  .r-ev{font-size:11px;color:#e8ebef;font-weight:600;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .r-time{font-size:9px;color:#899099;margin-top:2px;}
+  .r-dock{display:flex;justify-content:space-between;padding:9px 14px;background:#1c1f26;border-radius:20px;flex:0 0 auto;}
+  .r-app{width:38px;height:38px;border-radius:50%;flex:0 0 auto;}
+  .r-kb{margin-top:auto;background:#1a1c22;border-radius:16px 16px 0 0;padding:8px;flex:0 0 auto;}
+  .r-kbhead{display:flex;justify-content:flex-end;padding:2px 4px 8px;}
+  .r-zeiss{background:#173a9a;color:#dce6ff;font-size:8px;font-weight:700;letter-spacing:1px;padding:3px 10px;border-radius:99px;}
+  .r-krow{display:flex;gap:4px;justify-content:center;margin-bottom:4px;}
+  .r-krow.ind{padding:0 14px;}
+  .r-key{flex:1 1 0;min-width:0;height:26px;border-radius:50%;background:#000;color:#e8ebef;font-size:11px;display:flex;align-items:center;justify-content:center;}
+  .r-key.wide{flex:1.5 1 0;border-radius:13px;}
+  .r-key.sp{flex:4 1 0;border-radius:13px;background:#2a2e37;font-size:9px;color:#9aa2ab;}
+  .r-key.dock{color:#3B9DFF;font-size:8px;}.r-key.go{color:#FF4B45;font-size:9px;font-weight:700;}.r-key.n123{color:#899099;font-size:9px;}
+
+  /* ===== NEU redesign ===== */
+  .n-card{background:var(--base);border-radius:20px;padding:13px 15px;flex:0 0 auto;box-shadow:var(--raised);}
+  .n-weather{display:flex;align-items:center;gap:12px;}
+  .n-temp{font-size:27px;font-weight:300;line-height:1;letter-spacing:-1px;}
+  .n-cond{font-size:8px;letter-spacing:1.5px;color:var(--ink-faint);margin-top:4px;font-family:ui-monospace,monospace;}
+  .n-feels{flex:1;text-align:center;font-size:10px;color:var(--ink-dim);line-height:1.5;}
+  .n-sun{width:40px;height:40px;border-radius:50%;background:var(--base);box-shadow:var(--raised-sm);flex:0 0 auto;position:relative;}
+  .n-sun::after{content:"";position:absolute;inset:11px;border-radius:50%;background:var(--amber);opacity:.9;}
+  .n-cal{display:flex;gap:10px;flex:0 0 auto;}
+  .n-now,.n-next{flex:1;background:var(--base);border-radius:15px;padding:11px 12px;box-shadow:var(--pressed-sm);}
+  .n-lbl{font-family:ui-monospace,monospace;font-size:7.5px;letter-spacing:1.2px;}
+  .n-lbl.red{color:var(--accent);}.n-lbl.tan{color:var(--amber);}
+  .n-ev{font-size:12px;font-weight:600;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .n-time{font-size:9px;color:var(--ink-dim);margin-top:3px;}
+  .n-dock{display:flex;justify-content:space-between;padding:11px 15px;background:var(--base);border-radius:20px;flex:0 0 auto;box-shadow:var(--pressed-sm);}
+  .n-app{width:40px;height:40px;border-radius:50%;flex:0 0 auto;background:var(--base);box-shadow:var(--raised-sm);display:flex;align-items:center;justify-content:center;}
+  .n-app .glyph{width:22px;height:22px;border-radius:50%;background:var(--chip);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#0c1310;}
+  .n-kb{margin-top:auto;background:var(--base);border-radius:18px 18px 0 0;padding:9px 8px;flex:0 0 auto;box-shadow:var(--raised),0 -6px 16px rgba(0,0,0,.25);}
+  .n-kbhead{display:flex;justify-content:flex-end;padding:0 4px 8px;}
+  .n-zeiss{background:var(--base);color:var(--blue);font-size:8px;font-weight:700;letter-spacing:1px;padding:4px 11px;border-radius:99px;box-shadow:var(--pressed-sm);}
+  .n-krow{display:flex;gap:4px;justify-content:center;margin-bottom:4px;}
+  .n-krow.ind{padding:0 13px;}
+  .n-key{flex:1 1 0;min-width:0;height:27px;border-radius:8px;background:var(--base);box-shadow:var(--raised-sm);color:var(--ink);font-size:11px;display:flex;align-items:center;justify-content:center;transition:.05s;}
+  .n-key:active{box-shadow:var(--pressed-sm);}
+  .n-key.wide{flex:1.5 1 0;}
+  .n-key.sp{flex:4 1 0;font-size:9px;color:var(--ink-dim);letter-spacing:2px;}
+  .n-key.dock{color:var(--green);font-size:8px;font-weight:700;}.n-key.go{color:var(--accent);font-size:9px;font-weight:700;}.n-key.n123{color:var(--ink-dim);font-size:9px;}
+</style>
+</head>
+<body>
+<div class="controls">
+  <span class="lbl">MODE</span>
+  <div class="seg" id="segMode"><button class="segbtn active" data-mode="dark">Dark</button><button class="segbtn" data-mode="light">Light</button></div>
+  <span class="lbl">COLOR</span>
+  <div class="seg" id="segColor"><button class="segbtn active" data-color="bold">Bold</button><button class="segbtn" data-color="soft">Soft</button></div>
+</div>
+
+<div class="stage">
+
+  <!-- REAL -->
+  <div class="col">
+    <div class="cap now">Your launcher now</div>
+    <div class="phone real">
+      <div class="screen">
+        <div class="sb"><span>7:52</span><span class="dots">◈ ▲ ⌖ ▾</span></div>
+        <div class="home">
+          <div class="r-card r-weather">
+            <div><div class="r-temp">77°</div><div class="r-cond">CLEAR</div></div>
+            <div class="r-feels">Feels 87°<br>94% RH · 1 mph</div>
+            <div class="r-sun"></div>
+          </div>
+          <div class="r-cal">
+            <div class="r-now"><div class="r-lbl red">RIGHT NOW</div><div class="r-ev">Independence Day…</div><div class="r-time">Until 8:00 pm</div></div>
+            <div class="r-next"><div class="r-lbl tan">UP NEXT · +3</div><div class="r-ev">Post-Open Confirm…</div><div class="r-time">Today 9:45 am</div></div>
+          </div>
+          <div class="r-dock">
+            <div class="r-app" style="background:#e8e8e8"></div>
+            <div class="r-app" style="background:#1DB954"></div>
+            <div class="r-app" style="background:#FF4B45"></div>
+            <div class="r-app" style="background:#2AABEE"></div>
+            <div class="r-app" style="background:#5b8f6a"></div>
+          </div>
+          <div class="r-kb">
+            <div class="r-kbhead"><span class="r-zeiss">ZEISS</span></div>
+            <div class="r-keys" data-kb="r"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NEU -->
+  <div class="col">
+    <div class="cap new">Neumorphic redesign</div>
+    <div class="phone neu" id="neuPhone">
+      <div class="screen">
+        <div class="sb" style="color:var(--ink)"><span>7:52</span><span class="dots" style="color:var(--ink-dim)">◈ ▲ ⌖ ▾</span></div>
+        <div class="home">
+          <div class="n-card n-weather">
+            <div><div class="n-temp">77°</div><div class="n-cond">CLEAR</div></div>
+            <div class="n-feels">Feels 87°<br>94% RH · 1 mph</div>
+            <div class="n-sun"></div>
+          </div>
+          <div class="n-cal">
+            <div class="n-now"><div class="n-lbl red">RIGHT NOW</div><div class="n-ev">Independence Day…</div><div class="n-time">Until 8:00 pm</div></div>
+            <div class="n-next"><div class="n-lbl tan">UP NEXT · +3</div><div class="n-ev">Post-Open Confirm…</div><div class="n-time">Today 9:45 am</div></div>
+          </div>
+          <div class="n-dock">
+            <div class="n-app"><span class="glyph" style="--chip:#54A9EB">C</span></div>
+            <div class="n-app"><span class="glyph" style="--chip:#28E06A">S</span></div>
+            <div class="n-app"><span class="glyph" style="--chip:#FF4B45">♥</span></div>
+            <div class="n-app"><span class="glyph" style="--chip:#3B9DFF">T</span></div>
+            <div class="n-app"><span class="glyph" style="--chip:#8FD694">≡</span></div>
+          </div>
+          <div class="n-kb">
+            <div class="n-kbhead"><span class="n-zeiss">ZEISS</span></div>
+            <div class="n-keys" data-kb="n"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // build both keyboards (p = class prefix: 'r' real, 'n' neu)
+  function buildKb(container,p){
+    const rows=[['qwertyuiop',''],['asdfghjkl','ind']];
+    rows.forEach(([chars,cls])=>{
+      const r=document.createElement('div');r.className=`${p}-krow ${cls}`;
+      chars.split('').forEach(c=>{const k=document.createElement('div');k.className=`${p}-key`;k.textContent=c;r.appendChild(k);});
+      container.appendChild(r);
+    });
+    const r3=document.createElement('div');r3.className=`${p}-krow`;
+    r3.innerHTML=`<div class="${p}-key wide">↑</div>`+'zxcvbnm'.split('').map(c=>`<div class="${p}-key">${c}</div>`).join('')+`<div class="${p}-key wide">⌫</div>`;
+    container.appendChild(r3);
+    const r4=document.createElement('div');r4.className=`${p}-krow`;
+    r4.innerHTML=`<div class="${p}-key n123 wide">123</div><div class="${p}-key dock">DOCK</div><div class="${p}-key sp">space</div><div class="${p}-key">.</div><div class="${p}-key go wide">GO</div>`;
+    container.appendChild(r4);
+  }
+  buildKb(document.querySelector('[data-kb="r"]'),'r');
+  buildKb(document.querySelector('[data-kb="n"]'),'n');
+
+  document.getElementById('segMode').addEventListener('click',e=>{const b=e.target.closest('.segbtn');if(!b)return;document.querySelectorAll('#segMode .segbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.body.classList.toggle('light',b.dataset.mode==='light');});
+  document.getElementById('segColor').addEventListener('click',e=>{const b=e.target.closest('.segbtn');if(!b)return;document.querySelectorAll('#segColor .segbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.body.classList.toggle('soft',b.dataset.color==='soft');});
+</script>
+</body>
+</html>

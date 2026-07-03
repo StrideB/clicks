@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clicks Neumorphic System</title>
+<style>
+  :root{
+    /* DARK (default) */
+    --base:#181b21; --base-hi:#20242c; --base-lo:#0e1014;
+    --ink:#e8ebef; --ink-dim:#899099; --ink-faint:#565d66;
+    /* BOLD colors (default) */
+    --accent:#FF4B45; --green:#28E06A; --blue:#3B9DFF; --purple:#A071FF; --amber:#E8B84B; --teal:#5FD0C4;
+    --raised:-5px -5px 11px var(--base-hi),6px 6px 14px var(--base-lo);
+    --raised-sm:-3px -3px 7px var(--base-hi),4px 4px 9px var(--base-lo);
+    --pressed:inset -4px -4px 9px var(--base-hi),inset 5px 5px 11px var(--base-lo);
+    --pressed-sm:inset -2px -2px 5px var(--base-hi),inset 3px 3px 7px var(--base-lo);
+  }
+  /* ---- LIGHT MODE: gentle, tight tonal range — soft not contrasty ---- */
+  body.light{
+    --base:#eceef2; --base-hi:#ffffff; --base-lo:#d3d7de;
+    --ink:#3a3f47; --ink-dim:#828892; --ink-faint:#a8adb6;
+    /* dedicated softer light shadows: larger blur, lower offset than dark mode */
+    --raised:-4px -4px 12px var(--base-hi),5px 5px 13px var(--base-lo);
+    --raised-sm:-2px -2px 6px var(--base-hi),3px 3px 8px var(--base-lo);
+    --pressed:inset -3px -3px 8px var(--base-hi),inset 4px 4px 9px var(--base-lo);
+    --pressed-sm:inset -2px -2px 4px var(--base-hi),inset 2px 2px 5px var(--base-lo);
+  }
+  /* ---- SOFT color palette (muted/desaturated chips) ---- */
+  body.soft{
+    --accent:#e58a86; --green:#8fd6a8; --blue:#93b8e0; --purple:#b6a3e0; --amber:#dcc890; --teal:#a3d2cc;
+  }
+  /* soft mode chip text needs to stay legible on lighter chips */
+  body.soft .glyph, body.soft .ricon .glyph{color:#1c2028;}
+  /* in light mode, ease chip glyph ink so bold chips don't spike contrast */
+  body.light .glyph{color:#20242b;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;background:var(--base);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;overflow:hidden;}
+  .stage{height:100%;display:grid;grid-template-columns:230px auto;align-items:center;justify-content:center;gap:44px;padding:24px 40px 64px;}
+  @media(max-width:760px){.stage{grid-template-columns:1fr;justify-items:center;gap:16px;overflow-y:auto;padding:16px 12px 60px;}.side{max-width:360px;}}
+
+  /* nav */
+  .panel{width:230px;background:var(--base);border-radius:24px;padding:20px;box-shadow:var(--raised);}
+  .kicker{font-family:ui-monospace,monospace;font-size:9.5px;letter-spacing:2px;color:var(--accent);text-transform:uppercase;}
+  .panel h1{font-size:15px;margin:5px 0 12px;}
+  .nav{display:flex;flex-direction:column;gap:10px;}
+  .navbtn{text-align:left;font-size:13px;color:var(--ink-dim);background:var(--base);border:none;border-radius:13px;padding:12px 14px;cursor:pointer;box-shadow:var(--raised-sm);transition:box-shadow .12s,color .12s;display:flex;align-items:center;gap:10px;}
+  .navbtn:hover{color:var(--ink);}
+  .navbtn.active{color:var(--green);box-shadow:var(--pressed-sm);}
+  .navbtn .ic{width:22px;height:22px;border-radius:7px;background:var(--base);box-shadow:var(--raised-sm);display:flex;align-items:center;justify-content:center;font-size:11px;flex:0 0 auto;}
+  .navbtn.active .ic{box-shadow:var(--pressed-sm);color:var(--green);}
+  .note{font-size:11px;color:var(--ink-faint);line-height:1.5;margin-top:16px;}
+
+  /* phone */
+  .phone-wrap{justify-self:center;}
+  .phone{position:relative;width:326px;height:688px;border-radius:48px;background:var(--base);padding:13px;box-shadow:var(--raised),0 30px 60px rgba(0,0,0,.45);}
+  .screen{position:relative;width:100%;height:100%;border-radius:36px;background:var(--base);overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--pressed);}
+  .notch{position:absolute;top:11px;left:50%;transform:translateX(-50%);width:90px;height:20px;background:var(--base-lo);border-radius:0 0 13px 13px;z-index:60;box-shadow:inset 0 -2px 4px rgba(0,0,0,.5);}
+  .statusbar{display:flex;justify-content:space-between;padding:13px 24px 4px;font-size:12px;flex:0 0 auto;}
+  .statusbar .dots{letter-spacing:2px;color:var(--ink-dim);}
+  .view{flex:1 1 auto;min-height:0;display:none;flex-direction:column;padding:6px 16px 0;position:relative;}
+  .view.active{display:flex;}
+
+  /* shared bits */
+  .label{font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1.5px;color:var(--ink-faint);text-transform:uppercase;}
+  .chip-ic{width:42px;height:42px;border-radius:13px;background:var(--base);box-shadow:var(--pressed-sm);display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+  .chip-ic .glyph{width:28px;height:28px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#0c1310;background:var(--chip,#5FD0C4);}
+
+  /* ---- HOME ---- */
+  .weather{display:flex;align-items:center;gap:13px;padding:10px 4px 8px;flex:0 0 auto;}
+  .wsun{width:46px;height:46px;border-radius:50%;background:var(--base);flex:0 0 auto;box-shadow:var(--raised-sm);position:relative;}
+  .wsun::after{content:"";position:absolute;inset:12px;border-radius:50%;background:var(--amber);opacity:.88;}
+  .wtemp{font-size:30px;font-weight:300;letter-spacing:-1px;}
+  .wmeta{font-size:10.5px;color:var(--ink-dim);line-height:1.4;margin-left:auto;text-align:right;}
+  .stack{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;justify-content:center;gap:12px;padding:6px 0;}
+  .card{border-radius:22px;padding:15px 16px;background:var(--base);box-shadow:var(--raised);display:flex;align-items:center;gap:14px;}
+  .art{width:58px;height:58px;border-radius:16px;background:var(--base);box-shadow:var(--pressed-sm);display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+  .art .disc{width:26px;height:26px;border-radius:50%;background:var(--green);opacity:.9;}
+  .ctitle{font-size:15px;font-weight:600;margin-top:5px;}
+  .csub{font-size:10.5px;color:var(--ink-dim);margin-top:3px;}
+  .eq{display:flex;gap:3px;align-items:flex-end;margin-top:9px;height:16px;}
+  .eq span{width:3px;border-radius:2px;background:var(--green);opacity:.8;animation:eq 1s ease-in-out infinite;}
+  @keyframes eq{0%,100%{height:5px}50%{height:15px}}
+  .mini-row{display:flex;gap:10px;}
+  .mini{flex:1;border-radius:18px;padding:12px;background:var(--base);box-shadow:var(--raised-sm);}
+  .mini .label{margin-bottom:7px;}
+  .mini .big{font-size:15px;font-weight:600;}
+  .mini .sm{font-size:10px;color:var(--ink-dim);margin-top:3px;}
+  .fav-dock{display:flex;justify-content:center;gap:13px;padding:11px 16px;border-radius:22px;flex:0 0 auto;margin-bottom:4px;background:var(--base);box-shadow:var(--pressed-sm);}
+  .fav{width:42px;height:42px;border-radius:13px;background:var(--base);box-shadow:var(--raised-sm);display:flex;align-items:center;justify-content:center;flex:0 0 auto;}
+  .fav .glyph{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#0c1310;background:var(--chip);}
+
+  /* keyboard (shared) */
+  .kb{border-radius:20px 20px 14px 14px;flex:0 0 auto;background:var(--base);box-shadow:var(--raised),0 -8px 20px rgba(14,16,20,.55);margin-top:8px;position:relative;z-index:30;}
+  .strip{height:34px;display:flex;align-items:center;padding:0 14px;gap:9px;margin:8px 8px 0;border-radius:11px;background:var(--base);box-shadow:var(--pressed-sm);}
+  .strip .q{font-size:13px;color:var(--ink-dim);}
+  .keys{padding:8px;display:flex;flex-direction:column;gap:5px;}
+  .krow{display:flex;gap:5px;justify-content:center;}
+  .krow.indent{padding:0 15px;}
+  .key{flex:1 1 0;min-width:0;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--ink);cursor:pointer;background:var(--base);box-shadow:var(--raised-sm);transition:.05s;}
+  .key:active{box-shadow:var(--pressed-sm);transform:translateY(1px);}
+  .key.wide{flex:1.6 1 0;}.key.space{flex:4 1 0;color:var(--ink-dim);font-size:10px;letter-spacing:2px;}
+  .key.accent{color:var(--accent);font-weight:700;}.key.dock{color:var(--green);font-family:ui-monospace,monospace;font-size:10px;font-weight:700;}
+
+  /* ---- SEARCH ---- */
+  .res-head{display:flex;align-items:center;padding:8px 2px 8px;flex:0 0 auto;}
+  .res-head .count{margin-left:auto;font-family:ui-monospace,monospace;font-size:9px;color:var(--ink-dim);background:var(--base);border-radius:7px;padding:3px 8px;box-shadow:var(--pressed-sm);}
+  .rlist{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:11px;padding-bottom:8px;}
+  .rlist::-webkit-scrollbar{width:0;}
+  .rrow{display:flex;align-items:center;gap:13px;padding:11px 13px;border-radius:16px;background:var(--base);box-shadow:var(--raised-sm);cursor:pointer;transition:.08s;}
+  .rrow:active{box-shadow:var(--pressed-sm);transform:translateY(1px);}
+  .rtitle{font-size:14px;font-weight:600;}.rtitle .hl{color:var(--green);}
+  .rsub{font-size:10.5px;color:var(--ink-dim);margin-top:2px;}
+  .rkind{margin-left:auto;font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1px;color:var(--ink-faint);background:var(--base);border-radius:6px;padding:3px 7px;box-shadow:var(--pressed-sm);text-transform:uppercase;flex:0 0 auto;}
+
+  /* ---- LIBRARY ---- */
+  .lib-grid{flex:1 1 auto;min-height:0;overflow-y:auto;display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:10px 4px 8px;align-content:start;}
+  .lib-grid::-webkit-scrollbar{width:0;}
+  .app{display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;}
+  .app .tile{width:54px;height:54px;border-radius:16px;background:var(--base);box-shadow:var(--raised-sm);display:flex;align-items:center;justify-content:center;transition:.08s;}
+  .app:active .tile{box-shadow:var(--pressed-sm);}
+  .app .tile .glyph{width:32px;height:32px;border-radius:10px;background:var(--chip);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#0c1310;}
+  .app .nm{font-size:9.5px;color:var(--ink-dim);text-align:center;max-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+  /* ---- MUSIC ---- */
+  .music{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:10px;}
+  .vinyl{width:190px;height:190px;border-radius:50%;background:var(--base);box-shadow:var(--raised);display:flex;align-items:center;justify-content:center;position:relative;}
+  .vinyl::before{content:"";position:absolute;inset:26px;border-radius:50%;box-shadow:var(--pressed-sm);}
+  .vinyl .hub{width:64px;height:64px;border-radius:50%;background:var(--base);box-shadow:var(--pressed-sm);display:flex;align-items:center;justify-content:center;}
+  .vinyl .hub::after{content:"";width:24px;height:24px;border-radius:50%;background:var(--green);opacity:.85;}
+  .mtitle{font-size:20px;font-weight:600;}.martist{font-size:12px;color:var(--ink-dim);margin-top:4px;text-align:center;}
+  .scrub{width:88%;height:8px;border-radius:99px;background:var(--base);box-shadow:var(--pressed-sm);position:relative;}
+  .scrub .fill{position:absolute;left:0;top:0;bottom:0;width:42%;border-radius:99px;background:var(--green);opacity:.7;}
+  .transport{display:flex;gap:22px;align-items:center;}
+  .tbtn{width:52px;height:52px;border-radius:50%;background:var(--base);box-shadow:var(--raised);display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--ink);cursor:pointer;transition:.08s;}
+  .tbtn:active{box-shadow:var(--pressed);}
+  .tbtn.play{width:66px;height:66px;color:var(--green);font-size:20px;}
+
+  /* ---- THEMES showcase ---- */
+  .themes{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding:10px 2px;}
+  .themes::-webkit-scrollbar{width:0;}
+  .theme-card{border-radius:20px;padding:14px;background:var(--base);box-shadow:var(--raised-sm);}
+  .theme-card .th{display:flex;align-items:center;margin-bottom:10px;}
+  .theme-card .th .nm{font-size:13px;font-weight:600;}
+  .theme-card .th .badge{margin-left:auto;font-family:ui-monospace,monospace;font-size:8px;color:var(--ink-faint);background:var(--base);border-radius:6px;padding:3px 7px;box-shadow:var(--pressed-sm);}
+  .mini-keys{display:flex;flex-direction:column;gap:4px;}
+  .mini-keys .r{display:flex;gap:4px;justify-content:center;}
+  .mk{flex:1;height:20px;border-radius:6px;background:var(--base);box-shadow:var(--raised-sm);}
+  .theme-card.pressed .mk{box-shadow:var(--pressed-sm);}
+  .theme-card.accentgreen .mk.a{background:var(--green);opacity:.5;box-shadow:none;}
+  .theme-card.accentblue .mk.a{background:var(--blue);opacity:.5;box-shadow:none;}
+  .theme-card.accentred .mk.a{background:var(--accent);opacity:.5;box-shadow:none;}
+
+  /* ---- appearance / color toggles ---- */
+  .seg-wrap{margin-top:18px;}
+  .seg-label{font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1.5px;color:var(--ink-faint);text-transform:uppercase;margin-bottom:7px;}
+  .seg{display:flex;gap:6px;padding:5px;border-radius:14px;background:var(--base);box-shadow:var(--pressed-sm);}
+  .segbtn{flex:1;font-size:11.5px;color:var(--ink-dim);background:transparent;border:none;border-radius:10px;padding:8px;cursor:pointer;transition:.14s;}
+  .segbtn.active{color:var(--ink);background:var(--base);box-shadow:var(--raised-sm);}
+  body{transition:background .3s;}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <div class="side">
+    <div class="panel">
+      <div class="kicker">Clicks · Neumorphic</div>
+      <h1>Design system</h1>
+      <div class="nav" id="nav">
+        <button class="navbtn active" data-v="home"><span class="ic">⌂</span> Home</button>
+        <button class="navbtn" data-v="search"><span class="ic">⌕</span> Search</button>
+        <button class="navbtn" data-v="library"><span class="ic">▦</span> App library</button>
+        <button class="navbtn" data-v="music"><span class="ic">♪</span> Music</button>
+        <button class="navbtn" data-v="themes"><span class="ic">◑</span> Keyboard themes</button>
+      </div>
+      <div class="note">One base color, depth from dual soft shadows. Raised = extruded, pressed = carved in. Color only in centered chips.</div>
+      <div class="seg-wrap">
+        <div class="seg-label">Appearance</div>
+        <div class="seg" id="segMode">
+          <button class="segbtn active" data-mode="dark">Dark</button>
+          <button class="segbtn" data-mode="light">Light</button>
+        </div>
+        <div class="seg-label" style="margin-top:12px">Color</div>
+        <div class="seg" id="segColor">
+          <button class="segbtn active" data-color="bold">Bold</button>
+          <button class="segbtn" data-color="soft">Soft</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="phone-wrap">
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+        <div class="statusbar"><span>9:41</span><span class="dots">▂▃▄ ᯤ 84%</span></div>
+
+        <!-- HOME -->
+        <div class="view active" data-view="home">
+          <div class="weather"><div class="wsun"></div><div><div class="wtemp">72°</div></div><div class="wmeta">Feels 74° · 41%<br>Wind 6 mph · Clear</div></div>
+          <div class="stack">
+            <div class="card">
+              <div class="art"><div class="disc"></div></div>
+              <div style="flex:1;min-width:0"><div class="label" style="color:var(--green)">NOW PLAYING</div><div class="ctitle">Midnight City</div><div class="csub">M83 · Spotify</div>
+                <div class="eq"><span style="animation-delay:0s"></span><span style="animation-delay:.15s"></span><span style="animation-delay:.3s"></span><span style="animation-delay:.1s"></span><span style="animation-delay:.22s"></span></div></div>
+            </div>
+            <div class="mini-row">
+              <div class="mini"><div class="label" style="color:var(--amber)">UP NEXT</div><div class="big">Standup</div><div class="sm">10:30 · Meet</div></div>
+              <div class="mini"><div class="label" style="color:var(--teal)">CARLA</div><div class="big">Message</div><div class="sm">"running late…"</div></div>
+            </div>
+          </div>
+          <div class="fav-dock">
+            <div class="fav" style="--chip:#5FD0C4"><span class="glyph">M</span></div>
+            <div class="fav" style="--chip:#54A9EB"><span class="glyph">P</span></div>
+            <div class="fav" style="--chip:#F5C451"><span class="glyph">C</span></div>
+            <div class="fav" style="--chip:#FF5A3C"><span class="glyph">S</span></div>
+            <div class="fav" style="--chip:#C4B5FF"><span class="glyph">G</span></div>
+          </div>
+          <div class="kb"><div class="strip"><span class="q">Type to search…</span></div><div class="keys" data-keys></div></div>
+        </div>
+
+        <!-- SEARCH -->
+        <div class="view" data-view="search">
+          <div class="weather" style="padding-bottom:2px;opacity:.5"><div class="wsun"></div><div><div class="wtemp" style="font-size:22px">72°</div></div><div class="wmeta">Clear</div></div>
+          <div class="res-head"><span class="label">RESULTS</span><span class="count">7</span></div>
+          <div class="rlist" id="rlist"></div>
+          <div class="kb"><div class="strip"><span class="q" style="color:var(--ink)">ca</span></div><div class="keys" data-keys></div></div>
+        </div>
+
+        <!-- LIBRARY -->
+        <div class="view" data-view="library">
+          <div class="res-head" style="padding-top:12px"><span class="label">ALL APPS</span><span class="count">32</span></div>
+          <div class="lib-grid" id="libGrid"></div>
+          <div class="kb"><div class="strip"><span class="q">Filter apps…</span></div><div class="keys" data-keys></div></div>
+        </div>
+
+        <!-- MUSIC -->
+        <div class="view" data-view="music">
+          <div class="music">
+            <div class="vinyl"><div class="hub"></div></div>
+            <div style="text-align:center"><div class="mtitle">Midnight City</div><div class="martist">M83 · Hurry Up, We're Dreaming</div></div>
+            <div class="scrub"><div class="fill"></div></div>
+            <div class="transport">
+              <div class="tbtn">⏮</div>
+              <div class="tbtn play">⏸</div>
+              <div class="tbtn">⏭</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- THEMES -->
+        <div class="view" data-view="themes">
+          <div class="res-head" style="padding-top:12px"><span class="label">KEYBOARD THEMES</span></div>
+          <div class="themes">
+            <div class="theme-card accentred"><div class="th"><span class="nm">Default</span><span class="badge">RAISED</span></div><div class="mini-keys" data-mk></div></div>
+            <div class="theme-card pressed accentred"><div class="th"><span class="nm">Clicks</span><span class="badge">CARVED</span></div><div class="mini-keys" data-mk></div></div>
+            <div class="theme-card accentgreen"><div class="th"><span class="nm">Skeuo</span><span class="badge">RAISED</span></div><div class="mini-keys" data-mk></div></div>
+            <div class="theme-card accentblue"><div class="th"><span class="nm">GoKeys</span><span class="badge">FLAT · BLUE</span></div><div class="mini-keys" data-mk></div></div>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:center;padding:7px 0 10px;flex:0 0 auto"><i style="width:104px;height:5px;border-radius:99px;background:var(--base);box-shadow:var(--pressed-sm)"></i></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const ROWS=[['q','w','e','r','t','y','u','i','o','p'],['a','s','d','f','g','h','j','k','l'],['↑','z','x','c','v','b','n','m','⌫']];
+document.querySelectorAll('[data-keys]').forEach(k=>{
+  ROWS.forEach((row,ri)=>{const r=document.createElement('div');r.className='krow'+(ri===1?' indent':'');row.forEach(ch=>{const e=document.createElement('div');e.className='key'+(ch==='↑'||ch==='⌫'?' wide':'');e.textContent=ch;r.appendChild(e);});k.appendChild(r);});
+  const fr=document.createElement('div');fr.className='krow';fr.innerHTML='<div class="key dock wide">DOCK</div><div class="key">123</div><div class="key space">space</div><div class="key">.</div><div class="key accent wide">GO</div>';k.appendChild(fr);
+});
+
+const RES=[
+  {t:'Calendar',s:'Google · productivity',k:'app',chip:'#F5C451'},
+  {t:'Camera',s:'System app',k:'app',chip:'#8FD694'},
+  {t:'Calculator',s:'System app',k:'app',chip:'#54A9EB'},
+  {t:'Carla Ruiz',s:'Call · Contacts',k:'contact',chip:'#FF8A4C',g:'✆'},
+  {t:'New calendar event',s:'Command',k:'cmd',g:'＋',mono:'var(--green)'},
+  {t:'Ask Gemini: "ca"',s:'AI answer',k:'ai',g:'✦',mono:'var(--purple)'},
+  {t:'Search web',s:'Open in browser',k:'web',g:'⌕',mono:'var(--blue)'},
+];
+document.getElementById('rlist').innerHTML=RES.map(x=>{
+  const glyph=x.g?x.g:x.t[0];
+  const inner = x.mono?`<span class="glyph" style="background:var(--base);box-shadow:var(--raised-sm);color:${x.mono}">${glyph}</span>`:`<span class="glyph" style="background:${x.chip}">${glyph}</span>`;
+  let title=x.t; if(x.k!=='ai'){const li=x.t.toLowerCase().indexOf('ca');if(li>=0)title=x.t.slice(0,li)+'<span class="hl">'+x.t.slice(li,li+2)+'</span>'+x.t.slice(li+2);}
+  return `<div class="rrow"><div class="chip-ic">${inner}</div><div style="flex:1;min-width:0"><div class="rtitle">${title}</div><div class="rsub">${x.s}</div></div><div class="rkind">${x.k}</div></div>`;
+}).join('');
+
+const APPS=[['Cal','#F5C451'],['Cam','#8FD694'],['Calc','#54A9EB'],['Mail','#FF5A3C'],['Maps','#8FD694'],['Msg','#5FD0C4'],['Music','#28E06A'],['News','#54A9EB'],['Phone','#28E06A'],['Photo','#C4B5FF'],['Set','#9aa2ab'],['Store','#F5C451'],['Web','#54A9EB'],['Wall','#FF8A4C'],['Note','#F5C451'],['Clock','#5FD0C4']];
+document.getElementById('libGrid').innerHTML=APPS.map(([n,c])=>`<div class="app"><div class="tile"><div class="glyph" style="background:${c}">${n[0]}</div></div><div class="nm">${n}</div></div>`).join('');
+
+document.querySelectorAll('[data-mk]').forEach(mk=>{
+  for(let i=0;i<2;i++){const r=document.createElement('div');r.className='r';for(let j=0;j<8;j++){const k=document.createElement('div');k.className='mk'+(i===1&&j===7?' a':'');r.appendChild(k);}mk.appendChild(r);}
+});
+
+document.getElementById('nav').addEventListener('click',e=>{
+  const b=e.target.closest('.navbtn');if(!b)return;
+  document.querySelectorAll('.navbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  const v=b.dataset.v;document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.dataset.view===v));
+});
+
+document.getElementById('segMode').addEventListener('click',e=>{
+  const b=e.target.closest('.segbtn');if(!b)return;
+  document.querySelectorAll('#segMode .segbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  document.body.classList.toggle('light',b.dataset.mode==='light');
+});
+document.getElementById('segColor').addEventListener('click',e=>{
+  const b=e.target.closest('.segbtn');if(!b)return;
+  document.querySelectorAll('#segColor .segbtn').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+  document.body.classList.toggle('soft',b.dataset.color==='soft');
+});
+</script>
+</body>
+</html>
