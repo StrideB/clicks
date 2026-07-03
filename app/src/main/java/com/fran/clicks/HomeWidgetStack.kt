@@ -151,6 +151,7 @@ private sealed interface WidgetItem {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun HomeWidgetStack(
+    tokens: NeuTokens = Neu.Dark,
     visible: Boolean,
     isMusicPlaying: Boolean,
     title: String,
@@ -201,6 +202,7 @@ fun HomeWidgetStack(
         Modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(18.dp))
+            .background(tokens.baseCompose)
     ) {
         VerticalPager(
             state = pagerState,

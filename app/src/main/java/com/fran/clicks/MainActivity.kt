@@ -869,25 +869,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun typingStripBackground(): Drawable {
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFF16181D.toInt(),
-            0xFF08090C.toInt(),
-            0xFF000000.toInt()
-        )).apply {
-            setStroke(dp(1), 0xFF20232A.toInt())
-        }
-        val topLight = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x26FFFFFF,
-            0x00FFFFFF
-        ))
-        val bottomShade = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-            0x99000000.toInt(),
-            0x00000000
-        ))
-        return LayerDrawable(arrayOf(base, topLight, bottomShade)).apply {
-            setLayerInset(1, 0, 0, 0, dp(22))
-            setLayerInset(2, 0, dp(20), 0, 0)
-        }
+        return Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
     }
 
     private fun zeissRecessedBackground(): Drawable {
@@ -1149,16 +1131,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun home(): View {
         homeTileViews.clear()
-        homeEditMode = false
-        homeEditChipView = null
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            clipChildren = false
-            clipToPadding = false
-            setPadding(dp(20), dp(10), dp(20), dp(10))
+            homeEditMode = false
+            homeEditChipView = null
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                clipChildren = false
+                clipToPadding = false
+            setPadding(dp(14), dp(6), dp(14), dp(8))
             addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.9f))
+            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.22f))
             nowPlayingCardView = ComposeView(context).apply {
                 setBackgroundColor(Color.TRANSPARENT)
                 setNowPlayingCardContent()
@@ -1174,10 +1156,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER
                 clipChildren = false
                 clipToPadding = false
-                setPadding(dp(18), dp(8), dp(18), dp(8))
+                setPadding(dp(14), dp(9), dp(14), dp(9))
                 background = recessedDockBackground()
             }
-            addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(84)).apply {
+            addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
+                topMargin = dp(6)
                 bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(8) else dp(2)
             })
             if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
@@ -1859,7 +1842,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(10), dp(14), dp(10))
+            setPadding(dp(4), dp(6), dp(4), dp(2))
             isClickable = true
             setOnClickListener {
                 haptic(this)
@@ -1871,18 +1854,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER_VERTICAL
                 weatherTempView = TextView(context).apply {
                     text = prefs().getString(WEATHER_TEMP_PREF, "--")
-                    textSize = 44f
+                    textSize = 27f
                     typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
-                    setTextColor(Ink)
+                    setTextColor(activeNeuTokens.ink)
                     includeFontPadding = false
                 }
                 addView(weatherTempView)
                 weatherMetaView = TextView(context).apply {
                     text = prefs().getString(WEATHER_META_PREF, "Tap for local weather")
-                    textSize = 10.6f
+                    textSize = 8f
                     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                    letterSpacing = 0.22f
-                    setTextColor(InkDim)
+                    letterSpacing = 0.15f
+                    setTextColor(activeNeuTokens.inkFaint)
                     includeFontPadding = false
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
@@ -1894,9 +1877,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
                 weatherFeelsView = TextView(context).apply {
                     text = prefs().getString(WEATHER_FEELS_PREF, "Feels --")
-                    textSize = 10.5f
+                    textSize = 10f
                     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                    setTextColor(Ink)
+                    setTextColor(activeNeuTokens.inkDim)
                     includeFontPadding = false
                     gravity = Gravity.RIGHT
                 }
@@ -1905,7 +1888,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     text = prefs().getString(WEATHER_STATS_PREF, "Local")
                     textSize = 9f
                     letterSpacing = 0.08f
-                    setTextColor(InkDim)
+                    setTextColor(activeNeuTokens.inkDim)
                     includeFontPadding = false
                     gravity = Gravity.RIGHT
                     maxLines = 1
@@ -1917,7 +1900,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
                 setAnimationEnabled(animatedWeatherEnabled())
             }
-            addView(weatherIconView, LinearLayout.LayoutParams(dp(50), dp(50)))
+            addView(weatherIconView, LinearLayout.LayoutParams(dp(38), dp(38)))
         }
     }
 
@@ -1926,6 +1909,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val media by mediaSessionSource.nowPlaying.collectAsState()
             val current = media
             HomeWidgetStack(
+                tokens = activeNeuTokens,
                 visible = homeWidgetStackVisible(),
                 isMusicPlaying = current?.isPlaying == true,
                 title = current?.title.orEmpty(),
@@ -10084,33 +10068,11 @@ $emailText"""
         }
 
     private fun weatherHeaderBackground(): Drawable {
-        val body = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xF0181B20.toInt(),
-            0xF014171C.toInt(),
-            0xF0101216.toInt()
-        )).apply {
-            cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), 0x081C222B)
-        }
-        val lowerShade = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-            0x52000000,
-            0x00000000
-        )).apply { cornerRadius = dp(26).toFloat() }
-        return LayerDrawable(arrayOf(body, lowerShade)).apply {
-            setLayerInset(1, dp(1), dp(42), dp(1), dp(1))
-        }
+        return GradientDrawable().apply { setColor(Color.TRANSPARENT) }
     }
 
     private fun homeKeyboardWidgetBackground(): Drawable {
-        val body = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xF020232A.toInt(),
-            0xF014161B.toInt(),
-            0xF00B0C0F.toInt()
-        )).apply {
-            cornerRadius = dp(28).toFloat()
-            setStroke(dp(1), 0x0AFFFFFF)
-        }
-        return body
+        return Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.RAISED)
     }
 
     private fun widgetKeyboardHeight(): Int {
@@ -10118,60 +10080,11 @@ $emailText"""
     }
 
     private fun recessedDockBackground(): Drawable {
-        val pocket = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFF030405.toInt(),
-            0xFF05070A.toInt(),
-            0xFF090B0F.toInt()
-        )).apply {
-            cornerRadius = dp(24).toFloat()
-            setStroke(dp(1), 0xFF020304.toInt())
-        }
-        val innerTopShade = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xE6000000.toInt(),
-            0x00000000
-        )).apply { cornerRadius = dp(24).toFloat() }
-        val innerSideShade = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
-            0x8A000000.toInt(),
-            0x00000000,
-            0x00000000,
-            0x8A000000.toInt()
-        )).apply { cornerRadius = dp(24).toFloat() }
-        val lowerInsetRim = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-            0x181B2028,
-            0x00000000
-        )).apply { cornerRadius = dp(24).toFloat() }
-        val carvedEdge = GradientDrawable().apply {
-            setColor(Color.TRANSPARENT)
-            cornerRadius = dp(24).toFloat()
-            setStroke(dp(1), 0x331C222B)
-        }
-        return LayerDrawable(arrayOf(pocket, innerTopShade, innerSideShade, lowerInsetRim, carvedEdge)).apply {
-            setLayerInset(1, dp(2), dp(2), dp(2), dp(46))
-            setLayerInset(2, dp(1), dp(2), dp(1), dp(2))
-            setLayerInset(3, dp(3), dp(44), dp(3), dp(2))
-            setLayerInset(4, 0, 0, 0, 0)
-        }
+        return Neu.drawable(activeNeuTokens, dp(19).toFloat(), NeuLevel.PRESSED_SM)
     }
 
     private fun dockIconButtonBackground(): Drawable {
-        val skirt = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFF050608.toInt(),
-            0xFF020203.toInt()
-        )).apply {
-            cornerRadius = dp(14).toFloat()
-        }
-        val face = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFF1D2229.toInt(),
-            0xFF161A20.toInt(),
-            0xFF0C0E12.toInt()
-        )).apply {
-            cornerRadius = dp(14).toFloat()
-            setStroke(dp(1), 0xFF11151B.toInt())
-        }
-        return LayerDrawable(arrayOf(skirt, face)).apply {
-            setLayerInset(0, 0, dp(3), 0, 0)
-            setLayerInset(1, dp(1), 0, dp(1), dp(3))
-        }
+        return Neu.drawable(activeNeuTokens, dp(99).toFloat(), NeuLevel.RAISED_SM)
     }
 
     private fun widgetCircleBackground(): Drawable {
@@ -10722,7 +10635,7 @@ $emailText"""
     }
 
     private fun keyboardDeckBackground(): Drawable {
-        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return GradientDrawable().apply { setColor(0xFF000000.toInt()) }
+        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.RAISED)
         val colors = when (keyboardTheme) {
             KEYBOARD_THEME_SKEUO -> intArrayOf(0xFF24262D.toInt(), 0xFF101116.toInt(), 0xFF050506.toInt())
             KEYBOARD_THEME_CLICKS -> intArrayOf(0xFF1A1C21.toInt(), 0xFF111318.toInt(), 0xFF08090C.toInt(), 0xFF030304.toInt())
@@ -10810,11 +10723,7 @@ $emailText"""
 
     private fun themed123KeyBackground(pressed: Boolean): Drawable {
         hyper3dKeyDrawable("123")?.let { return it }
-        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(if (pressed) KeyHighlight else Key)
-            setStroke(dp(1), KeyEdge)
-        }
+        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(activeNeuTokens, dp(99).toFloat(), if (pressed) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
         val clicks = keyboardTheme == KEYBOARD_THEME_CLICKS
         val faceTop = if (pressed) 0xFF3A3E4A.toInt() else if (clicks) 0xFF22252B.toInt() else 0xFF34373E.toInt()
         val faceMid = if (pressed) 0xFF2A2D36.toInt() else if (clicks) 0xFF171A1F.toInt() else 0xFF202329.toInt()
@@ -10839,12 +10748,11 @@ $emailText"""
 
     private fun keyBackground() = keyBackground(null)
 
-    private fun keyBackground(fillColor: Int?): GradientDrawable {
-        if (fillColor != null) return GradientDrawable().apply {
-            setColor(fillColor); cornerRadius = dp(6).toFloat(); setStroke(dp(1), brighten(fillColor))
-        }
-        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF2A2D36.toInt(), Key)).apply {
-            cornerRadius = dp(6).toFloat(); setStroke(dp(1), KeyEdge)
+    private fun keyBackground(fillColor: Int?): Drawable {
+        return if (fillColor != null) {
+            Neu.drawable(activeNeuTokens, dp(7).toFloat(), NeuLevel.PRESSED_SM)
+        } else {
+            Neu.drawable(activeNeuTokens, dp(7).toFloat(), NeuLevel.RAISED_SM)
         }
     }
 
@@ -10918,7 +10826,7 @@ $emailText"""
 
     private fun themedGoKeyBackground(fillColor: Int, pressed: Boolean): Drawable {
         hyper3dKeyDrawable("enter")?.let { return it }
-        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return goKeyBackground(fillColor)
+        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(activeNeuTokens, dp(99).toFloat(), if (pressed) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
         val skirt = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(0xFF050609.toInt())
@@ -11027,10 +10935,11 @@ $emailText"""
             else -> 0xFFF3F5F8.toInt()
         }
     } else when (label) {
-            "enter" -> 0xFF180A06.toInt()
-            "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF7D8078.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> Accent }
-            "123", "clicks", "back", "period", "abc" -> 0xFF7D8078.toInt()
-            else -> Ink
+            "enter" -> Neu.ACCENT
+            "clicks" -> Neu.GREEN
+            "shift" -> when (shiftState) { ShiftState.OFF -> activeNeuTokens.inkDim; ShiftState.ONCE -> activeNeuTokens.ink; ShiftState.LOCK -> Neu.ACCENT }
+            "123", "back", "period", "abc" -> activeNeuTokens.inkDim
+            else -> activeNeuTokens.ink
     }
 
     private fun isHyper3dTheme(): Boolean {
