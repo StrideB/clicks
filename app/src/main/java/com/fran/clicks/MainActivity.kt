@@ -6839,7 +6839,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val safe = if (value == KEYBOARD_PLACEMENT_WIDGET) KEYBOARD_PLACEMENT_WIDGET else KEYBOARD_PLACEMENT_DOCKED
         keyboardPlacement = safe
         keyboardSettingsOpen = false
-        prefs().edit().putString(KEYBOARD_PLACEMENT_PREF, safe).apply()
+        KeyboardSettings.setPlacementMode(this, safe)
+        if (safe == KEYBOARD_PLACEMENT_WIDGET) {
+            stopService(Intent(this, DockedKeyboardService::class.java))
+        }
         render()
     }
 
@@ -10126,19 +10129,65 @@ Reply format: ["word1","word2","word3"]"""
         if (packageName == null) { openHere(target); return }
         try {
             if (target.deepLinkUri != null && isInstalled(packageName)) {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target.deepLinkUri)))
-                recordAppLaunch(packageName)
+                launchExternalIntent(Intent(Intent.ACTION_VIEW, Uri.parse(target.deepLinkUri)), packageName)
                 return
             }
             val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             if (launchIntent != null) {
-                startActivity(launchIntent)
-                recordAppLaunch(packageName)
+                launchExternalIntent(launchIntent, packageName)
                 return
             }
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$packageName")))
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, "${target.name} isn't available here", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun launchExternalIntent(intent: Intent, packageName: String) {
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+            if (!prepareDockedExternalMode()) return
+            val options = dockedExternalActivityOptions()
+            if (options != null) {
+                runCatching {
+                    startActivity(intent, options.toBundle())
+                }.onFailure {
+                    startActivity(intent)
+                }
+            } else {
+                startActivity(intent)
+            }
+        } else {
+            startActivity(intent)
+        }
+        recordAppLaunch(packageName)
+    }
+
+    private fun prepareDockedExternalMode(): Boolean {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return true
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Allow Display over other apps for the docked keyboard.", Toast.LENGTH_LONG).show()
+            runCatching { startActivity(DockedKeyboardService.overlaySettingsIntent(this)) }
+            return false
+        }
+        startService(Intent(this, DockedKeyboardService::class.java))
+        return true
+    }
+
+    private fun dockedExternalActivityOptions(): ActivityOptions? {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return null
+        val screen = resources.displayMetrics
+        val keyboardHeight = dp(238 + (KeyboardSettings.keyboardSize(this) * 54 / 100))
+        val topBounds = Rect(
+            0,
+            0,
+            screen.widthPixels,
+            (screen.heightPixels - keyboardHeight).coerceAtLeast(dp(360))
+        )
+        return ActivityOptions.makeBasic().apply {
+            launchBounds = topBounds
+            runCatching {
+                javaClass.getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType).invoke(this, 5)
+            }
         }
     }
 

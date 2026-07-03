@@ -3,7 +3,6 @@ package com.fran.clicks
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -93,6 +92,7 @@ class DockedKeyboardService : Service() {
 
     private fun keyView(label: String): TextView {
         return TextView(this).apply {
+            tag = label
             text = visualLabel(label)
             gravity = Gravity.CENTER
             includeFontPadding = false
