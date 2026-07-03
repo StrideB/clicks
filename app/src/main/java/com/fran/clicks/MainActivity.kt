@@ -245,6 +245,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetSwapHasDown = false
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
     private var glideRecognizedColor: Int? = null   // app brand color when a glided word names an app
+    @Volatile private var glideGestureActive = false   // true while a keyboard glide owns the touch
     private var numberPadOpen = false
     private var symbolsOpen = false
     private var lastMusicSourcePackage: String? = null
@@ -770,6 +771,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
+        // While a glide/swipe-type gesture is in progress the keyboard owns the touch — suppress
+        // launcher gestures (library, widget board, home swipes) so they don't fire mid-swipe.
+        if (glideGestureActive) return super.dispatchTouchEvent(event)
         if (handlePaneSwipe(event)) return true
         val wasLibraryDragging = libraryDragActive
         if (handleLibrarySwipe(event)) {
@@ -2423,7 +2427,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             overlay.translationY = 0f
         }
         val progress = 1f - (translation / size)
-        if (!libraryDragStartedOpen) {
+        if (query.isNotBlank()) {
+            overlay.alpha = 1f
+        } else if (!libraryDragStartedOpen) {
             overlay.alpha = ((if (activeNeuTokens.mode == NeuMode.LIGHT) 0.90f else 0.86f) + progress * 0.08f).coerceAtMost(0.98f)
         }
         val stage = when {
@@ -3818,6 +3824,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun fillLibraryContent(area: FrameLayout) {
         area.removeAllViews()
+        if (query.isNotBlank()) {
+            libraryView?.alpha = 1f
+        }
         val child = if (query.isNotBlank()) searchResultsGrid()
                     else if (libraryGridMode) libraryGrid() else bentoGrid()
         area.addView(child, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -4080,14 +4089,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun searchCardBackground(kind: SearchKind, isBest: Boolean, radiusDp: Int): Drawable {
+        val solid = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFF1F3F6.toInt() else activeNeuTokens.baseHi,
+            if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFE8EBF0.toInt() else activeNeuTokens.base,
+            if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFDDE2E9.toInt() else activeNeuTokens.base
+        )).apply {
+            cornerRadius = dp(radiusDp).toFloat()
+        }
         val base = Neu.drawable(activeNeuTokens, dp(radiusDp).toFloat(), if (isBest) NeuLevel.RAISED else NeuLevel.RAISED_SM)
-        if (!isBest) return base
+        if (!isBest) return LayerDrawable(arrayOf(solid, base))
         val ring = GradientDrawable().apply {
             setColor(Color.TRANSPARENT)
             cornerRadius = dp(radiusDp).toFloat()
             setStroke(dp(1), searchKindAccent(kind))
         }
-        return LayerDrawable(arrayOf(base, ring))
+        return LayerDrawable(arrayOf(solid, base, ring))
     }
 
     private fun searchKindTag(kind: SearchKind): TextView = mono(kind.name, 7.5f, activeNeuTokens.inkFaint).apply {
@@ -4184,13 +4200,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun searchCommandBackground(): Drawable {
+        val solid = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFF1F3F6.toInt() else activeNeuTokens.baseHi,
+            if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFE8EBF0.toInt() else activeNeuTokens.base,
+            if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFDDE2E9.toInt() else activeNeuTokens.base
+        )).apply {
+            cornerRadius = dp(15).toFloat()
+        }
         val base = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED)
         val ring = GradientDrawable().apply {
             setColor(Color.TRANSPARENT)
             cornerRadius = dp(15).toFloat()
             setStroke(dp(1), Neu.GREEN)
         }
-        return LayerDrawable(arrayOf(base, ring))
+        return LayerDrawable(arrayOf(solid, base, ring))
     }
 
     private fun searchAiInlineState(): AiAnswerState? {
@@ -7724,6 +7747,7 @@ Reply format: ["word1","word2","word3"]"""
                     if (!tracking) {
                         if (abs(ev.rawX - startRawX) > dp(10) || abs(ev.rawY - startRawY) > dp(10)) {
                             tracking = true
+                            glideGestureActive = true
                             keyAtPoint(startRawX, startRawY)?.let { k -> if (k.length == 1) traced.add(k) }
                             trailLocal.add(startRawX - screenX to startRawY - screenY)
                             glideClassifier?.addGesturePoint(startRawX, startRawY)
@@ -7732,7 +7756,7 @@ Reply format: ["word1","word2","word3"]"""
                     }
                     return tracking
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { tracking = false; return false }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { tracking = false; glideGestureActive = false; return false }
             }
             return false
         }
@@ -7782,6 +7806,7 @@ Reply format: ["word1","word2","word3"]"""
                     invalidate()
                 }
                 MotionEvent.ACTION_UP -> {
+                    glideGestureActive = false
                     // Swipe-left = whole-word delete (must be dominant horizontal, not a glide word path)
                     if (flickDetector.isLeftSwipe(startRawX, startRawY, ev.rawX, ev.rawY) && traced.size <= 2) {
                         tracking = false; traced.clear(); trailLocal.clear(); invalidate()
@@ -7815,7 +7840,7 @@ Reply format: ["word1","word2","word3"]"""
                     }
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    tracking = false; traced.clear(); trailLocal.clear()
+                    tracking = false; glideGestureActive = false; traced.clear(); trailLocal.clear()
                     glideClassifier?.clear(); invalidate()
                 }
             }
