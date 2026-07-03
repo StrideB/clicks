@@ -24,6 +24,10 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        // Generate lambdas/SAM conversions as classes instead of invokedynamic. Works around a
+        // Kotlin JVM backend crash ("Exception during IR lowering") when codegen'ing some Compose
+        // (Composer, Int) -> Unit lambdas in HomeWidgetStack.kt on a full build.
+        freeCompilerArgs = freeCompilerArgs + listOf("-Xlambdas=class", "-Xsam-conversions=class")
     }
 
     buildFeatures {

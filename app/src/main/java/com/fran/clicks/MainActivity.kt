@@ -4587,6 +4587,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun categoryMiniGrid(items: List<LibraryApp>, columns: Int): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
+        val maxLaunches = maxLaunchesForCategory(items)
         items.chunked(columns).forEachIndexed { rowIndex, rowItems ->
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -4600,6 +4601,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             scaleType = ImageView.ScaleType.FIT_CENTER
                             adjustViewBounds = true
                             setPadding(dp(4), dp(4), dp(4), dp(4))
+                            applyCategoryUsageScale(app, maxLaunches, null, this)
                         }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                     }, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(8) })
                 }
@@ -4614,6 +4616,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun showCategoryFolder(category: LibraryCategory) {
         closeCategoryFolder()
+        val (activeApps, archivedApps) = splitCategoryApps(category.apps)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             libraryView?.setRenderEffect(RenderEffect.createBlurEffect(10f, 10f, Shader.TileMode.CLAMP))
         }
@@ -4666,7 +4669,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     addView(LinearLayout(context).apply {
                         orientation = LinearLayout.VERTICAL
                         setPadding(0, dp(12), 0, 0)
-                        addView(tileGrid(category.apps, 4))
+                        addView(categoryTileGrid(activeApps, 4))
+                        if (archivedApps.isNotEmpty()) {
+                            addView(categoryArchiveSection(archivedApps), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                                topMargin = dp(14)
+                            })
+                        }
                     })
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER).apply {
@@ -4685,6 +4693,125 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 animate().scaleX(1f).scaleY(1f).translationY(0f).setDuration(210).setInterpolator(DecelerateInterpolator()).start()
             }
         }
+    }
+
+    private fun categoryTileGrid(items: List<LibraryApp>, columns: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        val maxLaunches = maxLaunchesForCategory(items)
+        items.chunked(columns).forEach { rowItems ->
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                rowItems.forEach { app ->
+                    addView(categoryAppTile(app, maxLaunches), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                }
+                repeat(columns - rowItems.size) { addView(View(context), LinearLayout.LayoutParams(0, 1, 1f)) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, appTileRowHeight()).apply {
+                bottomMargin = dp(8)
+            })
+        }
+    }
+
+    private fun categoryAppTile(app: LibraryApp, maxLaunches: Int): View {
+        val target = app.target
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isClickable = true
+            setPadding(dp(3), dp(4), dp(3), dp(2))
+            val iconFrame = appLibraryIconFrameSize()
+            val labelView = TextView(context).apply {
+                text = app.name
+                textSize = 10.5f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(activeNeuTokens.inkDim)
+                includeFontPadding = false
+                setPadding(0, dp(6), 0, 0)
+            }
+            addView(FrameLayout(context).apply {
+                elevation = dp(3).toFloat()
+                background = libraryIconButtonBackground(13, Line)
+                addView(ImageView(context).apply {
+                    setImageDrawable(iconFor(app))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    adjustViewBounds = true
+                    setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
+                    applyCategoryUsageScale(app, maxLaunches, labelView, this)
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(iconFrame, iconFrame))
+            addView(labelView, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setOnTouchListener { v, e ->
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90).start()
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                }
+                false
+            }
+            setOnClickListener {
+                haptic(this)
+                val opened = if (target.kind == PaneKind.MUSIC || target.packageName == null) {
+                    openHere(target)
+                    true
+                } else {
+                    openExternal(target)
+                }
+                if (opened) {
+                    closeCategoryFolder()
+                    libraryOpen = false
+                    libraryView?.let { contentFrame.removeView(it) }
+                    libraryView = null
+                    libraryContentArea = null
+                }
+            }
+            setOnLongClickListener { haptic(this); showIconMenu(this, app); true }
+        }
+    }
+
+    private fun categoryArchiveSection(archivedApps: List<LibraryApp>): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        val archivedGrid = categoryTileGrid(archivedApps, 4).apply { visibility = View.GONE }
+        val chevron = TextView(context).apply {
+            text = "+"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTextColor(activeNeuTokens.inkDim)
+            includeFontPadding = false
+        }
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            setPadding(dp(12), 0, dp(10), 0)
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.PRESSED_SM)
+            addView(TextView(context).apply {
+                text = "UNUSED APPS"
+                textSize = 10f
+                letterSpacing = 0.16f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(activeNeuTokens.inkDim)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(context).apply {
+                text = archivedApps.size.toString()
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setTextColor(activeNeuTokens.inkFaint)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(chevron, LinearLayout.LayoutParams(dp(26), dp(28)))
+            setOnClickListener {
+                haptic(this)
+                val opening = archivedGrid.visibility != View.VISIBLE
+                archivedGrid.visibility = if (opening) View.VISIBLE else View.GONE
+                chevron.text = if (opening) "-" else "+"
+            }
+        }
+        addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+        addView(archivedGrid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(10)
+        })
     }
 
     private fun closeCategoryFolder() {
@@ -10491,7 +10618,16 @@ Reply format: ["word1","word2","word3"]"""
         val counts = JSONObject(prefs().getString(APP_USAGE_PREF, "{}") ?: "{}")
         val nextCount = counts.optInt(packageName, 0) + 1
         counts.put(packageName, nextCount)
-        prefs().edit().putString(APP_USAGE_PREF, counts.toString()).apply()
+        val launches = JSONObject(prefs().getString(APP_LAST_LAUNCH_PREF, "{}") ?: "{}")
+        launches.put(packageName, System.currentTimeMillis())
+        prefs().edit()
+            .putString(APP_USAGE_PREF, counts.toString())
+            .putString(APP_LAST_LAUNCH_PREF, launches.toString())
+            .apply()
+        if (!libraryGridMode) {
+            libraryViewDirty = true
+            libraryContentReady = false
+        }
         renderFavoritesDock()
     }
 
@@ -10503,6 +10639,18 @@ Reply format: ["word1","word2","word3"]"""
             while (keys.hasNext()) {
                 val key = keys.next()
                 put(key, json.optInt(key, 0))
+            }
+        }
+    }
+
+    private fun appLastLaunches(): Map<String, Long> {
+        val raw = prefs().getString(APP_LAST_LAUNCH_PREF, "{}") ?: "{}"
+        val json = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyMap()
+        return buildMap {
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                put(key, json.optLong(key, 0L))
             }
         }
     }
@@ -13988,12 +14136,24 @@ $emailText"""
         }
     }
 
+    private class WeatherParticle(var x: Float, var y: Float, var vx: Float, var vy: Float,
+                                  var len: Float, var size: Float, var sway: Float, var phase: Float, var a: Float)
+
     private inner class WeatherAmbientView(context: Context) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private var weatherCode = 0
         private var mode = NeuMode.DARK
         private var progress = 1f
         private var animator: ValueAnimator? = null
+
+        // Precipitation particles: rain / snow / thunderstorm (rain + lightning) / fog.
+        private val parts = ArrayList<WeatherParticle>()
+        private val fog = ArrayList<WeatherParticle>()
+        private var running = false
+        private var lastFrame = 0L
+        private var flash = 0f
+        private var nextBolt = 2.5f
+        private val rnd = java.util.Random()
 
         fun setWeather(code: Int, neuMode: NeuMode, animate: Boolean) {
             val changed = weatherCode != code || mode != neuMode
@@ -14015,17 +14175,155 @@ $emailText"""
                 progress = 1f
                 invalidate()
             }
+            rebuildParticles()
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+            super.onSizeChanged(w, h, ow, oh)
+            rebuildParticles()
+        }
+
+        override fun onVisibilityAggregated(isVisible: Boolean) {
+            super.onVisibilityAggregated(isVisible)
+            if (isVisible) rebuildParticles() else stopLoop()
         }
 
         override fun onDetachedFromWindow() {
             animator?.cancel()
             animator = null
+            stopLoop()
             super.onDetachedFromWindow()
+        }
+
+        // 0 none, 1 rain/drizzle, 2 snow, 3 thunderstorm, 4 fog — WMO codes.
+        private fun precip(): Int = when {
+            weatherCode == 45 || weatherCode == 48 -> 4
+            weatherCode == 95 || weatherCode == 96 || weatherCode == 99 -> 3
+            weatherCode in intArrayOf(71, 73, 75, 77, 85, 86) -> 2
+            weatherCode in intArrayOf(51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82) -> 1
+            else -> 0
+        }
+
+        private fun heavy(): Float = when (weatherCode) {
+            55, 57, 65, 67, 75, 82, 86, 99 -> 1f
+            53, 63, 73, 81, 85, 96 -> 0.62f
+            else -> 0.38f
+        }
+
+        private fun startLoop() { if (!running) { running = true; lastFrame = 0L; postInvalidateOnAnimation() } }
+        private fun stopLoop() { running = false }
+
+        private fun rebuildParticles() {
+            parts.clear(); fog.clear()
+            val p = precip()
+            if (p == 0 || !animatedWeatherEnabled()) { stopLoop(); invalidate(); return }
+            if (width > 0 && height > 0) seed(p)
+            startLoop()
+        }
+
+        private fun seed(p: Int) {
+            parts.clear(); fog.clear()
+            val d = resources.displayMetrics.density
+            val w = width.toFloat(); val h = height.toFloat()
+            if (p == 4) {
+                repeat(7) {
+                    fog.add(WeatherParticle(rnd.nextFloat() * w, h * (0.08f + rnd.nextFloat() * 0.55f),
+                        (7 + rnd.nextFloat() * 13) * d * (if (rnd.nextBoolean()) 1f else -1f), 0f,
+                        0f, (120 + rnd.nextFloat() * 170) * d, 0f, 0f, 0.05f + rnd.nextFloat() * 0.06f))
+                }
+                return
+            }
+            val n = if (p == 2) (42 + 60 * heavy()).toInt() else (72 + 120 * heavy()).toInt()
+            repeat(n) { parts.add(spawn(p, d, w, h, true)) }
+        }
+
+        private fun spawn(p: Int, d: Float, w: Float, h: Float, anyY: Boolean): WeatherParticle {
+            val x = rnd.nextFloat() * w
+            val y = if (anyY) rnd.nextFloat() * h else -rnd.nextFloat() * h * 0.25f
+            return if (p == 2) {
+                WeatherParticle(x, y, 0f, (55 + rnd.nextFloat() * 55) * d, 0f, (1.6f + rnd.nextFloat() * 2.6f) * d,
+                    (12 + rnd.nextFloat() * 22) * d, rnd.nextFloat() * 6.28f, 0.5f + rnd.nextFloat() * 0.5f)
+            } else {
+                WeatherParticle(x, y, 70f * d, (900 + rnd.nextFloat() * 500 + heavy() * 500) * d,
+                    (14 + rnd.nextFloat() * 16 + heavy() * 12) * d, (1f + rnd.nextFloat()) * d, 0f, 0f,
+                    0.22f + rnd.nextFloat() * 0.33f)
+            }
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             if (width <= 0 || height <= 0) return
+            drawGlows(canvas)
+            val p = precip()
+            if (!running || p == 0 || !animatedWeatherEnabled()) return
+            if (parts.isEmpty() && fog.isEmpty()) seed(p)
+            val now = System.currentTimeMillis()
+            val dt = if (lastFrame == 0L) 0.016f else ((now - lastFrame) / 1000f).coerceIn(0f, 0.05f)
+            lastFrame = now
+            when (p) {
+                4 -> drawFog(canvas, dt)
+                2 -> drawSnow(canvas, dt)
+                else -> { drawRain(canvas, dt); if (p == 3) drawLightning(canvas, dt) }
+            }
+            postInvalidateOnAnimation()
+        }
+
+        private fun drawRain(canvas: Canvas, dt: Float) {
+            val w = width.toFloat(); val h = height.toFloat()
+            val color = if (mode == NeuMode.LIGHT) 0xFF6E7A88.toInt() else 0xFFBFD0E8.toInt()
+            paint.style = Paint.Style.STROKE
+            paint.strokeCap = Paint.Cap.ROUND
+            for (d in parts) {
+                d.x += d.vx * dt; d.y += d.vy * dt
+                if (d.y - d.len > h) { d.y = -rnd.nextFloat() * h * 0.15f; d.x = rnd.nextFloat() * w }
+                if (d.x > w) d.x -= w
+                paint.strokeWidth = d.size
+                paint.color = adjustAlpha(color, d.a)
+                canvas.drawLine(d.x, d.y, d.x - d.vx * 0.016f, d.y - d.len, paint)
+            }
+            paint.style = Paint.Style.FILL
+        }
+
+        private fun drawSnow(canvas: Canvas, dt: Float) {
+            val w = width.toFloat(); val h = height.toFloat()
+            val color = if (mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFFEAF1FF.toInt()
+            paint.style = Paint.Style.FILL
+            for (d in parts) {
+                d.phase += dt * 1.6f
+                d.y += d.vy * dt
+                d.x += kotlin.math.sin(d.phase.toDouble()).toFloat() * d.sway * dt
+                if (d.y - d.size > h) { d.y = -d.size - rnd.nextFloat() * h * 0.1f; d.x = rnd.nextFloat() * w }
+                paint.color = adjustAlpha(color, d.a)
+                canvas.drawCircle(d.x, d.y, d.size, paint)
+            }
+        }
+
+        private fun drawFog(canvas: Canvas, dt: Float) {
+            val w = width.toFloat()
+            val color = if (mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFFB8C2D0.toInt()
+            for (f in fog) {
+                f.x += f.vx * dt
+                if (f.x - f.size > w) f.x = -f.size
+                if (f.x + f.size < 0f) f.x = w + f.size
+                paint.shader = RadialGradient(f.x, f.y, f.size.coerceAtLeast(1f),
+                    intArrayOf(adjustAlpha(color, f.a), 0x00000000), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                canvas.drawCircle(f.x, f.y, f.size, paint)
+                paint.shader = null
+            }
+        }
+
+        private fun drawLightning(canvas: Canvas, dt: Float) {
+            nextBolt -= dt
+            if (nextBolt <= 0f) { flash = 1f; nextBolt = 3.5f + rnd.nextFloat() * 6f }
+            if (flash > 0f) {
+                paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.11f * flash)
+                canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+                flash -= dt * 3.2f
+                if (flash < 0f) flash = 0f
+            }
+        }
+
+        private fun drawGlows(canvas: Canvas) {
             val night = isWeatherNight()
             val cloudy = weatherCode in setOf(1, 2, 3, 45, 48)
             val wet = weatherCode in setOf(51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99)
