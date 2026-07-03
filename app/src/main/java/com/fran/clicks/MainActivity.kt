@@ -3429,7 +3429,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun searchResultIcon(result: SearchResult): View {
         val app = result.target?.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg } }
         return FrameLayout(this).apply {
-            background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.PRESSED_SM)
+            background = if (result.kind == SearchKind.APP && app != null) {
+                libraryIconButtonBackground(12, Line)
+            } else {
+                Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.PRESSED_SM)
+            }
             setPadding(dp(5), dp(5), dp(5), dp(5))
             if (result.kind == SearchKind.APP && app != null) {
                 addView(ImageView(context).apply {
@@ -3654,7 +3658,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val iconFrame = searchAppIconFrameSize()
             addView(FrameLayout(context).apply {
                 elevation = dp(if (isBest) 8 else 3).toFloat()
-                background = roundedPanel(Panel2, dp(15), if (isBest) Accent else Line)
+                background = libraryIconButtonBackground(15, if (isBest) Accent else Line)
                 addView(ImageView(context).apply {
                     setImageDrawable(iconFor(app))
                     scaleType = ImageView.ScaleType.FIT_CENTER
@@ -3787,7 +3791,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rowItems.forEach { app ->
                     addView(FrameLayout(context).apply {
                         elevation = dp(2).toFloat()
-                        background = roundedPanel(Panel2, dp(9), Line)
+                        background = libraryIconButtonBackground(9, Line)
                         addView(ImageView(context).apply {
                             setImageDrawable(iconFor(app))
                             scaleType = ImageView.ScaleType.FIT_CENTER
@@ -3943,7 +3947,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(dp(3), dp(4), dp(3), dp(2))
             val iconFrame = appLibraryIconFrameSize()
             addView(FrameLayout(context).apply {
-                elevation = dp(3).toFloat(); background = roundedPanel(Panel2, dp(13), Line)
+                elevation = dp(3).toFloat(); background = libraryIconButtonBackground(13, Line)
                 addView(ImageView(context).apply {
                     setImageDrawable(iconFor(app)); scaleType = ImageView.ScaleType.FIT_CENTER
                     adjustViewBounds = true; setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
@@ -5960,6 +5964,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            if (showSuggestionStrip()) addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
             if (symbolsOpen) {
                 addKeyRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
                 addKeyRow(listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"))
@@ -6455,8 +6460,81 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     // ── Suggestions ──────────────────────────────────────────────────────────
 
+    private var suggestionStripView: LinearLayout? = null
+
+    private fun showSuggestionStrip() = !keyboardSettingsOpen && !numberPadOpen
+    private fun suggestionStripHeight() = if (showSuggestionStrip()) dp(38) else 0
+
+    private fun suggestionStrip(): View {
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(3), dp(6), dp(3))
+        }
+        suggestionStripView = strip
+        updateSuggestionBar()
+        return strip
+    }
+
+    // If a shown suggestion or the current word names an installed app (e.g. "spotify"), return that
+    // app's brand color so the strip can tint to it. Prefix matches count once the user is 3+ chars in.
+    private fun suggestionStripAppColor(shown: List<String>): Int? {
+        val candidates = (shown + currentWordInCompose()).map { it.lowercase(Locale.US) }.filter { it.length >= 3 }
+        if (candidates.isEmpty()) return null
+        for (app in apps) {
+            val label = app.label.lowercase(Locale.US)
+            if (candidates.any { it == label || (label.startsWith(it) && it.length >= 3) }) return app.brandColor
+        }
+        return null
+    }
+
     private fun updateSuggestionBar() {
-        // Predictions are shown inline on keys via DynamicFlickKeyView — no separate chip bar.
+        val strip = suggestionStripView ?: return
+        strip.removeAllViews()
+        val shown = suggestions.take(3)
+        val pro = ProManager.isUnlocked(this)
+        val appColor = suggestionStripAppColor(shown)
+        // Free: text/strip tint to the matched app's brand color. Pro: an AI-style gradient theme,
+        // pulled toward the app color when one matches. Neutral when nothing is recognized.
+        val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
+        if (shown.isEmpty() && appColor == null) { strip.background = null; return }
+        strip.background = suggestionStripBackground(appColor, pro)
+        if (shown.isEmpty()) return
+        shown.forEachIndexed { i, word ->
+            strip.addView(TextView(this).apply {
+                text = word
+                gravity = Gravity.CENTER
+                textSize = 14.5f
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(textColor)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                isClickable = true
+                setOnClickListener { keyHaptic("space"); acceptSuggestion(word) }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            if (i < shown.lastIndex) {
+                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
+                    LinearLayout.LayoutParams(dp(1), dp(18)))
+            }
+        }
+    }
+
+    private fun suggestionStripBackground(appColor: Int?, pro: Boolean): android.graphics.drawable.Drawable {
+        val radius = dp(10).toFloat()
+        if (pro) {
+            val a = appColor ?: 0xFF8B5CF6.toInt()
+            val b = appColor?.let { brighten(it) } ?: 0xFF3AB6FF.toInt()
+            return GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(darken(a), a, b)).apply {
+                cornerRadius = radius
+                alpha = 64
+            }
+        }
+        return GradientDrawable().apply {
+            setColor(if (appColor != null) (appColor and 0x00FFFFFF) or 0x22000000 else 0x14FFFFFF)
+            cornerRadius = radius
+            if (appColor != null) setStroke(dp(1), (appColor and 0x00FFFFFF) or 0x55000000)
+        }
     }
 
     private fun acceptSuggestion(word: String) {
@@ -6486,7 +6564,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         scheduleLiveAutocorrect()
         val word = currentWordInCompose()
         if (word.length < 2) {
-            if (suggestions.isNotEmpty()) { suggestions = emptyList(); updateSuggestionBar() }
+            suggestions = emptyList(); updateSuggestionBar()
             liveRouter.onTextChanged("")
             return
         }
@@ -6499,9 +6577,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (prev.isNotEmpty()) ngramRepo.prefetchNextWords(prev)
             ngramRepo.prefetchNextWords(word)
             val localSuggs = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
-            if (localSuggs.isNotEmpty()) {
-                suggestions = localSuggs; updateSuggestionBar()
-            }
+            suggestions = localSuggs; updateSuggestionBar()
             spellChecker?.getSuggestions(TextInfo(word), 5)
         }
         suggestDebounce = r
@@ -11069,6 +11145,14 @@ $emailText"""
         return Neu.drawable(activeNeuTokens, dp(99).toFloat(), NeuLevel.RAISED_SM)
     }
 
+    private fun libraryIconButtonBackground(radiusDp: Int = 13, stroke: Int? = Line): Drawable {
+        return if (activeNeuTokens.mode == NeuMode.LIGHT) {
+            dockIconButtonBackground()
+        } else {
+            roundedPanel(Panel2, dp(radiusDp), stroke)
+        }
+    }
+
     private fun widgetCircleBackground(): Drawable {
         val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
             0xFF20242C.toInt(),
@@ -12330,7 +12414,7 @@ $emailText"""
         val rowsHeight = keyRowHeight() * rowCount
         val overlap = if (keyboardSettingsOpen) 0 else keyRowOverlap() * (rowCount - 1)
         val settingsHeight = if (keyboardSettingsOpen) dp(312) else 0
-        return rowsHeight - overlap + keyboardTopPadding() + keyboardBottomPadding() + settingsHeight
+        return rowsHeight - overlap + keyboardTopPadding() + keyboardBottomPadding() + settingsHeight + suggestionStripHeight()
     }
     private fun keyboardTopPadding() = dp(4)
     private fun keyboardBottomPadding() = dp(2)
