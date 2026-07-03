@@ -56,8 +56,8 @@ object Neu {
     val Dark = NeuTokens(
         mode = NeuMode.DARK,
         base = 0xFF181B21.toInt(),
-        baseHi = 0xFF20242C.toInt(),
-        baseLo = 0xFF0E1014.toInt(),
+        baseHi = 0xFF2A2F3A.toInt(),
+        baseLo = 0xFF05070A.toInt(),
         ink = 0xFFE8EBEF.toInt(),
         inkDim = 0xFF899099.toInt(),
         inkFaint = 0xFF565D66.toInt()
@@ -114,14 +114,14 @@ object Neu {
                 canvas.drawRoundRect(rect, radiusPx, radiusPx, paint)
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = spec.blur * 0.55f
-                paint.color = alpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.72f else 0.46f)
+                paint.color = alpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.72f else 0.62f)
                 canvas.drawRoundRect(
                     RectF(rect.left - spec.lightDx, rect.top - spec.lightDy, rect.right - spec.lightDx, rect.bottom - spec.lightDy),
                     radiusPx,
                     radiusPx,
                     paint
                 )
-                paint.color = alpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.82f else 0.72f)
+                paint.color = alpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.82f else 0.92f)
                 canvas.drawRoundRect(
                     RectF(rect.left - spec.darkDx, rect.top - spec.darkDy, rect.right - spec.darkDx, rect.bottom - spec.darkDy),
                     radiusPx,
@@ -132,14 +132,14 @@ object Neu {
             } else {
                 paint.style = Paint.Style.FILL
                 paint.maskFilter = BlurMaskFilter(spec.blur, BlurMaskFilter.Blur.NORMAL)
-                paint.color = alpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.88f else 0.84f)
+                paint.color = alpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.88f else 0.95f)
                 canvas.drawRoundRect(
                     RectF(rect.left + spec.darkDx, rect.top + spec.darkDy, rect.right + spec.darkDx, rect.bottom + spec.darkDy),
                     radiusPx,
                     radiusPx,
                     paint
                 )
-                paint.color = alpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.9f else 0.58f)
+                paint.color = alpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.9f else 0.72f)
                 canvas.drawRoundRect(
                     RectF(rect.left + spec.lightDx, rect.top + spec.lightDy, rect.right + spec.lightDx, rect.bottom + spec.lightDy),
                     radiusPx,
@@ -175,10 +175,10 @@ object Neu {
     private fun shadowSpec(mode: NeuMode, level: NeuLevel): ShadowSpec {
         return when (mode) {
             NeuMode.DARK -> when (level) {
-                NeuLevel.RAISED -> ShadowSpec(-5f, -5f, 6f, 6f, 11f)
-                NeuLevel.RAISED_SM -> ShadowSpec(-3f, -3f, 4f, 4f, 7f)
-                NeuLevel.PRESSED -> ShadowSpec(-4f, -4f, 5f, 5f, 9f)
-                NeuLevel.PRESSED_SM -> ShadowSpec(-2f, -2f, 3f, 3f, 5f)
+                NeuLevel.RAISED -> ShadowSpec(-5f, -5f, 6f, 6f, 13f)
+                NeuLevel.RAISED_SM -> ShadowSpec(-3f, -3f, 4f, 4f, 8f)
+                NeuLevel.PRESSED -> ShadowSpec(-4f, -4f, 5f, 5f, 10f)
+                NeuLevel.PRESSED_SM -> ShadowSpec(-2f, -2f, 3f, 3f, 6f)
             }
             NeuMode.LIGHT -> when (level) {
                 NeuLevel.RAISED -> ShadowSpec(-4f, -4f, 5f, 5f, 12f)
@@ -195,18 +195,18 @@ fun Modifier.neu(tokens: NeuTokens, radius: Dp, level: NeuLevel): Modifier = thi
     val light = tokens.mode == NeuMode.LIGHT
     // offset+blur per level (dp values from the spec), scaled to px
     val (offNeg, offPos, blurDp) = when (level) {
-        NeuLevel.RAISED     -> Triple(if (light) 4f else 5f, if (light) 5f else 6f, if (light) 12f else 11f)
-        NeuLevel.RAISED_SM  -> Triple(if (light) 2f else 3f, if (light) 3f else 4f, if (light) 6f else 7f)
-        NeuLevel.PRESSED    -> Triple(if (light) 3f else 4f, if (light) 4f else 5f, if (light) 8f else 9f)
-        NeuLevel.PRESSED_SM -> Triple(2f, if (light) 2f else 3f, if (light) 4f else 5f)
+        NeuLevel.RAISED     -> Triple(if (light) 4f else 5f, if (light) 5f else 6f, if (light) 12f else 13f)
+        NeuLevel.RAISED_SM  -> Triple(if (light) 2f else 3f, if (light) 3f else 4f, if (light) 6f else 8f)
+        NeuLevel.PRESSED    -> Triple(if (light) 3f else 4f, if (light) 4f else 5f, if (light) 8f else 10f)
+        NeuLevel.PRESSED_SM -> Triple(2f, if (light) 2f else 3f, if (light) 4f else 6f)
     }
     val dLight = offNeg.dp.toPx()
     val dDark  = offPos.dp.toPx()
     val blur   = blurDp.dp.toPx()
     val hi = tokens.baseHi
     val lo = tokens.baseLo
-    val hiA = if (light) 0.9f else 0.55f
-    val loA = if (light) 0.85f else 0.78f
+    val hiA = if (light) 0.9f else 0.72f
+    val loA = if (light) 0.85f else 0.95f
     val raised = level == NeuLevel.RAISED || level == NeuLevel.RAISED_SM
 
     if (raised) {
@@ -236,10 +236,10 @@ fun Modifier.neu(tokens: NeuTokens, radius: Dp, level: NeuLevel): Modifier = thi
                     maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
                 }
                 // dark inner shadow: pushed in from top-left → strong on top/left inner edges
-                p.color = androidx.compose.ui.graphics.Color(lo).copy(alpha = if (light) 0.9f else 0.85f).toArgb()
+                p.color = androidx.compose.ui.graphics.Color(lo).copy(alpha = if (light) 0.9f else 0.92f).toArgb()
                 c.nativeCanvas.drawRoundRect(dDark, dDark, size.width + dDark, size.height + dDark, r, r, p)
                 // light inner shadow: pushed in from bottom-right → highlight on bottom/right inner edges
-                p.color = androidx.compose.ui.graphics.Color(hi).copy(alpha = if (light) 0.85f else 0.5f).toArgb()
+                p.color = androidx.compose.ui.graphics.Color(hi).copy(alpha = if (light) 0.85f else 0.62f).toArgb()
                 c.nativeCanvas.drawRoundRect(-dLight, -dLight, size.width - dLight, size.height - dLight, r, r, p)
             }
         }

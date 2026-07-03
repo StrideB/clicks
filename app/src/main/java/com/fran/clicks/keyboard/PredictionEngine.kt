@@ -22,19 +22,31 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
         'n' to "bhjm",'m' to "njk"
     )
 
-    /** Predictions for the suggestion strip / live routing. */
+    /**
+     * Predictions for the suggestion strip / live routing. [ngramBoost] holds personalized
+     * next-word predictions for the *preceding* word (from the n-gram store). With nothing typed
+     * yet they ARE the prediction; once the user starts a word, only the boost entries that extend
+     * what's typed are valid completions — the rest would be unrelated words, so they're filtered.
+     */
     fun getSuggestions(typed: String, maxCount: Int = 3, ngramBoost: List<String> = emptyList()): List<String> {
         if (typed.length < 2) return ngramBoost.take(maxCount)
         val maxDist = if (typed.length <= 4) 1.6 else 2.4
         val ranked = rank(typed, maxDist).map { it.first }
-        return (ngramBoost + ranked).distinct().take(maxCount)
+        val boost = ngramBoost.filter { it.length > typed.length && it.startsWith(typed, ignoreCase = true) }
+        return (boost + ranked).distinct().take(maxCount)
     }
 
     /**
      * Returns a high-confidence correction for [typed], or null when we shouldn't touch it.
      * Never corrects a word that's already in the dictionary.
+     *
+     * [contextNextWords] are the user's personalized next-word predictions for the *preceding* word
+     * (from the n-gram store). When supplied, a near-distance candidate that the user actually types
+     * in this context wins the tiebreak — fixing homophone-style slips (their/there, form/from)
+     * that a context-free string metric can't, since it picks the word that fits the sentence.
+     * Passing an empty list reproduces the original context-free behavior exactly.
      */
-    fun bestCorrection(typed: String): String? {
+    fun bestCorrection(typed: String, contextNextWords: List<String> = emptyList()): String? {
         if (typed.length < 3) return null
         val t = typed.lowercase()
         if (!t.all { it in 'a'..'z' }) return null
@@ -43,6 +55,13 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
         val ranked = rank(t, maxAccept)
         val best = ranked.firstOrNull() ?: return null
         if (best.second > maxAccept) return null
+        // Context-aware tiebreak: among candidates within a small distance window of the best, if
+        // one is something the user types after the preceding word, prefer it over the raw winner.
+        if (contextNextWords.isNotEmpty()) {
+            val ctx = contextNextWords.mapTo(HashSet()) { it.lowercase() }
+            val contextPick = ranked.firstOrNull { (w, d) -> w != t && d <= best.second + 0.5 && w in ctx }
+            if (contextPick != null) return contextPick.first
+        }
         // Guard against low-confidence swaps: if the two best candidates are basically tied in
         // distance, only accept when the winner is also clearly the more common word.
         val runnerUp = ranked.getOrNull(1)

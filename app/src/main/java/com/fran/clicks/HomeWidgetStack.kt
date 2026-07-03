@@ -24,9 +24,12 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,7 +39,9 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -51,6 +56,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private var WidgetNeuTokens = Neu.Dark
+private var WidgetAmbientLight = Color.Transparent
+private var WidgetAmbientStrength = 0f
 private val Ink: Color get() = WidgetNeuTokens.inkCompose
 private val InkDim: Color get() = WidgetNeuTokens.inkDimCompose
 private val InkFaint: Color get() = WidgetNeuTokens.inkFaintCompose
@@ -185,10 +192,24 @@ fun HomeWidgetStack(
     onNewsClick: (ContextWidgetItem) -> Unit,
     onNewsLongClick: (ContextWidgetItem) -> Unit,
     onMapsClick: (ContextWidgetItem) -> Unit,
-    onMapsLongClick: (ContextWidgetItem) -> Unit
+    onMapsLongClick: (ContextWidgetItem) -> Unit,
+    ambientLightColor: Int = 0x00000000,
+    ambientLightStrength: Float = 0f
 ) {
     if (!visible) return
     WidgetNeuTokens = tokens
+    val reflectedLight by animateColorAsState(
+        targetValue = Color(ambientLightColor),
+        animationSpec = tween(durationMillis = 950),
+        label = "widgetAmbientLight"
+    )
+    val reflectedStrength by animateFloatAsState(
+        targetValue = ambientLightStrength.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 950),
+        label = "widgetAmbientStrength"
+    )
+    WidgetAmbientLight = reflectedLight
+    WidgetAmbientStrength = reflectedStrength
 
     val now = System.currentTimeMillis()
     val pages = buildList {
@@ -976,12 +997,134 @@ private fun Modifier.drawNewsSurface(tokens: NeuTokens): Modifier = raisedGlassS
 
 private fun Modifier.drawMapsSurface(tokens: NeuTokens): Modifier = raisedGlassSurface(tokens, 22)
 
-private fun Modifier.raisedGlassSurface(tokens: NeuTokens, radiusDp: Int): Modifier = this.neu(tokens, radiusDp.dp, NeuLevel.RAISED)
+private fun Modifier.raisedGlassSurface(tokens: NeuTokens, radiusDp: Int): Modifier =
+    this
+        .neu(tokens, radiusDp.dp, NeuLevel.RAISED)
+        .widgetRaisedEdges(tokens, radiusDp)
+        .widgetAmbientReflection(tokens, radiusDp)
 
 private fun Modifier.recessedTray(tokens: NeuTokens, radiusDp: Int, deep: Boolean = false): Modifier =
-    this.neu(tokens, radiusDp.dp, if (deep) NeuLevel.PRESSED else NeuLevel.PRESSED_SM)
+    this
+        .neu(tokens, radiusDp.dp, if (deep) NeuLevel.PRESSED else NeuLevel.PRESSED_SM)
+        .widgetInsetEdges(tokens, radiusDp, deep)
 
 private fun Modifier.domedSurface(tokens: NeuTokens, radiusDp: Int): Modifier = this.neu(tokens, radiusDp.dp, NeuLevel.RAISED_SM)
+
+private fun Modifier.widgetAmbientReflection(tokens: NeuTokens, radiusDp: Int): Modifier = this.drawWithContent {
+    drawContent()
+    if (WidgetAmbientStrength <= 0f) return@drawWithContent
+    val radius = radiusDp.dp.toPx()
+    val dark = tokens.mode == NeuMode.DARK
+    val glowAlpha = WidgetAmbientStrength * if (dark) 0.18f else 0.13f
+    val edgeAlpha = WidgetAmbientStrength * if (dark) 0.34f else 0.22f
+    val source = Offset(size.width * 0.82f, size.height * 0.02f)
+    drawRoundRect(
+        brush = Brush.radialGradient(
+            colors = listOf(
+                WidgetAmbientLight.copy(alpha = glowAlpha),
+                WidgetAmbientLight.copy(alpha = glowAlpha * 0.34f),
+                WidgetAmbientLight.copy(alpha = 0f)
+            ),
+            center = source,
+            radius = size.maxDimension * 0.78f
+        ),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    val hairline = 1.dp.toPx()
+    drawLine(
+        color = WidgetAmbientLight.copy(alpha = edgeAlpha),
+        start = Offset(size.width * 0.52f, hairline * 1.35f),
+        end = Offset(size.width - radius * 0.62f, hairline * 1.35f),
+        strokeWidth = hairline
+    )
+    drawLine(
+        color = WidgetAmbientLight.copy(alpha = edgeAlpha * 0.58f),
+        start = Offset(size.width - hairline * 1.4f, radius * 0.62f),
+        end = Offset(size.width - hairline * 1.4f, size.height * 0.72f),
+        strokeWidth = hairline
+    )
+}
+
+private fun Modifier.widgetRaisedEdges(tokens: NeuTokens, radiusDp: Int): Modifier = this.drawWithContent {
+    drawContent()
+    val radius = radiusDp.dp.toPx()
+    val hairline = 1.dp.toPx()
+    val dark = tokens.mode == NeuMode.DARK
+    val hiAlpha = if (dark) 0.24f else 0.42f
+    val loAlpha = if (dark) 0.66f else 0.30f
+    val midAlpha = if (dark) 0.10f else 0.18f
+    drawRoundRect(
+        color = tokens.hiCompose.copy(alpha = midAlpha),
+        topLeft = Offset(hairline * 0.5f, hairline * 0.5f),
+        size = Size(size.width - hairline, size.height - hairline),
+        cornerRadius = CornerRadius(radius, radius),
+        style = Stroke(width = hairline)
+    )
+    drawLine(
+        color = tokens.hiCompose.copy(alpha = hiAlpha),
+        start = Offset(radius * 0.52f, hairline * 0.7f),
+        end = Offset(size.width - radius * 0.52f, hairline * 0.7f),
+        strokeWidth = hairline
+    )
+    drawLine(
+        color = tokens.hiCompose.copy(alpha = hiAlpha * 0.72f),
+        start = Offset(hairline * 0.7f, radius * 0.56f),
+        end = Offset(hairline * 0.7f, size.height - radius * 0.56f),
+        strokeWidth = hairline
+    )
+    drawLine(
+        color = tokens.loCompose.copy(alpha = loAlpha),
+        start = Offset(radius * 0.56f, size.height - hairline * 0.7f),
+        end = Offset(size.width - radius * 0.56f, size.height - hairline * 0.7f),
+        strokeWidth = hairline
+    )
+    drawLine(
+        color = tokens.loCompose.copy(alpha = loAlpha * 0.82f),
+        start = Offset(size.width - hairline * 0.7f, radius * 0.56f),
+        end = Offset(size.width - hairline * 0.7f, size.height - radius * 0.56f),
+        strokeWidth = hairline
+    )
+}
+
+private fun Modifier.widgetInsetEdges(tokens: NeuTokens, radiusDp: Int, deep: Boolean): Modifier = this.drawWithContent {
+    drawContent()
+    val radius = radiusDp.dp.toPx()
+    val hairline = 1.dp.toPx()
+    val dark = tokens.mode == NeuMode.DARK
+    val darkAlpha = if (dark) if (deep) 0.78f else 0.58f else if (deep) 0.34f else 0.24f
+    val lightAlpha = if (dark) if (deep) 0.20f else 0.16f else if (deep) 0.52f else 0.42f
+    drawRoundRect(
+        color = tokens.loCompose.copy(alpha = darkAlpha * 0.28f),
+        topLeft = Offset(hairline * 0.5f, hairline * 0.5f),
+        size = Size(size.width - hairline, size.height - hairline),
+        cornerRadius = CornerRadius(radius, radius),
+        style = Stroke(width = hairline)
+    )
+    drawLine(
+        color = tokens.loCompose.copy(alpha = darkAlpha),
+        start = Offset(radius * 0.5f, hairline * 0.75f),
+        end = Offset(size.width - radius * 0.5f, hairline * 0.75f),
+        strokeWidth = hairline
+    )
+    drawLine(
+        color = tokens.loCompose.copy(alpha = darkAlpha * 0.75f),
+        start = Offset(hairline * 0.75f, radius * 0.55f),
+        end = Offset(hairline * 0.75f, size.height - radius * 0.55f),
+        strokeWidth = hairline
+    )
+    drawLine(
+        color = tokens.hiCompose.copy(alpha = lightAlpha),
+        start = Offset(radius * 0.55f, size.height - hairline * 0.75f),
+        end = Offset(size.width - radius * 0.55f, size.height - hairline * 0.75f),
+        strokeWidth = hairline
+    )
+    drawLine(
+        color = tokens.hiCompose.copy(alpha = lightAlpha * 0.78f),
+        start = Offset(size.width - hairline * 0.75f, radius * 0.55f),
+        end = Offset(size.width - hairline * 0.75f, size.height - radius * 0.55f),
+        strokeWidth = hairline
+    )
+}
 
 private fun calendarEndTime(endMs: Long): String {
     return Instant.ofEpochMilli(endMs)

@@ -25,6 +25,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderEffect
+import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.app.AlertDialog
@@ -130,6 +131,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var query = ""
     private var apps: List<AppEntry> = emptyList()
     private var keyboardSize = 0
+    private var appIconSize = 0
     private var keyboardTheme = KEYBOARD_THEME_DEFAULT
     private var keyboardPlacement = KEYBOARD_PLACEMENT_DOCKED
     private var themeMode = THEME_MODE_SYSTEM
@@ -157,6 +159,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var librarySwipeStartY = 0f
     private var librarySwipeTriggered = false
     private var librarySwipeBlockedByWidget = false
+    private var libraryDragActive = false
+    private var libraryDragStartedOpen = false
+    private var libraryDragHapticStage = 0
     private var stripSwipeStartX = 0f
     private var stripSwipeStartY = 0f
     private var stripSwipeTriggered = false
@@ -166,6 +171,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var paneSwipeFromDock = false
     private var iconPacksCache: List<IconPack>? = null
     private val iconPackMatchCache = mutableMapOf<String, IconPackIcon?>()
+    private val iconPackDrawableCache = mutableMapOf<String, List<IconPackIcon>>()
+    private var libraryCategoriesCacheSignature: String? = null
+    private var libraryCategoriesCache: List<LibraryCategory> = emptyList()
     private var composeText = ""
     private var aiDraftText = ""
     private var aiDraftActive = false
@@ -175,6 +183,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastSpaceMs = 0L
     private var lastShiftTapMs = 0L
     private var suggestions: List<String> = emptyList()
+    private val deleteRepeatHandler = Handler(Looper.getMainLooper())
+    private var deleteRepeatRunnable: Runnable? = null
+    private var deleteRepeatActive = false
+    private var deleteRepeatFired = false
     // Autocorrect undo — stores what was replaced so backspace immediately after reverts it
     private data class AutocorrectUndo(val original: String, val corrected: String)
     private var pendingAutocorrectUndo: AutocorrectUndo? = null
@@ -188,6 +200,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val handler = Handler(Looper.getMainLooper())
     private var suggestDebounce: Runnable? = null
     private var libraryRefreshDebounce: Runnable? = null
+    private var libraryPopulateRunnable: Runnable? = null
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -197,6 +210,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetPreviewTheme = KEYBOARD_THEME_DEFAULT
     private var widgetKeyboardHost: FrameLayout? = null
     private var widgetKeyboardModule: FrameLayout? = null
+    private var pendingWidgetKeyboardPopIn = false
     private var widgetSocketView: KeyboardSocketView? = null
     private var widgetCoachView: TextView? = null
     private var widgetDotsView: LinearLayout? = null
@@ -235,6 +249,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var spotifyCompactOverlay: View? = null
     private var spotifyFullLibraryDismiss: (() -> Unit)? = null
     private val fallbackIconCache = android.util.LruCache<String, Drawable>(64)
+    private val appIconStateCache = android.util.LruCache<String, Drawable.ConstantState>(192)
     private var lastAppsLoadMs = 0L
     private var lastHubLoadMs = 0L
     private var lastCalendarLoadMs = 0L
@@ -255,6 +270,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var liveRouter: LivePredictionRouter
     private var wordlistFrequencies: Map<String, Float> = emptyMap()
     private lateinit var weatherIconView: AnimatedWeatherIconView
+    private var weatherAmbientView: WeatherAmbientView? = null
     private lateinit var weatherTempView: TextView
     private lateinit var weatherMetaView: TextView
     private lateinit var weatherFeelsView: TextView
@@ -268,6 +284,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var nowPlayingCardView: ComposeView
     private lateinit var keyboardDockView: FrameLayout
     private lateinit var searchHintView: TextView
+    private var widgetSearchRendered = false
+    private var widgetSearchContentArea: FrameLayout? = null
     private var zeissButtonView: ZeissCameraButtonView? = null
     private lateinit var hintBar: LinearLayout
     private var musicProgressBar: View? = null
@@ -282,6 +300,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == HUB_MESSAGES_PREF) {
             runOnUiThread { refreshHubMessagesFromPrefs() }
+        } else if (key == ACTIVE_ICON_PACK_PREF || key?.startsWith(ICON_OVERRIDE_PREFIX) == true) {
+            runOnUiThread {
+                invalidateLibraryCaches()
+                if (libraryOpen) scheduleLibraryRefresh()
+            }
         }
     }
 
@@ -325,6 +348,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         appWidgetHost.startListening()
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
+        appIconSize = prefs().getInt(APP_ICON_SIZE_PREF, 0)
         keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, KEYBOARD_THEME_DEFAULT) ?: KEYBOARD_THEME_DEFAULT
         keyboardPlacement = prefs().getString(KEYBOARD_PLACEMENT_PREF, KEYBOARD_PLACEMENT_DOCKED) ?: KEYBOARD_PLACEMENT_DOCKED
         themeMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
@@ -431,7 +455,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (previousTheme != activeNeuTokens.mode && ::rootView.isInitialized) render()
         ensureBillingConnected()
         val now = System.currentTimeMillis()
-        if (now - lastAppsLoadMs > 10_000) { apps = loadLaunchableApps(); lastAppsLoadMs = now }
+        if (now - lastAppsLoadMs > 10_000) {
+            val updatedApps = loadLaunchableApps()
+            if (updatedApps.map { it.componentName } != apps.map { it.componentName }) invalidateLibraryCaches()
+            apps = updatedApps
+            lastAppsLoadMs = now
+        }
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
@@ -712,7 +741,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
         if (handlePaneSwipe(event)) return true
-        handleLibrarySwipe(event)
+        val wasLibraryDragging = libraryDragActive
+        if (handleLibrarySwipe(event)) {
+            if (!wasLibraryDragging && libraryDragActive) {
+                val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                super.dispatchTouchEvent(cancel)
+                cancel.recycle()
+            }
+            return true
+        }
         return super.dispatchTouchEvent(event)
     }
 
@@ -755,13 +792,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun render() {
+        stopDeleteRepeat(clearFired = true)
         keyViews.clear()
         keyBounds.clear()
         applyTheme()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(activeNeuTokens.base)
-            setPadding(0, systemStatusBarHeight(), 0, 0)
+            setPadding(0, systemStatusBarHeight(), 0, keyboardBottomLift())
         }
         rootView = root
         contentFrame = FrameLayout(this).apply {
@@ -769,18 +807,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+        val hideDockForPane = openPane?.kind == PaneKind.SETTINGS
+        val showRootDock = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
+        if (showRootDock && !hideDockForPane) {
             root.addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
             keyboardDockView = FrameLayout(this).apply {
                 addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
-            root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, keyboardHeight())
+            root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, activeRootDockHeight())
         } else {
             keyboardDockView = FrameLayout(this)
         }
         setContentView(root)
         updateClock()
         renderHub()
+        renderFavoritesDock()
         renderRibbon()
         openPane?.let { showPane(it, animate = false) }
         if (libraryOpen) showLibrary(animate = false)
@@ -803,7 +844,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             searchHintView = TextView(context).apply {
                 textSize = 15f
                 typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-                setTextColor(Ink)
+                setTextColor(activeNeuTokens.ink)
                 gravity = Gravity.CENTER_VERTICAL
                 includeFontPadding = false
                 maxLines = 1
@@ -813,11 +854,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setOnTouchListener { _, event -> handleTypingStripGesture(event) }
             }
             addView(searchHintView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
-            if (isVivoDevice()) {
-                addView(zeissCameraButton(), LinearLayout.LayoutParams(dp(56), dp(22)).apply {
-                    marginEnd = dp(10)
-                })
-            }
         }
     }
 
@@ -1131,43 +1167,69 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun home(): View {
         homeTileViews.clear()
+        widgetSearchContentArea = null
+        val widgetSearchActive = isWidgetUniversalSearchActive()
+        widgetSearchRendered = widgetSearchActive
             homeEditMode = false
             homeEditChipView = null
-            return LinearLayout(this).apply {
+            val content = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
                 clipChildren = false
                 clipToPadding = false
             setPadding(dp(14), dp(6), dp(14), 0)
-            addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.08f))
-            nowPlayingCardView = ComposeView(context).apply {
-                setBackgroundColor(Color.TRANSPARENT)
-                setNowPlayingCardContent()
-                elevation = dp(8).toFloat()
+            if (widgetSearchActive) {
+                val searchArea = FrameLayout(context).apply {
+                    clipChildren = true
+                    clipToPadding = true
+                    setPadding(0, dp(4), 0, dp(8))
+                }
+                widgetSearchContentArea = searchArea
+                refreshWidgetSearchContent()
+                addView(searchArea, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+                favoritesDockView = LinearLayout(context)
+            } else {
+                addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.08f))
+                nowPlayingCardView = ComposeView(context).apply {
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setNowPlayingCardContent()
+                    elevation = dp(8).toFloat()
+                }
+                addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()).apply {
+                    topMargin = dp(2)
+                    bottomMargin = dp(2)
+                })
+                addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.18f))
+                favoritesDockView = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    clipChildren = false
+                    clipToPadding = false
+                    setPadding(dp(14), dp(9), dp(14), dp(9))
+                    background = recessedDockBackground()
+                }
+                addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
+                    topMargin = dp(6)
+                    bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else 0
+                })
             }
-            addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()).apply {
-                topMargin = dp(2)
-                bottomMargin = dp(2)
-            })
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.18f))
-            favoritesDockView = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-                clipChildren = false
-                clipToPadding = false
-                setPadding(dp(14), dp(9), dp(14), dp(9))
-                background = recessedDockBackground()
-            }
-            addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
-                topMargin = dp(6)
-                bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else 0
-            })
-            if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+            if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && !widgetPaneUsesRootDock()) {
                 addView(homeKeyboardWidget(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, widgetKeyboardHeight()).apply {
+                    leftMargin = -widgetKeyboardHorizontalBleed()
+                    rightMargin = -widgetKeyboardHorizontalBleed()
                     bottomMargin = dp(0)
                 })
             }
+        }
+        return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            weatherAmbientView = WeatherAmbientView(context).apply {
+                setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = animatedWeatherEnabled())
+            }
+            addView(weatherAmbientView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
     }
 
@@ -1247,7 +1309,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             orientation = LinearLayout.VERTICAL
             clipChildren = false
             clipToPadding = false
-            setPadding(dp(4), dp(4), dp(4), dp(0))
+            setPadding(dp(2), dp(4), dp(2), dp(0))
             addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
             addView(keyboard(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
@@ -1256,11 +1318,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             alpha = if (widgetSwapState == WidgetKeyboardSwapState.SEATED) 0f else 1f
             visibility = if (widgetSwapState == WidgetKeyboardSwapState.SEATED) View.GONE else View.VISIBLE
         }
-        widgetProngsView = prongs
-        module.addView(prongs, FrameLayout.LayoutParams(dp(132), dp(18), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-            bottomMargin = -dp(3)
-        })
-        module.setOnTouchListener { _, event -> handleWidgetKeyboardDetachedTouch(event) }
+            widgetProngsView = prongs
+            module.addView(prongs, FrameLayout.LayoutParams(dp(132), dp(18), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = -dp(3)
+            })
+            module.setOnTouchListener { _, event -> handleWidgetKeyboardDetachedTouch(event) }
+            if (pendingWidgetKeyboardPopIn) {
+                pendingWidgetKeyboardPopIn = false
+                module.alpha = 0f
+                module.translationY = dp(42).toFloat()
+                module.scaleX = 0.965f
+                module.scaleY = 0.94f
+                module.post {
+                    module.animate()
+                        .alpha(1f)
+                        .translationY(0f)
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(280L)
+                        .setInterpolator(DecelerateInterpolator(1.55f))
+                        .start()
+                }
+            }
     }
 
     private val widgetSwapThemes: List<String>
@@ -1842,7 +1921,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(6), dp(4), dp(2))
+            setPadding(dp(28), dp(3), dp(10), dp(1))
             isClickable = true
             setOnClickListener {
                 haptic(this)
@@ -1854,40 +1933,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER_VERTICAL
                 weatherTempView = TextView(context).apply {
                     text = prefs().getString(WEATHER_TEMP_PREF, "--")
-                    textSize = 27f
-                    typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
+                    textSize = 34f
+                    typeface = Typeface.create("sans-serif", Typeface.NORMAL)
                     setTextColor(activeNeuTokens.ink)
                     includeFontPadding = false
                 }
                 addView(weatherTempView)
                 weatherMetaView = TextView(context).apply {
                     text = prefs().getString(WEATHER_META_PREF, "Tap for local weather")
-                    textSize = 8f
+                    textSize = 9.4f
                     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                    letterSpacing = 0.15f
-                    setTextColor(activeNeuTokens.inkFaint)
+                    letterSpacing = 0.10f
+                    setTextColor(activeNeuTokens.inkDim)
                     includeFontPadding = false
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }
                 addView(weatherMetaView)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.18f))
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
                 weatherFeelsView = TextView(context).apply {
                     text = prefs().getString(WEATHER_FEELS_PREF, "Feels --")
-                    textSize = 10f
-                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                    setTextColor(activeNeuTokens.inkDim)
+                    textSize = 11.4f
+                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
                     includeFontPadding = false
                     gravity = Gravity.RIGHT
                 }
                 addView(weatherFeelsView)
                 weatherStatsView = TextView(context).apply {
                     text = prefs().getString(WEATHER_STATS_PREF, "Local")
-                    textSize = 9f
-                    letterSpacing = 0.08f
+                    textSize = 9.8f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    letterSpacing = 0.05f
                     setTextColor(activeNeuTokens.inkDim)
                     includeFontPadding = false
                     gravity = Gravity.RIGHT
@@ -1895,12 +1975,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 }
                 addView(weatherStatsView)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.72f).apply { marginEnd = dp(10) })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.50f).apply { marginEnd = dp(2) })
             weatherIconView = AnimatedWeatherIconView(context).apply {
                 setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
                 setAnimationEnabled(animatedWeatherEnabled())
             }
-            addView(weatherIconView, LinearLayout.LayoutParams(dp(38), dp(38)))
+            addView(weatherIconView, LinearLayout.LayoutParams(dp(44), dp(44)))
         }
     }
 
@@ -1970,7 +2050,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 onMapsLongClick = { item ->
                     haptic(this@setNowPlayingCardContent)
                     openContextItemApp(item)
-                }
+                },
+                ambientLightColor = weatherAmbientLightColor(),
+                ambientLightStrength = weatherAmbientLightStrength()
             )
         }
     }
@@ -1991,12 +2073,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun nowPlayingCardHeight(): Int {
         if (!homeWidgetStackVisible()) return 0
         val metrics = resources.displayMetrics
-        val dockedChrome = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) dp(34) + keyboardHeight() else 0
-        val widgetChrome = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) widgetKeyboardHeight() + dp(72) else dp(66)
-        val contentHeight = metrics.heightPixels - systemStatusBarHeight() - dockedChrome
-        val reservedHomeChrome = dp(84) + widgetChrome
-        val flexibleSpace = (contentHeight - reservedHomeChrome).coerceAtLeast(dp(176))
-        return flexibleSpace.coerceIn(dp(176), dp(360))
+        val contentHeight = metrics.heightPixels -
+            systemStatusBarHeight() -
+            dp(34) -
+            keyboardHeight()
+        val reservedHomeChrome = dp(20) + dp(70) + dp(80) + dp(28)
+        val flexibleSpace = (contentHeight - reservedHomeChrome).coerceAtLeast(dp(120))
+        return (flexibleSpace * 0.74f).toInt().coerceIn(dp(126), dp(214))
     }
 
     private fun homeWidgetStackVisible() = openPane == null && !libraryOpen
@@ -2005,18 +2088,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && widgetSwapState != WidgetKeyboardSwapState.SEATED
     }
 
-    private fun handleLibrarySwipe(event: MotionEvent) {
+    private fun handleLibrarySwipe(event: MotionEvent): Boolean {
         if (widgetKeyboardSwapActive()) {
             librarySwipeTriggered = false
             librarySwipeBlockedByWidget = false
-            return
+            return false
         }
-        if (!::contentFrame.isInitialized) return
-        if (widgetBoardView != null) return
+        if (!::contentFrame.isInitialized) return false
+        if (widgetBoardView != null) return false
         if (homeEditMode) {
             librarySwipeTriggered = false
             librarySwipeBlockedByWidget = false
-            return
+            return false
         }
         val loc = IntArray(2)
         contentFrame.getLocationOnScreen(loc)
@@ -2027,14 +2110,61 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 librarySwipeStartX = event.rawX
                 librarySwipeStartY = event.rawY
                 librarySwipeTriggered = false
+                libraryDragActive = false
+                libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
             }
+            MotionEvent.ACTION_MOVE -> {
+                if (!inContent) return false
+                val dx = event.rawX - librarySwipeStartX
+                val dy = event.rawY - librarySwipeStartY
+                if (librarySwipeBlockedByWidget) {
+                    val wantsLibraryDrag = abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f &&
+                        ((dx < 0 && !libraryOpen && openPane == null) || (dx > 0 && libraryOpen))
+                    if (wantsLibraryDrag) {
+                        librarySwipeBlockedByWidget = false
+                    } else {
+                        return false
+                    }
+                }
+                if (libraryDragActive) {
+                    updateLibraryDrag(dx)
+                    return true
+                }
+                // Start horizontal library motion as soon as the swipe is intentional, not on finger-up.
+                if (!librarySwipeTriggered && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f) {
+                    when {
+                        dx < 0 && !libraryOpen && openPane == null -> {
+                            librarySwipeTriggered = true
+                            beginLibraryDrag(startedOpen = false)
+                            updateLibraryDrag(dx)
+                            return true
+                        }
+                        dx > 0 && libraryOpen -> {
+                            librarySwipeTriggered = true
+                            beginLibraryDrag(startedOpen = true)
+                            updateLibraryDrag(dx)
+                            return true
+                        }
+                        dx < 0 && libraryOpen -> {
+                            librarySwipeTriggered = true
+                            closeLibrary(slideLeft = true)
+                            return true
+                        }
+                    }
+                }
+            }
             MotionEvent.ACTION_UP -> {
+                if (libraryDragActive) {
+                    val dx = event.rawX - librarySwipeStartX
+                    settleLibraryDrag(dx)
+                    return true
+                }
                 if (librarySwipeBlockedByWidget) {
                     librarySwipeBlockedByWidget = false
-                    return
+                    return false
                 }
-                if (!inContent || librarySwipeTriggered) return
+                if (!inContent || librarySwipeTriggered) return librarySwipeTriggered
                 val dx = event.rawX - librarySwipeStartX
                 val dy = event.rawY - librarySwipeStartY
                 // Deliberate horizontal threshold keeps vertical library scrolls and keyboard swipes separate.
@@ -2043,22 +2173,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         dx < 0 && !libraryOpen && openPane == null -> {
                             librarySwipeTriggered = true
                             openLibrary()
+                            return true
                         }
                         dx > 0 && libraryOpen -> {
                             librarySwipeTriggered = true
                             closeLibrary()
+                            return true
                         }
                         dx < 0 && libraryOpen -> {
                             librarySwipeTriggered = true
                             closeLibrary(slideLeft = true)
+                            return true
                         }
                         dx > 0 && openPane == null && activeMusicMode() != MusicMode.SIMPLE && spotifyCompactOverlay == null -> {
                             librarySwipeTriggered = true
                             showCompactSpotifyLibrary()
+                            return true
                         }
                         dx > 0 && openPane == null && activeMusicMode() == MusicMode.SIMPLE -> {
                             librarySwipeTriggered = true
                             performHomeGesture(gestureAction(GESTURE_RIGHT_PREF, GESTURE_NONE))
+                            return true
                         }
                     }
                 } else if (!libraryOpen && openPane == null && abs(dy) > dp(42) && abs(dy) > abs(dx) * 1.2f) {
@@ -2068,13 +2203,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     } else {
                         performHomeGesture(gestureAction(GESTURE_DOWN_PREF, GESTURE_NOTIFICATIONS))
                     }
+                    return true
                 }
             }
             MotionEvent.ACTION_CANCEL -> {
+                if (libraryDragActive) settleLibraryDrag(if (libraryDragStartedOpen) 0f else contentFrame.width.toFloat())
                 librarySwipeTriggered = false
                 librarySwipeBlockedByWidget = false
+                libraryDragActive = false
+                return true
             }
         }
+        return false
     }
 
     private fun handlePaneSwipe(event: MotionEvent): Boolean {
@@ -2158,6 +2298,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             MotionEvent.ACTION_UP -> {
                 if (!stripSwipeTriggered) {
                     haptic(searchHintView)
+                    if (openPane != null) {
+                        keyboardSettingsOpen = false
+                        refreshKeyboardDock()
+                        stripSwipeTriggered = false
+                        return true
+                    }
                     keyboardSettingsOpen = !keyboardSettingsOpen
                     refreshKeyboardDock()
                 }
@@ -2183,10 +2329,145 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshNowPlayingCard()
     }
 
+    private fun beginLibraryDrag(startedOpen: Boolean) {
+        if (openPane != null && !startedOpen) return
+        libraryDragActive = true
+        libraryDragStartedOpen = startedOpen
+        libraryDragHapticStage = 0
+        if (!startedOpen) {
+            query = ""
+            keyboardSettingsOpen = false
+            libraryView?.let { contentFrame.removeView(it) }
+            categoryFolderView = null
+            val overlay = appLibrary()
+            libraryView = overlay
+            overlay.translationX = (contentFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+            overlay.alpha = if (activeNeuTokens.mode == NeuMode.LIGHT) 0.92f else 0.88f
+            overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            contentFrame.addView(overlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            scheduleLibraryPopulate(24L)
+            libraryDragHaptic(1)
+        } else {
+            libraryView?.apply {
+                animate().cancel()
+                setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            }
+            libraryDragHaptic(1)
+        }
+    }
+
+    private fun updateLibraryDrag(dx: Float) {
+        val overlay = libraryView ?: return
+        val width = (contentFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+        val translation = if (libraryDragStartedOpen) {
+            dx.coerceIn(0f, width)
+        } else {
+            (width + dx).coerceIn(0f, width)
+        }
+        overlay.translationX = translation
+        val progress = if (libraryDragStartedOpen) 1f - (translation / width) else 1f - (translation / width)
+        if (!libraryDragStartedOpen) {
+            overlay.alpha = ((if (activeNeuTokens.mode == NeuMode.LIGHT) 0.90f else 0.86f) + progress * 0.08f).coerceAtMost(0.98f)
+        }
+        val stage = when {
+            progress > 0.78f -> 3
+            progress > 0.42f -> 2
+            progress > 0.12f -> 1
+            else -> 0
+        }
+        if (stage > libraryDragHapticStage) {
+            libraryDragHapticStage = stage
+            libraryDragHaptic(stage)
+        }
+    }
+
+    private fun settleLibraryDrag(dx: Float) {
+        val overlay = libraryView ?: run {
+            libraryDragActive = false
+            return
+        }
+        val width = (contentFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+        val translation = overlay.translationX.coerceIn(0f, width)
+        val openProgress = 1f - (translation / width)
+        val shouldOpen = if (libraryDragStartedOpen) {
+            openProgress > 0.72f || dx < -dp(56)
+        } else {
+            openProgress > 0.22f || dx < -dp(88)
+        }
+        libraryDragActive = false
+        librarySwipeTriggered = false
+        librarySwipeBlockedByWidget = false
+        overlay.animate().cancel()
+        overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        if (shouldOpen) {
+            libraryOpen = true
+            overlay.animate()
+                .translationX(0f)
+                .alpha(1f)
+                .setDuration(librarySettleDuration(translation))
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    overlay.setLayerType(View.LAYER_TYPE_NONE, null)
+                    refreshLibraryContent()
+                    renderRibbon()
+                    syncNowPlayingCardVisibility()
+                    refreshNowPlayingCard()
+                    libraryLockHaptic(overlay)
+                }
+                .start()
+        } else {
+            libraryOpen = false
+            libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
+            libraryPopulateRunnable = null
+            overlay.animate()
+                .translationX(width)
+                .alpha(0.92f)
+                .setDuration(librarySettleDuration(width - translation))
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    contentFrame.removeView(overlay)
+                    if (libraryView === overlay) libraryView = null
+                    libraryContentArea = null
+                    overlay.setLayerType(View.LAYER_TYPE_NONE, null)
+                    renderRibbon()
+                    syncNowPlayingCardVisibility()
+                    refreshNowPlayingCard()
+                }
+                .start()
+        }
+    }
+
+    private fun librarySettleDuration(distancePx: Float): Long {
+        val width = (contentFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+        return (90 + 130 * (distancePx / width).coerceIn(0f, 1f)).toLong()
+    }
+
+    private fun libraryDragHaptic(stage: Int) {
+        if (!hapticsEnabled) return
+        val view = libraryView ?: contentFrame
+        val constant = when (stage) {
+            1 -> HapticFeedbackConstants.CLOCK_TICK
+            2 -> HapticFeedbackConstants.KEYBOARD_TAP
+            else -> HapticFeedbackConstants.CONTEXT_CLICK
+        }
+        view.performHapticFeedback(constant)
+    }
+
+    private fun libraryLockHaptic(view: View) {
+        if (!hapticsEnabled) return
+        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+    }
+
     private fun closeLibrary(slideLeft: Boolean = false) {
         if (!libraryOpen) return
         libraryOpen = false
         query = ""
+        libraryDragActive = false
+        libraryDragHapticStage = 0
+        libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
+        libraryPopulateRunnable = null
+        libraryRefreshDebounce?.let { handler.removeCallbacks(it) }
+        libraryRefreshDebounce = null
         closeCategoryFolder()
         renderRibbon()
         syncNowPlayingCardVisibility()
@@ -2789,27 +3070,54 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         categoryFolderView = null
         val overlay = appLibrary()
         libraryView = overlay
+        if (animate) overlay.translationX = resources.displayMetrics.widthPixels.toFloat()
         // Overlay contentFrame only; the keyboard is a sibling below and stays docked.
         contentFrame.addView(overlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         if (animate) overlay.post {
-            overlay.translationX = overlay.width.toFloat()
-            overlay.animate().translationX(0f).setDuration(360).setInterpolator(DecelerateInterpolator()).start()
+            overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            overlay.animate()
+                .translationX(0f)
+                .setDuration(190)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    overlay.setLayerType(View.LAYER_TYPE_NONE, null)
+                }
+                .start()
         }
+        scheduleLibraryPopulate(if (animate) 48L else 0L)
     }
 
     private fun appLibrary(): View = FrameLayout(this).apply {
         setPadding(dp(14), dp(14), dp(14), dp(10))
-        background = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(0xFF22242B.toInt(), 0xFF131419.toInt(), Screen)
-        )
+        setBackgroundColor(activeNeuTokens.base)
         val contentArea = FrameLayout(context)
         libraryContentArea = contentArea
-        fillLibraryContent(contentArea)
+        showLibraryLoading(contentArea)
         addView(contentArea, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply {
             topMargin = dp(38)
         })
         addView(libraryHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
+    }
+
+    private fun showLibraryLoading(area: FrameLayout) {
+        area.removeAllViews()
+        area.addView(TextView(this).apply {
+            text = ""
+            setTextColor(activeNeuTokens.inkFaint)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+        }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+    }
+
+    private fun scheduleLibraryPopulate(delayMs: Long) {
+        libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
+        val r = Runnable {
+            libraryPopulateRunnable = null
+            if (!libraryOpen && !libraryDragActive) return@Runnable
+            libraryContentArea?.let { fillLibraryContent(it) }
+        }
+        libraryPopulateRunnable = r
+        handler.postDelayed(r, delayMs)
     }
 
     private fun fillLibraryContent(area: FrameLayout) {
@@ -2821,6 +3129,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun refreshLibraryContent() {
         val area = libraryContentArea ?: run { showLibrary(animate = false); return }
+        libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
+        libraryPopulateRunnable = null
         fillLibraryContent(area)
     }
 
@@ -2828,21 +3138,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(12), 0, dp(10), 0)
-        background = libraryHeaderGlassBg()
+        background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
         elevation = dp(10).toFloat()
         addView(TextView(context).apply {
             text = "App Library"; textSize = 17f
             typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
-            setTextColor(Ink); includeFontPadding = false
+            setTextColor(activeNeuTokens.ink); includeFontPadding = false
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         addView(TextView(context).apply {
             text = if (libraryGridMode) "Categories" else "Grid"
             gravity = Gravity.CENTER
             textSize = 11f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Ink)
+            setTextColor(activeNeuTokens.ink)
             includeFontPadding = false
-            background = roundedPanel(Panel2, dp(15), Line)
+            background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
             isClickable = true
             setOnClickListener {
                 haptic(this)
@@ -2853,14 +3163,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, LinearLayout.LayoutParams(dp(94), dp(30)).apply { marginEnd = dp(8) })
     }
 
+    private fun isWidgetUniversalSearchActive(): Boolean =
+        keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET &&
+            openPane == null &&
+            !libraryOpen &&
+            !keyboardSettingsOpen &&
+            query.isNotBlank()
+
+    private fun refreshWidgetSearchContent() {
+        val area = widgetSearchContentArea ?: return
+        area.removeAllViews()
+        val content = searchResultsList(widgetMode = true).apply {
+            alpha = 0f
+            translationY = dp(52).toFloat()
+            animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(400)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
+        area.addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+    }
+
     private fun searchResultsGrid(): View = ScrollView(this).apply {
         val results = universalSearchResults()
-        if (results.isEmpty()) {
+        val command = searchCommandPreview()
+        val aiInline = searchAiInlineState()
+        if (results.isEmpty() && command == null && aiInline == null) {
             addView(TextView(context).apply {
                 text = "No results for \"$query\""
                 textSize = 13f
                 gravity = Gravity.CENTER
-                setTextColor(InkDim)
+                setTextColor(activeNeuTokens.inkDim)
                 includeFontPadding = false
             }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(260)))
             return@apply
@@ -2868,6 +3203,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(12), 0, dp(10))
+            command?.let {
+                addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
+                    bottomMargin = dp(10)
+                })
+            }
+            aiInline?.let {
+                addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(10)
+                })
+            }
             results.chunked(2).forEachIndexed { rowIndex, rowItems ->
                 addView(LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -2881,8 +3226,48 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     repeat(2 - rowItems.size) {
                         addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
                     }
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(104)).apply {
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(120)).apply {
                     bottomMargin = dp(10)
+                })
+            }
+        })
+    }
+
+    private fun searchResultsList(widgetMode: Boolean = false): View = ScrollView(this).apply {
+        clipToPadding = false
+        val results = universalSearchResults()
+        val command = searchCommandPreview()
+        val aiInline = searchAiInlineState()
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, if (widgetMode) dp(10) else dp(12), 0, if (widgetMode) dp(18) else dp(10))
+            addView(mono(if (widgetMode) "UNIVERSAL SEARCH" else "RESULTS", 8.5f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.18f
+                setPadding(dp(2), 0, 0, dp(8))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
+            command?.let {
+                addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
+                    bottomMargin = dp(9)
+                })
+            }
+            aiInline?.let {
+                addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(9)
+                })
+            }
+            val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
+            if (visibleResults.isEmpty() && command == null && aiInline == null) {
+                addView(TextView(context).apply {
+                    text = "No results for \"$query\""
+                    textSize = 13f
+                    gravity = Gravity.CENTER
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
+            }
+            visibleResults.forEachIndexed { index, result ->
+                addView(searchResultRow(result, index == 0 && command == null && aiInline == null, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
+                    bottomMargin = dp(8)
                 })
             }
         })
@@ -2898,24 +3283,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             scaleY = 0.94f
             translationY = dp(8).toFloat()
             setPadding(dp(10), dp(9), dp(10), dp(8))
-            background = roundedPanel(if (isBest) 0xFF20242B.toInt() else 0xFF191C22.toInt(), dp(20), if (isBest) result.accent else Line)
+            background = searchCardBackground(result.kind, isBest, 20)
             postDelayed({
                 animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
             }, (index * 28L).coerceAtMost(240L))
-            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(if (result.kind == SearchKind.APP) 48 else 42), dp(if (result.kind == SearchKind.APP) 48 else 42)))
+            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(if (result.kind == SearchKind.APP) 46 else 38), dp(if (result.kind == SearchKind.APP) 46 else 38)))
             addView(TextView(context).apply {
                 text = highlightedLabel(result.title, query)
                 textSize = if (result.kind == SearchKind.APP) 12.5f else 13f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                 gravity = Gravity.CENTER
-                setTextColor(Ink)
+                setTextColor(activeNeuTokens.ink)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 includeFontPadding = false
                 setPadding(0, dp(8), 0, 0)
             }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             if (result.kind != SearchKind.APP) {
-                addView(mono(result.subtitle.uppercase(Locale.US), 8f, InkDim).apply {
+                addView(mono(result.subtitle.uppercase(Locale.US), 8f, activeNeuTokens.inkFaint).apply {
                     letterSpacing = 0.06f
                     gravity = Gravity.CENTER
                     maxLines = 1
@@ -2923,6 +3308,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     setPadding(0, dp(4), 0, 0)
                 }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             }
+            addView(searchKindTag(result.kind), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(19)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = dp(5)
+            })
             setOnClickListener { haptic(this); openSearchResult(result) }
         }
     }
@@ -2934,31 +3323,34 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             isClickable = true
             alpha = 0f
             translationY = dp(8).toFloat()
-            setPadding(dp(10), dp(8), dp(12), dp(8))
-            background = roundedPanel(if (isBest) 0xFF20242B.toInt() else Panel2, dp(18), if (isBest) result.accent else Line)
+            setPadding(dp(9), dp(8), dp(9), dp(8))
+            background = searchCardBackground(result.kind, isBest, 15)
             postDelayed({
                 animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
             }, (index * 28L).coerceAtMost(240L))
-            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginEnd = dp(12) })
+            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(11) })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(context).apply {
                     text = highlightedLabel(result.title, query)
-                    textSize = 14f
+                    textSize = 13.5f
                     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                    setTextColor(Ink)
+                    setTextColor(activeNeuTokens.ink)
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     includeFontPadding = false
                 }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                addView(mono(result.subtitle.uppercase(Locale.US), 8.5f, InkDim).apply {
-                    letterSpacing = 0.08f
+                addView(mono(result.subtitle.uppercase(Locale.US), 9f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.06f
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     setPadding(0, dp(5), 0, 0)
                 }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(searchKindTag(result.kind), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22)).apply {
+                marginStart = dp(8)
+            })
             setOnClickListener { haptic(this); openSearchResult(result) }
         }
     }
@@ -2966,29 +3358,203 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun searchResultIcon(result: SearchResult): View {
         val app = result.target?.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg } }
         return FrameLayout(this).apply {
-            background = roundedPanel(0xFF171A20.toInt(), dp(14), adjustAlpha(result.accent, 0.55f))
+            background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.PRESSED_SM)
+            setPadding(dp(5), dp(5), dp(5), dp(5))
             if (result.kind == SearchKind.APP && app != null) {
                 addView(ImageView(context).apply {
                     setImageDrawable(iconFor(app.toLibraryApp()))
                     scaleType = ImageView.ScaleType.FIT_CENTER
-                    setPadding(dp(5), dp(5), dp(5), dp(5))
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             } else {
                 addView(TextView(context).apply {
-                    text = when (result.kind) {
-                        SearchKind.CONTACT -> "P"
-                        SearchKind.EMAIL -> "@"
-                        SearchKind.MESSAGE -> "M"
-                        SearchKind.CALENDAR -> "C"
-                        SearchKind.AI -> "AI"
-                        SearchKind.APP -> "A"
-                        SearchKind.TRAVEL -> "✈"
-                    }
+                    text = searchKindGlyph(result.kind)
                     gravity = Gravity.CENTER
                     textSize = if (result.kind == SearchKind.AI) 11f else 14f
                     typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(result.accent)
+                    setTextColor(searchKindAccent(result.kind))
+                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.RAISED_SM)
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
+        }
+    }
+
+    private fun searchCardBackground(kind: SearchKind, isBest: Boolean, radiusDp: Int): Drawable {
+        val base = Neu.drawable(activeNeuTokens, dp(radiusDp).toFloat(), if (isBest) NeuLevel.RAISED else NeuLevel.RAISED_SM)
+        if (!isBest) return base
+        val ring = GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+            cornerRadius = dp(radiusDp).toFloat()
+            setStroke(dp(1), searchKindAccent(kind))
+        }
+        return LayerDrawable(arrayOf(base, ring))
+    }
+
+    private fun searchKindTag(kind: SearchKind): TextView = mono(kind.name, 7.5f, activeNeuTokens.inkFaint).apply {
+        gravity = Gravity.CENTER
+        letterSpacing = 0.1f
+        setPadding(dp(7), 0, dp(7), 0)
+        background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.PRESSED_SM)
+    }
+
+    private fun searchKindAccent(kind: SearchKind): Int = when (kind) {
+        SearchKind.APP -> Neu.BLUE
+        SearchKind.CONTACT -> Neu.ORANGE
+        SearchKind.EMAIL -> Neu.ACCENT
+        SearchKind.MESSAGE -> Neu.TEAL
+        SearchKind.CALENDAR -> Neu.AMBER
+        SearchKind.TRAVEL -> Neu.PURPLE
+        SearchKind.AI -> Neu.PURPLE
+    }
+
+    private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
+        SearchKind.CONTACT -> "P"
+        SearchKind.EMAIL -> "@"
+        SearchKind.MESSAGE -> "M"
+        SearchKind.CALENDAR -> "C"
+        SearchKind.AI -> "AI"
+        SearchKind.APP -> "A"
+        SearchKind.TRAVEL -> "✈"
+    }
+
+    private data class SearchCommandPreview(val title: String, val subtitle: String, val glyph: String)
+
+    private fun searchCommandPreview(): SearchCommandPreview? {
+        val clean = query.trim()
+        if (clean.isBlank()) return null
+        val verb = clean.substringBefore(' ').lowercase(Locale.US)
+        val body = clean.substringAfter(' ', "").trim()
+        if (body.isBlank() && verb !in listOf("ask", "ai", "gemini")) return null
+        return when (verb) {
+            "text", "sms", "message" -> SearchCommandPreview("Message ${body.substringBefore(' ')}", "SEND MESSAGE · MESSAGES", "➤")
+            "email", "mail" -> SearchCommandPreview("Email ${body.substringBefore(' ')}", "COMPOSE EMAIL", "➤")
+            "call" -> SearchCommandPreview("Call $body", "START CALL · PHONE", "✆")
+            "calendar", "schedule" -> SearchCommandPreview(body.ifBlank { "Create event" }, "CREATE EVENT · CALENDAR", "＋")
+            "open", "launch" -> SearchCommandPreview("Open $body", "OPEN APP", "➤")
+            "play" -> SearchCommandPreview("Play $body", "START MUSIC SEARCH", "▶")
+            "ask", "ai", "gemini" -> SearchCommandPreview(body.ifBlank { clean }, "ASK CLICKS AI", "AI")
+            else -> null
+        }
+    }
+
+    private fun searchCommandCard(command: SearchCommandPreview): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            setPadding(dp(10), dp(8), dp(12), dp(8))
+            background = searchCommandBackground()
+            addView(TextView(context).apply {
+                text = command.glyph
+                gravity = Gravity.CENTER
+                textSize = if (command.glyph == "AI") 12f else 17f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(Neu.GREEN)
+                background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.RAISED_SM)
+            }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(11) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = command.title
+                    textSize = 14f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                addView(mono(command.subtitle, 9f, Neu.GREEN).apply {
+                    letterSpacing = 0.08f
+                    setPadding(0, dp(5), 0, 0)
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(searchKindTag(SearchKind.AI).apply {
+                text = "DO THIS"
+                setTextColor(Neu.GREEN)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22)).apply { marginStart = dp(8) })
+            setOnClickListener {
+                haptic(this)
+                if (executeTypeToDoCommand(query)) {
+                    query = ""
+                    if (libraryOpen) refreshLibraryContent() else render()
+                }
+            }
+        }
+    }
+
+    private fun searchCommandBackground(): Drawable {
+        val base = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED)
+        val ring = GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+            cornerRadius = dp(15).toFloat()
+            setStroke(dp(1), Neu.GREEN)
+        }
+        return LayerDrawable(arrayOf(base, ring))
+    }
+
+    private fun searchAiInlineState(): AiAnswerState? {
+        val clean = query.trim()
+        if (clean.isBlank() || !looksLikeAiQuestion(clean)) return null
+        val target = aiTarget(clean)
+        return aiAnswersById[target.id] ?: AiAnswerState(clean, "Tap to ask Gemini from Clicks.", false)
+    }
+
+    private fun searchAiAnswerCard(state: AiAnswerState): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(dp(12), dp(11), dp(12), dp(12))
+            background = searchCardBackground(SearchKind.AI, true, 16)
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = "C"
+                    gravity = Gravity.CENTER
+                    textSize = 12f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Neu.PURPLE)
+                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.RAISED_SM)
+                }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(9) })
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply {
+                        text = "Clicks AI"
+                        textSize = 12f
+                        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                        setTextColor(activeNeuTokens.ink)
+                        includeFontPadding = false
+                    }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    addView(mono(if (state.loading) "GEMINI · THINKING" else "GEMINI", 8f, Neu.PURPLE).apply {
+                        letterSpacing = 0.12f
+                        setPadding(0, dp(3), 0, 0)
+                    }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+            addView(TextView(context).apply {
+                text = state.prompt
+                textSize = 11f
+                setTextColor(activeNeuTokens.inkDim)
+                includeFontPadding = false
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(TextView(context).apply {
+                text = state.answer
+                textSize = 12f
+                setTextColor(activeNeuTokens.ink)
+                includeFontPadding = false
+                setLineSpacing(dp(3).toFloat(), 1f)
+                setPadding(dp(10), dp(9), dp(10), dp(9))
+                background = Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(8)
+            })
+            setOnClickListener {
+                haptic(this)
+                askGemini(query)
             }
         }
     }
@@ -3014,6 +3580,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     .setInterpolator(DecelerateInterpolator())
                     .start()
             }, (index * 35L).coerceAtMost(280L))
+            val iconFrame = searchAppIconFrameSize()
             addView(FrameLayout(context).apply {
                 elevation = dp(if (isBest) 8 else 3).toFloat()
                 background = roundedPanel(Panel2, dp(15), if (isBest) Accent else Line)
@@ -3021,9 +3588,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     setImageDrawable(iconFor(app))
                     scaleType = ImageView.ScaleType.FIT_CENTER
                     adjustViewBounds = true
-                    setPadding(dp(5), dp(5), dp(5), dp(5))
+                    setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }, LinearLayout.LayoutParams(dp(52), dp(52)))
+            }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             addView(TextView(context).apply {
                 text = highlightedLabel(app.name, query)
                 textSize = 12.5f
@@ -3292,7 +3859,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 rowItems.forEach { app -> addView(appTile(app), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)) }
                 repeat(columns - rowItems.size) { addView(View(context), LinearLayout.LayoutParams(0, 1, 1f)) }
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(82)).apply {
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, appTileRowHeight()).apply {
                 bottomMargin = dp(if (libraryGridMode) 20 else 4)
             })
         }
@@ -3303,17 +3870,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; isClickable = true
             setPadding(dp(3), dp(4), dp(3), dp(2))
+            val iconFrame = appLibraryIconFrameSize()
             addView(FrameLayout(context).apply {
                 elevation = dp(3).toFloat(); background = roundedPanel(Panel2, dp(13), Line)
                 addView(ImageView(context).apply {
                     setImageDrawable(iconFor(app)); scaleType = ImageView.ScaleType.FIT_CENTER
-                    adjustViewBounds = true; setPadding(dp(4), dp(4), dp(4), dp(4))
+                    adjustViewBounds = true; setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }, LinearLayout.LayoutParams(dp(46), dp(46)))
+            }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             addView(TextView(context).apply {
                 text = app.name; textSize = 10.5f; gravity = Gravity.CENTER; maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(0xFFCDD0D6.toInt()); includeFontPadding = false; setPadding(0, dp(6), 0, 0)
+                setTextColor(activeNeuTokens.inkDim); includeFontPadding = false; setPadding(0, dp(6), 0, 0)
             }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             setOnTouchListener { v, e ->
                 when (e.actionMasked) {
@@ -5314,6 +5882,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         val swipeLayout = SwipeKeyboardLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             clipChildren = false
             clipToPadding = false
             background = keyboardDeckBackground()
@@ -5522,6 +6091,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         render()
     }
 
+    private fun beginDockedKeyboardPopToWidget(anchor: View) {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED || openPane != null || libraryOpen) return
+        haptic(anchor)
+        keyboardSettingsOpen = false
+        query = ""
+        val dock = if (::keyboardDockView.isInitialized && keyboardDockView.parent != null) keyboardDockView else null
+        if (dock == null) {
+            pendingWidgetKeyboardPopIn = true
+            setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
+            return
+        }
+        dock.animate()
+            .translationY(dp(54).toFloat())
+            .scaleX(0.965f)
+            .scaleY(0.92f)
+            .alpha(0.42f)
+            .setDuration(150L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction {
+                pendingWidgetKeyboardPopIn = true
+                keyboardPlacement = KEYBOARD_PLACEMENT_WIDGET
+                prefs().edit().putString(KEYBOARD_PLACEMENT_PREF, KEYBOARD_PLACEMENT_WIDGET).apply()
+                render()
+            }
+            .start()
+    }
+
     private fun settingToggle(label: String, enabled: Boolean, onClick: TextView.() -> Unit): View {
         return TextView(this).apply {
             text = "$label   ${if (enabled) "ON" else "OFF"}"; gravity = Gravity.CENTER_VERTICAL
@@ -5593,6 +6189,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun key(label: String): TextView {
         val isLetter = label.length == 1 && label[0].isLetter()
         val isWidgetDockKey = label == "clicks" && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET
+        val isDockedClicksKey = label == "clicks" && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
         return (if (isWidgetDockKey) DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else TextView(this)).apply {
             text = keyLabel(label)
             gravity = Gravity.CENTER
@@ -5616,15 +6213,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
 
             var touchDownX = 0f; var touchDownY = 0f
-            var deleteRepeating = false
-            var deleteRunnable: Runnable? = null
-            val deleteHandler = if (label == "back") android.os.Handler(android.os.Looper.getMainLooper()) else null
-
-            fun cancelRepeat() {
-                deleteRunnable?.let { deleteHandler?.removeCallbacks(it) }
-                deleteRunnable = null
-            }
-
             var spaceCursorLastX = 0f
             var spaceCursorMoved = false
             val cursorStepPx = dp(8).toFloat()
@@ -5632,6 +6220,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // View's built-in long-click detection never runs. Detect it ourselves.
             val longPressAction: (() -> Unit)? = when {
                 isWidgetDockKey -> { -> beginWidgetKeyboardDetach(this@apply) }
+                isDockedClicksKey -> { -> beginDockedKeyboardPopToWidget(this@apply) }
                 label == "enter" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
                 label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
                 isLetter -> { -> haptic(this@apply); handleLetterLongPress(label.lowercase(Locale.US)) }
@@ -5651,8 +6240,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         v.background = idleBg()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
                         cancelLongPress()
-                        cancelRepeat()
-                        deleteRepeating = false
+                        if (label == "back") stopDeleteRepeat(clearFired = true)
                         spaceCursorMoved = false
                     }
                     return@setOnTouchListener handleWidgetKeyboardDetachedTouch(event)
@@ -5680,16 +6268,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             longPressHandler?.postDelayed(r, delay)
                         }
                         if (label == "back") {
-                            deleteRepeating = false
-                            deleteRunnable = object : Runnable {
-                                override fun run() {
-                                    deleteRepeating = true
-                                    handleKey("back")
-                                    keyHaptic("back")
-                                    deleteHandler?.postDelayed(this, 45L)
-                                }
-                            }
-                            deleteHandler?.postDelayed(deleteRunnable!!, 380L)
+                            startDeleteRepeat()
                         }
                     }
                     MotionEvent.ACTION_MOVE -> {
@@ -5723,8 +6302,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         cancelLongPress()
                         if (longPressFired) { longPressFired = false; return@setOnTouchListener true }
                         if (label == "back") {
-                            cancelRepeat()
-                            if (deleteRepeating) { deleteRepeating = false; return@setOnTouchListener true }
+                            val repeated = deleteRepeatFired
+                            stopDeleteRepeat(clearFired = true)
+                            if (repeated) return@setOnTouchListener true
                         }
                         if (label == "space" && spaceCursorMoved) { spaceCursorMoved = false; return@setOnTouchListener true }
                         val flick = flickDetector.classify(touchDownX, touchDownY, event.x, event.y)
@@ -5745,13 +6325,46 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         if (keyboardTheme != KEYBOARD_THEME_DEFAULT && keyboardTiltLighting) v.animateSpringReturn(dp(2).toFloat())
                         if (keyboardTiltLighting) v.animate().rotationX(0f).scaleX(1f).scaleY(1f).setDuration(150L).start()
                         if (!keyboardTiltLighting) { v.translationY = 0f; v.rotationX = 0f; v.scaleX = 1f; v.scaleY = 1f }
-                        cancelRepeat(); deleteRepeating = false; spaceCursorMoved = false
+                        if (label == "back") stopDeleteRepeat(clearFired = true)
+                        spaceCursorMoved = false
                         cancelLongPress(); longPressFired = false
                     }
                 }
                 true  // consume all key touches so they don't bubble to pane swipe handler
             }
+            if (label == "back") {
+                addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(v: View) = Unit
+                    override fun onViewDetachedFromWindow(v: View) {
+                        stopDeleteRepeat(clearFired = true)
+                    }
+                })
+            }
         }.also { keyViews[label] = it }
+    }
+
+    private fun startDeleteRepeat() {
+        stopDeleteRepeat(clearFired = true)
+        deleteRepeatActive = true
+        val repeat = object : Runnable {
+            override fun run() {
+                if (!deleteRepeatActive) return
+                deleteRepeatFired = true
+                handleKey("back")
+                if (!deleteRepeatActive) return
+                keyHaptic("back")
+                deleteRepeatHandler.postDelayed(this, 45L)
+            }
+        }
+        deleteRepeatRunnable = repeat
+        deleteRepeatHandler.postDelayed(repeat, 380L)
+    }
+
+    private fun stopDeleteRepeat(clearFired: Boolean = false) {
+        deleteRepeatRunnable?.let { deleteRepeatHandler.removeCallbacks(it) }
+        deleteRepeatRunnable = null
+        deleteRepeatActive = false
+        if (clearFired) deleteRepeatFired = false
     }
 
     private fun keyLabel(label: String): String = when (label) {
@@ -5802,9 +6415,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return
         }
         liveRouter.onTextChanged(word)
+        val prev = previousWordInCompose()
         val r = Runnable {
             lastSuggestWord = word
-            val localSuggs = predictionEngine.getSuggestions(word, 3)
+            // Warm the n-gram cache: `prev` boosts the current word's completions now; `word` is
+            // pre-fetched so its next-word predictions are ready the moment it's committed.
+            if (prev.isNotEmpty()) ngramRepo.prefetchNextWords(prev)
+            ngramRepo.prefetchNextWords(word)
+            val localSuggs = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
             if (localSuggs.isNotEmpty()) {
                 suggestions = localSuggs; updateSuggestionBar()
             }
@@ -5820,12 +6438,32 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return if (lastSpace < 0) text else text.substring(lastSpace + 1)
     }
 
+    // The word before the one currently being typed — the n-gram key for next-word predictions.
+    // Handles the trailing-space case (a word was just committed) by treating the last token as
+    // the previous word, so predictions key off the right context.
+    private fun previousWordInCompose(): String {
+        val raw = if (openPane?.kind == PaneKind.CHAT) composeText else query
+        val trimmed = raw.trimEnd()
+        val words = trimmed.split(' ').filter { it.isNotEmpty() }
+        return when {
+            raw.isNotEmpty() && raw != trimmed -> words.lastOrNull().orEmpty()
+            words.size >= 2 -> words[words.size - 2]
+            else -> ""
+        }
+    }
+
     // ── Autocorrect ──────────────────────────────────────────────────────────
 
     private fun tryAutocorrect() {
         val word = currentWordInCompose().trimEnd()
         if (word.length < 2) return
-        val top = predictionEngine.getSuggestions(word, 1).firstOrNull() ?: return
+        // Context-aware correction first: given the preceding word, prefer the candidate the user
+        // actually types next (fixes homophone-style slips). Falls back to the original top-
+        // suggestion behavior when it declines. Either way the edit-distance<=1 guard below still
+        // bounds how aggressive an applied correction can be, so this never over-corrects.
+        val context = ngramRepo.cachedNextWords(previousWordInCompose())
+        val top = predictionEngine.bestCorrection(word, context)
+            ?: predictionEngine.getSuggestions(word, 1).firstOrNull() ?: return
         if (top.equals(word, ignoreCase = true)) return
         // Only correct if edit distance is 1 (one transposition/substitution) — avoids aggressive changes
         if (editDistance(word, top) > 1) return
@@ -6958,7 +7596,12 @@ Reply format: ["word1","word2","word3"]"""
                         if (words.size >= 2) ngramRepo.recordWord(words.last(), words[words.size - 2])
                         tryAutocorrect()  // autocorrect current word before adding space
                         if (!query.endsWith(" ")) query += " "  // tryAutocorrect may have already appended the space
-                        suggestions = emptyList(); updateSuggestionBar()
+                        // Surface personalized next-word predictions for the word just committed
+                        // (warmed during typing, so the strip fills instead of going blank).
+                        val committed = query.trimEnd().substringAfterLast(' ')
+                        if (committed.isNotEmpty()) ngramRepo.prefetchNextWords(committed)
+                        suggestions = if (committed.isNotEmpty()) ngramRepo.cachedNextWords(committed).take(3) else emptyList()
+                        updateSuggestionBar()
                     }
                     lastSpaceMs = System.currentTimeMillis()
                 }
@@ -6980,6 +7623,11 @@ Reply format: ["word1","word2","word3"]"""
             "clicks" -> {
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
                     setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
+                    return
+                }
+                if (openPane != null) {
+                    keyboardSettingsOpen = false
+                    refreshKeyboardDock()
                     return
                 }
                 if (libraryOpen) {
@@ -7076,6 +7724,7 @@ Reply format: ["word1","word2","word3"]"""
             }
             "clicks" -> {
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
+                else if (openPane != null) { keyboardSettingsOpen = false; refreshKeyboardDock() }
                 else { keyboardSettingsOpen = !keyboardSettingsOpen; render() }
                 return
             }
@@ -7102,8 +7751,12 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun scheduleLibraryRefresh() {
+        if (!libraryOpen) return
         libraryRefreshDebounce?.let { handler.removeCallbacks(it) }
-        val r = Runnable { refreshLibraryContent() }
+        val r = Runnable {
+            libraryRefreshDebounce = null
+            if (libraryOpen) refreshLibraryContent()
+        }
         libraryRefreshDebounce = r
         // Instant refresh for ≤2 chars (first letters feel snappy), debounce longer queries
         handler.postDelayed(r, if (query.length <= 2) 0L else 120L)
@@ -7151,6 +7804,7 @@ Reply format: ["word1","word2","word3"]"""
             }
             "clicks" -> {
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
+                else if (openPane != null) { keyboardSettingsOpen = false; refreshKeyboardDock() }
                 else { keyboardSettingsOpen = !keyboardSettingsOpen; render() }
                 return
             }
@@ -7227,7 +7881,16 @@ Reply format: ["word1","word2","word3"]"""
         keyboardSettingsOpen = false; query = ""; composeText = ""
         shiftState = ShiftState.ONCE; suggestions = emptyList()
         updateKeyLabels(); updateSuggestionBar()
-        openPane = target; showPane(target, animate = true); renderRibbon(); refreshKeyboardDock()
+        openPane = target
+        if (target.kind == PaneKind.SETTINGS) {
+            render()
+            return
+        }
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && target.usesMediaDock()) {
+            render()
+            return
+        }
+        showPane(target, animate = true); renderRibbon(); refreshKeyboardDock()
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
     }
@@ -7367,11 +8030,20 @@ Reply format: ["word1","word2","word3"]"""
     private fun closePane() {
         val closing = paneView
         val closingPane = openPane
+        val restoreWidgetKeyboard = keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && closingPane?.usesMediaDock() == true
         openPane = null; composeText = ""; aiDraftText = ""; aiDraftActive = false
         shiftState = ShiftState.OFF; suggestions = emptyList()
         if (closingPane?.kind == PaneKind.PHOTOS) zeissButtonView?.animateShutterOpen()
         if (closingPane?.kind == PaneKind.MUSIC) hideMusicProgressFromHintBar()
         updateKeyLabels(); updateSuggestionBar(); renderRibbon(); refreshKeyboardDock(); syncNowPlayingCardVisibility(); refreshNowPlayingCard()
+        if (restoreWidgetKeyboard) {
+            render()
+            return
+        }
+        if (closingPane?.kind == PaneKind.SETTINGS) {
+            render()
+            return
+        }
         if (closing == null) return
         closing.animate().translationY(closing.height.toFloat()).setDuration(220).withEndAction {
             contentFrame.removeView(closing); if (paneView === closing) paneView = null
@@ -7599,6 +8271,7 @@ Reply format: ["word1","word2","word3"]"""
             haptic(this)
             showIconPackMenu(this)
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(iconSizeSetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
         parent.addView(settingToggle("DOCK LABELS", showDockLabels()) {
             val next = !showDockLabels()
             prefs().edit().putBoolean(DOCK_LABELS_PREF, next).apply()
@@ -7647,6 +8320,48 @@ Reply format: ["word1","word2","word3"]"""
             setPadding(0, dp(14), 0, 0)
             letterSpacing = 0.08f
         })
+    }
+
+    private fun iconSizeSetting(): View {
+        lateinit var valueView: TextView
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), 0)
+            addView(mono("ICON SIZE", 9.5f, InkDim).apply {
+                letterSpacing = 0.10f
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(dp(78), ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(SeekBar(context).apply {
+                max = 100
+                progress = appIconSize
+                thumbTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(KeyEdge)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        appIconSize = p
+                        valueView.text = p.toString()
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(s: SeekBar?) {
+                        s?.let { haptic(it) }
+                        prefs().edit().putInt(APP_ICON_SIZE_PREF, appIconSize).apply()
+                        renderFavoritesDock()
+                        if (libraryOpen) refreshLibraryContent()
+                        if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(clicksSettingsTarget())
+                    }
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            })
+            valueView = mono(appIconSize.toString(), 9f, Accent2).apply {
+                gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
+            }
+            addView(valueView, LinearLayout.LayoutParams(dp(30), ViewGroup.LayoutParams.MATCH_PARENT))
+        }
     }
 
     private fun geminiIntegrationRow(): View {
@@ -8199,7 +8914,6 @@ Reply format: ["word1","word2","word3"]"""
         if (::ribbonView.isInitialized) {
             ribbonView.removeAllViews()
         }
-        renderFavoritesDock()
         val pane = openPane
         val typedText = when {
             pane?.kind == PaneKind.CHAT -> composeText
@@ -8222,7 +8936,7 @@ Reply format: ["word1","word2","word3"]"""
             searchHintView.gravity = Gravity.CENTER_VERTICAL
             searchHintView.includeFontPadding = false
             searchHintView.setPadding(dp(16), dp(3), dp(16), dp(4))
-            searchHintView.setTextColor(Ink)
+            searchHintView.setTextColor(activeNeuTokens.ink)
             searchHintView.text = styledTypedCommand(typedText)
         } else {
             searchHintView.textSize = if (isVivoDevice()) 8.6f else 9.5f
@@ -8232,37 +8946,59 @@ Reply format: ["word1","word2","word3"]"""
             searchHintView.includeFontPadding = false
             searchHintView.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
             searchHintView.setPadding(dp(10), dp(2), dp(6), dp(3))
-            searchHintView.setTextColor(0xFF44474E.toInt())
+            searchHintView.setTextColor(activeNeuTokens.inkDim)
             searchHintView.text = hint
         }
+        val widgetSearchActive = isWidgetUniversalSearchActive()
+        if (widgetSearchActive != widgetSearchRendered && ::contentFrame.isInitialized) {
+            render()
+            return
+        }
+        if (widgetSearchActive) refreshWidgetSearchContent()
     }
 
     private fun renderFavoritesDock() {
         if (!::favoritesDockView.isInitialized) return
         favoritesDockView.removeAllViews()
-        val dockApps = homeDockApps()
-        if (dockApps.isEmpty()) {
+        val dockItems = homeDockItems()
+        if (dockItems.isEmpty()) {
             favoritesDockView.addView(mono("LONG-PRESS APPS IN THE LIBRARY TO ADD FAVORITES", 8.5f, InkDim).apply {
                 gravity = Gravity.CENTER
                 letterSpacing = 0.12f
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return
         }
-        dockApps.take(DOCK_APP_LIMIT).forEachIndexed { index, app ->
-            favoritesDockView.addView(dockAppButton(app, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+        dockItems.take(DOCK_APP_LIMIT).forEachIndexed { index, item ->
+            favoritesDockView.addView(dockItemButton(item, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
                 if (index > 0) marginStart = dp(6)
             })
         }
-        repeat(DOCK_APP_LIMIT - dockApps.size.coerceAtMost(DOCK_APP_LIMIT)) { index ->
+        repeat(DOCK_APP_LIMIT - dockItems.size.coerceAtMost(DOCK_APP_LIMIT)) { index ->
             favoritesDockView.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                if (dockApps.isNotEmpty() || index > 0) marginStart = dp(6)
+                if (dockItems.isNotEmpty() || index > 0) marginStart = dp(6)
             })
         }
     }
 
-    private fun dockAppButton(app: AppEntry, index: Int): View {
-        val target = app.toPaneTarget()
+    private data class HomeDockItem(
+        val app: AppEntry?,
+        val target: PaneTarget,
+        val label: String,
+        val accent: Int
+    )
+
+    private fun homeDockItems(): List<HomeDockItem> {
+        val music = HomeDockItem(null, musicTarget(), "Music", 0xFF57C98A.toInt())
+        val appItems = homeDockApps()
+            .filterNot { it.packageName == packageName }
+            .map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) }
+        return (listOf(music) + appItems).take(DOCK_APP_LIMIT)
+    }
+
+    private fun dockItemButton(item: HomeDockItem, index: Int): View {
+        val target = item.target
         val showLabel = showDockLabels()
+        val libraryApp = item.app?.toLibraryApp() ?: if (target.kind == PaneKind.MUSIC) musicLibraryApp() else null
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -8280,19 +9016,31 @@ Reply format: ["word1","word2","word3"]"""
                     .setInterpolator(DecelerateInterpolator())
                     .start()
             }, (index * 24L).coerceAtMost(120L))
+            val iconFrame = dockIconFrameSize(showLabel)
             addView(FrameLayout(context).apply {
                 elevation = dp(2).toFloat()
                 background = dockIconButtonBackground()
-                addView(ImageView(context).apply {
-                    setImageDrawable(iconFor(app.toLibraryApp()))
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                    adjustViewBounds = true
-                    setPadding(dp(5), dp(5), dp(5), dp(5))
-                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }, LinearLayout.LayoutParams(dp(if (showLabel) 40 else 44), dp(if (showLabel) 40 else 44)))
+                if (libraryApp != null) {
+                    addView(ImageView(context).apply {
+                        setImageDrawable(iconFor(libraryApp))
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        adjustViewBounds = true
+                        setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
+                    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                } else {
+                    addView(TextView(context).apply {
+                        text = "♪"
+                        gravity = Gravity.CENTER
+                        textSize = 23f
+                        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                        setTextColor(item.accent)
+                        includeFontPadding = false
+                    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                }
+            }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             if (showLabel) {
                 addView(TextView(context).apply {
-                    text = app.shortName
+                    text = item.label
                     textSize = 9.5f
                     gravity = Gravity.CENTER
                     maxLines = 1
@@ -8309,7 +9057,7 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 false
             }
-            setOnClickListener { haptic(this); openExternal(target) }
+            setOnClickListener { haptic(this); if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target) }
             setOnLongClickListener { haptic(this); showOpenMenu(this, target); true }
         }
     }
@@ -8377,6 +9125,12 @@ Reply format: ["word1","word2","word3"]"""
         val canOpenHere = target.kind != PaneKind.LIST || target.packageName == null
         menu.addView(menuItem("Open here", canOpenHere) { popup.dismiss(); openHere(target) })
         menu.addView(menuItem("Open app", target.packageName != null) { popup.dismiss(); openExternal(target) })
+        if (target.kind == PaneKind.MUSIC) {
+            menu.addView(menuItem("Change icon", true) {
+                popup.dismiss()
+                showIconMenu(anchor, musicLibraryApp())
+            })
+        }
         target.packageName?.let { packageName ->
             val onHome = isOnHome(packageName)
             menu.addView(menuItem(if (onHome) "Remove from dock" else "Add to dock", true) {
@@ -9601,6 +10355,12 @@ $emailText"""
 
     private fun animatedWeatherEnabled(): Boolean = prefs().getBoolean(ANIMATED_WEATHER_PREF, true)
 
+    private fun invalidateLibraryCaches() {
+        libraryCategoriesCacheSignature = null
+        libraryCategoriesCache = emptyList()
+        appIconStateCache.evictAll()
+    }
+
     private fun isOnHome(packageName: String?) = packageName != null &&
         homeDockApps().any { it.packageName == packageName }
 
@@ -9639,6 +10399,8 @@ $emailText"""
     private fun AppEntry.toPaneTarget() = PaneTarget(packageName, label, brandColor, PaneKind.LIST, packageName, null, "Open $label")
 
     private fun AppEntry.toLibraryApp() = LibraryApp(label, brandColor, toPaneTarget(), componentName)
+
+    private fun musicLibraryApp() = LibraryApp("Music", 0xFF57C98A.toInt(), musicTarget(), null)
 
     private fun HubMessage.toPaneTarget() = PaneTarget(
         "$packageName:$sender",
@@ -9893,6 +10655,8 @@ $emailText"""
         weatherStatsView.text = prefs().getString(WEATHER_STATS_PREF, "Local")
         weatherIconView.setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
         weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
+        weatherAmbientView?.setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = false)
+        refreshNowPlayingCard()
     }
 
     private fun refreshWeather(force: Boolean) {
@@ -9939,7 +10703,11 @@ $emailText"""
                     .putLong(WEATHER_FETCHED_AT_PREF, System.currentTimeMillis())
                     .apply()
                 updateClock()
-                if (weatherChanged) weatherIconView.playLivePhotoBurst()
+                if (weatherChanged) {
+                    weatherIconView.playLivePhotoBurst()
+                    weatherAmbientView?.setWeather(result.code, activeNeuTokens.mode, animate = animatedWeatherEnabled())
+                    refreshNowPlayingCard()
+                }
             }
         }
     }
@@ -9952,6 +10720,7 @@ $emailText"""
         weatherStatsView.text = "Local"
         weatherIconView.setWeatherCode(0)
         weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
+        weatherAmbientView?.setWeather(0, activeNeuTokens.mode, animate = false)
     }
 
     private fun hasWeatherPermission(): Boolean {
@@ -9992,6 +10761,31 @@ $emailText"""
         else -> "Local weather"
     }
 
+    private fun weatherAmbientLightColor(): Int {
+        val code = prefs().getInt(WEATHER_CODE_PREF, 0)
+        return when {
+            isWeatherNight() -> 0xFF9DB4FF.toInt()
+            code in setOf(51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99) -> 0xFF5FD0C4.toInt()
+            code in setOf(71, 73, 75, 77, 85, 86) -> 0xFFDCE6FF.toInt()
+            code in setOf(45, 48) -> 0xFFAEB6C4.toInt()
+            else -> 0xFFF5C451.toInt()
+        }
+    }
+
+    private fun weatherAmbientLightStrength(): Float {
+        val code = prefs().getInt(WEATHER_CODE_PREF, 0)
+        val base = when (code) {
+            0 -> 0.78f
+            1, 2, 3 -> 0.68f
+            45, 48 -> 0.42f
+            51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82 -> 0.52f
+            71, 73, 75, 77, 85, 86 -> 0.48f
+            95, 96, 99 -> 0.62f
+            else -> 0.52f
+        }
+        return if (activeNeuTokens.mode == NeuMode.LIGHT) base else base * 0.82f
+    }
+
     private fun mono(text: String, size: Float, color: Int) = TextView(this).apply {
         this.text = text; textSize = size; typeface = Typeface.MONOSPACE; setTextColor(color); includeFontPadding = false
     }
@@ -10009,7 +10803,7 @@ $emailText"""
         val start = label.lowercase(Locale.US).indexOf(q.lowercase(Locale.US))
         if (start < 0) return styled
         val end = (start + q.length).coerceAtMost(label.length)
-        styled.setSpan(ForegroundColorSpan(Accent2), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        styled.setSpan(ForegroundColorSpan(Neu.GREEN), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         styled.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         return styled
     }
@@ -10077,6 +10871,20 @@ $emailText"""
     private fun widgetKeyboardHeight(): Int {
         return (keyboardHeight() + dp(28)).coerceIn(dp(238), dp(360))
     }
+
+    private fun PaneTarget.usesMediaDock(): Boolean {
+        return kind == PaneKind.MUSIC || kind == PaneKind.PHOTOS
+    }
+
+    private fun widgetPaneUsesRootDock(): Boolean {
+        return keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && openPane?.usesMediaDock() == true
+    }
+
+    private fun activeRootDockHeight(): Int {
+        return if (widgetPaneUsesRootDock()) widgetKeyboardHeight() else keyboardHeight()
+    }
+
+    private fun widgetKeyboardHorizontalBleed(): Int = dp(10)
 
     private fun recessedDockBackground(): Drawable {
         return Neu.drawable(activeNeuTokens, dp(19).toFloat(), NeuLevel.PRESSED_SM)
@@ -10165,14 +10973,19 @@ $emailText"""
     }
 
     private fun libraryCategories(): List<LibraryCategory> {
+        val signature = apps.joinToString("|") { it.componentName.flattenToShortString() }
+        if (signature == libraryCategoriesCacheSignature) return libraryCategoriesCache
         val grouped = apps.map { it.toLibraryApp() }.groupBy { app -> categoryNameFor(app.target.packageName) }
         val preferredOrder = listOf("Social", "Music & Audio", "Video", "Photos", "Maps", "Productivity", "Games", "News", "Tools", "Other")
-        return preferredOrder.mapNotNull { name ->
+        val categories = preferredOrder.mapNotNull { name ->
             grouped[name]?.takeIf { it.isNotEmpty() }?.let { LibraryCategory(name, categoryAccent(name), it) }
         } + grouped.keys
             .filterNot { it in preferredOrder }
             .sortedWith(collator)
             .mapNotNull { name -> grouped[name]?.takeIf { it.isNotEmpty() }?.let { LibraryCategory(name, categoryAccent(name), it) } }
+        libraryCategoriesCacheSignature = signature
+        libraryCategoriesCache = categories
+        return categories
     }
 
     private fun categoryNameFor(packageName: String?): String {
@@ -10204,14 +11017,42 @@ $emailText"""
         else -> Accent
     }
 
+    private fun iconSizeExtra(maxDp: Int): Int = dp(appIconSize.coerceIn(0, 100) * maxDp / 100)
+
+    private fun appIconInnerPadding(): Int = dp((5 - appIconSize.coerceIn(0, 100) * 2 / 100).coerceAtLeast(2))
+
+    private fun appLibraryIconFrameSize(): Int = dp(46) + iconSizeExtra(14)
+
+    private fun searchAppIconFrameSize(): Int = dp(52) + iconSizeExtra(14)
+
+    private fun dockIconFrameSize(showLabel: Boolean): Int {
+        val base = if (showLabel) 40 else 44
+        return dp(base) + iconSizeExtra(if (showLabel) 8 else 10)
+    }
+
+    private fun appTileRowHeight(): Int = dp(82) + iconSizeExtra(18)
+
     private fun iconFor(app: LibraryApp): Drawable {
-        prefs().getString(iconOverrideKey(app), null)?.let { iconFromOverride(it)?.let { icon -> return icon } }
-        app.componentName?.let { component ->
-            autoIconPackIcon(component)?.let { return it }
-            runCatching { packageManager.getActivityIcon(component) }.getOrNull()?.let { return it }
-        }
-        app.target.packageName?.let { pkg -> runCatching { packageManager.getApplicationIcon(pkg) }.getOrNull()?.let { return it } }
-        return fallbackLetterIcon(app)
+        val override = prefs().getString(iconOverrideKey(app), null)
+        val activePack = prefs().getString(ACTIVE_ICON_PACK_PREF, null)
+        val cacheKey = listOf(
+            app.componentName?.flattenToShortString().orEmpty(),
+            app.target.id,
+            app.target.packageName.orEmpty(),
+            override.orEmpty(),
+            activePack.orEmpty()
+        ).joinToString("|")
+        appIconStateCache.get(cacheKey)?.newDrawable(resources)?.mutate()?.let { return it }
+        val resolved = override?.let { iconFromOverride(it) }
+            ?: app.componentName?.let { component ->
+                autoIconPackIcon(component)
+                    ?: runCatching { packageManager.getActivityIcon(component) }.getOrNull()
+            }
+            ?: app.target.packageName?.let { pkg -> runCatching { packageManager.getApplicationIcon(pkg) }.getOrNull() }
+            ?: if (app.target.kind == PaneKind.MUSIC) fallbackMusicIcon(app) else null
+            ?: return fallbackLetterIcon(app)
+        resolved.constantState?.let { appIconStateCache.put(cacheKey, it) }
+        return resolved
     }
 
     private fun iconFromOverride(value: String): Drawable? = when {
@@ -10225,7 +11066,7 @@ $emailText"""
     }
 
     private fun fallbackLetterIcon(app: LibraryApp): Drawable {
-        val key = "${app.target.packageName}:${app.accent}"
+        val key = "${app.target.id}:${app.target.packageName}:${app.accent}"
         fallbackIconCache.get(key)?.let { return it }
         val size = dp(46)
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -10238,6 +11079,31 @@ $emailText"""
             typeface = Typeface.DEFAULT_BOLD; textSize = dp(18).toFloat()
         }
         canvas.drawText(app.name.take(1).uppercase(Locale.US), size / 2f, size / 2f - (paint.descent() + paint.ascent()) / 2f, paint)
+        val drawable = android.graphics.drawable.BitmapDrawable(resources, bitmap)
+        fallbackIconCache.put(key, drawable)
+        return drawable
+    }
+
+    private fun fallbackMusicIcon(app: LibraryApp): Drawable {
+        val key = "${app.target.id}:music:${app.accent}"
+        fallbackIconCache.get(key)?.let { return it }
+        val size = dp(46)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0xFF22322B.toInt(), 0xFF101916.toInt())).apply {
+            cornerRadius = dp(13).toFloat()
+            setStroke(dp(1), adjustAlpha(app.accent, 0x60))
+            setBounds(0, 0, size, size)
+            draw(canvas)
+        }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = app.accent
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            textSize = dp(22).toFloat()
+            setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(app.accent, 0x55))
+        }
+        canvas.drawText("♪", size / 2f, size / 2f - (paint.descent() + paint.ascent()) / 2f, paint)
         val drawable = android.graphics.drawable.BitmapDrawable(resources, bitmap)
         fallbackIconCache.put(key, drawable)
         return drawable
@@ -10257,27 +11123,127 @@ $emailText"""
             })
         }
         menu.addView(menuItem("Default icon", true) {
-            prefs().edit().remove(iconOverrideKey(app)).apply(); popup.dismiss(); showLibrary(animate = false)
+            prefs().edit().remove(iconOverrideKey(app)).apply(); popup.dismiss(); refreshIconSurfaces()
         })
         menu.addView(menuItem("System icons for all", true) {
-            prefs().edit().remove(ACTIVE_ICON_PACK_PREF).apply(); popup.dismiss(); showLibrary(animate = false)
+            prefs().edit().remove(ACTIVE_ICON_PACK_PREF).apply(); popup.dismiss(); refreshIconSurfaces()
+        })
+        menu.addView(menuItem("Pick from icon pack...", iconPacks().isNotEmpty()) {
+            popup.dismiss()
+            showIconPackSourceChooser(anchor, app)
         })
         app.componentName?.let { component ->
             iconPacks().forEach { pack ->
                 matchingIconPackIcon(pack, component)?.let { icon ->
                     menu.addView(menuItem("Use ${pack.name} here", true) {
                         prefs().edit().putString(iconOverrideKey(app), "pack:${icon.packageName}:${icon.drawableName}").apply()
-                        popup.dismiss(); showLibrary(animate = false)
+                        popup.dismiss(); refreshIconSurfaces()
                     })
                     menu.addView(menuItem("Apply ${pack.name} to all", true) {
                         prefs().edit().putString(ACTIVE_ICON_PACK_PREF, pack.packageName).apply()
-                        popup.dismiss(); showLibrary(animate = false)
+                        popup.dismiss(); refreshIconSurfaces()
                     })
                 }
             }
         }
         menu.addView(menuItem("Use another app icon", apps.isNotEmpty()) { popup.dismiss(); showAppIconChooser(anchor, app) })
         popup.showAsDropDown(anchor, -dp(82), -anchor.height)
+    }
+
+    private fun showIconPackSourceChooser(anchor: View, app: LibraryApp) {
+        lateinit var popup: PopupWindow
+        val packs = iconPacks()
+        val menu = ScrollView(this).apply {
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(6), dp(6), dp(6), dp(6))
+                background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
+                if (packs.isEmpty()) {
+                    addView(menuItem("No icon packs installed", false) {})
+                } else {
+                    packs.forEach { pack ->
+                        addView(menuItem(pack.name, true) {
+                            popup.dismiss()
+                            showIconPackDrawableChooser(anchor, app, pack)
+                        })
+                    }
+                }
+            })
+        }
+        popup = PopupWindow(menu, dp(260), dp(340), true).apply {
+            isOutsideTouchable = true
+            showAsDropDown(anchor, -dp(96), -dp(300))
+        }
+    }
+
+    private fun showIconPackDrawableChooser(anchor: View, app: LibraryApp, pack: IconPack) {
+        lateinit var popup: PopupWindow
+        val matched = app.componentName?.let { matchingIconPackIcon(pack, it) }
+        val icons = iconPackIcons(pack)
+            .sortedWith(compareBy<IconPackIcon> { if (it.drawableName == matched?.drawableName) 0 else 1 }.thenBy { it.drawableName })
+        val menu = ScrollView(this).apply {
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(6), dp(6), dp(6), dp(8))
+                background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
+                addView(mono(pack.name.uppercase(Locale.US), 8.5f, Accent2).apply {
+                    letterSpacing = 0.12f
+                    setPadding(dp(8), dp(4), dp(8), dp(8))
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                if (icons.isEmpty()) {
+                    addView(menuItem("No icons found in pack", false) {})
+                } else {
+                    icons.forEach { icon ->
+                        val drawable = drawableFromIconPack(icon.packageName, icon.drawableName) ?: return@forEach
+                        addView(iconPackDrawableRow(icon, drawable, icon.drawableName == matched?.drawableName) {
+                            prefs().edit().putString(iconOverrideKey(app), "pack:${icon.packageName}:${icon.drawableName}").apply()
+                            popup.dismiss()
+                            refreshIconSurfaces()
+                        })
+                    }
+                }
+            })
+        }
+        popup = PopupWindow(menu, dp(304), dp(430), true).apply {
+            isOutsideTouchable = true
+            showAsDropDown(anchor, -dp(116), -dp(390))
+        }
+    }
+
+    private fun iconPackDrawableRow(icon: IconPackIcon, drawable: Drawable, isMatched: Boolean, onClick: () -> Unit): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            isClickable = true
+            background = if (isMatched) roundedPanel(Panel2, dp(9), Accent2) else border(Line)
+            addView(FrameLayout(context).apply {
+                background = dockIconButtonBackground()
+                setPadding(dp(5), dp(5), dp(5), dp(5))
+                addView(ImageView(context).apply {
+                    setImageDrawable(drawable)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(10) })
+            addView(TextView(context).apply {
+                text = icon.drawableName.replace('_', ' ')
+                textSize = 12f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(Ink)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (isMatched) {
+                addView(mono("MATCH", 8f, Accent2).apply {
+                    gravity = Gravity.RIGHT
+                    letterSpacing = 0.08f
+                }, LinearLayout.LayoutParams(dp(46), ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            setOnClickListener {
+                haptic(this)
+                onClick()
+            }
+        }
     }
 
     private fun showAppIconChooser(anchor: View, app: LibraryApp) {
@@ -10289,7 +11255,7 @@ $emailText"""
                 apps.forEach { candidate ->
                     addView(menuItem(candidate.label, true) {
                         prefs().edit().putString(iconOverrideKey(app), "component:${candidate.componentName.flattenToString()}").apply()
-                        popup.dismiss(); showLibrary(animate = false)
+                        popup.dismiss(); refreshIconSurfaces()
                     })
                 }
             })
@@ -10302,6 +11268,13 @@ $emailText"""
 
     private fun iconOverrideKey(app: LibraryApp) = "$ICON_OVERRIDE_PREFIX${app.target.packageName ?: app.target.id}"
 
+    private fun refreshIconSurfaces() {
+        invalidateLibraryCaches()
+        if (libraryOpen) refreshLibraryContent()
+        renderFavoritesDock()
+        renderRibbon()
+    }
+
     private fun iconPacks(): List<IconPack> {
         iconPacksCache?.let { return it }
         val packs = packageManager.getInstalledApplications(0).mapNotNull { info ->
@@ -10311,6 +11284,31 @@ $emailText"""
         }.sortedWith { l, r -> collator.compare(l.name, r.name) }
         iconPacksCache = packs
         return packs
+    }
+
+    private fun iconPackIcons(pack: IconPack): List<IconPackIcon> {
+        iconPackDrawableCache[pack.packageName]?.let { return it }
+        val res = runCatching { packageManager.getResourcesForApplication(pack.packageName) }.getOrNull()
+            ?: return emptyList<IconPackIcon>().also { iconPackDrawableCache[pack.packageName] = it }
+        val icons = runCatching {
+            res.assets.open("appfilter.xml").use { stream ->
+                val parser = Xml.newPullParser()
+                parser.setInput(stream, null)
+                val names = linkedSetOf<String>()
+                var event = parser.eventType
+                while (event != XmlPullParser.END_DOCUMENT) {
+                    if (event == XmlPullParser.START_TAG && parser.name == "item") {
+                        parser.getAttributeValue(null, "drawable")
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { names.add(it) }
+                    }
+                    event = parser.next()
+                }
+                names.map { IconPackIcon(pack.packageName, it) }
+            }
+        }.getOrDefault(emptyList())
+        iconPackDrawableCache[pack.packageName] = icons
+        return icons
     }
 
     private fun autoIconPackIcon(component: ComponentName): Drawable? {
@@ -10902,9 +11900,16 @@ $emailText"""
     }
 
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
-    private fun keyboardHeight() = dp(272 + keyboardSize * 80 / 100)
+    private fun keyboardHeight(): Int {
+        val rowCount = 4
+        val rowsHeight = keyRowHeight() * rowCount
+        val overlap = if (keyboardSettingsOpen) 0 else keyRowOverlap() * (rowCount - 1)
+        val settingsHeight = if (keyboardSettingsOpen) dp(312) else 0
+        return rowsHeight - overlap + keyboardTopPadding() + keyboardBottomPadding() + settingsHeight
+    }
     private fun keyboardTopPadding() = dp(4)
-    private fun keyboardBottomPadding() = dp(8)
+    private fun keyboardBottomPadding() = dp(2)
+    private fun keyboardBottomLift() = dp(3)
 
     private fun keyTextSize(label: String): Float {
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
@@ -11028,6 +12033,191 @@ $emailText"""
         }
         if (count == 0L) return Accent
         return Color.rgb((red/count).toInt().coerceIn(48,232), (green/count).toInt().coerceIn(48,232), (blue/count).toInt().coerceIn(48,232))
+    }
+
+    private inner class LibraryDrawerView(context: Context) : FrameLayout(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rect = RectF()
+        private var ambientColor = Accent2
+        private var ambientStrength = 0.45f
+        private var mode = NeuMode.DARK
+        private var dragProgress = 1f
+
+        init {
+            setWillNotDraw(false)
+            clipToPadding = false
+            clipChildren = false
+        }
+
+        fun setAmbient(color: Int, strength: Float, neuMode: NeuMode) {
+            ambientColor = color
+            ambientStrength = strength.coerceIn(0f, 1f)
+            mode = neuMode
+            invalidate()
+        }
+
+        fun setDragProgress(progress: Float) {
+            dragProgress = progress.coerceIn(0f, 1f)
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            if (width <= 0 || height <= 0) return
+            val base = activeNeuTokens.base
+            val baseHi = activeNeuTokens.baseHi
+            val baseLo = activeNeuTokens.baseLo
+            paint.shader = android.graphics.LinearGradient(
+                0f, 0f, width.toFloat(), height.toFloat(),
+                intArrayOf(baseHi, base, baseLo),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+            paint.shader = null
+
+            val glowAlpha = (if (mode == NeuMode.LIGHT) 0.12f else 0.23f) * ambientStrength * (0.45f + dragProgress * 0.55f)
+            paint.shader = RadialGradient(
+                width * 0.24f,
+                height * 0.20f,
+                width * 0.82f,
+                intArrayOf(
+                    adjustAlpha(ambientColor, glowAlpha),
+                    adjustAlpha(ambientColor, glowAlpha * 0.34f),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.42f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(width * 0.24f, height * 0.20f, width * 0.82f, paint)
+            paint.shader = null
+
+            val edgeWidth = dp(34).toFloat()
+            rect.set(0f, dp(78).toFloat(), edgeWidth, height - dp(74).toFloat())
+            paint.shader = android.graphics.LinearGradient(
+                rect.left, 0f, rect.right, 0f,
+                intArrayOf(
+                    adjustAlpha(baseHi, if (mode == NeuMode.LIGHT) 0.38f else 0.24f),
+                    adjustAlpha(base, 0.86f),
+                    adjustAlpha(baseLo, if (mode == NeuMode.LIGHT) 0.34f else 0.72f)
+                ),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(rect, dp(18).toFloat(), dp(18).toFloat(), paint)
+            paint.shader = null
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), if (mode == NeuMode.LIGHT) 0.32f else 0.14f)
+            canvas.drawLine(dp(4).toFloat(), rect.top + dp(16), dp(4).toFloat(), rect.bottom - dp(16), paint)
+            paint.color = adjustAlpha(0xFF000000.toInt(), if (mode == NeuMode.LIGHT) 0.18f else 0.58f)
+            canvas.drawLine(edgeWidth - dp(2).toFloat(), rect.top + dp(18), edgeWidth - dp(2).toFloat(), rect.bottom - dp(18), paint)
+
+            paint.style = Paint.Style.FILL
+            val gripHeight = dp(74).toFloat()
+            val gripTop = height / 2f - gripHeight / 2f
+            rect.set(dp(10).toFloat(), gripTop, dp(16).toFloat(), gripTop + gripHeight)
+            paint.shader = android.graphics.LinearGradient(
+                rect.left, 0f, rect.right, 0f,
+                intArrayOf(adjustAlpha(baseLo, 0.78f), adjustAlpha(baseHi, 0.24f), adjustAlpha(ambientColor, 0.18f * dragProgress)),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(rect, rect.width() / 2f, rect.width() / 2f, paint)
+            paint.shader = null
+            paint.style = Paint.Style.FILL
+
+            super.onDraw(canvas)
+        }
+    }
+
+    private inner class WeatherAmbientView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var weatherCode = 0
+        private var mode = NeuMode.DARK
+        private var progress = 1f
+        private var animator: ValueAnimator? = null
+
+        fun setWeather(code: Int, neuMode: NeuMode, animate: Boolean) {
+            val changed = weatherCode != code || mode != neuMode
+            weatherCode = code
+            mode = neuMode
+            animator?.cancel()
+            if (animate && changed) {
+                progress = 0f
+                animator = ValueAnimator.ofFloat(0f, 1f).apply {
+                    duration = WEATHER_AMBIENT_BURST_MS
+                    interpolator = DecelerateInterpolator(1.6f)
+                    addUpdateListener {
+                        progress = it.animatedValue as Float
+                        invalidate()
+                    }
+                    start()
+                }
+            } else {
+                progress = 1f
+                invalidate()
+            }
+        }
+
+        override fun onDetachedFromWindow() {
+            animator?.cancel()
+            animator = null
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (width <= 0 || height <= 0) return
+            val night = isWeatherNight()
+            val cloudy = weatherCode in setOf(1, 2, 3, 45, 48)
+            val wet = weatherCode in setOf(51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99)
+            val snow = weatherCode in setOf(71, 73, 75, 77, 85, 86)
+            val baseAlpha = if (mode == NeuMode.LIGHT) 0.18f else 0.30f
+            val settle = 0.72f + 0.28f * progress
+            val x = if (night) width * 0.18f else width * 0.82f
+            val startY = if (night) height * 0.22f else height * 0.24f
+            val endY = if (night) height * 0.13f else height * 0.10f
+            val y = startY + (endY - startY) * progress
+            val mainColor = when {
+                night -> 0xFF9DB4FF.toInt()
+                wet -> 0xFF5FD0C4.toInt()
+                snow -> 0xFFDCE6FF.toInt()
+                cloudy -> 0xFFE8B84B.toInt()
+                else -> 0xFFF5C451.toInt()
+            }
+            drawAmbientGlow(canvas, x, y, width * if (night) 0.46f else 0.42f, mainColor, baseAlpha * settle)
+            if (wet || snow || cloudy) {
+                drawAmbientGlow(
+                    canvas,
+                    width * 0.50f,
+                    height * 0.34f,
+                    width * 0.52f,
+                    if (wet) 0xFF57C98A.toInt() else if (snow) 0xFFDCE6FF.toInt() else 0xFF8B8F99.toInt(),
+                    (if (mode == NeuMode.LIGHT) 0.08f else 0.13f) * settle
+                )
+            }
+        }
+
+        private fun drawAmbientGlow(canvas: Canvas, cx: Float, cy: Float, radius: Float, color: Int, alpha: Float) {
+            val inner = adjustAlpha(color, alpha.coerceIn(0f, 0.42f))
+            val mid = adjustAlpha(color, (alpha * 0.34f).coerceIn(0f, 0.18f))
+            paint.shader = RadialGradient(
+                cx,
+                cy,
+                radius.coerceAtLeast(1f),
+                intArrayOf(inner, mid, 0x00000000),
+                floatArrayOf(0f, 0.42f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(cx, cy, radius, paint)
+            paint.shader = null
+        }
+    }
+
+    private fun isWeatherNight(): Boolean {
+        val hour = LocalTime.now().hour
+        return hour < 6 || hour >= 19
     }
 
     private inner class AnimatedWeatherIconView(context: Context) : View(context) {
@@ -11160,6 +12350,7 @@ $emailText"""
         private const val KeyHighlight = 0xFF3A3E4A.toInt()
         private const val PREFS_NAME = "clicks"
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
+        private const val APP_ICON_SIZE_PREF = "app_icon_size"
         private const val KEYBOARD_PLACEMENT_PREF = "keyboard_placement"
         private const val KEYBOARD_PLACEMENT_INTRO_PREF = "keyboard_placement_intro_shown"
         private const val KEYBOARD_PLACEMENT_DOCKED = "docked"
@@ -11199,6 +12390,7 @@ $emailText"""
         private const val WEATHER_CODE_PREF = "weather_code"
         private const val WEATHER_FETCHED_AT_PREF = "weather_fetched_at"
         private const val WEATHER_ANIMATION_BURST_MS = 4000L
+        private const val WEATHER_AMBIENT_BURST_MS = 2600L
         private const val WIDGET_HOST_ID = 1407
         private const val WIDGET_BIND_REQUEST_CODE = 501
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502
