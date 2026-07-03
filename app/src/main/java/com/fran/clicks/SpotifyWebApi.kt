@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.URLEncoder
 import java.net.URL
 
 data class SpotifyTrack(
@@ -27,6 +28,19 @@ data class SpotifyPlaylist(
     val trackCount: Int,
     val imageUrl: String?,
     val uri: String = "spotify:playlist:$id"
+)
+
+data class SpotifyPlaylistTracksResult(
+    val tracks: List<SpotifyTrack>,
+    val total: Int = tracks.size,
+    val skipped: Int = 0,
+    val error: SpotifyApiError? = null
+)
+
+data class SpotifyApiError(
+    val statusCode: Int,
+    val userMessage: String,
+    val apiMessage: String = ""
 )
 
 data class SpotifyPlaybackState(
@@ -203,24 +217,64 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
     }
 
     suspend fun getPlaylistTracks(playlistId: String, limit: Int = 100): List<SpotifyTrack> =
+        getPlaylistTracksResult(playlistId, limit).tracks
+
+    suspend fun getPlaylistTracksResult(playlistId: String, limit: Int = 100): SpotifyPlaylistTracksResult =
         withContext(Dispatchers.IO) {
-            val token = auth.getValidToken() ?: return@withContext emptyList()
+            val token = auth.getValidToken() ?: return@withContext SpotifyPlaylistTracksResult(
+                tracks = emptyList(),
+                error = SpotifyApiError(401, "Reconnect Spotify to refresh your library access.")
+            )
             runCatching {
-                // No fields filter — fetch all data to avoid encoding issues
-                val conn = get(
-                    "https://api.spotify.com/v1/playlists/$playlistId/tracks?limit=$limit",
-                    token
-                ) ?: return@withContext emptyList()
-                if (conn.responseCode !in 200..299) { conn.disconnect(); return@withContext emptyList() }
-                val json = JSONObject(conn.inputStream.bufferedReader().readText())
-                conn.disconnect()
-                val items = json.optJSONArray("items") ?: return@withContext emptyList()
-                items.toList().mapNotNull { obj ->
-                    val track = obj.optJSONObject("track") ?: return@mapNotNull null
-                    if (track.optString("id").isBlank()) return@mapNotNull null
-                    parseTrack(track)
+                val tracks = mutableListOf<SpotifyTrack>()
+                var skipped = 0
+                var total = 0
+                var offset = 0
+                val requested = limit.coerceIn(1, 300)
+                val encodedId = URLEncoder.encode(playlistId, "UTF-8")
+                while (tracks.size < requested) {
+                    val pageLimit = minOf(100, requested - tracks.size)
+                    val url = "https://api.spotify.com/v1/playlists/$encodedId/items" +
+                        "?limit=$pageLimit&offset=$offset"
+                    val conn = get(url, token) ?: return@withContext SpotifyPlaylistTracksResult(
+                        tracks = tracks,
+                        total = total,
+                        skipped = skipped,
+                        error = SpotifyApiError(0, "Couldn't reach Spotify. Check your connection and try again.")
+                    )
+                    val code = conn.responseCode
+                    if (code !in 200..299) {
+                        val body = conn.readBody()
+                        val apiMsg = spotifyApiMessage(body)
+                        val msg = spotifyErrorMessage(code, apiMsg)
+                        conn.disconnect()
+                        return@withContext SpotifyPlaylistTracksResult(
+                            tracks = tracks,
+                            total = total,
+                            skipped = skipped,
+                            error = SpotifyApiError(code, msg, apiMsg)
+                        )
+                    }
+                    val json = JSONObject(conn.inputStream.bufferedReader().readText())
+                    conn.disconnect()
+                    total = json.optInt("total", total)
+                    val items = json.optJSONArray("items") ?: break
+                    if (items.length() == 0) break
+                    items.toList().forEach { obj ->
+                        val track = obj.optJSONObject("track") ?: obj.optJSONObject("item")
+                        val parsed = track?.takeIf { it.optString("type", "track") == "track" }?.let { parseTrack(it) }
+                        if (parsed != null) tracks.add(parsed) else skipped += 1
+                    }
+                    offset += items.length()
+                    if (offset >= total || json.optString("next").isBlank() || tracks.size >= requested) break
                 }
-            }.getOrDefault(emptyList())
+                SpotifyPlaylistTracksResult(tracks = tracks, total = total, skipped = skipped)
+            }.getOrElse {
+                SpotifyPlaylistTracksResult(
+                    tracks = emptyList(),
+                    error = SpotifyApiError(0, "Spotify couldn't load this playlist. Try again in a moment.")
+                )
+            }
         }
 
     // ── Search ───────────────────────────────────────────────────────────────
@@ -242,7 +296,8 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
     // ── Parsers ──────────────────────────────────────────────────────────────
 
     private fun parseTrack(t: JSONObject): SpotifyTrack? {
-        val id = t.optString("id").takeIf { it.isNotBlank() } ?: return null
+        val uri = t.optString("uri").takeIf { it.isNotBlank() }
+        val id = t.optString("id").takeIf { it.isNotBlank() } ?: uri?.takeIf { it.startsWith("spotify:local:") } ?: return null
         val artists = t.optJSONArray("artists")
         val artistName = artists.toStringList { it.optString("name") }.joinToString(", ")
         val album = t.optJSONObject("album")
@@ -255,7 +310,7 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
             album = album?.optString("name") ?: "",
             albumArtUrl = artUrl,
             durationMs = t.optLong("duration_ms"),
-            uri = t.optString("uri").takeIf { it.isNotBlank() } ?: "spotify:track:$id",
+            uri = uri ?: "spotify:track:$id",
             popularity = t.optInt("popularity")
         )
     }
@@ -305,6 +360,22 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
             connect()
         }
     }.getOrNull()
+
+    private fun HttpURLConnection.readBody(): String =
+        runCatching { (errorStream ?: inputStream)?.bufferedReader()?.readText().orEmpty() }.getOrDefault("")
+
+    private fun spotifyApiMessage(body: String): String =
+        runCatching { JSONObject(body).optJSONObject("error")?.optString("message") }.getOrNull().orEmpty()
+
+    private fun spotifyErrorMessage(code: Int, apiMessage: String): String {
+        return when (code) {
+            401 -> "Spotify says this session expired. Reconnect once more."
+            403 -> apiMessage.ifBlank { "Spotify denied playlist track access for this account." }
+            404 -> "Spotify can't find this playlist anymore."
+            429 -> "Spotify is rate-limiting requests. Try again shortly."
+            else -> apiMessage.ifBlank { "Spotify couldn't load this playlist. Try again." }
+        }
+    }
 
     // ── JSONArray helpers ────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.location.Location
@@ -22,6 +23,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -120,6 +122,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.min
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessionListener {
@@ -129,7 +132,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var keyboardSize = 0
     private var keyboardTheme = KEYBOARD_THEME_DEFAULT
     private var keyboardPlacement = KEYBOARD_PLACEMENT_DOCKED
+    private var themeMode = THEME_MODE_SYSTEM
+    private var activeNeuTokens = Neu.Dark
     private var hapticsEnabled = true
+    private var keyboardTiltLighting = true
     private var keyboardSettingsOpen = false
     private var goKeyColor = Accent
     private var messages: List<HubMessage> = emptyList()
@@ -185,6 +191,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
+    private enum class WidgetKeyboardSwapState { SEATED, DETACHING, DETACHED, SEATING }
+    private var widgetSwapState = WidgetKeyboardSwapState.SEATED
+    private var widgetCommittedTheme = KEYBOARD_THEME_DEFAULT
+    private var widgetPreviewTheme = KEYBOARD_THEME_DEFAULT
+    private var widgetKeyboardHost: FrameLayout? = null
+    private var widgetKeyboardModule: FrameLayout? = null
+    private var widgetSocketView: KeyboardSocketView? = null
+    private var widgetCoachView: TextView? = null
+    private var widgetDotsView: LinearLayout? = null
+    private var widgetProngsView: ConnectorProngsView? = null
+    private var widgetLockPillView: TextView? = null
+    private var widgetCoachAnimator: ValueAnimator? = null
+    private var widgetSwapDownX = 0f
+    private var widgetSwapDownY = 0f
+    private var widgetSwapHasDown = false
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
     private var numberPadOpen = false
     private var symbolsOpen = false
@@ -306,7 +327,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
         keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, KEYBOARD_THEME_DEFAULT) ?: KEYBOARD_THEME_DEFAULT
         keyboardPlacement = prefs().getString(KEYBOARD_PLACEMENT_PREF, KEYBOARD_PLACEMENT_DOCKED) ?: KEYBOARD_PLACEMENT_DOCKED
+        themeMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
+        applyTheme()
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
+        keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
         migrateWidgetGestureDefault()
@@ -402,6 +426,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onResume() {
         super.onResume()
+        val previousTheme = activeNeuTokens.mode
+        applyTheme()
+        if (previousTheme != activeNeuTokens.mode && ::rootView.isInitialized) render()
         ensureBillingConnected()
         val now = System.currentTimeMillis()
         if (now - lastAppsLoadMs > 10_000) { apps = loadLaunchableApps(); lastAppsLoadMs = now }
@@ -416,6 +443,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshNowPlayingCard()
             refreshWeather(force = false)
         }
+    }
+
+    override fun onPause() {
+        cancelWidgetKeyboardSwap(resetTheme = true)
+        super.onPause()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val previousTheme = activeNeuTokens.mode
+        applyTheme()
+        if (previousTheme != activeNeuTokens.mode && ::rootView.isInitialized) render()
     }
 
     override fun onDestroy() {
@@ -671,6 +710,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
         if (handlePaneSwipe(event)) return true
         handleLibrarySwipe(event)
         return super.dispatchTouchEvent(event)
@@ -717,9 +757,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun render() {
         keyViews.clear()
         keyBounds.clear()
+        applyTheme()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Screen)
+            setBackgroundColor(activeNeuTokens.base)
             setPadding(0, systemStatusBarHeight(), 0, 0)
         }
         rootView = root
@@ -1163,15 +1204,440 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun homeKeyboardWidget(): View {
-        return LinearLayout(this).apply {
+        widgetCommittedTheme = keyboardTheme
+        widgetPreviewTheme = keyboardTheme
+        return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            widgetKeyboardHost = this
+
+            val socket = KeyboardSocketView(context).apply {
+                alpha = 0f
+                visibility = View.GONE
+            }
+            widgetSocketView = socket
+            addView(socket, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+            val module = FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                background = homeKeyboardWidgetBackground()
+                setOnTouchListener { _, event -> handleWidgetKeyboardDetachedTouch(event) }
+            }
+            widgetKeyboardModule = module
+            populateWidgetKeyboardModule(module)
+            addView(module, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+            widgetCoachView = TextView(context).apply {
+                text = "⇆  Swipe to browse · tap to install"
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                textSize = 11f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(0xFFEAF7EF.toInt())
+                setPadding(dp(12), 0, dp(12), 0)
+                background = swapPillBackground(0xCC111A16.toInt(), 0x6638D67A)
+                alpha = 0f
+                visibility = View.GONE
+            }
+            addView(widgetCoachView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(30), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(2)
+            })
+
+            widgetDotsView = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                alpha = 0f
+                visibility = View.GONE
+            }
+            addView(widgetDotsView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = dp(4)
+            })
+            updateWidgetThemeDots()
+        }
+    }
+
+    private fun populateWidgetKeyboardModule(module: FrameLayout) {
+        module.removeAllViews()
+        module.background = homeKeyboardWidgetBackground()
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            clipChildren = true
-            clipToPadding = true
-            clipToOutline = true
-            background = homeKeyboardWidgetBackground()
+            clipChildren = false
+            clipToPadding = false
             setPadding(dp(4), dp(4), dp(4), dp(0))
             addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
             addView(keyboard(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        module.addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        val prongs = ConnectorProngsView(this).apply {
+            alpha = if (widgetSwapState == WidgetKeyboardSwapState.SEATED) 0f else 1f
+            visibility = if (widgetSwapState == WidgetKeyboardSwapState.SEATED) View.GONE else View.VISIBLE
+        }
+        widgetProngsView = prongs
+        module.addView(prongs, FrameLayout.LayoutParams(dp(132), dp(18), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = -dp(3)
+        })
+        module.setOnTouchListener { _, event -> handleWidgetKeyboardDetachedTouch(event) }
+    }
+
+    private val widgetSwapThemes: List<String>
+        get() = listOf(
+            KEYBOARD_THEME_DEFAULT,
+            KEYBOARD_THEME_CLICKS,
+            KEYBOARD_THEME_SKEUO,
+            KEYBOARD_THEME_GOKEYS,
+            KEYBOARD_THEME_HYPER3D,
+            KEYBOARD_THEME_HYPER3D_BLACK,
+            KEYBOARD_THEME_HYPER3D_LIGHT
+        )
+
+    private fun widgetThemeName(theme: String): String = when (theme) {
+        KEYBOARD_THEME_CLICKS -> "CLICKS"
+        KEYBOARD_THEME_SKEUO -> "SKEUO"
+        KEYBOARD_THEME_GOKEYS -> "GOKEYS"
+        KEYBOARD_THEME_HYPER3D -> "HYPER3D"
+        KEYBOARD_THEME_HYPER3D_BLACK -> "HYPER BLACK"
+        KEYBOARD_THEME_HYPER3D_LIGHT -> "HYPER LIGHT"
+        else -> "DEFAULT"
+    }
+
+    private fun beginWidgetKeyboardDetach(dockKey: TextView) {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_WIDGET || widgetSwapState != WidgetKeyboardSwapState.SEATED) return
+        val module = widgetKeyboardModule ?: return
+        widgetSwapState = WidgetKeyboardSwapState.DETACHING
+        widgetCommittedTheme = keyboardTheme
+        widgetPreviewTheme = keyboardTheme
+        widgetSwapHasDown = false
+        dockDetachHaptic(dockKey)
+        showWidgetSwapChrome()
+        module.animate().cancel()
+        module.elevation = dp(18).toFloat()
+        module.cameraDistance = 12000f
+        module.animate()
+            .translationY(-dp(118).toFloat())
+            .translationX(0f)
+            .rotation(0f)
+            .rotationX(9f)
+            .scaleX(0.94f)
+            .scaleY(0.94f)
+            .setDuration(460L)
+            .setInterpolator(android.view.animation.OvershootInterpolator(1.1f))
+            .withEndAction {
+                if (widgetSwapState != WidgetKeyboardSwapState.DETACHING) return@withEndAction
+                widgetSwapState = WidgetKeyboardSwapState.DETACHED
+                module.animate().translationY(-dp(112).toFloat()).setDuration(95L).withEndAction {
+                    if (widgetSwapState == WidgetKeyboardSwapState.DETACHED) snapWidgetHoverPose()
+                }.start()
+            }
+            .start()
+    }
+
+    private fun showWidgetSwapChrome() {
+        widgetSocketView?.apply {
+            visibility = View.VISIBLE
+            animate().alpha(1f).setDuration(180L).setInterpolator(DecelerateInterpolator()).start()
+        }
+        widgetProngsView?.apply {
+            visibility = View.VISIBLE
+            animate().alpha(1f).setDuration(160L).start()
+        }
+        widgetCoachView?.apply {
+            visibility = View.VISIBLE
+            alpha = 0f
+            translationX = -dp(8).toFloat()
+            animate().alpha(1f).translationX(0f).setDuration(180L).setInterpolator(DecelerateInterpolator()).start()
+        }
+        startWidgetCoachNudge()
+        widgetDotsView?.apply {
+            visibility = View.VISIBLE
+            animate().alpha(1f).setDuration(180L).start()
+        }
+        updateWidgetThemeDots()
+    }
+
+    private fun hideWidgetSwapChrome() {
+        widgetCoachAnimator?.cancel()
+        widgetCoachAnimator = null
+        listOf(widgetCoachView, widgetDotsView, widgetProngsView, widgetSocketView).forEach { view ->
+            view?.animate()?.alpha(0f)?.setDuration(160L)?.withEndAction {
+                view?.visibility = View.GONE
+            }?.start()
+        }
+    }
+
+    private fun startWidgetCoachNudge() {
+        widgetCoachAnimator?.cancel()
+        val coach = widgetCoachView ?: return
+        widgetCoachAnimator = ValueAnimator.ofFloat(-1f, 1f).apply {
+            duration = 900L
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener {
+                coach.translationX = (it.animatedValue as Float) * dp(5)
+            }
+            start()
+        }
+    }
+
+    private fun dismissWidgetCoach() {
+        widgetCoachAnimator?.cancel()
+        widgetCoachAnimator = null
+        widgetCoachView?.animate()?.alpha(0f)?.setDuration(140L)?.withEndAction {
+            widgetCoachView?.visibility = View.GONE
+        }?.start()
+    }
+
+    private fun updateWidgetThemeDots() {
+        val dots = widgetDotsView ?: return
+        dots.removeAllViews()
+        widgetSwapThemes.forEach { theme ->
+            val selected = theme == widgetPreviewTheme
+            val dot = TextView(this).apply {
+                text = ""
+                isClickable = true
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dp(5).toFloat()
+                    setColor(if (selected) 0xFF7AF0A0.toInt() else 0x55727782)
+                }
+                setOnClickListener {
+                    if (widgetSwapState == WidgetKeyboardSwapState.DETACHED) previewWidgetTheme(theme, fromLeft = null)
+                }
+            }
+            dots.addView(dot, LinearLayout.LayoutParams(if (selected) dp(22) else dp(9), dp(9)).apply {
+                leftMargin = dp(4)
+                rightMargin = dp(4)
+            })
+        }
+    }
+
+    private fun previewWidgetTheme(theme: String, fromLeft: Boolean?) {
+        if (widgetSwapState != WidgetKeyboardSwapState.DETACHED) return
+        if (theme == widgetPreviewTheme) {
+            updateWidgetThemeDots()
+            snapWidgetHoverPose()
+            return
+        }
+        val module = widgetKeyboardModule ?: return
+        widgetPreviewTheme = theme
+        keyboardTheme = theme
+        haptic(module)
+        updateWidgetThemeDots()
+        val outX = if (fromLeft == true) dp(54).toFloat() else -dp(54).toFloat()
+        val inX = -outX
+        module.animate().cancel()
+        module.animate().alpha(0.18f).translationX(outX).rotation(outX * 0.03f).setDuration(120L).withEndAction {
+            populateWidgetKeyboardModule(module)
+            module.alpha = 0.18f
+            module.translationX = inX
+            module.rotation = inX * 0.03f
+            module.translationY = -dp(118).toFloat()
+            module.rotationX = 9f
+            module.scaleX = 0.94f
+            module.scaleY = 0.94f
+            module.animate()
+                .alpha(1f)
+                .translationX(0f)
+                .rotation(0f)
+                .setDuration(300L)
+                .setInterpolator(android.view.animation.OvershootInterpolator(1.4f))
+                .withEndAction { snapWidgetHoverPose() }
+                .start()
+        }.start()
+    }
+
+    private fun handleWidgetKeyboardDetachedTouch(event: MotionEvent): Boolean {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_WIDGET) return false
+        if (widgetSwapState == WidgetKeyboardSwapState.DETACHING || widgetSwapState == WidgetKeyboardSwapState.SEATING) return true
+        if (widgetSwapState != WidgetKeyboardSwapState.DETACHED) return false
+        val module = widgetKeyboardModule ?: return true
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                widgetSwapDownX = event.rawX
+                widgetSwapDownY = event.rawY
+                widgetSwapHasDown = true
+                module.animate().cancel()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!widgetSwapHasDown) return true
+                val dx = event.rawX - widgetSwapDownX
+                val dy = event.rawY - widgetSwapDownY
+                if (Math.abs(dx) > dp(8) && Math.abs(dx) > Math.abs(dy)) dismissWidgetCoach()
+                module.translationX = dx * 0.5f
+                module.rotation = dx * 0.03f
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!widgetSwapHasDown) {
+                    snapWidgetHoverPose()
+                    return true
+                }
+                widgetSwapHasDown = false
+                val dx = event.rawX - widgetSwapDownX
+                val dy = event.rawY - widgetSwapDownY
+                val absDx = Math.abs(dx)
+                val absDy = Math.abs(dy)
+                return when {
+                    absDx > dp(42) && absDx > absDy -> {
+                        val current = widgetSwapThemes.indexOf(widgetPreviewTheme).coerceAtLeast(0)
+                        val next = if (dx < 0f) (current + 1) % widgetSwapThemes.size else (current - 1 + widgetSwapThemes.size) % widgetSwapThemes.size
+                        dismissWidgetCoach()
+                        previewWidgetTheme(widgetSwapThemes[next], fromLeft = dx > 0f)
+                        true
+                    }
+                    absDx < dp(8) && absDy < dp(8) -> {
+                        seatWidgetKeyboard()
+                        true
+                    }
+                    else -> {
+                        snapWidgetHoverPose()
+                        true
+                    }
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                widgetSwapHasDown = false
+                snapWidgetHoverPose()
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun snapWidgetHoverPose() {
+        val module = widgetKeyboardModule ?: return
+        if (widgetSwapState != WidgetKeyboardSwapState.DETACHED) return
+        module.animate()
+            .translationY(-dp(118).toFloat())
+            .translationX(0f)
+            .rotation(0f)
+            .rotationX(9f)
+            .scaleX(0.94f)
+            .scaleY(0.94f)
+            .setDuration(180L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+    }
+
+    private fun seatWidgetKeyboard() {
+        if (widgetSwapState != WidgetKeyboardSwapState.DETACHED) return
+        val module = widgetKeyboardModule ?: return
+        widgetSwapState = WidgetKeyboardSwapState.SEATING
+        widgetSwapHasDown = false
+        dismissWidgetCoach()
+        widgetDotsView?.animate()?.alpha(0f)?.setDuration(140L)?.withEndAction { widgetDotsView?.visibility = View.GONE }?.start()
+        module.animate().cancel()
+        module.animate()
+            .translationY(dp(14).toFloat())
+            .translationX(0f)
+            .rotation(0f)
+            .rotationX(0f)
+            .scaleX(1.018f)
+            .scaleY(0.992f)
+            .setDuration(185L)
+            .setInterpolator(android.view.animation.AccelerateInterpolator(1.65f))
+            .withEndAction {
+                haptic(module)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    module.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                }
+                widgetProngsView?.pulse()
+                widgetSocketView?.pulseGlow()
+                module.animate()
+                    .translationY(-dp(3).toFloat())
+                    .scaleX(0.996f)
+                    .scaleY(1.006f)
+                    .setDuration(92L)
+                    .setInterpolator(DecelerateInterpolator(2.4f))
+                    .withEndAction {
+                        module.animate()
+                            .translationY(0f)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(118L)
+                            .setInterpolator(android.view.animation.OvershootInterpolator(0.55f))
+                            .withEndAction {
+                                keyboardTheme = widgetPreviewTheme
+                                prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
+                                widgetCommittedTheme = keyboardTheme
+                                module.elevation = 0f
+                                showWidgetLockedPill()
+                                widgetSwapState = WidgetKeyboardSwapState.SEATED
+                                handler.postDelayed({
+                                    hideWidgetSwapChrome()
+                                    widgetKeyboardModule?.let { populateWidgetKeyboardModule(it) }
+                                }, 680L)
+                            }
+                            .start()
+                    }
+                    .start()
+            }
+            .start()
+    }
+
+    private fun showWidgetLockedPill() {
+        val host = widgetKeyboardHost ?: return
+        widgetLockPillView?.let { host.removeView(it) }
+        val pill = TextView(this).apply {
+            text = "LOCKED"
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            textSize = 9.5f
+            letterSpacing = 0.22f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(0xCCB7F8C1.toInt())
+            background = swapPillBackground(0xDD07090B.toInt(), 0x559AF5AE)
+            alpha = 0f
+            translationY = dp(7).toFloat()
+            scaleX = 0.94f
+            scaleY = 0.94f
+        }
+        widgetLockPillView = pill
+        host.addView(pill, FrameLayout.LayoutParams(dp(92), dp(24), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            leftMargin = dp(12)
+            rightMargin = dp(12)
+            bottomMargin = dp(11)
+        })
+        pill.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f).setDuration(115L).setInterpolator(DecelerateInterpolator(2.2f)).withEndAction {
+            pill.animate().alpha(0f).translationY(dp(5).toFloat()).setStartDelay(430L).setDuration(180L).withEndAction {
+                widgetLockPillView = null
+                host.removeView(pill)
+            }.start()
+        }.start()
+    }
+
+    private fun cancelWidgetKeyboardSwap(resetTheme: Boolean) {
+        if (widgetSwapState == WidgetKeyboardSwapState.SEATED) return
+        widgetCoachAnimator?.cancel()
+        widgetCoachAnimator = null
+        widgetKeyboardModule?.animate()?.cancel()
+        if (resetTheme) keyboardTheme = widgetCommittedTheme
+        widgetSwapState = WidgetKeyboardSwapState.SEATED
+        widgetSwapHasDown = false
+        widgetKeyboardModule?.apply {
+            alpha = 1f
+            translationX = 0f
+            translationY = 0f
+            rotation = 0f
+            rotationX = 0f
+            scaleX = 1f
+            scaleY = 1f
+            elevation = 0f
+        }
+        widgetCoachView?.visibility = View.GONE
+        widgetDotsView?.visibility = View.GONE
+        widgetProngsView?.visibility = View.GONE
+        widgetSocketView?.visibility = View.GONE
+        widgetKeyboardModule?.let { populateWidgetKeyboardModule(it) }
+    }
+
+    private fun swapPillBackground(fill: Int, stroke: Int): Drawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(18).toFloat()
+            setColor(fill)
+            setStroke(dp(1), stroke)
         }
     }
 
@@ -1552,7 +2018,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun homeWidgetStackVisible() = openPane == null && !libraryOpen
 
+    private fun widgetKeyboardSwapActive(): Boolean {
+        return keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && widgetSwapState != WidgetKeyboardSwapState.SEATED
+    }
+
     private fun handleLibrarySwipe(event: MotionEvent) {
+        if (widgetKeyboardSwapActive()) {
+            librarySwipeTriggered = false
+            librarySwipeBlockedByWidget = false
+            return
+        }
         if (!::contentFrame.isInitialized) return
         if (widgetBoardView != null) return
         if (homeEditMode) {
@@ -1675,6 +2150,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun handleTypingStripGesture(event: MotionEvent): Boolean {
+        if (widgetKeyboardSwapActive()) return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 stripSwipeStartX = event.rawX
@@ -4855,6 +5331,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         val swipeLayout = SwipeKeyboardLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             background = keyboardDeckBackground()
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
@@ -4928,6 +5406,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 haptic(this); render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
 
+            addView(settingToggle("TILT LIGHTING", keyboardTiltLighting) {
+                keyboardTiltLighting = !keyboardTiltLighting
+                prefs().edit().putBoolean(KBD_TILT_LIGHT_PREF, keyboardTiltLighting).apply()
+                haptic(this); render()
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
+
             addView(settingAction("CLICKS SETTINGS") {
                 keyboardSettingsOpen = false
                 openHere(clicksSettingsTarget())
@@ -4942,31 +5426,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(0, dp(8), 0, 0)
             addView(mono("THEME", 9f, InkDim).apply { letterSpacing = 0.12f },
                 LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT))
-            listOf(
-                "DEFAULT" to KEYBOARD_THEME_DEFAULT,
-                "CLICKS" to KEYBOARD_THEME_CLICKS,
-                "SKEUO" to KEYBOARD_THEME_SKEUO,
-                "GOKEYS" to KEYBOARD_THEME_GOKEYS
-            ).forEach { (label, value) ->
-                addView(TextView(context).apply {
-                    text = label
-                    gravity = Gravity.CENTER
-                    textSize = 9.2f
-                    letterSpacing = 0.08f
-                    typeface = Typeface.MONOSPACE
-                    setTextColor(if (keyboardTheme == value) Ink else InkDim)
-                    background = if (keyboardTheme == value) keyboardThemePillBackground(value) else border(Line)
-                    isClickable = true
-                    setOnClickListener {
-                        if (value == KEYBOARD_THEME_SKEUO && !ProManager.isUnlocked(this@MainActivity)) {
-                            showUpgradeSheet(ProFeature.SKEUO_THEME); return@setOnClickListener
-                        }
-                        keyboardTheme = value
-                        prefs().edit().putString(KEYBOARD_THEME_PREF, value).apply()
-                        haptic(this); render()
+            addView(HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    listOf(
+                        "DEFAULT" to KEYBOARD_THEME_DEFAULT,
+                        "CLICKS" to KEYBOARD_THEME_CLICKS,
+                        "SKEUO" to KEYBOARD_THEME_SKEUO,
+                        "GOKEYS" to KEYBOARD_THEME_GOKEYS,
+                        "HYPER" to KEYBOARD_THEME_HYPER3D,
+                        "BLACK" to KEYBOARD_THEME_HYPER3D_BLACK,
+                        "LIGHT" to KEYBOARD_THEME_HYPER3D_LIGHT
+                    ).forEach { (label, value) ->
+                        addView(TextView(context).apply {
+                            text = label
+                            gravity = Gravity.CENTER
+                            textSize = 9.2f
+                            letterSpacing = 0.08f
+                            typeface = Typeface.MONOSPACE
+                            setTextColor(if (keyboardTheme == value) Ink else InkDim)
+                            background = if (keyboardTheme == value) keyboardThemePillBackground(value) else border(Line)
+                            isClickable = true
+                            setOnClickListener {
+                                if (value == KEYBOARD_THEME_SKEUO && !ProManager.isUnlocked(this@MainActivity)) {
+                                    showUpgradeSheet(ProFeature.SKEUO_THEME); return@setOnClickListener
+                                }
+                                keyboardTheme = value
+                                prefs().edit().putString(KEYBOARD_THEME_PREF, value).apply()
+                                haptic(this); render()
+                            }
+                        }, LinearLayout.LayoutParams(dp(68), dp(28)).apply { marginStart = dp(6) })
                     }
-                }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
-            }
+                }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(0, dp(32), 1f))
         }
     }
 
@@ -5031,8 +5525,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun LinearLayout.addKeyRow(labels: List<String>, horizontalInset: Int = 0) {
-        addView(LinearLayout(context).apply {
+        val hasPriorKeyRow = (0 until childCount).any { getChildAt(it).tag == "key_row" }
+        val row = LinearLayout(context).apply {
+            tag = "key_row"
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
             setPadding(horizontalInset, 0, horizontalInset, 0)
             labels.forEach { label ->
                 val weight = when (label) {
@@ -5064,12 +5562,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     })
                 }
             }
-        }, LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight())
+        }
+        val rowParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight()).apply {
+            if (hasPriorKeyRow && !keyboardSettingsOpen) topMargin = -keyRowOverlap()
+        }
+        addView(row, rowParams)
     }
 
     private fun key(label: String): TextView {
         val isLetter = label.length == 1 && label[0].isLetter()
-        return (if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else TextView(this)).apply {
+        val isWidgetDockKey = label == "clicks" && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET
+        return (if (isWidgetDockKey) DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else TextView(this)).apply {
             text = keyLabel(label)
             gravity = Gravity.CENTER
             textSize = keyTextSize(label)
@@ -5088,6 +5591,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (keyboardTheme != KEYBOARD_THEME_DEFAULT) {
                 elevation = dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 5 else 3).toFloat()
                 stateListAnimator = null
+                cameraDistance = 9000f
             }
 
             var touchDownX = 0f; var touchDownY = 0f
@@ -5106,6 +5610,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // Manual long-press: the OnTouchListener consumes events (returns true), so the
             // View's built-in long-click detection never runs. Detect it ourselves.
             val longPressAction: (() -> Unit)? = when {
+                isWidgetDockKey -> { -> beginWidgetKeyboardDetach(this@apply) }
                 label == "enter" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
                 label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
                 isLetter -> { -> haptic(this@apply); handleLetterLongPress(label.lowercase(Locale.US)) }
@@ -5120,20 +5625,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 longPressRunnable = null
             }
             setOnTouchListener { v, event ->
+                if (widgetSwapState != WidgetKeyboardSwapState.SEATED && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                    if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                        v.background = idleBg()
+                        if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
+                        cancelLongPress()
+                        cancelRepeat()
+                        deleteRepeating = false
+                        spaceCursorMoved = false
+                    }
+                    return@setOnTouchListener handleWidgetKeyboardDetachedTouch(event)
+                }
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         touchDownX = event.x; touchDownY = event.y
                         spaceCursorLastX = event.rawX; spaceCursorMoved = false
                         v.background = pressedBg()
                         KeyPhysicsRegistry.activeSprings[v]?.cancel()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.translationY = dp(2).toFloat()
+                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT && keyboardTiltLighting) {
+                            v.translationY = dp(2).toFloat()
+                            v.rotationX = if (label == "space") -1.5f else -3.5f
+                            v.scaleX = 0.985f
+                            v.scaleY = 0.985f
+                        }
                         keyHaptic(label)
                         keyPreviewManager.show(v, label)
                         if (longPressAction != null) {
                             longPressFired = false
                             val r = Runnable { longPressFired = true; longPressAction() }
                             longPressRunnable = r
-                            longPressHandler?.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                            val delay = if (isWidgetDockKey) 650L else android.view.ViewConfiguration.getLongPressTimeout().toLong()
+                            if (isWidgetDockKey) (v as? DockKeyView)?.startHoldProgress(delay)
+                            longPressHandler?.postDelayed(r, delay)
                         }
                         if (label == "back") {
                             deleteRepeating = false
@@ -5152,6 +5675,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         if (longPressRunnable != null &&
                             (Math.abs(event.x - touchDownX) > touchSlop || Math.abs(event.y - touchDownY) > touchSlop)) {
                             cancelLongPress()
+                            if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
                         }
                         if (label == "space" && !libraryOpen) {
                             val delta = event.rawX - spaceCursorLastX
@@ -5171,7 +5695,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                     MotionEvent.ACTION_UP -> {
                         v.background = idleBg()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.animateSpringReturn(dp(2).toFloat())
+                        if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
+                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT && keyboardTiltLighting) v.animateSpringReturn(dp(2).toFloat())
+                        if (keyboardTiltLighting) v.animate().rotationX(0f).scaleX(1f).scaleY(1f).setDuration(150L).start()
+                        if (!keyboardTiltLighting) { v.translationY = 0f; v.rotationX = 0f; v.scaleX = 1f; v.scaleY = 1f }
                         cancelLongPress()
                         if (longPressFired) { longPressFired = false; return@setOnTouchListener true }
                         if (label == "back") {
@@ -5193,7 +5720,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         v.background = idleBg()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT) v.animateSpringReturn(dp(2).toFloat())
+                        if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
+                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT && keyboardTiltLighting) v.animateSpringReturn(dp(2).toFloat())
+                        if (keyboardTiltLighting) v.animate().rotationX(0f).scaleX(1f).scaleY(1f).setDuration(150L).start()
+                        if (!keyboardTiltLighting) { v.translationY = 0f; v.rotationX = 0f; v.scaleX = 1f; v.scaleY = 1f }
                         cancelRepeat(); deleteRepeating = false; spaceCursorMoved = false
                         cancelLongPress(); longPressFired = false
                     }
@@ -5577,6 +6107,25 @@ Reply format: ["word1","word2","word3"]"""
         renderRibbon()
     }
 
+    private fun glideTrailColors(): IntArray {
+        val core = when (keyboardTheme) {
+            KEYBOARD_THEME_GOKEYS -> 0xFFF2691E.toInt()
+            KEYBOARD_THEME_CLICKS -> Accent2
+            KEYBOARD_THEME_SKEUO -> 0xFF8FD694.toInt()
+            KEYBOARD_THEME_HYPER3D -> 0xFF7EA2FF.toInt()
+            KEYBOARD_THEME_HYPER3D_BLACK -> 0xFFFF6B6B.toInt()
+            KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF4E6FE7.toInt()
+            else -> goKeyColor
+        }
+        val tail = when (keyboardTheme) {
+            KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF8FD6FF.toInt()
+            KEYBOARD_THEME_HYPER3D_BLACK -> 0xFF9DB4FF.toInt()
+            KEYBOARD_THEME_CLICKS -> 0xFFFF8A68.toInt()
+            else -> brighten(core)
+        }
+        return intArrayOf(adjustAlpha(core, 0x20), tail, core, adjustAlpha(core, 0x22))
+    }
+
     inner class SwipeKeyboardLayout(context: Context) : LinearLayout(context) {
         private var startRawX = 0f
         private var startRawY = 0f
@@ -5586,14 +6135,20 @@ Reply format: ["word1","word2","word3"]"""
         private var screenX = 0f
         private var screenY = 0f
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Accent
-            strokeWidth = 8f
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
-            alpha = 150
         }
         private val trailPath = Path()
+
+        private fun clearGlideTouchState() {
+            tracking = false
+            traced.clear()
+            trailLocal.clear()
+            trackpadActive = false
+            glideClassifier?.clear()
+            invalidate()
+        }
 
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
@@ -5601,11 +6156,33 @@ Reply format: ["word1","word2","word3"]"""
                 trailPath.reset()
                 trailPath.moveTo(trailLocal[0].first, trailLocal[0].second)
                 for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
+                val start = trailLocal.first()
+                val end = trailLocal.last()
+                val colors = glideTrailColors()
+                trailPaint.shader = android.graphics.LinearGradient(
+                    start.first, start.second, end.first, end.second,
+                    colors, null, Shader.TileMode.CLAMP
+                )
+                trailPaint.strokeWidth = dp(12).toFloat()
+                trailPaint.alpha = 58
                 canvas.drawPath(trailPath, trailPaint)
+                trailPaint.strokeWidth = dp(5).toFloat()
+                trailPaint.alpha = 222
+                canvas.drawPath(trailPath, trailPaint)
+                trailPaint.shader = null
+                trailPaint.alpha = 255
             }
         }
 
         override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+            if (widgetKeyboardSwapActive()) {
+                clearGlideTouchState()
+                return true
+            }
+            if (keyboardSettingsOpen) {
+                clearGlideTouchState()
+                return false
+            }
             // Intercept as soon as a second finger lands so we can drive trackpad scrolling
             if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && libraryOpen) {
                 trackpadLastY = (ev.getY(0) + ev.getY(1)) / 2f
@@ -5670,6 +6247,11 @@ Reply format: ["word1","word2","word3"]"""
         }
 
         override fun onTouchEvent(ev: MotionEvent): Boolean {
+            if (widgetKeyboardSwapActive()) {
+                clearGlideTouchState()
+                return handleWidgetKeyboardDetachedTouch(ev)
+            }
+            if (keyboardSettingsOpen) return false
             if (trackpadScroll(ev)) return true
             if (!tracking) return false
             when (ev.actionMasked) {
@@ -9823,6 +10405,240 @@ $emailText"""
         return if (id == 0) null else runCatching { res.getDrawable(id, theme) }.getOrNull()
     }
 
+    private inner class DockKeyView(context: Context) : TextView(context) {
+        private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
+        private val arcRect = RectF()
+        private var progressAnimator: ValueAnimator? = null
+        private var holdProgress = 0f
+        private var holdHapticStage = 0
+
+        fun startHoldProgress(durationMs: Long) {
+            progressAnimator?.cancel()
+            holdProgress = 0f
+            holdHapticStage = 0
+            invalidate()
+            progressAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = durationMs
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener {
+                    holdProgress = it.animatedValue as Float
+                    val nextStage = when {
+                        holdProgress >= 0.72f -> 3
+                        holdProgress >= 0.46f -> 2
+                        holdProgress >= 0.2f -> 1
+                        else -> 0
+                    }
+                    if (nextStage > holdHapticStage) {
+                        holdHapticStage = nextStage
+                        dockHoldHaptic(nextStage)
+                    }
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        fun cancelHoldProgress() {
+            progressAnimator?.cancel()
+            progressAnimator = null
+            holdProgress = 0f
+            holdHapticStage = 0
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (holdProgress <= 0f) return
+            val accent = if (keyboardTheme == KEYBOARD_THEME_HYPER3D_LIGHT) 0xFF6D7FFF.toInt() else 0xFF7AF0A0.toInt()
+            val cx = width / 2f
+            val cy = height / 2f
+            val diameter = (min(width, height) - dp(8)).coerceAtLeast(dp(28)).toFloat()
+            val radius = diameter / 2f
+            val trackRadius = radius * 0.98f
+            arcRect.set(cx - trackRadius, cy - trackRadius, cx + trackRadius, cy + trackRadius)
+
+            fillPaint.shader = null
+            fillPaint.color = adjustAlpha(0xFF000000.toInt(), 0.36f)
+            canvas.drawCircle(cx, cy + dp(2), radius * 1.1f, fillPaint)
+
+            fillPaint.shader = android.graphics.RadialGradient(
+                cx,
+                cy,
+                radius * 1.7f,
+                intArrayOf(adjustAlpha(accent, 0.22f), adjustAlpha(accent, 0.06f), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(cx, cy, radius * 1.55f, fillPaint)
+
+            fillPaint.shader = android.graphics.LinearGradient(
+                0f,
+                cy - radius,
+                0f,
+                cy + radius,
+                intArrayOf(0xFF262A31.toInt(), 0xFF111319.toInt(), 0xFF050607.toInt()),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(cx, cy, radius * 0.82f, fillPaint)
+            fillPaint.shader = null
+
+            ringPaint.style = Paint.Style.STROKE
+            ringPaint.strokeWidth = dp(1).toFloat()
+            ringPaint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.12f)
+            canvas.drawCircle(cx, cy - dp(1), radius * 0.8f, ringPaint)
+            ringPaint.color = adjustAlpha(0xFF000000.toInt(), 0.48f)
+            canvas.drawCircle(cx, cy + dp(1), radius * 0.83f, ringPaint)
+
+            ringPaint.strokeWidth = dp(3).toFloat()
+            ringPaint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.13f)
+            canvas.drawCircle(cx, cy, trackRadius, ringPaint)
+            ringPaint.strokeWidth = dp(4).toFloat()
+            ringPaint.color = accent
+            canvas.drawArc(arcRect, -90f, holdProgress * 360f, false, ringPaint)
+        }
+
+        override fun onDetachedFromWindow() {
+            progressAnimator?.cancel()
+            super.onDetachedFromWindow()
+        }
+    }
+
+    private inner class KeyboardSocketView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rect = RectF()
+        private var glow = 0f
+
+        fun pulseGlow() {
+            ValueAnimator.ofFloat(0f, 1f, 0f).apply {
+                duration = 520L
+                addUpdateListener {
+                    glow = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val side = dp(6).toFloat()
+            rect.set(side, dp(8).toFloat(), width - side, height - dp(8).toFloat())
+            paint.shader = android.graphics.LinearGradient(
+                0f, rect.top, 0f, rect.bottom,
+                intArrayOf(0xFF030405.toInt(), 0xFF0B0E12.toInt(), 0xFF020203.toInt()),
+                floatArrayOf(0f, 0.42f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(rect, dp(22).toFloat(), dp(22).toFloat(), paint)
+            paint.shader = null
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.08f + glow * 0.16f)
+            canvas.drawRoundRect(rect, dp(22).toFloat(), dp(22).toFloat(), paint)
+            paint.style = Paint.Style.FILL
+            val stripWidth = (width * 0.42f).coerceAtMost(dp(178).toFloat())
+            val stripHeight = dp(13).toFloat()
+            val stripLeft = width / 2f - stripWidth / 2f
+            val stripTop = height - dp(23).toFloat()
+            val strip = RectF(stripLeft, stripTop, stripLeft + stripWidth, stripTop + stripHeight)
+            paint.shader = android.graphics.LinearGradient(
+                0f,
+                strip.top,
+                0f,
+                strip.bottom,
+                intArrayOf(0xFF050608.toInt(), 0xFF15191E.toInt(), 0xFF030304.toInt()),
+                floatArrayOf(0f, 0.42f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(strip, stripHeight / 2f, stripHeight / 2f, paint)
+            paint.shader = null
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.08f + glow * 0.2f)
+            canvas.drawRoundRect(strip, stripHeight / 2f, stripHeight / 2f, paint)
+            paint.style = Paint.Style.FILL
+            val contactColor = if (glow > 0.05f) 0xFF9AF5AE.toInt() else 0xFF57606B.toInt()
+            val gap = stripWidth / 7f
+            repeat(6) { i ->
+                val cx = stripLeft + gap * (i + 1)
+                val cy = strip.centerY()
+                paint.shader = android.graphics.RadialGradient(
+                    cx,
+                    cy,
+                    dp(10).toFloat(),
+                    intArrayOf(adjustAlpha(contactColor, 0.22f + glow * 0.42f), Color.TRANSPARENT),
+                    null,
+                    Shader.TileMode.CLAMP
+                )
+                canvas.drawCircle(cx, cy, dp(9).toFloat(), paint)
+                paint.shader = null
+                paint.color = adjustAlpha(contactColor, if (glow > 0.05f) 0.7f else 0.32f)
+                canvas.drawCircle(cx, cy, dp(2).toFloat(), paint)
+            }
+        }
+    }
+
+    private inner class ConnectorProngsView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var pulse = 0f
+
+        fun pulse() {
+            ValueAnimator.ofFloat(0f, 1f, 0f).apply {
+                duration = 520L
+                addUpdateListener {
+                    pulse = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val strip = RectF(dp(7).toFloat(), dp(3).toFloat(), width - dp(7).toFloat(), height - dp(3).toFloat())
+            paint.shader = android.graphics.LinearGradient(
+                0f,
+                strip.top,
+                0f,
+                strip.bottom,
+                intArrayOf(0x441E242C, 0xAA07090D.toInt(), 0x66000000),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(strip, strip.height() / 2f, strip.height() / 2f, paint)
+            paint.shader = null
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.08f + pulse * 0.2f)
+            canvas.drawRoundRect(strip, strip.height() / 2f, strip.height() / 2f, paint)
+            paint.style = Paint.Style.FILL
+            val contactColor = if (pulse > 0.05f) 0xFFB9FFC5.toInt() else 0xFF65707B.toInt()
+            val gap = strip.width() / 7f
+            repeat(6) { i ->
+                val cx = strip.left + gap * (i + 1)
+                val contact = RectF(cx - dp(3).toFloat(), strip.centerY() - dp(2).toFloat(), cx + dp(3).toFloat(), strip.centerY() + dp(2).toFloat())
+                paint.shader = android.graphics.LinearGradient(
+                    contact.left,
+                    contact.top,
+                    contact.right,
+                    contact.bottom,
+                    intArrayOf(adjustAlpha(contactColor, 0.52f + pulse * 0.34f), adjustAlpha(0xFFFFFFFF.toInt(), 0.16f + pulse * 0.24f), adjustAlpha(contactColor, 0.28f + pulse * 0.28f)),
+                    null,
+                    Shader.TileMode.CLAMP
+                )
+                canvas.drawRoundRect(contact, dp(2).toFloat(), dp(2).toFloat(), paint)
+            }
+            paint.shader = null
+        }
+    }
+
     private inner class SpaceKeyView(context: Context) : TextView(context) {
         private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             strokeCap = Paint.Cap.ROUND
@@ -9873,6 +10689,9 @@ $emailText"""
             KEYBOARD_THEME_SKEUO -> intArrayOf(0xFF24262D.toInt(), 0xFF101116.toInt(), 0xFF050506.toInt())
             KEYBOARD_THEME_CLICKS -> intArrayOf(0xFF1A1C21.toInt(), 0xFF111318.toInt(), 0xFF08090C.toInt(), 0xFF030304.toInt())
             KEYBOARD_THEME_GOKEYS -> intArrayOf(0xFF15171B.toInt(), 0xFF101115.toInt(), 0xFF0B0C0F.toInt())
+            KEYBOARD_THEME_HYPER3D_BLACK -> intArrayOf(0xFF0C0C0E.toInt(), 0xFF080809.toInt(), 0xFF050506.toInt())
+            KEYBOARD_THEME_HYPER3D_LIGHT -> intArrayOf(0xFFE8EBF0.toInt(), 0xFFD4D8E0.toInt(), 0xFFBEC4CF.toInt())
+            KEYBOARD_THEME_HYPER3D -> intArrayOf(0xFF171A20.toInt(), 0xFF0D0F13.toInt(), 0xFF050608.toInt())
             else -> intArrayOf(0xFF1F2127.toInt(), 0xFF0C0D10.toInt(), 0xFF030304.toInt())
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, colors).apply {
@@ -9880,23 +10699,26 @@ $emailText"""
             setStroke(dp(1), when (keyboardTheme) {
                 KEYBOARD_THEME_SKEUO -> 0x303B4250
                 KEYBOARD_THEME_GOKEYS -> 0x14FFFFFF
+                KEYBOARD_THEME_HYPER3D_LIGHT -> 0x66FFFFFF
                 else -> 0x181B20
             })
         }
     }
 
-    private fun keyIdleBackground(label: String): Drawable? {
+    private fun keyIdleBackground(label: String): Drawable {
+        hyper3dKeyDrawable(label)?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = false)
         if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false)
         if (label == "123") return themed123KeyBackground(pressed = false)
         return when (keyboardTheme) {
             KEYBOARD_THEME_CLICKS -> physicalKeyBackground(pressed = false, premium = false, fn = isFnKey(label))
             KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = false, premium = true, fn = isFnKey(label))
-            else -> null
+            else -> keyBackground()
         }
     }
 
     private fun keyPressedBackground(label: String): Drawable {
+        hyper3dKeyDrawable(label)?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = true)
         if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true)
         if (label == "123") return themed123KeyBackground(pressed = true)
@@ -9905,6 +10727,30 @@ $emailText"""
             KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = true, premium = true, fn = isFnKey(label))
             else -> keyBackground(KeyHighlight)
         }
+    }
+
+    private fun hyper3dKeyDrawable(label: String): Drawable? {
+        val id = when (keyboardTheme) {
+            KEYBOARD_THEME_HYPER3D -> when {
+                label == "enter" -> R.drawable.key_hyper3d_go
+                isFnKey(label) -> R.drawable.key_hyper3d_dark
+                else -> R.drawable.key_hyper3d
+            }
+            KEYBOARD_THEME_HYPER3D_BLACK -> when {
+                label == "enter" -> R.drawable.key_hyper3d_black_go
+                label == "clicks" -> R.drawable.key_hyper3d_black_accent
+                isFnKey(label) -> R.drawable.key_hyper3d_black_dark
+                else -> R.drawable.key_hyper3d_black
+            }
+            KEYBOARD_THEME_HYPER3D_LIGHT -> when {
+                label == "enter" -> R.drawable.key_hyper3d_light_go
+                label == "clicks" -> R.drawable.key_hyper3d_light_accent
+                isFnKey(label) -> R.drawable.key_hyper3d_light_dark
+                else -> R.drawable.key_hyper3d_light
+            }
+            else -> return null
+        }
+        return runCatching { resources.getDrawable(id, theme) }.getOrNull()
     }
 
     private fun goKeysKeyBackground(label: String, pressed: Boolean): Drawable {
@@ -9925,6 +10771,7 @@ $emailText"""
     }
 
     private fun themed123KeyBackground(pressed: Boolean): Drawable {
+        hyper3dKeyDrawable("123")?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(if (pressed) KeyHighlight else Key)
@@ -10032,6 +10879,7 @@ $emailText"""
     }
 
     private fun themedGoKeyBackground(fillColor: Int, pressed: Boolean): Drawable {
+        hyper3dKeyDrawable("enter")?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return goKeyBackground(fillColor)
         val skirt = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
@@ -10057,6 +10905,9 @@ $emailText"""
             KEYBOARD_THEME_CLICKS -> Accent2
             KEYBOARD_THEME_SKEUO -> 0xFF8FD694.toInt()
             KEYBOARD_THEME_GOKEYS -> 0xFFF2691E.toInt()
+            KEYBOARD_THEME_HYPER3D -> 0xFF6C89D8.toInt()
+            KEYBOARD_THEME_HYPER3D_BLACK -> 0xFF2C3038.toInt()
+            KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFFE7EAF0.toInt()
             else -> Accent
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(accent), accent)).apply {
@@ -10079,8 +10930,12 @@ $emailText"""
     }
 
     private fun keyVerticalInset(): Int {
-        if (keyboardTheme == KEYBOARD_THEME_CLICKS || keyboardTheme == KEYBOARD_THEME_GOKEYS) return dp(10 + keyboardSize * 5 / 100)
+        if (keyboardTheme == KEYBOARD_THEME_CLICKS || keyboardTheme == KEYBOARD_THEME_GOKEYS || isHyper3dTheme()) return dp(10 + keyboardSize * 5 / 100)
         return dp(7 + keyboardSize * 4 / 100)
+    }
+
+    private fun keyRowOverlap(): Int {
+        return dp(8 + keyboardSize * 3 / 100)
     }
 
     private fun keyHorizontalInset(): Int {
@@ -10113,7 +10968,20 @@ $emailText"""
         return base + (keyboardSize * growth / 100f)
     }
 
-    private fun keyTextColor(label: String) = if (keyboardTheme == KEYBOARD_THEME_GOKEYS) {
+    private fun keyTextColor(label: String) = if (isHyper3dTheme()) {
+        when {
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_LIGHT && label == "enter" -> 0xFF104026.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_LIGHT && isFnKey(label) -> 0xFF596170.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF1E2633.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK && label == "enter" -> 0xFFFF6B6B.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK && label == "clicks" -> 0xFF9DB4FF.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK && isFnKey(label) -> 0xFF9AA2B1.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D && label == "enter" -> 0xFFEAFFF2.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D && label == "clicks" -> 0xFFEAF0FF.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D && isFnKey(label) -> 0xFF9AA2B1.toInt()
+            else -> 0xFFEEF1F7.toInt()
+        }
+    } else if (keyboardTheme == KEYBOARD_THEME_GOKEYS) {
         when (label) {
             "enter" -> 0xFFFFFFFF.toInt()
             "shift" -> when (shiftState) { ShiftState.OFF -> 0xFF9AA1AB.toInt(); ShiftState.ONCE -> Ink; ShiftState.LOCK -> 0xFFF2691E.toInt() }
@@ -10127,11 +10995,40 @@ $emailText"""
             else -> Ink
     }
 
+    private fun isHyper3dTheme(): Boolean {
+        return keyboardTheme == KEYBOARD_THEME_HYPER3D ||
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK ||
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_LIGHT
+    }
+
     private fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun applyTheme() {
+        activeNeuTokens = when (themeMode) {
+            THEME_MODE_DARK -> Neu.Dark
+            THEME_MODE_LIGHT -> Neu.Light
+            else -> if (isSystemDarkMode()) Neu.Dark else Neu.Light
+        }
+    }
+
+    private fun isSystemDarkMode(): Boolean {
+        return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    }
 
     private fun haptic(view: View) {
         if (!hapticsEnabled) return
         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    private fun dockHoldHaptic(stage: Int) {
+        if (!hapticsEnabled) return
+        hapticEngine.dockHoldStage(stage)
+    }
+
+    private fun dockDetachHaptic(view: View) {
+        if (!hapticsEnabled) return
+        hapticEngine.dockDetachSnap()
+        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
     }
 
     // Pop-select micro-interaction: quick press-in, fire the action, then an
@@ -10300,36 +11197,8 @@ $emailText"""
 
     // ── Types ────────────────────────────────────────────────────────────────
 
-    private enum class PaneKind { CHAT, MAIL, LIST, SETTINGS, MUSIC, PHOTOS, AI }
-    private enum class ShiftState { OFF, ONCE, LOCK }
-
-    private data class PaneTarget(val id: String, val name: String, val accent: Int, val kind: PaneKind,
-        val packageName: String?, val deepLinkUri: String?, val preview: String)
-    private data class AppEntry(val label: String, val shortName: String, val packageName: String, val componentName: ComponentName, val brandColor: Int)
-    private data class LibraryCategory(val name: String, val accent: Int, val apps: List<LibraryApp>)
-    private data class LibraryApp(val name: String, val accent: Int, val target: PaneTarget, val componentName: ComponentName?)
-    private data class IconPack(val name: String, val packageName: String)
-    private data class IconPackIcon(val packageName: String, val drawableName: String)
-    private data class RibbonEntry(val label: String, val accent: Int, val target: PaneTarget)
-    private data class HomeTileSpec(val id: String, val col: Int, val row: Int, val colSpan: Int, val rowSpan: Int)
-    private data class HubMessage(val key: String, val sender: String, val preview: String, val packageName: String, val kind: String, val color: Int, val lastUpdated: Long)
-    private data class ChatLine(val text: String, val fromMe: Boolean)
-    private data class ContactMatch(val name: String, val value: String)
-    private data class ContactCommand(val contact: ContactMatch, val message: String)
-    private data class CalendarCommand(val title: String, val startMs: Long, val endMs: Long)
-    private data class AiAnswerState(val prompt: String, val answer: String, val loading: Boolean)
-    private data class SearchResult(val title: String, val subtitle: String, val accent: Int, val kind: SearchKind, val target: PaneTarget?, val action: (() -> Unit)? = null)
-    private enum class SearchKind { APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI, TRAVEL }
-
-    data class FlightSegment(
-        val airline: String, val flightNumber: String,
-        val from: String, val to: String,
-        val depart: String, val arrive: String,
-        val date: String, val confirmation: String, val seat: String
-    )
-    private data class WeatherSnapshot(val tempF: Int, val feelsLikeF: Int, val humidity: Int, val windMph: Int, val code: Int, val label: String)
-    private data class WidgetSpec(val id: Int, val size: String)
-    private data class WidgetGridSize(val columns: Int, val rows: Int)
+    // NOTE: Pure model types (PaneKind, PaneTarget, AppEntry, SearchResult, FlightSegment, …)
+    // moved verbatim to LauncherModels.kt. Behaviour unchanged; referenced here by simple name.
 
     companion object {
         private const val Screen = 0xFF0D0E11.toInt()
@@ -10349,11 +11218,18 @@ $emailText"""
         private const val KEYBOARD_PLACEMENT_INTRO_PREF = "keyboard_placement_intro_shown"
         private const val KEYBOARD_PLACEMENT_DOCKED = "docked"
         private const val KEYBOARD_PLACEMENT_WIDGET = "widget"
+        private const val THEME_MODE_PREF = "theme_mode"
+        private const val THEME_MODE_DARK = "dark"
+        private const val THEME_MODE_LIGHT = "light"
+        private const val THEME_MODE_SYSTEM = "system"
         private const val KEYBOARD_THEME_PREF = "keyboard_theme"
         private const val KEYBOARD_THEME_DEFAULT = "default"
         private const val KEYBOARD_THEME_CLICKS = "clicks"
         private const val KEYBOARD_THEME_SKEUO = "skeuo"
         private const val KEYBOARD_THEME_GOKEYS = "gokeys"
+        private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
+        private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
+        private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
         private const val MUSIC_THEME_PREF = "music_theme"
         private const val MUSIC_THEME_MUSIC1 = "music1"
         private const val MUSIC_THEME_BLACK = "music_black"
@@ -10361,6 +11237,7 @@ $emailText"""
         private const val PHOTO_SELECTED_ID_PREF = "photo_selected_id"
         private const val PHOTO_FAVORITES_PREF = "photo_favorites"
         private const val HAPTICS_PREF = "haptics"
+        private const val KBD_TILT_LIGHT_PREF = "kbd_tilt_light"
         private const val LIBRARY_GRID_MODE_PREF = "library_grid_mode"
         private const val GO_KEY_COLOR_PREF = "go_key_color"
         private const val FAVORITE_APPS_PREF = "favorite_apps"

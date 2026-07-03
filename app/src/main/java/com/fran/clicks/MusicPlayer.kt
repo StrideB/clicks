@@ -203,13 +203,42 @@ fun MusicPlayer(
     val current = media
     if (current == null) {
         Box(Modifier.fillMaxSize().background(Panel), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                LabelText("NO ACTIVE MEDIA SESSION", GreenSoft)
-                Spacer(Modifier.height(8.dp))
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(horizontal = 28.dp)
+            ) {
+                LabelText("CLICKS MUSIC", GreenSoft)
+                Spacer(Modifier.height(12.dp))
                 BasicText(
-                    text = "Start music in any app, then return here.",
+                    text = "Your music player is ready.",
+                    style = TextStyle(color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                )
+                Spacer(Modifier.height(7.dp))
+                BasicText(
+                    text = "Open the library or start playback in Spotify, Apple Music, or another player. When media is active, this screen becomes the full now-playing experience.",
                     style = TextStyle(color = InkDim, fontSize = 12.sp, textAlign = TextAlign.Center)
                 )
+                Spacer(Modifier.height(18.dp))
+                Box(
+                    modifier = Modifier
+                        .height(38.dp)
+                        .clip(RoundedCornerShape(19.dp))
+                        .background(Brush.verticalGradient(listOf(GreenSoft.copy(alpha = 0.95f), GreenBright.copy(alpha = 0.78f))))
+                        .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(19.dp))
+                        .clickable(onClick = onOpenSource)
+                        .padding(horizontal = 18.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BasicText(
+                        text = "OPEN MUSIC",
+                        style = TextStyle(
+                            color = Color(0xFF06120C),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.1.sp
+                        )
+                    )
+                }
             }
         }
         return
@@ -652,7 +681,12 @@ private fun PortraitVinylDisc(
 }
 
 @Composable
-private fun FullPaneAlbumArt(title: String, artist: String, albumArt: Bitmap?, appColor: Color) {
+private fun FullPaneAlbumArt(
+    title: String,
+    artist: String,
+    albumArt: Bitmap?,
+    appColor: Color
+) {
     Box(Modifier.fillMaxSize()) {
         if (albumArt != null) {
             Image(albumArt.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)

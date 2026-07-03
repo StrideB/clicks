@@ -68,11 +68,56 @@ class CustomHapticEngine(context: Context) {
         }
     }
 
+    /** Progressive hold feedback for the widget-mode DOCK key. */
+    fun dockHoldStage(stage: Int) {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        val clamped = stage.coerceIn(1, 3)
+        val scale = when (clamped) {
+            1 -> 0.34f
+            2 -> 0.56f
+            else -> 0.78f
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                v.vibrate(
+                    VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, scale)
+                        .compose()
+                )
+            }.onFailure { pulse(7L + clamped * 3L, 80 + clamped * 40) }
+        } else {
+            pulse(7L + clamped * 3L, 80 + clamped * 40)
+        }
+    }
+
+    /** Strong confirmation when the widget keyboard physically detaches. */
+    fun dockDetachSnap() {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                v.vibrate(
+                    VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1.0f)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.72f)
+                        .compose()
+                )
+            }.onFailure { pulse(24L, 255) }
+        } else {
+            pulse(24L, 255)
+        }
+    }
+
     private fun fallback(label: String) {
         val durationMs = if (label == "space" || label == "back") 12L else 8L
         val amp = (150 * amplitude()).toInt()
+        pulse(durationMs, amp)
+    }
+
+    private fun pulse(durationMs: Long, amp: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator?.vibrate(VibrationEffect.createOneShot(durationMs, amp))
+            vibrator?.vibrate(VibrationEffect.createOneShot(durationMs, amp.coerceIn(1, 255)))
         } else {
             @Suppress("DEPRECATION")
             vibrator?.vibrate(durationMs)

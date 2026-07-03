@@ -68,6 +68,7 @@ class SpotifyAuth(private val context: Context) {
             .appendQueryParameter("state", state)
             .appendQueryParameter("code_challenge_method", "S256")
             .appendQueryParameter("code_challenge", challenge)
+            .appendQueryParameter("show_dialog", "true")
             .build()
 
         CustomTabsIntent.Builder().build().launchUrl(activity, authUrl)
@@ -124,6 +125,7 @@ class SpotifyAuth(private val context: Context) {
         prefs.edit()
             .putString("access_token", json.getString("access_token"))
             .putLong("expires_at", System.currentTimeMillis() + json.getLong("expires_in") * 1000L)
+            .putString("scope", json.optString("scope"))
             .also { e -> json.optString("refresh_token").takeIf { it.isNotBlank() }?.let { e.putString("refresh_token", it) } }
             .apply()
         _connectState.value = SpotifyConnectState.CONNECTED
