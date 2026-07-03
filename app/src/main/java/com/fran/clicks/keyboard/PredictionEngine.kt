@@ -23,6 +23,17 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
     )
 
     /**
+     * True if any dictionary word extends [prefix] beyond itself — i.e. the user could still be
+     * mid-typing a real word. Live (no-space) autocorrect uses this to only rewrite "dead-end"
+     * strings that can't become a real word, so it never mangles a word in progress.
+     */
+    fun isPrefixOfDictWord(prefix: String): Boolean {
+        if (prefix.isEmpty()) return false
+        val p = prefix.lowercase()
+        return wordFrequencies.keys.any { it.length > p.length && it.startsWith(p) }
+    }
+
+    /**
      * Predictions for the suggestion strip / live routing. [ngramBoost] holds personalized
      * next-word predictions for the *preceding* word (from the n-gram store). With nothing typed
      * yet they ARE the prediction; once the user starts a word, only the boost entries that extend

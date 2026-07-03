@@ -7,10 +7,12 @@ import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.content.pm.PackageManager
@@ -148,6 +150,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var libraryGridMode = true
     private var libraryView: View? = null
     private var libraryContentArea: FrameLayout? = null
+    private var libraryViewDirty = true
+    private var libraryContentReady = false
     private var categoryFolderView: View? = null
     private var widgetBoardView: View? = null
     private var widgetPickerView: View? = null
@@ -188,7 +192,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var deleteRepeatActive = false
     private var deleteRepeatFired = false
     // Autocorrect undo — stores what was replaced so backspace immediately after reverts it
-    private data class AutocorrectUndo(val original: String, val corrected: String)
+    private data class AutocorrectUndo(val original: String, val corrected: String, val trailingSpace: Boolean = true)
     private var pendingAutocorrectUndo: AutocorrectUndo? = null
     // Cursor position within query/composeText (null = end)
     private var cursorPos: Int? = null
@@ -253,6 +257,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastAppsLoadMs = 0L
     private var lastHubLoadMs = 0L
     private var lastCalendarLoadMs = 0L
+    private val packageChangeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            refreshAppsForPackageChange()
+        }
+    }
 
     private lateinit var contactsLauncher: ActivityResultLauncher<String>
     private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
@@ -359,6 +368,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
         migrateWidgetGestureDefault()
         apps = loadLaunchableApps()
+        lastAppsLoadMs = System.currentTimeMillis()
+        registerAppPackageReceiver()
         messages = loadHubMessages()
         calendarEvents = loadCalendarEvents()
         prefs().registerOnSharedPreferenceChangeListener(prefsListener)
@@ -455,12 +466,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (previousTheme != activeNeuTokens.mode && ::rootView.isInitialized) render()
         ensureBillingConnected()
         val now = System.currentTimeMillis()
-        if (now - lastAppsLoadMs > 10_000) {
-            val updatedApps = loadLaunchableApps()
-            if (updatedApps.map { it.componentName } != apps.map { it.componentName }) invalidateLibraryCaches()
-            apps = updatedApps
-            lastAppsLoadMs = now
-        }
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
@@ -489,6 +494,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onDestroy() {
         super.onDestroy()
         prefs().unregisterOnSharedPreferenceChangeListener(prefsListener)
+        runCatching { unregisterReceiver(packageChangeReceiver) }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
         mediaUiScope.cancel()
@@ -2082,7 +2088,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return (flexibleSpace * 0.74f).toInt().coerceIn(dp(126), dp(214))
     }
 
-    private fun homeWidgetStackVisible() = openPane == null && !libraryOpen
+    private fun homeWidgetStackVisible() = openPane == null
 
     private fun widgetKeyboardSwapActive(): Boolean {
         return keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && widgetSwapState != WidgetKeyboardSwapState.SEATED
@@ -2421,8 +2427,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 .setInterpolator(DecelerateInterpolator())
                 .withEndAction {
                     contentFrame.removeView(overlay)
-                    if (libraryView === overlay) libraryView = null
-                    libraryContentArea = null
                     overlay.setLayerType(View.LAYER_TYPE_NONE, null)
                     renderRibbon()
                     syncNowPlayingCardVisibility()
@@ -2473,8 +2477,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
                 contentFrame.removeView(closing)
-                if (libraryView === closing) libraryView = null
-                libraryContentArea = null
+                closing.setLayerType(View.LAYER_TYPE_NONE, null)
             }.start()
     }
 
@@ -3082,20 +3085,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         scheduleLibraryPopulate(if (animate) 48L else 0L)
     }
 
-    private fun appLibrary(): View = FrameLayout(this).apply {
-        setPadding(dp(14), dp(14), dp(14), dp(10))
-        setBackgroundColor(activeNeuTokens.base)
-        val contentArea = FrameLayout(context)
-        libraryContentArea = contentArea
-        showLibraryLoading(contentArea)
-        addView(contentArea, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply {
-            topMargin = dp(38)
-        })
-        addView(libraryHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
+    private fun appLibrary(): View {
+        val cached = libraryView as? FrameLayout
+        if (!libraryViewDirty && cached != null) {
+            libraryContentArea = cached.findViewWithTag("library_content") as? FrameLayout
+            cached.setBackgroundColor(activeNeuTokens.base)
+            return cached
+        }
+        return FrameLayout(this).apply {
+            setPadding(dp(14), dp(14), dp(14), dp(10))
+            setBackgroundColor(activeNeuTokens.base)
+            val contentArea = FrameLayout(context).apply { tag = "library_content" }
+            libraryContentArea = contentArea
+            showLibraryLoading(contentArea)
+            addView(contentArea, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply {
+                topMargin = dp(38)
+            })
+            addView(libraryHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
+            libraryViewDirty = false
+        }
     }
 
     private fun showLibraryLoading(area: FrameLayout) {
         area.removeAllViews()
+        libraryContentReady = false
         area.addView(TextView(this).apply {
             text = ""
             setTextColor(activeNeuTokens.inkFaint)
@@ -3105,6 +3118,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun scheduleLibraryPopulate(delayMs: Long) {
+        if (libraryContentReady && query.isBlank()) return
         libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
         val r = Runnable {
             libraryPopulateRunnable = null
@@ -3120,6 +3134,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val child = if (query.isNotBlank()) searchResultsGrid()
                     else if (libraryGridMode) libraryGrid() else bentoGrid()
         area.addView(child, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        libraryContentReady = query.isBlank()
     }
 
     private fun refreshLibraryContent() {
@@ -3887,7 +3902,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             setOnClickListener {
                 haptic(this); libraryOpen = false
-                libraryView?.let { contentFrame.removeView(it) }; libraryView = null
+                libraryView?.let { contentFrame.removeView(it) }
                 if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target)
             }
             setOnLongClickListener { haptic(this); showIconMenu(this, app); true }
@@ -6403,6 +6418,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun scheduleSpellCheck() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
+        scheduleLiveAutocorrect()
         val word = currentWordInCompose()
         if (word.length < 2) {
             if (suggestions.isNotEmpty()) { suggestions = emptyList(); updateSuggestionBar() }
@@ -6449,9 +6465,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     // ── Autocorrect ──────────────────────────────────────────────────────────
 
-    private fun tryAutocorrect() {
+    // [live] = fired from the pause debounce with no space typed. In that mode we ONLY rewrite a
+    // "dead-end" word (one no real word extends), so we never rewrite a word still being typed, and
+    // we don't add a trailing space. Non-live is the on-space path and behaves as before.
+    private fun tryAutocorrect(live: Boolean = false) {
         val word = currentWordInCompose().trimEnd()
         if (word.length < 2) return
+        if (live && (word.length < 3 || predictionEngine.isPrefixOfDictWord(word))) return
         // bestCorrection is already Damerau-aware (a transposition like teh→the or an adjacent-key
         // slip counts as ~1 edit) and confidence-bounded, so trust its result directly. Only the
         // looser getSuggestions fallback — which can return a longer completion — needs the plain
@@ -6459,17 +6479,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // the bug: plain Levenshtein scores a transposition as 2, so common typos were never fixed.
         val context = ngramRepo.cachedNextWords(previousWordInCompose())
         val top = predictionEngine.bestCorrection(word, context) ?: run {
+            if (live) return                    // live mode trusts only the confident correction
             val g = predictionEngine.getSuggestions(word, 1).firstOrNull() ?: return
             if (editDistance(word, g) > 1) return
             g
         }
         if (top.equals(word, ignoreCase = true)) return
-        pendingAutocorrectUndo = AutocorrectUndo(word, top)
+        pendingAutocorrectUndo = AutocorrectUndo(word, top, trailingSpace = !live)
+        val suffix = if (live) "" else " "
         if (openPane?.kind == PaneKind.CHAT) {
-            composeText = composeText.dropLast(word.length) + top + " "
+            composeText = composeText.dropLast(word.length) + top + suffix
         } else {
-            query = query.dropLast(word.length) + top + " "
+            query = query.dropLast(word.length) + top + suffix
         }
+        if (live) { renderRibbon(); scheduleSpellCheck() }   // reflect the inline rewrite + refresh strip
+    }
+
+    private var liveCorrectDebounce: Runnable? = null
+
+    // Silent, no-space autocorrect: after a brief pause, if the current word is a finished typo
+    // (a dead-end that can't extend into any real word) with a confident fix, rewrite it in place.
+    // The dead-end guard in tryAutocorrect(live=true) is what makes this safe mid-sentence.
+    private fun scheduleLiveAutocorrect() {
+        liveCorrectDebounce?.let { handler.removeCallbacks(it) }
+        val raw = if (openPane?.kind == PaneKind.CHAT) composeText else query
+        if (raw.isEmpty() || raw.last() == ' ' || libraryOpen) return
+        val word = currentWordInCompose().trimEnd()
+        if (word.length < 3) return
+        val r = Runnable {
+            val curRaw = if (openPane?.kind == PaneKind.CHAT) composeText else query
+            if (curRaw.isEmpty() || curRaw.last() == ' ') return@Runnable
+            if (currentWordInCompose().trimEnd() != word) return@Runnable   // user kept typing
+            tryAutocorrect(live = true)
+        }
+        liveCorrectDebounce = r
+        handler.postDelayed(r, 600)
     }
 
     private fun editDistance(a: String, b: String): Int {
@@ -7558,9 +7602,9 @@ Reply format: ["word1","word2","word3"]"""
                 val undo = pendingAutocorrectUndo
                 if (undo != null && !libraryOpen) {
                     pendingAutocorrectUndo = null
-                    query = query.dropLast(undo.corrected.length + 1) + undo.original  // strip "corrected " and restore
+                    query = query.dropLast(undo.corrected.length + (if (undo.trailingSpace) 1 else 0)) + undo.original  // strip "corrected " and restore
                     if (openPane?.kind == PaneKind.CHAT) {
-                        composeText = composeText.dropLast(undo.corrected.length + 1) + undo.original
+                        composeText = composeText.dropLast(undo.corrected.length + (if (undo.trailingSpace) 1 else 0)) + undo.original
                     }
                     renderRibbon(); return
                 }
@@ -7765,7 +7809,7 @@ Reply format: ["word1","word2","word3"]"""
                 val undo = pendingAutocorrectUndo
                 if (undo != null) {
                     pendingAutocorrectUndo = null
-                    composeText = composeText.dropLast(undo.corrected.length + 1) + undo.original
+                    composeText = composeText.dropLast(undo.corrected.length + (if (undo.trailingSpace) 1 else 0)) + undo.original
                     updateAutoCapState(); updateKeyLabels(); return
                 }
                 pendingAutocorrectUndo = null
@@ -7874,7 +7918,6 @@ Reply format: ["word1","word2","word3"]"""
         closeCategoryFolder()
         libraryOpen = false
         libraryView?.let { contentFrame.removeView(it) }
-        libraryView = null
         keyboardSettingsOpen = false; query = ""; composeText = ""
         shiftState = ShiftState.ONCE; suggestions = emptyList()
         updateKeyLabels(); updateSuggestionBar()
@@ -7896,7 +7939,6 @@ Reply format: ["word1","word2","word3"]"""
         closeCategoryFolder()
         libraryOpen = false
         libraryView?.let { contentFrame.removeView(it) }
-        libraryView = null
         renderRibbon()
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
@@ -10356,6 +10398,44 @@ $emailText"""
         libraryCategoriesCacheSignature = null
         libraryCategoriesCache = emptyList()
         appIconStateCache.evictAll()
+        libraryViewDirty = true
+        libraryContentReady = false
+        libraryContentArea = null
+        libraryView?.let { view ->
+            (view.parent as? ViewGroup)?.removeView(view)
+        }
+        libraryView = null
+    }
+
+    private fun registerAppPackageReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(packageChangeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(packageChangeReceiver, filter)
+            }
+        }
+    }
+
+    private fun refreshAppsForPackageChange() {
+        handler.post {
+            val updatedApps = loadLaunchableApps()
+            val changed = updatedApps.map { it.componentName } != apps.map { it.componentName }
+            apps = updatedApps
+            lastAppsLoadMs = System.currentTimeMillis()
+            if (changed) {
+                invalidateLibraryCaches()
+                renderRibbon()
+                renderFavoritesDock()
+            }
+        }
     }
 
     private fun isOnHome(packageName: String?) = packageName != null &&
