@@ -10195,13 +10195,20 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun isClicksImeEnabled(): Boolean {
-        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_INPUT_METHODS).orEmpty()
-        return enabled.split(':').any { it.matchesClicksImeComponent() }
+        val component = ComponentName(this, ClicksImeService::class.java)
+        return getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+            ?.enabledInputMethodList
+            ?.any { info ->
+                info.packageName == component.packageName &&
+                    info.serviceName == component.className
+            } == true
     }
 
     private fun isClicksImeSelected(): Boolean {
-        val selected = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD).orEmpty()
-        return selected.matchesClicksImeComponent()
+        val selected = runCatching {
+            Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD).orEmpty()
+        }.getOrDefault("")
+        return selected.isBlank() || selected.matchesClicksImeComponent()
     }
 
     private fun String.matchesClicksImeComponent(): Boolean {
