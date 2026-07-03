@@ -2618,6 +2618,37 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    private inner class WidgetCellCanvas(context: Context) : FrameLayout(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rect = RectF()
+
+        init {
+            setWillNotDraw(false)
+            background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.PRESSED_SM)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val specs = savedWidgetSpecs()
+            val metrics = widgetBoardMetrics(specs)
+            val dotRadius = dp(1).toFloat()
+            paint.color = adjustAlpha(activeNeuTokens.inkFaint, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.24f else 0.18f)
+            for (row in 0 until metrics.rows) {
+                for (col in 0 until WIDGET_BOARD_COLUMNS) {
+                    val cx = paddingLeft + metrics.leftForCell(col) + metrics.cellWidth / 2f
+                    val cy = paddingTop + metrics.topForCell(row) + metrics.cellHeight / 2f
+                    canvas.drawCircle(cx, cy, dotRadius, paint)
+                }
+            }
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.35f else 0.12f)
+            rect.set(0f, dp(4).toFloat(), width.toFloat(), height - dp(4).toFloat())
+            canvas.drawRoundRect(rect, dp(22).toFloat(), dp(22).toFloat(), paint)
+            paint.style = Paint.Style.FILL
+        }
+    }
+
     private fun widgetBoardHeader(): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2666,32 +2697,59 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return ScrollView(this).apply {
             clipToPadding = false
             isFillViewport = true
-            addView(GridLayout(context).apply {
-                columnCount = WIDGET_BOARD_COLUMNS
+            addView(WidgetCellCanvas(context).apply {
                 clipChildren = false
                 clipToPadding = false
                 setPadding(0, dp(14), 0, dp(30))
                 val widgets = savedWidgetSpecs()
                 if (widgets.isEmpty()) {
-                    addView(emptyWidgetHint(), GridLayout.LayoutParams().apply {
-                        width = GridLayout.LayoutParams.MATCH_PARENT
+                    addView(emptyWidgetHint(), FrameLayout.LayoutParams(
+                        resources.displayMetrics.widthPixels - dp(32),
+                        dp(240)
+                    ).apply {
+                        width = resources.displayMetrics.widthPixels - dp(32)
                         height = dp(240)
-                        columnSpec = GridLayout.spec(0, WIDGET_BOARD_COLUMNS)
                         setMargins(0, dp(26), 0, 0)
                     })
                 } else {
+                    val metrics = widgetBoardMetrics(widgets)
+                    minimumHeight = metrics.canvasHeight + dp(44)
                     widgets.forEach { spec ->
-                        val span = widgetColumnSpan(spec.size)
-                        addView(widgetTile(spec), GridLayout.LayoutParams().apply {
-                            width = widgetTileWidth(span)
-                            height = widgetTileHeight(spec.size)
-                            columnSpec = GridLayout.spec(GridLayout.UNDEFINED, span)
-                            setMargins(dp(4), dp(5), dp(4), dp(7))
+                        addView(widgetTile(spec), FrameLayout.LayoutParams(
+                            metrics.widthForSpan(spec.spanX),
+                            metrics.heightForSpan(spec.spanY)
+                        ).apply {
+                            width = metrics.widthForSpan(spec.spanX)
+                            height = metrics.heightForSpan(spec.spanY)
+                            leftMargin = metrics.leftForCell(spec.cellX)
+                            topMargin = metrics.topForCell(spec.cellY)
                         })
                     }
                 }
             }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
+    }
+
+    private data class WidgetBoardMetrics(
+        val cellWidth: Int,
+        val cellHeight: Int,
+        val gutter: Int,
+        val rows: Int
+    ) {
+        val canvasHeight: Int get() = rows * cellHeight + (rows - 1).coerceAtLeast(0) * gutter
+        fun leftForCell(cellX: Int) = cellX * (cellWidth + gutter)
+        fun topForCell(cellY: Int) = cellY * (cellHeight + gutter)
+        fun widthForSpan(spanX: Int) = spanX * cellWidth + (spanX - 1).coerceAtLeast(0) * gutter
+        fun heightForSpan(spanY: Int) = spanY * cellHeight + (spanY - 1).coerceAtLeast(0) * gutter
+    }
+
+    private fun widgetBoardMetrics(specs: List<WidgetSpec> = savedWidgetSpecs()): WidgetBoardMetrics {
+        val gutter = dp(8)
+        val available = resources.displayMetrics.widthPixels - dp(32)
+        val cellWidth = ((available - gutter * (WIDGET_BOARD_COLUMNS - 1)) / WIDGET_BOARD_COLUMNS).coerceAtLeast(dp(64))
+        val cellHeight = dp(98)
+        val rows = maxOf(WIDGET_BOARD_MIN_ROWS, specs.maxOfOrNull { it.cellY + it.spanY + 1 } ?: WIDGET_BOARD_MIN_ROWS)
+        return WidgetBoardMetrics(cellWidth, cellHeight, gutter, rows.coerceAtMost(WIDGET_BOARD_MAX_ROWS))
     }
 
     private fun emptyWidgetHint(): View {
@@ -2726,40 +2784,181 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val hostView = if (info != null) {
             appWidgetHost.createView(this, widgetId, info).apply {
                 setAppWidget(widgetId, info)
-                updateAppWidgetSize(null, widgetMinWidthDp(spec.size), widgetMinHeightDp(spec.size), widgetMaxWidthDp(spec.size), widgetMaxHeightDp(spec.size))
+                optimizeWidgetHostView(this)
+                updateAppWidgetSize(null, widgetMinWidthDp(spec), widgetMinHeightDp(spec), widgetMaxWidthDp(spec), widgetMaxHeightDp(spec))
             }
         } else null
-        return FrameLayout(this).apply {
-            clipChildren = true
-            clipToPadding = true
-            setPadding(dp(7), dp(28), dp(7), dp(7))
-            background = widgetTileBackground()
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(mono(title.uppercase(Locale.US), 8f, InkDim).apply {
-                    letterSpacing = 0.12f
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-                addView(mono("${widgetColumnSpan(spec.size)}x${parseWidgetGridSize(spec.size).rows}", 8f, Accent2).apply {
-                    gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
-                    letterSpacing = 0.08f
-                }, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.MATCH_PARENT))
-            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(22), Gravity.TOP).apply {
-                leftMargin = dp(10); rightMargin = dp(10); topMargin = dp(5)
-            })
+        return ResizableWidgetContainer(this, spec).apply {
             if (hostView != null) {
                 addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             } else {
                 addView(mono("WIDGET UNAVAILABLE", 9f, InkDim).apply { gravity = Gravity.CENTER },
                     FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                isClickable = true
+                background = Neu.drawable(activeNeuTokens, dp(13).toFloat(), NeuLevel.RAISED_SM)
+                addView(mono(title.uppercase(Locale.US), 8f, InkDim).apply {
+                    letterSpacing = 0.12f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                addView(mono("${spec.spanX}x${spec.spanY}", 8f, Accent2).apply {
+                    gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
+                    letterSpacing = 0.08f
+                }, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.MATCH_PARENT))
+                setOnClickListener {
+                    haptic(this)
+                    showWidgetOptions(spec)
+                }
+                setOnLongClickListener {
+                    (parent as? ResizableWidgetContainer)?.enterEditMode()
+                    true
+                }
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(22), Gravity.TOP).apply {
+                leftMargin = dp(10); rightMargin = dp(10); topMargin = dp(5)
+            })
             setOnLongClickListener {
-                haptic(this)
-                showWidgetOptions(spec)
+                enterEditMode()
                 true
             }
+        }
+    }
+
+    private inner class ResizableWidgetContainer(context: Context, private var spec: WidgetSpec) : FrameLayout(context) {
+        private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var editing = false
+        private var moving = false
+        private var resizing = false
+        private var downRawX = 0f
+        private var downRawY = 0f
+        private var startCellX = 0
+        private var startCellY = 0
+        private var startSpanX = 1
+        private var startSpanY = 1
+
+        init {
+            clipChildren = true
+            clipToPadding = true
+            setWillNotDraw(false)
+            setPadding(dp(7), dp(28), dp(7), dp(7))
+            background = widgetTileBackground()
+            isClickable = true
+            isLongClickable = true
+        }
+
+        fun enterEditMode() {
+            editing = true
+            haptic(this)
+            invalidate()
+        }
+
+        override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+            return editing && event.actionMasked == MotionEvent.ACTION_DOWN
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (!editing && !moving && !resizing) return
+            val accent = Accent2
+            handlePaint.style = Paint.Style.STROKE
+            handlePaint.strokeWidth = dp(1).toFloat()
+            handlePaint.color = adjustAlpha(accent, 0.82f)
+            canvas.drawRoundRect(dp(4).toFloat(), dp(4).toFloat(), width - dp(4).toFloat(), height - dp(4).toFloat(), dp(18).toFloat(), dp(18).toFloat(), handlePaint)
+            handlePaint.style = Paint.Style.FILL
+            listOf(
+                dp(14).toFloat() to height / 2f,
+                width - dp(14).toFloat() to height / 2f,
+                width / 2f to dp(14).toFloat(),
+                width / 2f to height - dp(14).toFloat(),
+                width - dp(14).toFloat() to height - dp(14).toFloat()
+            ).forEach { (x, y) ->
+                handlePaint.color = adjustAlpha(0xFF000000.toInt(), 0.34f)
+                canvas.drawCircle(x, y + dp(1), dp(7).toFloat(), handlePaint)
+                handlePaint.color = accent
+                canvas.drawCircle(x, y, dp(6).toFloat(), handlePaint)
+                handlePaint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.55f)
+                canvas.drawCircle(x - dp(2), y - dp(2), dp(2).toFloat(), handlePaint)
+            }
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startCellX = spec.cellX
+                    startCellY = spec.cellY
+                    startSpanX = spec.spanX
+                    startSpanY = spec.spanY
+                    resizing = isResizeHandle(event.x, event.y)
+                    moving = editing && !resizing
+                    if (resizing || moving) {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        animate().scaleX(0.992f).scaleY(0.992f).setDuration(80).start()
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!moving && !resizing) return super.onTouchEvent(event)
+                    val metrics = widgetBoardMetrics()
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
+                    if (moving) {
+                        val nextCellX = (startCellX + kotlin.math.round(dx / (metrics.cellWidth + metrics.gutter)).toInt())
+                            .coerceIn(0, WIDGET_BOARD_COLUMNS - spec.spanX)
+                        val nextCellY = (startCellY + kotlin.math.round(dy / (metrics.cellHeight + metrics.gutter)).toInt())
+                            .coerceIn(0, WIDGET_BOARD_MAX_ROWS - spec.spanY)
+                        val left = metrics.leftForCell(nextCellX)
+                        val top = metrics.topForCell(nextCellY)
+                        (layoutParams as? FrameLayout.LayoutParams)?.let {
+                            it.leftMargin = left
+                            it.topMargin = top
+                            layoutParams = it
+                        }
+                        spec = spec.copy(cellX = nextCellX, cellY = nextCellY)
+                    } else if (resizing) {
+                        val nextSpanX = (startSpanX + kotlin.math.round(dx / (metrics.cellWidth + metrics.gutter)).toInt())
+                            .coerceIn(spec.minSpanX, WIDGET_BOARD_COLUMNS - spec.cellX)
+                        val nextSpanY = (startSpanY + kotlin.math.round(dy / (metrics.cellHeight + metrics.gutter)).toInt())
+                            .coerceIn(spec.minSpanY, WIDGET_BOARD_MAX_ROWS - spec.cellY)
+                        (layoutParams as? FrameLayout.LayoutParams)?.let {
+                            it.width = metrics.widthForSpan(nextSpanX)
+                            it.height = metrics.heightForSpan(nextSpanY)
+                            layoutParams = it
+                        }
+                        spec = spec.copy(spanX = nextSpanX, spanY = nextSpanY)
+                        updateHostedWidgetSize()
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (moving || resizing) {
+                        animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                        saveWidgetSpec(spec)
+                        updateHostedWidgetSize()
+                        moving = false
+                        resizing = false
+                        editing = false
+                        invalidate()
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        return true
+                    }
+                }
+            }
+            return super.onTouchEvent(event)
+        }
+
+        private fun isResizeHandle(x: Float, y: Float): Boolean {
+            return x >= width - dp(40) && y >= height - dp(40)
+        }
+
+        private fun updateHostedWidgetSize() {
+            val hostView = (0 until childCount).map { getChildAt(it) }.firstOrNull { it is AppWidgetHostView } as? AppWidgetHostView ?: return
+            hostView.updateAppWidgetSize(null, widgetMinWidthDp(spec), widgetMinHeightDp(spec), widgetMaxWidthDp(spec), widgetMaxHeightDp(spec))
+            trackWidgetInteractionSafe(hostView, spec, if (resizing) "resize" else "move")
         }
     }
 
@@ -2940,7 +3139,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun saveWidgetId(widgetId: Int) {
-        val next = savedWidgetSpecs().filterNot { it.id == widgetId } + WidgetSpec(widgetId, widgetSizeString(4, 3))
+        val current = savedWidgetSpecs().filterNot { it.id == widgetId }
+        val next = current + nextWidgetSpec(widgetId, current, 4, 3)
         saveWidgetSpecs(next)
     }
 
@@ -2948,23 +3148,43 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val raw = prefs().getString(WIDGET_IDS_PREF, "[]") ?: "[]"
         return runCatching {
             val json = JSONArray(raw)
-            (0 until json.length()).mapNotNull { index ->
+            val specs = mutableListOf<WidgetSpec>()
+            (0 until json.length()).forEach { index ->
                 when (val item = json.opt(index)) {
                     is JSONObject -> {
                         val id = item.optInt("id", AppWidgetManager.INVALID_APPWIDGET_ID)
-                        val size = normalizeWidgetSize(item.optString("size", WIDGET_SIZE_LARGE))
-                        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) WidgetSpec(id, size) else null
+                        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) {
+                            val span = parseWidgetGridSize(item.optString("size", widgetSizeString(item.optInt("spanX", 4), item.optInt("spanY", 3))))
+                            val spanX = item.optInt("spanX", span.columns).coerceIn(1, WIDGET_BOARD_COLUMNS)
+                            val spanY = item.optInt("spanY", span.rows).coerceIn(1, WIDGET_BOARD_MAX_ROWS)
+                            val hasCells = item.has("cellX") && item.has("cellY")
+                            val spec = if (hasCells) {
+                                WidgetSpec(
+                                    id = id,
+                                    cellX = item.optInt("cellX", 0).coerceIn(0, WIDGET_BOARD_COLUMNS - spanX),
+                                    cellY = item.optInt("cellY", 0).coerceIn(0, WIDGET_BOARD_MAX_ROWS - spanY),
+                                    spanX = spanX,
+                                    spanY = spanY,
+                                    minSpanX = item.optInt("minSpanX", 1).coerceIn(1, WIDGET_BOARD_COLUMNS),
+                                    minSpanY = item.optInt("minSpanY", 1).coerceIn(1, WIDGET_BOARD_MAX_ROWS)
+                                )
+                            } else {
+                                nextWidgetSpec(id, specs, spanX, spanY)
+                            }
+                            specs.add(spec)
+                        }
                     }
                     is Number -> {
                         val id = item.toInt()
-                        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) WidgetSpec(id, WIDGET_SIZE_LARGE) else null
+                        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) specs.add(nextWidgetSpec(id, specs, 4, 3))
                     }
                     else -> {
                         val id = json.optInt(index, AppWidgetManager.INVALID_APPWIDGET_ID)
-                        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) WidgetSpec(id, WIDGET_SIZE_LARGE) else null
+                        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) specs.add(nextWidgetSpec(id, specs, 4, 3))
                     }
                 }
             }
+            specs
         }.getOrDefault(emptyList())
     }
 
@@ -2973,14 +3193,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         specs.forEach { spec ->
             json.put(JSONObject().apply {
                 put("id", spec.id)
-                put("size", normalizeWidgetSize(spec.size))
+                put("cellX", spec.cellX.coerceIn(0, WIDGET_BOARD_COLUMNS - spec.spanX.coerceIn(1, WIDGET_BOARD_COLUMNS)))
+                put("cellY", spec.cellY.coerceIn(0, WIDGET_BOARD_MAX_ROWS - spec.spanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS)))
+                put("spanX", spec.spanX.coerceIn(1, WIDGET_BOARD_COLUMNS))
+                put("spanY", spec.spanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS))
+                put("minSpanX", spec.minSpanX.coerceIn(1, WIDGET_BOARD_COLUMNS))
+                put("minSpanY", spec.minSpanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS))
             })
         }
         prefs().edit().putString(WIDGET_IDS_PREF, json.toString()).apply()
     }
 
     private fun showWidgetOptions(spec: WidgetSpec) {
-        val size = parseWidgetGridSize(spec.size)
         val labels = arrayOf(
             "Wider",
             "Narrower",
@@ -2992,16 +3216,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "Remove"
         )
         AlertDialog.Builder(this)
-            .setTitle("Widget ${size.columns}x${size.rows}")
+            .setTitle("Widget ${spec.spanX}x${spec.spanY}")
             .setItems(labels) { dialog, which ->
                 when (labels[which]) {
-                    "Wider" -> resizeWidget(spec.id, widgetSizeString((size.columns + 1).coerceAtMost(WIDGET_BOARD_COLUMNS), size.rows))
-                    "Narrower" -> resizeWidget(spec.id, widgetSizeString((size.columns - 1).coerceAtLeast(1), size.rows))
-                    "Taller" -> resizeWidget(spec.id, widgetSizeString(size.columns, (size.rows + 1).coerceAtMost(6)))
-                    "Shorter" -> resizeWidget(spec.id, widgetSizeString(size.columns, (size.rows - 1).coerceAtLeast(1)))
-                    "Compact 2x2" -> resizeWidget(spec.id, widgetSizeString(2, 2))
-                    "Wide 4x2" -> resizeWidget(spec.id, widgetSizeString(4, 2))
-                    "Large 4x3" -> resizeWidget(spec.id, widgetSizeString(4, 3))
+                    "Wider" -> resizeWidget(spec.id, (spec.spanX + 1).coerceAtMost(WIDGET_BOARD_COLUMNS), spec.spanY)
+                    "Narrower" -> resizeWidget(spec.id, (spec.spanX - 1).coerceAtLeast(spec.minSpanX), spec.spanY)
+                    "Taller" -> resizeWidget(spec.id, spec.spanX, (spec.spanY + 1).coerceAtMost(WIDGET_BOARD_MAX_ROWS))
+                    "Shorter" -> resizeWidget(spec.id, spec.spanX, (spec.spanY - 1).coerceAtLeast(spec.minSpanY))
+                    "Compact 2x2" -> resizeWidget(spec.id, 2, 2)
+                    "Wide 4x2" -> resizeWidget(spec.id, 4, 2)
+                    "Large 4x3" -> resizeWidget(spec.id, 4, 3)
                     "Remove" -> confirmRemoveWidget(spec.id)
                 }
                 dialog.dismiss()
@@ -3009,12 +3233,71 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .show()
     }
 
-    private fun resizeWidget(widgetId: Int, size: String) {
+    private fun resizeWidget(widgetId: Int, spanX: Int, spanY: Int) {
         val specs = savedWidgetSpecs().map { spec ->
-            if (spec.id == widgetId) spec.copy(size = normalizeWidgetSize(size)) else spec
+            if (spec.id == widgetId) {
+                val nextSpanX = spanX.coerceIn(spec.minSpanX, WIDGET_BOARD_COLUMNS)
+                val nextSpanY = spanY.coerceIn(spec.minSpanY, WIDGET_BOARD_MAX_ROWS)
+                spec.copy(
+                    spanX = nextSpanX,
+                    spanY = nextSpanY,
+                    cellX = spec.cellX.coerceIn(0, WIDGET_BOARD_COLUMNS - nextSpanX),
+                    cellY = spec.cellY.coerceIn(0, WIDGET_BOARD_MAX_ROWS - nextSpanY)
+                )
+            } else spec
         }
         saveWidgetSpecs(specs)
         refreshWidgetBoard()
+    }
+
+    private fun saveWidgetSpec(updated: WidgetSpec) {
+        val existing = savedWidgetSpecs().filterNot { it.id == updated.id }
+        val safe = resolveWidgetPlacement(updated, existing)
+        saveWidgetSpecs(existing + safe)
+    }
+
+    private fun resolveWidgetPlacement(updated: WidgetSpec, existing: List<WidgetSpec>): WidgetSpec {
+        val clamped = updated.copy(
+            spanX = updated.spanX.coerceIn(updated.minSpanX, WIDGET_BOARD_COLUMNS),
+            spanY = updated.spanY.coerceIn(updated.minSpanY, WIDGET_BOARD_MAX_ROWS)
+        ).let {
+            it.copy(
+                cellX = it.cellX.coerceIn(0, WIDGET_BOARD_COLUMNS - it.spanX),
+                cellY = it.cellY.coerceIn(0, WIDGET_BOARD_MAX_ROWS - it.spanY)
+            )
+        }
+        if (!existing.any { widgetsOverlap(it, clamped) }) return clamped
+        val candidates = mutableListOf<WidgetSpec>()
+        for (row in 0..(WIDGET_BOARD_MAX_ROWS - clamped.spanY)) {
+            for (col in 0..(WIDGET_BOARD_COLUMNS - clamped.spanX)) {
+                candidates.add(clamped.copy(cellX = col, cellY = row))
+            }
+        }
+        return candidates
+            .filter { candidate -> existing.none { widgetsOverlap(it, candidate) } }
+            .minByOrNull { kotlin.math.abs(it.cellX - clamped.cellX) + kotlin.math.abs(it.cellY - clamped.cellY) }
+            ?: clamped
+    }
+
+    private fun nextWidgetSpec(widgetId: Int, existing: List<WidgetSpec>, preferredSpanX: Int, preferredSpanY: Int): WidgetSpec {
+        val spanX = preferredSpanX.coerceIn(1, WIDGET_BOARD_COLUMNS)
+        val spanY = preferredSpanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS)
+        for (row in 0..(WIDGET_BOARD_MAX_ROWS - spanY)) {
+            for (col in 0..(WIDGET_BOARD_COLUMNS - spanX)) {
+                val candidate = WidgetSpec(widgetId, col, row, spanX, spanY)
+                if (!existing.any { widgetsOverlap(it, candidate) }) return candidate
+            }
+        }
+        val lastY = existing.maxOfOrNull { it.cellY + it.spanY } ?: 0
+        return WidgetSpec(widgetId, 0, lastY.coerceIn(0, WIDGET_BOARD_MAX_ROWS - spanY), spanX, spanY)
+    }
+
+    private fun widgetsOverlap(left: WidgetSpec, right: WidgetSpec): Boolean {
+        if (left.id == right.id) return false
+        return left.cellX < right.cellX + right.spanX &&
+            left.cellX + left.spanX > right.cellX &&
+            left.cellY < right.cellY + right.spanY &&
+            left.cellY + left.spanY > right.cellY
     }
 
     private fun confirmRemoveWidget(widgetId: Int) {
@@ -3036,7 +3319,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun normalizeWidgetSize(size: String): String {
         return when {
-            size.matches(Regex("c[1-4]r[1-6]")) -> size
+            size.matches(Regex("c[1-4]r([1-9]|1[0-2])")) -> size
             size == WIDGET_SIZE_COMPACT -> widgetSizeString(2, 2)
             size == WIDGET_SIZE_WIDE -> widgetSizeString(4, 2)
             size == WIDGET_SIZE_TALL -> widgetSizeString(2, 4)
@@ -3046,34 +3329,43 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun widgetSizeString(columns: Int, rows: Int) =
-        "c${columns.coerceIn(1, WIDGET_BOARD_COLUMNS)}r${rows.coerceIn(1, 6)}"
+        "c${columns.coerceIn(1, WIDGET_BOARD_COLUMNS)}r${rows.coerceIn(1, WIDGET_BOARD_MAX_ROWS)}"
 
     private fun parseWidgetGridSize(size: String): WidgetGridSize {
         val clean = normalizeWidgetSize(size)
-        val match = Regex("c([1-4])r([1-6])").matchEntire(clean)
+        val match = Regex("c([1-4])r([1-9]|1[0-2])").matchEntire(clean)
         val columns = match?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 4
         val rows = match?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 3
-        return WidgetGridSize(columns.coerceIn(1, WIDGET_BOARD_COLUMNS), rows.coerceIn(1, 6))
+        return WidgetGridSize(columns.coerceIn(1, WIDGET_BOARD_COLUMNS), rows.coerceIn(1, WIDGET_BOARD_MAX_ROWS))
     }
 
-    private fun widgetColumnSpan(size: String): Int = parseWidgetGridSize(size).columns
+    private fun widgetMinWidthDp(spec: WidgetSpec): Int = spec.spanX.coerceIn(1, WIDGET_BOARD_COLUMNS) * 78
 
-    private fun widgetTileHeight(size: String): Int = dp(78 + parseWidgetGridSize(size).rows * 72)
+    private fun widgetMaxWidthDp(spec: WidgetSpec): Int = spec.spanX.coerceIn(1, WIDGET_BOARD_COLUMNS) * 132
 
-    private fun widgetTileWidth(span: Int): Int {
-        val available = resources.displayMetrics.widthPixels - dp(40)
-        val gutter = dp(8)
-        val cell = (available - gutter * (WIDGET_BOARD_COLUMNS - 1)) / WIDGET_BOARD_COLUMNS
-        return cell * span.coerceIn(1, WIDGET_BOARD_COLUMNS) + gutter * (span.coerceIn(1, WIDGET_BOARD_COLUMNS) - 1)
+    private fun widgetMinHeightDp(spec: WidgetSpec): Int = spec.spanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS) * 72
+
+    private fun widgetMaxHeightDp(spec: WidgetSpec): Int = spec.spanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS) * 112
+
+    private fun optimizeWidgetHostView(hostView: AppWidgetHostView) {
+        if (Build.VERSION.SDK_INT < 36) return
+        runCatching {
+            hostView.clipChildren = false
+            hostView.clipToPadding = false
+            Class.forName("android.appwidget.AppWidgetEvent")
+            Class.forName("android.appwidget.AppWidgetMetricsManager")
+        }
     }
 
-    private fun widgetMinWidthDp(size: String): Int = parseWidgetGridSize(size).columns * 78
-
-    private fun widgetMaxWidthDp(size: String): Int = parseWidgetGridSize(size).columns * 132
-
-    private fun widgetMinHeightDp(size: String): Int = parseWidgetGridSize(size).rows * 72
-
-    private fun widgetMaxHeightDp(size: String): Int = parseWidgetGridSize(size).rows * 112
+    private fun trackWidgetInteractionSafe(hostView: AppWidgetHostView, spec: WidgetSpec, actionType: String) {
+        if (Build.VERSION.SDK_INT < 36) return
+        runCatching {
+            Class.forName("android.appwidget.AppWidgetEvent")
+            Class.forName("android.appwidget.AppWidgetMetricsManager")
+            hostView.context.getSystemService("appwidget_metrics") ?: return
+            android.util.Log.d("ClicksWidgetBoard", "API36 widget metric hook: $actionType ${spec.id} ${spec.spanX}x${spec.spanY}")
+        }
+    }
 
     private fun refreshWidgetBoard() {
         val old = widgetBoardView ?: return
@@ -6490,50 +6782,70 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun updateSuggestionBar() {
         val strip = suggestionStripView ?: return
-        strip.removeAllViews()
         val shown = suggestions.take(3)
         val pro = ProManager.isUnlocked(this)
         val appColor = suggestionStripAppColor(shown)
-        // Free: text/strip tint to the matched app's brand color. Pro: an AI-style gradient theme,
-        // pulled toward the app color when one matches. Neutral when nothing is recognized.
-        val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
+        val fieldBlank = (if (openPane?.kind == PaneKind.CHAT) composeText else query).isBlank()
+        // Persist: after a glide / word commit there may be nothing new to show, but keep the last
+        // strip content (esp. the swipe result) until the user clears the field or fresh ones arrive.
+        if (shown.isEmpty() && appColor == null && !fieldBlank && strip.childCount > 0) return
+        val wasEmpty = strip.childCount == 0
+        strip.removeAllViews()
         if (shown.isEmpty() && appColor == null) { strip.background = null; return }
         strip.background = suggestionStripBackground(appColor, pro)
-        if (shown.isEmpty()) return
-        shown.forEachIndexed { i, word ->
-            strip.addView(TextView(this).apply {
-                text = word
-                gravity = Gravity.CENTER
-                textSize = 14.5f
-                includeFontPadding = false
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(textColor)
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                isClickable = true
-                setOnClickListener { keyHaptic("space"); acceptSuggestion(word) }
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-            if (i < shown.lastIndex) {
-                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
-                    LinearLayout.LayoutParams(dp(1), dp(18)))
+        if (shown.isNotEmpty()) {
+            val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
+            shown.forEachIndexed { i, word ->
+                strip.addView(TextView(this).apply {
+                    text = word
+                    gravity = Gravity.CENTER
+                    textSize = 14.5f
+                    includeFontPadding = false
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setTextColor(textColor)
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    isClickable = true
+                    setOnClickListener { keyHaptic("space"); acceptSuggestion(word) }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                if (i < shown.lastIndex) {
+                    strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
+                        LinearLayout.LayoutParams(dp(1), dp(16)))
+                }
             }
+        }
+        // Elegant slide-in when the strip goes from empty to showing content.
+        if (wasEmpty) {
+            strip.alpha = 0f
+            strip.translationY = dp(9).toFloat()
+            strip.animate().alpha(1f).translationY(0f).setDuration(190)
+                .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
         }
     }
 
+    // Neumorphic well matching the launcher's soft UI, with an optional color wash for app matches
+    // (free) or an AI-style gradient (Pro). The wash is inset and low-alpha so the soft neu shadows
+    // still read through it.
     private fun suggestionStripBackground(appColor: Int?, pro: Boolean): android.graphics.drawable.Drawable {
-        val radius = dp(10).toFloat()
-        if (pro) {
+        val radius = dp(12).toFloat()
+        val neu = Neu.drawable(activeNeuTokens, radius, NeuLevel.PRESSED_SM)
+        if (appColor == null && !pro) return neu
+        val wash = if (pro) {
             val a = appColor ?: 0xFF8B5CF6.toInt()
-            val b = appColor?.let { brighten(it) } ?: 0xFF3AB6FF.toInt()
-            return GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(darken(a), a, b)).apply {
+            GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
+                (darken(a) and 0x00FFFFFF) or 0x22000000,
+                (a and 0x00FFFFFF) or 0x33000000,
+                (brighten(a) and 0x00FFFFFF) or 0x22000000
+            )).apply { cornerRadius = radius }
+        } else {
+            GradientDrawable().apply {
+                setColor((appColor!! and 0x00FFFFFF) or 0x2E000000)
                 cornerRadius = radius
-                alpha = 64
             }
         }
-        return GradientDrawable().apply {
-            setColor(if (appColor != null) (appColor and 0x00FFFFFF) or 0x22000000 else 0x14FFFFFF)
-            cornerRadius = radius
-            if (appColor != null) setStroke(dp(1), (appColor and 0x00FFFFFF) or 0x55000000)
+        return android.graphics.drawable.LayerDrawable(arrayOf(neu, wash)).apply {
+            val inset = dp(2)
+            setLayerInset(1, inset, inset, inset, inset)
         }
     }
 
@@ -13042,6 +13354,8 @@ $emailText"""
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502
         private const val WIDGET_IDS_PREF = "widget_board_ids"
         private const val WIDGET_BOARD_COLUMNS = 4
+        private const val WIDGET_BOARD_MIN_ROWS = 8
+        private const val WIDGET_BOARD_MAX_ROWS = 12
         private const val WIDGET_SIZE_COMPACT = "compact"
         private const val WIDGET_SIZE_WIDE = "wide"
         private const val WIDGET_SIZE_TALL = "tall"
