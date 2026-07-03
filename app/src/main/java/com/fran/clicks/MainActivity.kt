@@ -5331,16 +5331,38 @@ Reply format: ["word1","word2","word3"]"""
             requestMethod = "POST"; connectTimeout = 6_000; readTimeout = 8_000
             setRequestProperty("Content-Type", "application/json"); doOutput = true
         }
-        java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-        if (conn.responseCode !in 200..299) return emptyList()
-        val raw = conn.inputStream.bufferedReader().use { it.readText() }
-        val text = org.json.JSONObject(raw)
-            .optJSONArray("candidates")?.optJSONObject(0)
-            ?.optJSONObject("content")?.optJSONArray("parts")
-            ?.optJSONObject(0)?.optString("text")?.trim() ?: return emptyList()
-        // Parse ["word1","word2","word3"]
-        val match = Regex(""""\s*([^"]+)\s*"""").findAll(text)
-        return match.map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.take(3).toList()
+        try {
+            java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+            if (conn.responseCode !in 200..299) return emptyList()
+            val raw = conn.inputStream.bufferedReader().use { it.readText() }
+            val text = org.json.JSONObject(raw)
+                .optJSONArray("candidates")?.optJSONObject(0)
+                ?.optJSONObject("content")?.optJSONArray("parts")
+                ?.optJSONObject(0)?.optString("text")?.trim() ?: return emptyList()
+            return parseGeminiSuggestionArray(text)
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /**
+     * Extract up to 3 suggestions from the model's reply. Prefers strict JSON array parsing;
+     * falls back to the original lenient regex so replies wrapped in markdown fences or extra
+     * prose (which the regex tolerates) still work exactly as before.
+     */
+    private fun parseGeminiSuggestionArray(text: String): List<String> {
+        runCatching {
+            val arr = org.json.JSONArray(text)
+            val out = ArrayList<String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val s = arr.optString(i).trim()
+                if (s.isNotBlank()) out.add(s)
+            }
+            if (out.isNotEmpty()) return out.take(3)
+        }
+        // Fallback: original ["word1","word2","word3"] regex extraction.
+        return Regex(""""\s*([^"]+)\s*"""").findAll(text)
+            .map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.take(3).toList()
     }
 
     // ── Gemini smart compose ─────────────────────────────────────────────────
@@ -5379,13 +5401,17 @@ Reply format: ["word1","word2","word3"]"""
             requestMethod = "POST"; connectTimeout = 8_000; readTimeout = 15_000
             setRequestProperty("Content-Type", "application/json"); doOutput = true
         }
-        java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-        if (conn.responseCode !in 200..299) return ""
-        val raw = conn.inputStream.bufferedReader().use { it.readText() }
-        return org.json.JSONObject(raw)
-            .optJSONArray("candidates")?.optJSONObject(0)
-            ?.optJSONObject("content")?.optJSONArray("parts")
-            ?.optJSONObject(0)?.optString("text")?.trim() ?: ""
+        try {
+            java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+            if (conn.responseCode !in 200..299) return ""
+            val raw = conn.inputStream.bufferedReader().use { it.readText() }
+            return org.json.JSONObject(raw)
+                .optJSONArray("candidates")?.optJSONObject(0)
+                ?.optJSONObject("content")?.optJSONArray("parts")
+                ?.optJSONObject(0)?.optString("text")?.trim() ?: ""
+        } finally {
+            conn.disconnect()
+        }
     }
 
     // ── Shift ────────────────────────────────────────────────────────────────
