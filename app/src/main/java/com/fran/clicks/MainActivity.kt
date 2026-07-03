@@ -2,6 +2,7 @@ package com.fran.clicks
 
 import android.Manifest
 import android.animation.ValueAnimator
+import android.app.ActivityOptions
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
@@ -486,6 +487,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onResume() {
         super.onResume()
+        stopService(Intent(this, DockedKeyboardService::class.java))
         updateLauncherTheme(animated = true)
         ensureBillingConnected()
         val now = System.currentTimeMillis()
@@ -7848,15 +7850,18 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 MotionEvent.ACTION_UP -> {
                     glideGestureActive = false
-                    // Swipe-left = whole-word delete (must be dominant horizontal, not a glide word path)
-                    if (flickDetector.isLeftSwipe(startRawX, startRawY, ev.rawX, ev.rawY) && traced.size <= 2) {
-                        tracking = false; traced.clear(); trailLocal.clear(); invalidate()
-                        glideClassifier?.clear()
+                    val clf = glideClassifier
+                    // Deliberate quick left-swipe = whole-word delete. A glide that spells a word has
+                    // many sampled points (hasEnoughPoints), so it must never be read as a delete even
+                    // when its path happens to end left of where it started (common for later words).
+                    if (flickDetector.isLeftSwipe(startRawX, startRawY, ev.rawX, ev.rawY) &&
+                        (clf == null || !clf.hasEnoughPoints)) {
+                        tracking = false; traced.clear(); trailLocal.clear(); glidePersisting = false; invalidate()
+                        clf?.clear()
                         keyHaptic("back")
                         deleteWord()
                         return true
                     }
-                    val clf = glideClassifier
                     val t = traced.toList()
                     tracking = false; traced.clear()
                     glidePersisting = trailLocal.size > 1   // hold the trail through recognition
