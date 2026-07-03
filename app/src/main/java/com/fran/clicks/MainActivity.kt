@@ -154,6 +154,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var libraryOpen = false
     private var libraryGridMode = true
     private var libraryView: View? = null
+    private var libraryViewMode: NeuMode? = null
     private var libraryContentArea: FrameLayout? = null
     private var libraryViewDirty = true
     private var libraryContentReady = false
@@ -887,7 +888,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun resetDockParallax() {
         if (!::favoritesDockView.isInitialized) return
         val dock = favoritesDockView
-        dock.translationX = 0f; dock.translationY = 0f
+        dock.translationX = 0f; dock.translationY = 0f; dock.rotationX = 0f; dock.rotationY = 0f
         for (i in 0 until dock.childCount) {
             dock.getChildAt(i).apply { translationX = 0f; translationY = 0f; rotationX = 0f; rotationY = 0f }
         }
@@ -899,19 +900,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!::favoritesDockView.isInitialized) return
         val dock = favoritesDockView
         if (dock.childCount == 0 || !dock.isShown) return
-        val tiltX = (roll / 0.3f).coerceIn(-1f, 1f)
-        val tiltY = (pitch / 0.3f).coerceIn(-1f, 1f)
-        val maxT = dp(7).toFloat()
-        dock.translationX = -tiltX * maxT * 0.35f
-        dock.translationY = -tiltY * maxT * 0.35f
-        val camDist = resources.displayMetrics.density * 8000f
+        val tiltX = (roll / 0.42f).coerceIn(-1f, 1f)
+        val tiltY = (pitch / 0.42f).coerceIn(-1f, 1f)
+        val density = resources.displayMetrics.density
+        // Tilt the whole dock like one physical plate: perspective rotation about its center. A
+        // close camera makes these small angles read as genuine 3D depth rather than a flat skew.
+        dock.cameraDistance = density * 3200f
+        dock.rotationY = tiltX * 4f
+        dock.rotationX = -tiltY * 4f
+        // Icons float a hair in front of the plate for layered parallax; the plate itself does the 3D.
+        val maxT = density * 2.5f
         for (i in 0 until dock.childCount) {
             dock.getChildAt(i).apply {
-                cameraDistance = camDist
                 translationX = tiltX * maxT
                 translationY = tiltY * maxT
-                rotationX = -tiltY * 6f
-                rotationY = tiltX * 6f
+                rotationX = 0f
+                rotationY = 0f
             }
         }
     }
@@ -3890,7 +3894,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun appLibrary(): View {
         val cached = libraryView as? FrameLayout
-        if (!libraryViewDirty && cached != null) {
+        if (!libraryViewDirty && cached != null && libraryViewMode == activeNeuTokens.mode) {
             libraryContentArea = cached.findViewWithTag("library_content") as? FrameLayout
             cached.setBackgroundColor(activeNeuTokens.base)
             return cached
@@ -3905,6 +3909,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 topMargin = dp(38)
             })
             addView(libraryHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
+            libraryViewMode = activeNeuTokens.mode
             libraryViewDirty = false
         }
     }
@@ -3954,7 +3959,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(12), 0, dp(10), 0)
-        background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
+        background = libraryHeaderBackground()
         elevation = dp(10).toFloat()
         addView(TextView(context).apply {
             text = "App Library"; textSize = 17f
@@ -3968,15 +3973,53 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(activeNeuTokens.ink)
             includeFontPadding = false
-            background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
+            background = libraryModeToggleBackground()
             isClickable = true
             setOnClickListener {
                 haptic(this)
                 libraryGridMode = !libraryGridMode
                 prefs().edit().putBoolean(LIBRARY_GRID_MODE_PREF, libraryGridMode).apply()
+                libraryViewDirty = true
+                libraryContentReady = false
                 showLibrary(animate = false)
             }
         }, LinearLayout.LayoutParams(dp(94), dp(30)).apply { marginEnd = dp(8) })
+    }
+
+    private fun libraryHeaderBackground(): Drawable {
+        if (activeNeuTokens.mode == NeuMode.LIGHT) {
+            return Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
+        }
+        val base = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(activeNeuTokens.baseHi, activeNeuTokens.base, activeNeuTokens.baseLo)
+        ).apply {
+            cornerRadius = dp(18).toFloat()
+            setStroke(dp(1), adjustAlpha(activeNeuTokens.baseHi, 0.22f))
+        }
+        val rim = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.18f), Color.TRANSPARENT, adjustAlpha(activeNeuTokens.baseLo, 0.38f))
+        ).apply { cornerRadius = dp(18).toFloat() }
+        return LayerDrawable(arrayOf(base, rim))
+    }
+
+    private fun libraryModeToggleBackground(): Drawable {
+        if (activeNeuTokens.mode == NeuMode.LIGHT) {
+            return Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
+        }
+        val base = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(activeNeuTokens.baseLo, activeNeuTokens.base, activeNeuTokens.baseHi)
+        ).apply {
+            cornerRadius = dp(15).toFloat()
+            setStroke(dp(1), adjustAlpha(activeNeuTokens.baseHi, 0.16f))
+        }
+        val wellShade = GradientDrawable(
+            GradientDrawable.Orientation.BOTTOM_TOP,
+            intArrayOf(adjustAlpha(Color.BLACK, 0.42f), Color.TRANSPARENT)
+        ).apply { cornerRadius = dp(15).toFloat() }
+        return LayerDrawable(arrayOf(base, wellShade))
     }
 
     private fun isWidgetUniversalSearchActive(): Boolean =
@@ -11654,6 +11697,7 @@ $emailText"""
             (view.parent as? ViewGroup)?.removeView(view)
         }
         libraryView = null
+        libraryViewMode = null
     }
 
     private fun registerAppPackageReceiver() {
