@@ -244,6 +244,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetSwapDownY = 0f
     private var widgetSwapHasDown = false
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
+    private var glideRecognizedColor: Int? = null   // app brand color when a glided word names an app
     private var numberPadOpen = false
     private var symbolsOpen = false
     private var lastMusicSourcePackage: String? = null
@@ -7610,6 +7611,9 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun glideTrailColors(): IntArray {
+        glideRecognizedColor?.let { c ->
+            return intArrayOf(adjustAlpha(c, 0x20), brighten(c), c, adjustAlpha(c, 0x22))
+        }
         val core = when (keyboardTheme) {
             KEYBOARD_THEME_GOKEYS -> 0xFFF2691E.toInt()
             KEYBOARD_THEME_CLICKS -> Accent2
@@ -7642,6 +7646,17 @@ Reply format: ["word1","word2","word3"]"""
             strokeJoin = Paint.Join.ROUND
         }
         private val trailPath = Path()
+        private var glidePersisting = false
+        private var glideFadeRunnable: Runnable? = null
+
+        // Keep the finished glide trail on screen briefly (recolored to the matched app / theme),
+        // then fade it out — so it "stays after finishing" instead of vanishing the instant you lift.
+        private fun fadeGlideTrail() {
+            glideFadeRunnable?.let { handler.removeCallbacks(it) }
+            val r = Runnable { glidePersisting = false; trailLocal.clear(); glideRecognizedColor = null; invalidate() }
+            glideFadeRunnable = r
+            handler.postDelayed(r, 900)
+        }
 
         private fun clearGlideTouchState() {
             tracking = false
@@ -7654,7 +7669,7 @@ Reply format: ["word1","word2","word3"]"""
 
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
-            if (tracking && trailLocal.size > 1) {
+            if ((tracking || glidePersisting) && trailLocal.size > 1) {
                 trailPath.reset()
                 trailPath.moveTo(trailLocal[0].first, trailLocal[0].second)
                 for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
@@ -7696,6 +7711,8 @@ Reply format: ["word1","word2","word3"]"""
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX; startRawY = ev.rawY
+                    glideFadeRunnable?.let { handler.removeCallbacks(it) }
+                    glidePersisting = false; glideRecognizedColor = null
                     tracking = false; traced.clear(); trailLocal.clear()
                     val loc = IntArray(2); getLocationOnScreen(loc)
                     screenX = loc[0].toFloat(); screenY = loc[1].toFloat()
@@ -7775,19 +7792,26 @@ Reply format: ["word1","word2","word3"]"""
                     }
                     val clf = glideClassifier
                     val t = traced.toList()
-                    tracking = false; traced.clear(); trailLocal.clear(); invalidate()
+                    tracking = false; traced.clear()
+                    glidePersisting = trailLocal.size > 1   // hold the trail through recognition
+                    invalidate()
                     if (clf != null && clf.hasEnoughPoints) {
                         Thread {
                             val results = clf.getSuggestions(3)
                             clf.clear()
                             handler.post {
-                                if (results.isNotEmpty()) handleGlideResult(results)
-                                else if (t.size >= 3) handleSwipeFallback(t)
+                                if (results.isNotEmpty()) {
+                                    handleGlideResult(results)
+                                    glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
+                                    invalidate()
+                                } else if (t.size >= 3) handleSwipeFallback(t)
+                                fadeGlideTrail()
                             }
                         }.start()
                     } else {
                         clf?.clear()
                         if (t.size >= 3) handleSwipeFallback(t)
+                        fadeGlideTrail()
                     }
                 }
                 MotionEvent.ACTION_CANCEL -> {
