@@ -10148,40 +10148,28 @@ Reply format: ["word1","word2","word3"]"""
             if (!prepareDockedExternalMode()) return
             intent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
-                    Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or
                     Intent.FLAG_ACTIVITY_NO_ANIMATION
             )
-            val options = dockedExternalActivityOptions()
-            if (options != null) {
-                runCatching {
-                    startActivity(intent, options.toBundle())
-                }.onFailure {
-                    startActivity(intent)
-                }
-            } else {
-                startActivity(intent)
-            }
+            startActivity(intent)
         } else {
             startActivity(intent)
         }
-        requestDockedSplitFallbackIfNeeded()
         recordAppLaunch(packageName)
     }
 
     private fun prepareDockedExternalMode(): Boolean {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return true
-        if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Allow Display over other apps for the docked keyboard.", Toast.LENGTH_LONG).show()
-            runCatching { startActivity(DockedKeyboardService.overlaySettingsIntent(this)) }
+        stopService(Intent(this, DockedKeyboardService::class.java))
+        if (!isClicksImeEnabled()) {
+            Toast.makeText(this, "Enable Clicks Keyboard, then select it for docked typing.", Toast.LENGTH_LONG).show()
+            runCatching { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
             return false
         }
-        if (!isClicksAccessibilityEnabled()) {
-            Toast.makeText(this, "Enable Clicks Accessibility so docked apps can open above the keyboard.", Toast.LENGTH_LONG).show()
-            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        if (!isClicksImeSelected()) {
+            Toast.makeText(this, "Select Clicks Keyboard for docked mode.", Toast.LENGTH_LONG).show()
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.showInputMethodPicker()
             return false
         }
-        startService(Intent(this, DockedKeyboardService::class.java))
         return true
     }
 
@@ -10204,6 +10192,22 @@ Reply format: ["word1","word2","word3"]"""
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()
         val mine = ComponentName(this, InputInjectionService::class.java).flattenToString()
         return enabled.split(':').any { it.equals(mine, ignoreCase = true) }
+    }
+
+    private fun isClicksImeEnabled(): Boolean {
+        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_INPUT_METHODS).orEmpty()
+        return enabled.split(':').any { it.matchesClicksImeComponent() }
+    }
+
+    private fun isClicksImeSelected(): Boolean {
+        val selected = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD).orEmpty()
+        return selected.matchesClicksImeComponent()
+    }
+
+    private fun String.matchesClicksImeComponent(): Boolean {
+        val component = ComponentName(this@MainActivity, ClicksImeService::class.java)
+        return equals(component.flattenToString(), ignoreCase = true) ||
+            equals(component.flattenToShortString(), ignoreCase = true)
     }
 
     private fun dockedExternalActivityOptions(): ActivityOptions? {
