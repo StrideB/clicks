@@ -12,10 +12,13 @@ import android.view.View
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color as ComposeColor
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -48,6 +51,7 @@ object Neu {
     const val ORANGE = 0xFFFF8A4C.toInt()
     const val PURPLE = 0xFFA071FF.toInt()
     const val LIGHT_CHIP_TEXT = 0xFF20242B.toInt()
+    const val DARK_CHIP_TEXT = 0xFF0C1310.toInt()
 
     val Dark = NeuTokens(
         mode = NeuMode.DARK,
@@ -93,7 +97,8 @@ object Neu {
             val b = bounds
             if (b.isEmpty) return
             val spec = shadowSpec(tokens.mode, level)
-            val inset = spec.blur + kotlin.math.max(kotlin.math.abs(spec.lightDx), kotlin.math.abs(spec.darkDx)) + 1f
+            val rawInset = spec.blur + kotlin.math.max(kotlin.math.abs(spec.lightDx), kotlin.math.abs(spec.darkDx)) + 1f
+            val inset = kotlin.math.min(rawInset, kotlin.math.min(b.width(), b.height()) * 0.28f)
             rect.set(
                 b.left + inset,
                 b.top + inset,
@@ -187,51 +192,57 @@ object Neu {
 
 fun Modifier.neu(tokens: NeuTokens, radius: Dp, level: NeuLevel): Modifier = this.drawWithContent {
     val r = radius.toPx()
-    val spec = when (tokens.mode) {
-        NeuMode.DARK -> when (level) {
-            NeuLevel.RAISED -> listOf(-5.dp, -5.dp, 6.dp, 6.dp)
-            NeuLevel.RAISED_SM -> listOf(-3.dp, -3.dp, 4.dp, 4.dp)
-            NeuLevel.PRESSED -> listOf(-4.dp, -4.dp, 5.dp, 5.dp)
-            NeuLevel.PRESSED_SM -> listOf(-2.dp, -2.dp, 3.dp, 3.dp)
-        }
-        NeuMode.LIGHT -> when (level) {
-            NeuLevel.RAISED -> listOf(-4.dp, -4.dp, 5.dp, 5.dp)
-            NeuLevel.RAISED_SM -> listOf(-2.dp, -2.dp, 3.dp, 3.dp)
-            NeuLevel.PRESSED -> listOf(-3.dp, -3.dp, 4.dp, 4.dp)
-            NeuLevel.PRESSED_SM -> listOf(-2.dp, -2.dp, 2.dp, 2.dp)
-        }
+    val light = tokens.mode == NeuMode.LIGHT
+    // offset+blur per level (dp values from the spec), scaled to px
+    val (offNeg, offPos, blurDp) = when (level) {
+        NeuLevel.RAISED     -> Triple(if (light) 4f else 5f, if (light) 5f else 6f, if (light) 12f else 11f)
+        NeuLevel.RAISED_SM  -> Triple(if (light) 2f else 3f, if (light) 3f else 4f, if (light) 6f else 7f)
+        NeuLevel.PRESSED    -> Triple(if (light) 3f else 4f, if (light) 4f else 5f, if (light) 8f else 9f)
+        NeuLevel.PRESSED_SM -> Triple(2f, if (light) 2f else 3f, if (light) 4f else 5f)
     }
+    val dLight = offNeg.dp.toPx()
+    val dDark  = offPos.dp.toPx()
+    val blur   = blurDp.dp.toPx()
+    val hi = tokens.baseHi
+    val lo = tokens.baseLo
+    val hiA = if (light) 0.9f else 0.55f
+    val loA = if (light) 0.85f else 0.78f
     val raised = level == NeuLevel.RAISED || level == NeuLevel.RAISED_SM
+
     if (raised) {
-        drawRoundRect(
-            color = tokens.loCompose.copy(alpha = if (tokens.mode == NeuMode.LIGHT) 0.84f else 0.78f),
-            topLeft = Offset(spec[2].toPx(), spec[3].toPx()),
-            size = Size(size.width, size.height),
-            cornerRadius = CornerRadius(r, r)
-        )
-        drawRoundRect(
-            color = tokens.hiCompose.copy(alpha = if (tokens.mode == NeuMode.LIGHT) 0.9f else 0.52f),
-            topLeft = Offset(spec[0].toPx(), spec[1].toPx()),
-            size = Size(size.width, size.height),
-            cornerRadius = CornerRadius(r, r)
-        )
+        drawIntoCanvas { c ->
+            val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+            // dark shadow bottom-right
+            p.color = androidx.compose.ui.graphics.Color(lo).copy(alpha = loA).toArgb()
+            c.nativeCanvas.drawRoundRect(dDark, dDark, size.width + dDark, size.height + dDark, r, r, p)
+            // light shadow top-left
+            p.color = androidx.compose.ui.graphics.Color(hi).copy(alpha = hiA).toArgb()
+            c.nativeCanvas.drawRoundRect(-dLight, -dLight, size.width - dLight, size.height - dLight, r, r, p)
+        }
         drawRoundRect(color = tokens.baseCompose, cornerRadius = CornerRadius(r, r))
     } else {
+        // base first, then inner shadows CLIPPED to the shape → reads as carved
         drawRoundRect(color = tokens.baseCompose, cornerRadius = CornerRadius(r, r))
-        drawRoundRect(
-            color = tokens.hiCompose.copy(alpha = if (tokens.mode == NeuMode.LIGHT) 0.74f else 0.38f),
-            topLeft = Offset(spec[0].toPx(), spec[1].toPx()),
-            size = Size(size.width, size.height),
-            cornerRadius = CornerRadius(r, r),
-            style = Stroke(width = kotlin.math.abs(spec[0].toPx()) + 2.dp.toPx())
-        )
-        drawRoundRect(
-            color = tokens.loCompose.copy(alpha = if (tokens.mode == NeuMode.LIGHT) 0.8f else 0.68f),
-            topLeft = Offset(spec[2].toPx(), spec[3].toPx()),
-            size = Size(size.width, size.height),
-            cornerRadius = CornerRadius(r, r),
-            style = Stroke(width = kotlin.math.abs(spec[2].toPx()) + 2.dp.toPx())
-        )
+        val clip = androidx.compose.ui.graphics.Path().apply {
+            addRoundRect(androidx.compose.ui.geometry.RoundRect(0f, 0f, size.width, size.height, CornerRadius(r, r)))
+        }
+        clipPath(clip) {
+            drawIntoCanvas { c ->
+                val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = blur * 1.6f
+                    maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+                // dark inner shadow: pushed in from top-left → strong on top/left inner edges
+                p.color = androidx.compose.ui.graphics.Color(lo).copy(alpha = if (light) 0.9f else 0.85f).toArgb()
+                c.nativeCanvas.drawRoundRect(dDark, dDark, size.width + dDark, size.height + dDark, r, r, p)
+                // light inner shadow: pushed in from bottom-right → highlight on bottom/right inner edges
+                p.color = androidx.compose.ui.graphics.Color(hi).copy(alpha = if (light) 0.85f else 0.5f).toArgb()
+                c.nativeCanvas.drawRoundRect(-dLight, -dLight, size.width - dLight, size.height - dLight, r, r, p)
+            }
+        }
     }
     drawContent()
 }

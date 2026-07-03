@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -34,7 +35,6 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -54,10 +54,18 @@ private var WidgetNeuTokens = Neu.Dark
 private val Ink: Color get() = WidgetNeuTokens.inkCompose
 private val InkDim: Color get() = WidgetNeuTokens.inkDimCompose
 private val InkFaint: Color get() = WidgetNeuTokens.inkFaintCompose
-private val GreenSoft = Color(0xFF28E06A)
-private val Amber = Color(0xFFE8B84B)
-private val Purple = Color(0xFFA071FF)
-private val Accent = Color(0xFFFF4B45)
+private val GreenSoft = Color(Neu.GREEN)
+private val Amber = Color(Neu.AMBER)
+private val Purple = Color(Neu.PURPLE)
+private val Accent = Color(Neu.ACCENT)
+private val Blue = Color(Neu.BLUE)
+private val Teal = Color(Neu.TEAL)
+private val Orange = Color(Neu.ORANGE)
+private val DarkChipText = Color(Neu.DARK_CHIP_TEXT)
+
+private fun chipTextColor(tokens: NeuTokens): Color {
+    return if (tokens.mode == NeuMode.LIGHT) Color(Neu.LIGHT_CHIP_TEXT) else DarkChipText
+}
 
 data class CalendarEvent(
     val eventId: Long,
@@ -112,7 +120,7 @@ private sealed interface WidgetItem {
         val people: List<RecentPerson>
     ) : WidgetItem {
         override val id = "people"
-        override val accent = Color(0xFFFF8A4C)
+        override val accent = Orange
     }
 
     data class Email(
@@ -120,7 +128,7 @@ private sealed interface WidgetItem {
         val emails: List<ContextWidgetItem>
     ) : WidgetItem {
         override val id = "email"
-        override val accent = Color(0xFF3B9DFF)
+        override val accent = Accent
     }
 
     data class News(
@@ -283,7 +291,7 @@ fun HomeWidgetStack(
                             .width(5.dp)
                             .height(dotHeight.value)
                             .clip(RoundedCornerShape(99.dp))
-                            .background(if (selected) GreenSoft else Color(0x668B8F99))
+                            .background(if (selected) GreenSoft else InkFaint.copy(alpha = 0.5f))
                             .clickable { scope.launch { pagerState.animateScrollToPage(index) } }
                     )
                 }
@@ -304,64 +312,102 @@ private fun MusicWidgetCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .drawMusicSurface(tokens)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 15.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 17.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Box(
-            Modifier
-                .size(76.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .recessedTraySurface(tokens, 20),
-            contentAlignment = Alignment.Center
+        LabelText("NOW PLAYING", GreenSoft)
+        Row(
+            modifier = Modifier.fillMaxWidth().weight(1f),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            if (albumArt != null) {
-                Image(
-                    bitmap = albumArt.asImageBitmap(),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
+            Box(
+                Modifier
+                    .size(82.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .recessedTray(tokens, 18, deep = true)
+                    .padding(6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (albumArt != null) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(16.dp))
+                            .neu(tokens, 16.dp, NeuLevel.RAISED_SM)
+                            .padding(4.dp)
+                    ) {
+                        Image(
+                            bitmap = albumArt.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                } else {
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        repeat(2) {
+                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                repeat(2) {
+                                    Box(
+                                        Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .clip(RoundedCornerShape(7.dp))
+                                            .neu(tokens, 7.dp, NeuLevel.RAISED_SM)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
+                BasicText(
+                    text = title.ifBlank { "Music" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
                 )
-            } else {
-                Canvas(Modifier.fillMaxSize()) {
-                    drawCircle(sourceColor.copy(alpha = 0.84f), radius = size.minDimension * 0.36f, center = center)
-                    drawCircle(Color(0xFF0A0B0E), radius = size.minDimension * 0.13f, center = center)
-                    drawCircle(Color.White.copy(alpha = 0.16f), radius = size.minDimension * 0.04f, center = center)
+                Spacer(Modifier.height(5.dp))
+                BasicText(
+                    text = listOf(artist, sourceApp).filter { it.isNotBlank() }.joinToString(" . "),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(color = InkDim, fontSize = 11.sp, fontFamily = FontFamily.SansSerif)
+                )
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(7.dp)
+                        .clip(RoundedCornerShape(99.dp))
+                        .recessedTray(tokens, 99, deep = false)
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(0.44f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(GreenSoft.copy(alpha = 0.7f))
+                    )
                 }
             }
         }
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-            LabelText("NOW PLAYING", sourceColor)
-            Spacer(Modifier.height(7.dp))
-            BasicText(
-                text = title.ifBlank { "Music" },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
-            )
-            Spacer(Modifier.height(5.dp))
-            BasicText(
-                text = listOf(artist, sourceApp).filter { it.isNotBlank() }.joinToString(" . "),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = InkDim, fontSize = 11.4.sp, fontFamily = FontFamily.SansSerif)
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
-                listOf(10.dp, 18.dp, 13.dp, 22.dp, 15.dp, 8.dp).forEach { height ->
-                    Box(
-                        Modifier
-                            .width(3.dp)
-                            .height(height)
-                            .clip(RoundedCornerShape(99.dp))
-                            .background(sourceColor.copy(alpha = 0.78f))
-                    )
-                }
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.Bottom) {
+            listOf(10.dp, 18.dp, 13.dp, 20.dp, 15.dp, 8.dp).forEach { height ->
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .height(height)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(GreenSoft.copy(alpha = 0.85f))
+                )
             }
         }
     }
@@ -393,11 +439,11 @@ private fun EmailWidgetCard(
                     .domedSurface(tokens, 10),
                 contentAlignment = Alignment.Center
             ) {
-                BasicText("M", style = TextStyle(color = Color(0xFF260805), fontSize = 15.sp, fontWeight = FontWeight.Black))
+                BasicText("M", style = TextStyle(color = chipTextColor(tokens), fontSize = 15.sp, fontWeight = FontWeight.Black))
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                LabelText("INBOX", Color(0xFFEA4335))
+                LabelText("INBOX", Accent)
                 Spacer(Modifier.height(3.dp))
                 BasicText(
                     text = "Latest email",
@@ -414,7 +460,7 @@ private fun EmailWidgetCard(
                 BasicText(
                     text = emails.size.coerceAtMost(99).toString(),
                     maxLines = 1,
-                    style = TextStyle(color = Color(0xFFFFB4AA), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    style = TextStyle(color = Accent, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 )
             }
         }
@@ -422,7 +468,7 @@ private fun EmailWidgetCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(18.dp))
-                .recessedTraySurface(tokens, 18)
+                .recessedTray(tokens, 18, deep = true)
                 .padding(horizontal = 11.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -448,7 +494,7 @@ private fun EmailWidgetCard(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
                 emails.drop(1).take(2).forEach { email ->
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                        Box(Modifier.size(5.dp).clip(RoundedCornerShape(99.dp)).background(Color(0xFFEA4335).copy(alpha = 0.74f)))
+                        Box(Modifier.size(5.dp).clip(RoundedCornerShape(99.dp)).background(Accent.copy(alpha = 0.74f)))
                         Spacer(Modifier.width(7.dp))
                         BasicText(
                             text = email.title,
@@ -483,7 +529,7 @@ private fun NewsWidgetCard(
         ContextIcon(tokens, item, fallback = "N", size = 50)
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-            LabelText("GOOGLE NEWS", Color(0xFF8AB4F8))
+            LabelText("GOOGLE NEWS", Blue)
             Spacer(Modifier.height(7.dp))
             BasicText(
                 text = item.title,
@@ -521,18 +567,17 @@ private fun MapsWidgetCard(
     ) {
         Box(
             modifier = Modifier
-                .size(86.dp)
+                .size(88.dp)
                 .clip(RoundedCornerShape(22.dp))
-                .recessedTraySurface(tokens, 22)
+                .recessedTray(tokens, 18, deep = true)
         ) {
             Canvas(Modifier.fillMaxSize()) {
-                val road = Color(0xFF2A2F36)
-                val roadLit = Color(0xFF57C98A)
+                val road = InkFaint.copy(alpha = 0.4f)
                 drawLine(road, Offset(size.width * 0.14f, size.height * 0.24f), Offset(size.width * 0.86f, size.height * 0.72f), strokeWidth = 7.dp.toPx())
                 drawLine(road, Offset(size.width * 0.18f, size.height * 0.78f), Offset(size.width * 0.80f, size.height * 0.18f), strokeWidth = 5.dp.toPx())
-                drawLine(roadLit.copy(alpha = 0.82f), Offset(size.width * 0.14f, size.height * 0.24f), Offset(size.width * 0.55f, size.height * 0.51f), strokeWidth = 3.dp.toPx())
-                drawCircle(Color(0xFF0B1511), radius = 12.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
-                drawCircle(roadLit, radius = 7.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
+                drawLine(GreenSoft.copy(alpha = 0.82f), Offset(size.width * 0.14f, size.height * 0.24f), Offset(size.width * 0.55f, size.height * 0.51f), strokeWidth = 3.dp.toPx())
+                drawCircle(tokens.baseCompose, radius = 12.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
+                drawCircle(GreenSoft, radius = 7.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
                 drawCircle(Color.White.copy(alpha = 0.22f), radius = 2.dp.toPx(), center = Offset(size.width * 0.60f, size.height * 0.55f))
             }
         }
@@ -575,7 +620,7 @@ private fun ContextIcon(tokens: NeuTokens, item: ContextWidgetItem, fallback: St
         Modifier
             .size(size.dp)
             .clip(RoundedCornerShape(16.dp))
-            .recessedTraySurface(tokens, 16),
+            .recessedTray(tokens, 13, deep = false),
         contentAlignment = Alignment.Center
     ) {
         if (item.avatar != null) {
@@ -589,7 +634,7 @@ private fun ContextIcon(tokens: NeuTokens, item: ContextWidgetItem, fallback: St
             BasicText(
                 text = item.title.take(1).uppercase().ifBlank { fallback },
                 maxLines = 1,
-                style = TextStyle(color = Color(0xFF071009), fontSize = 18.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.SansSerif)
+                style = TextStyle(color = chipTextColor(tokens), fontSize = 18.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.SansSerif)
             )
         }
     }
@@ -611,20 +656,26 @@ private fun RecentPeopleCard(
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            LabelText("RECENT PEOPLE", Color(0xFF5FD0C4))
+            LabelText("RECENT PEOPLE", Teal)
             Spacer(Modifier.width(8.dp))
-            Box(Modifier.height(1.dp).weight(1f).background(Color(0x1F5FD0C4)))
+            Box(Modifier.height(1.dp).weight(1f).background(Teal.copy(alpha = 0.12f)))
             if (people.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))
                 BasicText(
                     text = people.size.coerceAtMost(6).toString(),
                     maxLines = 1,
-                    style = TextStyle(color = Color(0xFF5FD0C4), fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    style = TextStyle(color = Teal, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 )
             }
         }
         if (people.isEmpty()) {
-            Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Column(
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
                 Row(horizontalArrangement = Arrangement.spacedBy((-8).dp)) {
                     repeat(3) { index ->
                         Box(
@@ -644,14 +695,26 @@ private fun RecentPeopleCard(
                 )
             }
         } else if (people.size == 1) {
-            RecentPersonWideCard(
-                tokens = tokens,
-                person = people.first(),
-                onClick = { onPersonClick(people.first()) },
-                onLongClick = { onPersonLongClick(people.first()) }
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                RecentPersonWideCard(
+                    tokens = tokens,
+                    person = people.first(),
+                    onClick = { onPersonClick(people.first()) },
+                    onLongClick = { onPersonLongClick(people.first()) }
+                )
+            }
         } else {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 people.take(3).forEach { person ->
                     RecentPersonChip(
                         tokens = tokens,
@@ -678,9 +741,9 @@ private fun RecentPersonWideCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(82.dp)
+            .fillMaxHeight()
             .clip(RoundedCornerShape(22.dp))
-            .recessedTraySurface(tokens, 22)
+            .recessedTray(tokens, 16, deep = false)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -723,9 +786,9 @@ private fun RecentPersonChip(
 ) {
     Row(
         modifier = modifier
-            .height(78.dp)
+            .fillMaxHeight()
             .clip(RoundedCornerShape(20.dp))
-            .recessedTraySurface(tokens, 20)
+            .recessedTray(tokens, 16, deep = false)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 7.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -817,7 +880,7 @@ private fun CalendarNowBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermis
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(18.dp))
-            .recessedTraySurface(tokens, 18)
+            .recessedTray(tokens, 16, deep = true)
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
@@ -857,7 +920,7 @@ private fun CalendarNextBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermi
         Row(verticalAlignment = Alignment.CenterVertically) {
             LabelText("UP NEXT", Amber)
             Spacer(Modifier.width(6.dp))
-            Box(Modifier.height(1.dp).weight(1f).background(Color(0x242A2C33)))
+            Box(Modifier.height(1.dp).weight(1f).background(InkFaint.copy(alpha = 0.18f)))
             if (count > 1) {
                 Spacer(Modifier.width(6.dp))
                 BasicText(
@@ -872,7 +935,7 @@ private fun CalendarNextBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermi
                 .fillMaxWidth()
                 .weight(1f)
                 .clip(RoundedCornerShape(17.dp))
-                .recessedTraySurface(tokens, 17)
+                .recessedTray(tokens, 16, deep = true)
                 .padding(horizontal = 11.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.Center
         ) {
@@ -903,8 +966,6 @@ private fun CalendarNextBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermi
 
 private fun Modifier.drawCalendarSurface(tokens: NeuTokens): Modifier = raisedGlassSurface(tokens, 22)
 
-private fun Modifier.drawNeutralSurface(tokens: NeuTokens): Modifier = raisedGlassSurface(tokens, 22)
-
 private fun Modifier.drawMusicSurface(tokens: NeuTokens): Modifier = raisedGlassSurface(tokens, 22)
 
 private fun Modifier.drawPeopleSurface(tokens: NeuTokens): Modifier = raisedGlassSurface(tokens, 22)
@@ -917,17 +978,10 @@ private fun Modifier.drawMapsSurface(tokens: NeuTokens): Modifier = raisedGlassS
 
 private fun Modifier.raisedGlassSurface(tokens: NeuTokens, radiusDp: Int): Modifier = this.neu(tokens, radiusDp.dp, NeuLevel.RAISED)
 
-private fun Modifier.recessedTraySurface(tokens: NeuTokens, radiusDp: Int): Modifier = this.neu(tokens, radiusDp.dp, NeuLevel.PRESSED_SM)
+private fun Modifier.recessedTray(tokens: NeuTokens, radiusDp: Int, deep: Boolean = false): Modifier =
+    this.neu(tokens, radiusDp.dp, if (deep) NeuLevel.PRESSED else NeuLevel.PRESSED_SM)
 
 private fun Modifier.domedSurface(tokens: NeuTokens, radiusDp: Int): Modifier = this.neu(tokens, radiusDp.dp, NeuLevel.RAISED_SM)
-
-private fun calendarTimeParts(timeLabel: String?): Pair<String, String> {
-    val clean = timeLabel?.trim().orEmpty()
-    if (clean.isBlank()) return "TODAY" to ""
-    val firstSpace = clean.indexOf(' ')
-    if (firstSpace < 0) return clean.uppercase() to ""
-    return clean.substring(0, firstSpace).uppercase() to clean.substring(firstSpace + 1)
-}
 
 private fun calendarEndTime(endMs: Long): String {
     return Instant.ofEpochMilli(endMs)
@@ -958,36 +1012,4 @@ private fun LabelText(text: String, color: Color) {
             letterSpacing = 1.4.sp
         )
     )
-}
-
-@Composable
-private fun CalendarDateMark(dayLabel: String, timeLabel: String, hasPermission: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Canvas(Modifier.size(width = 8.dp, height = 72.dp)) {
-            val line = if (hasPermission) Amber else InkDim
-            drawLine(
-                color = line.copy(alpha = 0.45f),
-                start = Offset(size.width / 2f, 2.dp.toPx()),
-                end = Offset(size.width / 2f, size.height - 2.dp.toPx()),
-                strokeWidth = 1.dp.toPx()
-            )
-            drawCircle(Accent, radius = 2.4.dp.toPx(), center = Offset(size.width / 2f, size.height * 0.42f))
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(verticalArrangement = Arrangement.Center) {
-            BasicText(
-                text = dayLabel.take(8),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = if (hasPermission) Amber else InkDim, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, letterSpacing = 0.8.sp, fontWeight = FontWeight.Bold)
-            )
-            Spacer(Modifier.height(4.dp))
-            BasicText(
-                text = timeLabel.ifBlank { "agenda" },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = InkDim, fontSize = 10.2.sp, fontFamily = FontFamily.SansSerif)
-            )
-        }
-    }
 }

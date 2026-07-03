@@ -1138,9 +1138,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER_HORIZONTAL
                 clipChildren = false
                 clipToPadding = false
-            setPadding(dp(14), dp(6), dp(14), dp(8))
+            setPadding(dp(14), dp(6), dp(14), 0)
             addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.22f))
+            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.08f))
             nowPlayingCardView = ComposeView(context).apply {
                 setBackgroundColor(Color.TRANSPARENT)
                 setNowPlayingCardContent()
@@ -1150,7 +1150,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 topMargin = dp(2)
                 bottomMargin = dp(2)
             })
-            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.42f else 1.1f))
+            addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.18f))
             favoritesDockView = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
@@ -1161,7 +1161,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
                 topMargin = dp(6)
-                bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(8) else dp(2)
+                bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else 0
             })
             if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
                 addView(homeKeyboardWidget(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, widgetKeyboardHeight()).apply {
@@ -1991,13 +1991,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun nowPlayingCardHeight(): Int {
         if (!homeWidgetStackVisible()) return 0
         val metrics = resources.displayMetrics
-        val contentHeight = metrics.heightPixels -
-            systemStatusBarHeight() -
-            dp(34) -
-            keyboardHeight()
-        val reservedHomeChrome = dp(20) + dp(70) + dp(80) + dp(28)
-        val flexibleSpace = (contentHeight - reservedHomeChrome).coerceAtLeast(dp(120))
-        return (flexibleSpace * 0.74f).toInt().coerceIn(dp(126), dp(214))
+        val dockedChrome = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) dp(34) + keyboardHeight() else 0
+        val widgetChrome = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) widgetKeyboardHeight() + dp(72) else dp(66)
+        val contentHeight = metrics.heightPixels - systemStatusBarHeight() - dockedChrome
+        val reservedHomeChrome = dp(84) + widgetChrome
+        val flexibleSpace = (contentHeight - reservedHomeChrome).coerceAtLeast(dp(176))
+        return flexibleSpace.coerceIn(dp(176), dp(360))
     }
 
     private fun homeWidgetStackVisible() = openPane == null && !libraryOpen
@@ -10076,7 +10075,7 @@ $emailText"""
     }
 
     private fun widgetKeyboardHeight(): Int {
-        return (keyboardHeight() + dp(44)).coerceIn(dp(250), dp(380))
+        return (keyboardHeight() + dp(28)).coerceIn(dp(238), dp(360))
     }
 
     private fun recessedDockBackground(): Drawable {
@@ -10905,7 +10904,7 @@ $emailText"""
     private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
     private fun keyboardHeight() = dp(272 + keyboardSize * 80 / 100)
     private fun keyboardTopPadding() = dp(4)
-    private fun keyboardBottomPadding() = dp(20)
+    private fun keyboardBottomPadding() = dp(8)
 
     private fun keyTextSize(label: String): Float {
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
