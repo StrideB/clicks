@@ -10146,6 +10146,7 @@ Reply format: ["word1","word2","word3"]"""
     private fun launchExternalIntent(intent: Intent, packageName: String) {
         if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
             if (!prepareDockedExternalMode()) return
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
             val options = dockedExternalActivityOptions()
             if (options != null) {
                 runCatching {
@@ -10159,6 +10160,7 @@ Reply format: ["word1","word2","word3"]"""
         } else {
             startActivity(intent)
         }
+        requestDockedSplitFallbackIfNeeded()
         recordAppLaunch(packageName)
     }
 
@@ -10169,8 +10171,34 @@ Reply format: ["word1","word2","word3"]"""
             runCatching { startActivity(DockedKeyboardService.overlaySettingsIntent(this)) }
             return false
         }
+        if (!isClicksAccessibilityEnabled()) {
+            Toast.makeText(this, "Enable Clicks Accessibility so docked apps can open above the keyboard.", Toast.LENGTH_LONG).show()
+            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            return false
+        }
         startService(Intent(this, DockedKeyboardService::class.java))
         return true
+    }
+
+    private fun requestDockedSplitFallbackIfNeeded() {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED || dockedFreeformLikelyEnabled()) return
+        handler.postDelayed({
+            sendBroadcast(Intent(InputInjectionService.ACTION_TOGGLE_SPLIT_SCREEN).apply {
+                setPackage(this@MainActivity.packageName)
+            })
+        }, 650L)
+    }
+
+    private fun dockedFreeformLikelyEnabled(): Boolean {
+        val freeform = Settings.Global.getInt(contentResolver, "enable_freeform_support", 0) == 1
+        val resizable = Settings.Global.getInt(contentResolver, "force_resizable_activities", 0) == 1
+        return freeform && resizable
+    }
+
+    private fun isClicksAccessibilityEnabled(): Boolean {
+        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()
+        val mine = ComponentName(this, InputInjectionService::class.java).flattenToString()
+        return enabled.split(':').any { it.equals(mine, ignoreCase = true) }
     }
 
     private fun dockedExternalActivityOptions(): ActivityOptions? {

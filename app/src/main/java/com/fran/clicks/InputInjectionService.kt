@@ -14,14 +14,19 @@ class InputInjectionService : AccessibilityService() {
 
     private val keystrokeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != ACTION_INJECT_KEY || !KeyboardSettings.isDocked(this@InputInjectionService)) return
-            injectKey(intent.getStringExtra(EXTRA_CHAR).orEmpty())
+            if (!KeyboardSettings.isDocked(this@InputInjectionService)) return
+            when (intent?.action) {
+                ACTION_INJECT_KEY -> injectKey(intent.getStringExtra(EXTRA_CHAR).orEmpty())
+                ACTION_TOGGLE_SPLIT_SCREEN -> performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        val filter = IntentFilter(ACTION_INJECT_KEY)
+        val filter = IntentFilter(ACTION_INJECT_KEY).apply {
+            addAction(ACTION_TOGGLE_SPLIT_SCREEN)
+        }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(keystrokeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -71,6 +76,7 @@ class InputInjectionService : AccessibilityService() {
 
     companion object {
         const val ACTION_INJECT_KEY = "com.fran.clicks.ACTION_INJECT_KEY"
+        const val ACTION_TOGGLE_SPLIT_SCREEN = "com.fran.clicks.ACTION_TOGGLE_SPLIT_SCREEN"
         const val EXTRA_CHAR = "extra_char"
         const val KEY_BACKSPACE = "__BACKSPACE__"
         const val KEY_ENTER = "__ENTER__"
