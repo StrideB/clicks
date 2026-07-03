@@ -421,7 +421,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
         liveRouter.start()
         loadGlideWords()
+        syncVivoDockedExperiment()
         render()
+        handleKeyboardActionIntent(intent)
         rootView.post { maybeShowKeyboardPlacementIntro() }
         refreshWeather(force = false)
         maybeRequestSmsPermission()
@@ -456,6 +458,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        syncVivoDockedExperiment()
+        if (handleKeyboardActionIntent(intent)) return
         if (intent.hasCategory(Intent.CATEGORY_HOME)) {
             dismissToHome()
             return
@@ -485,9 +489,36 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    private fun handleKeyboardActionIntent(intent: Intent?): Boolean {
+        when (intent?.action) {
+            ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS -> {
+                VivoDockedExperiment.clearViewportTruncation(this)
+                stopService(Intent(this, DockedKeyboardService::class.java))
+                openPane = null
+                libraryOpen = false
+                keyboardSettingsOpen = true
+                query = ""
+                render()
+                return true
+            }
+            ClicksKeyboardActions.SWITCH_TO_WIDGET_MODE -> {
+                VivoDockedExperiment.clearViewportTruncation(this)
+                stopService(Intent(this, DockedKeyboardService::class.java))
+                openPane = null
+                libraryOpen = false
+                keyboardSettingsOpen = false
+                query = ""
+                setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
+                return true
+            }
+        }
+        return false
+    }
+
     override fun onResume() {
         super.onResume()
         stopService(Intent(this, DockedKeyboardService::class.java))
+        syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
         ensureBillingConnected()
         val now = System.currentTimeMillis()
@@ -502,6 +533,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
             refreshWeather(force = false)
+        }
+    }
+
+    private fun syncVivoDockedExperiment() {
+        android.util.Log.i("VivoDockedExperiment", "sync placement=$keyboardPlacement enabled=${VivoDockedExperiment.isEnabled(this)}")
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && VivoDockedExperiment.isEnabled(this)) {
+            VivoDockedExperiment.applyViewportTruncation(this)
+        } else {
+            VivoDockedExperiment.clearViewportTruncation(this)
         }
     }
 
@@ -4170,6 +4210,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "calendar", "schedule" -> SearchCommandPreview(body.ifBlank { "Create event" }, "CREATE EVENT · CALENDAR", "＋")
             "open", "launch" -> SearchCommandPreview("Open $body", "OPEN APP", "➤")
             "play" -> SearchCommandPreview("Play $body", "START MUSIC SEARCH", "▶")
+            "search", "google", "web" -> SearchCommandPreview(body.ifBlank { clean }, "SEARCH GOOGLE IN CLICKS", "G")
             "ask", "ai", "gemini" -> SearchCommandPreview(body.ifBlank { clean }, "ASK CLICKS AI", "AI")
             else -> null
         }
@@ -4637,9 +4678,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 false
             }
             setOnClickListener {
-                haptic(this); libraryOpen = false
-                libraryView?.let { contentFrame.removeView(it) }
-                if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target)
+                haptic(this)
+                val opened = if (target.kind == PaneKind.MUSIC || target.packageName == null) {
+                    openHere(target)
+                    true
+                } else {
+                    openExternal(target)
+                }
+                if (opened) {
+                    libraryOpen = false
+                    libraryView?.let { contentFrame.removeView(it) }
+                    libraryView = null
+                    libraryContentArea = null
+                }
             }
             setOnLongClickListener { haptic(this); showIconMenu(this, app); true }
         }
@@ -6841,7 +6892,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyboardSettingsOpen = false
         KeyboardSettings.setPlacementMode(this, safe)
         if (safe == KEYBOARD_PLACEMENT_WIDGET) {
+            VivoDockedExperiment.clearViewportTruncation(this)
             stopService(Intent(this, DockedKeyboardService::class.java))
+        } else if (VivoDockedExperiment.isEnabled(this)) {
+            VivoDockedExperiment.applyViewportTruncation(this)
+            if (Settings.canDrawOverlays(this)) {
+                startService(Intent(this, DockedKeyboardService::class.java))
+            }
         }
         render()
     }
@@ -6893,6 +6950,51 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(0, dp(8), 0, 0)
             isClickable = true
             setOnClickListener { onClick() }
+        }
+    }
+
+    private fun devExperimentsEnabled(): Boolean {
+        return applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0 &&
+            prefs().getBoolean(DEV_EXPERIMENTS_PREF, false)
+    }
+
+    private fun vivoDockedExperimentSelector(): View {
+        val current = VivoDockedExperiment.currentMode(this)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+            addView(mono("VIVO EXP", 9f, activeNeuTokens.inkDim).apply { letterSpacing = 0.12f },
+                LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT))
+            listOf(
+                "OFF" to VivoDockedExperiment.MODE_OFF,
+                "WM" to VivoDockedExperiment.MODE_WM_SIZE,
+                "OVER" to VivoDockedExperiment.MODE_OVERSCAN
+            ).forEach { (label, value) ->
+                addView(TextView(context).apply {
+                    text = label
+                    gravity = Gravity.CENTER
+                    textSize = 9.2f
+                    letterSpacing = 0.08f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(if (current == value) activeNeuTokens.ink else activeNeuTokens.inkDim)
+                    background = if (current == value) {
+                        Neu.drawable(activeNeuTokens, dp(10).toFloat(), NeuLevel.PRESSED_SM)
+                    } else {
+                        Neu.drawable(activeNeuTokens, dp(10).toFloat(), NeuLevel.RAISED_SM)
+                    }
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        VivoDockedExperiment.clearViewportTruncation(this@MainActivity)
+                        VivoDockedExperiment.setMode(this@MainActivity, value)
+                        if (value != VivoDockedExperiment.MODE_OFF && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+                            VivoDockedExperiment.applyViewportTruncation(this@MainActivity)
+                        }
+                        renderPaneContent(clicksSettingsTarget())
+                    }
+                }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
+            }
         }
     }
 
@@ -8581,7 +8683,13 @@ Reply format: ["word1","word2","word3"]"""
             }
             "enter" -> {
                 if (libraryOpen) {
-                    universalSearchResults().firstOrNull()?.let { openSearchResult(it) }
+                    if (executeTypeToDoCommand(query)) {
+                        query = ""
+                        refreshLibraryContent()
+                        return
+                    }
+                    val result = bestLauncherResultForGo()
+                    if (result != null) openSearchResult(result) else launchInAppGoogleSearch(query)
                     return
                 }
                 if (numberPadOpen) {
@@ -8593,7 +8701,12 @@ Reply format: ["word1","word2","word3"]"""
                         renderRibbon()
                         return
                     }
-                    filteredRibbonEntries().firstOrNull()?.let { if (it.target.kind == PaneKind.MUSIC || it.target.packageName == null) openHere(it.target) else openExternal(it.target) }
+                    val ribbon = filteredRibbonEntries().firstOrNull()
+                    if (ribbon != null && query.isNotBlank()) {
+                        if (ribbon.target.kind == PaneKind.MUSIC || ribbon.target.packageName == null) openHere(ribbon.target) else openExternal(ribbon.target)
+                    } else {
+                        launchInAppGoogleSearch(query)
+                    }
                 }
             }
             else -> {
@@ -9208,6 +9321,21 @@ Reply format: ["word1","word2","word3"]"""
         parent.addView(mono("LAUNCHER", 10f, Accent).apply {
             letterSpacing = 0.22f
             setPadding(0, 0, 0, dp(8))
+            if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+                isLongClickable = true
+                setOnLongClickListener {
+                    val next = !prefs().getBoolean(DEV_EXPERIMENTS_PREF, false)
+                    prefs().edit().putBoolean(DEV_EXPERIMENTS_PREF, next).apply()
+                    if (!next) {
+                        VivoDockedExperiment.clearViewportTruncation(this@MainActivity)
+                        VivoDockedExperiment.setMode(this@MainActivity, VivoDockedExperiment.MODE_OFF)
+                    }
+                    haptic(this)
+                    Toast.makeText(this@MainActivity, if (next) "Dev experiments enabled" else "Dev experiments disabled", Toast.LENGTH_SHORT).show()
+                    renderPaneContent(clicksSettingsTarget())
+                    true
+                }
+            }
         })
         parent.addView(settingAction("ICON PACK   ${activeIconPackLabel().uppercase(Locale.US)}") {
             haptic(this)
@@ -9228,6 +9356,9 @@ Reply format: ["word1","word2","word3"]"""
             if (::weatherIconView.isInitialized) weatherIconView.setAnimationEnabled(next)
             renderPaneContent(clicksSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        if (devExperimentsEnabled() && VivoDockedExperiment.isAvailable(this)) {
+            parent.addView(vivoDockedExperimentSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
+        }
         parent.addView(themeColorSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
 
         parent.addView(mono("GESTURES", 10f, Accent).apply {
@@ -10121,45 +10252,68 @@ Reply format: ["word1","word2","word3"]"""
 
     // ── App loading ──────────────────────────────────────────────────────────
 
-    private fun openExternal(target: PaneTarget) {
+    private fun openExternal(target: PaneTarget): Boolean {
         target.deepLinkUri?.takeIf { it.startsWith("tel:") }?.let {
-            startActivity(Intent(Intent.ACTION_DIAL, Uri.parse(it))); return
+            startActivity(Intent(Intent.ACTION_DIAL, Uri.parse(it))); return true
         }
         val packageName = target.packageName
-        if (packageName == null) { openHere(target); return }
+        if (packageName == null) { openHere(target); return true }
         try {
             if (target.deepLinkUri != null && isInstalled(packageName)) {
-                launchExternalIntent(Intent(Intent.ACTION_VIEW, Uri.parse(target.deepLinkUri)), packageName)
-                return
+                return launchExternalIntent(Intent(Intent.ACTION_VIEW, Uri.parse(target.deepLinkUri)), packageName)
             }
             val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             if (launchIntent != null) {
-                launchExternalIntent(launchIntent, packageName)
-                return
+                return launchExternalIntent(launchIntent, packageName)
             }
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$packageName")))
+            return true
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, "${target.name} isn't available here", Toast.LENGTH_SHORT).show()
         }
+        return false
     }
 
-    private fun launchExternalIntent(intent: Intent, packageName: String) {
+    private fun launchExternalIntent(intent: Intent, packageName: String): Boolean {
         if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
-            if (!prepareDockedExternalMode()) return
+            if (!prepareDockedExternalMode()) return false
             intent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP
             )
-            startActivity(intent)
+            val options = if (VivoDockedExperiment.isEnabled(this)) null else dockedExternalActivityOptions()
+            if (options != null) {
+                runCatching { startActivity(intent, options.toBundle()) }
+                    .onFailure { startActivity(intent) }
+            } else {
+                startActivity(intent)
+            }
         } else {
+            VivoDockedExperiment.clearViewportTruncation(this)
             startActivity(intent)
         }
         recordAppLaunch(packageName)
+        return true
     }
 
     private fun prepareDockedExternalMode(): Boolean {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return true
-        stopService(Intent(this, DockedKeyboardService::class.java))
+        if (VivoDockedExperiment.isEnabled(this)) {
+            VivoDockedExperiment.applyViewportTruncation(this)
+            if (!Settings.canDrawOverlays(this)) {
+                Toast.makeText(this, "Allow Clicks overlay so the docked keyboard can stay visible.", Toast.LENGTH_LONG).show()
+                runCatching { startActivity(DockedKeyboardService.overlaySettingsIntent(this)) }
+                return false
+            }
+            if (!isClicksAccessibilityEnabled()) {
+                Toast.makeText(this, "Enable Clicks Accessibility so the docked keyboard can type into apps.", Toast.LENGTH_LONG).show()
+                runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                return false
+            }
+            startService(Intent(this, DockedKeyboardService::class.java))
+        } else {
+            stopService(Intent(this, DockedKeyboardService::class.java))
+        }
         if (!isClicksImeEnabled()) {
             Toast.makeText(this, "Enable Clicks Keyboard, then select it for docked typing.", Toast.LENGTH_LONG).show()
             runCatching { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
@@ -10675,6 +10829,27 @@ Reply format: ["word1","word2","word3"]"""
         }
     }
 
+    private fun bestLauncherResultForGo(): SearchResult? {
+        val q = query.trim()
+        if (q.isBlank()) return null
+        val results = universalSearchResults()
+        val exactApp = results.firstOrNull {
+            it.kind == SearchKind.APP && it.title.equals(q, ignoreCase = true)
+        }
+        return exactApp ?: results.firstOrNull { it.kind != SearchKind.AI }
+    }
+
+    private fun launchInAppGoogleSearch(rawQuery: String) {
+        val search = InAppGoogleSearchEngine.stripWebVerb(rawQuery).ifBlank { return }
+        val toolbar = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.baseHi else activeNeuTokens.base
+        val nav = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.base else activeNeuTokens.baseLo
+        runCatching {
+            InAppGoogleSearchEngine(this).launchInAppSearch(search, toolbar, nav)
+        }.onFailure {
+            startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(search)}")), "No browser available")
+        }
+    }
+
     // Contacts are cached in memory and filtered locally per keystroke. The old code ran two
     // contentResolver LIKE '%q%' queries (leading-wildcard full scans) on the main thread on every
     // keystroke — that was the search typing lag. The cache warms off the main thread on permission
@@ -10791,6 +10966,7 @@ Reply format: ["word1","word2","word3"]"""
         val verb = command.substringBefore(' ').lowercase(Locale.US)
         val body = command.substringAfter(' ', "").trim()
         return when (verb) {
+            "search", "google", "web" -> executeWebSearchCommand(body.ifBlank { command })
             "ask", "ai", "gemini" -> executeAiCommand(body.ifBlank { command })
             "call" -> executeCallCommand(body, command)
             "text", "sms", "message" -> executeTextCommand(body, command)
@@ -10806,6 +10982,12 @@ Reply format: ["word1","word2","word3"]"""
         val prompt = body.trim()
         if (prompt.isBlank()) return false
         askGemini(prompt)
+        return true
+    }
+
+    private fun executeWebSearchCommand(body: String): Boolean {
+        val search = InAppGoogleSearchEngine.stripWebVerb(body).ifBlank { return false }
+        launchInAppGoogleSearch(search)
         return true
     }
 
@@ -11044,7 +11226,7 @@ $emailText"""
                 else "Tell me what to play."
             "web" -> {
                 if (target.isBlank()) return "What should I search for?"
-                startSafeIntent(Intent(Intent.ACTION_WEB_SEARCH).putExtra(android.app.SearchManager.QUERY, target), "No search app available")
+                launchInAppGoogleSearch(target)
                 "Searching the web for \"$target\"…"
             }
             "maps" -> {
@@ -13960,6 +14142,7 @@ $emailText"""
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
         private const val DOCK_LABELS_PREF = "dock_labels"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
+        private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
         private const val DOCK_APP_LIMIT = 5
         private const val APP_USAGE_PREF = "app_usage_counts"
         private const val WEATHER_TEMP_PREF = "weather_temp"

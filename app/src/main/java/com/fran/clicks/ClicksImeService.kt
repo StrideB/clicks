@@ -1,5 +1,9 @@
 package com.fran.clicks
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
@@ -40,9 +44,36 @@ class ClicksImeService : InputMethodService() {
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteRepeatActive = false
     private var deleteRepeatFired = false
+    private var dockedSystemSurfaceVisible = false
+
+    private val dockedVisibilityReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != InputInjectionService.ACTION_SET_DOCKED_OVERLAY_VISIBLE) return
+            val keyboardAllowed = intent.getBooleanExtra(InputInjectionService.EXTRA_VISIBLE, true)
+            dockedSystemSurfaceVisible = !keyboardAllowed
+            if (!keyboardAllowed) {
+                stopDeleteRepeat(clearFired = true)
+                requestHideSelf(0)
+                runCatching { hideWindow() }
+            } else {
+                forceVisibleIfAllowed()
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        val filter = IntentFilter(InputInjectionService.ACTION_SET_DOCKED_OVERLAY_VISIBLE)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(dockedVisibilityReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(dockedVisibilityReceiver, filter)
+        }
+    }
 
     override fun onEvaluateInputViewShown(): Boolean {
-        return true
+        return !dockedSystemSurfaceVisible
     }
 
     override fun onCreateInputView(): View {
@@ -54,6 +85,7 @@ class ClicksImeService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         refreshKeyboardChrome()
+        forceVisibleIfAllowed()
         updateInputViewShown()
     }
 
@@ -61,6 +93,35 @@ class ClicksImeService : InputMethodService() {
         super.onStartInput(attribute, restarting)
         shifted = shouldStartShifted(attribute)
         refreshKeyboardChrome()
+    }
+
+    override fun onWindowShown() {
+        super.onWindowShown()
+        forceVisibleIfAllowed()
+    }
+
+    override fun onUpdateSelection(
+        oldSelStart: Int,
+        oldSelEnd: Int,
+        newSelStart: Int,
+        newSelEnd: Int,
+        candidatesStart: Int,
+        candidatesEnd: Int
+    ) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        forceVisibleIfAllowed()
+    }
+
+    private fun forceVisibleIfAllowed() {
+        if (!dockedSystemSurfaceVisible) {
+            VivoDockedExperiment.forceImeVisible(this)
+        }
+    }
+
+    override fun onDestroy() {
+        runCatching { unregisterReceiver(dockedVisibilityReceiver) }
+        stopDeleteRepeat(clearFired = true)
+        super.onDestroy()
     }
 
     private fun buildKeyboard(): SwipeImeKeyboardLayout {
@@ -134,20 +195,44 @@ class ClicksImeService : InputMethodService() {
     private inner class ImeKeyTouchListener(private val label: String) : View.OnTouchListener {
         private var downRawX = 0f
         private var downRawY = 0f
+        private var clicksLongPressRunnable: Runnable? = null
+        private var clicksLongPressFired = false
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX
                     downRawY = event.rawY
+                    clicksLongPressFired = false
                     v.background = visualKeyBackground(label, pressed = true)
                     keyHaptic(label)
+                    if (label == "clicks") {
+                        val runnable = Runnable {
+                            clicksLongPressFired = true
+                            keyHaptic("enter")
+                            openLauncherKeyboardAction(ClicksKeyboardActions.SWITCH_TO_WIDGET_MODE)
+                        }
+                        clicksLongPressRunnable = runnable
+                        handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
+                    }
                     if (label == "back") startDeleteRepeat()
                     return true
                 }
-                MotionEvent.ACTION_MOVE -> return true
+                MotionEvent.ACTION_MOVE -> {
+                    if (label == "clicks" &&
+                        (abs(event.rawX - downRawX) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop ||
+                            abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
+                        cancelClicksLongPress()
+                    }
+                    return true
+                }
                 MotionEvent.ACTION_UP -> {
                     v.background = visualKeyBackground(label, pressed = false)
+                    cancelClicksLongPress()
+                    if (clicksLongPressFired) {
+                        clicksLongPressFired = false
+                        return true
+                    }
                     if (label == "back") {
                         val repeated = deleteRepeatFired
                         stopDeleteRepeat(clearFired = true)
@@ -158,38 +243,66 @@ class ClicksImeService : InputMethodService() {
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     v.background = visualKeyBackground(label, pressed = false)
+                    cancelClicksLongPress()
+                    clicksLongPressFired = false
                     if (label == "back") stopDeleteRepeat(clearFired = true)
                     return true
                 }
             }
             return true
         }
+
+        private fun cancelClicksLongPress() {
+            clicksLongPressRunnable?.let { handler.removeCallbacks(it) }
+            clicksLongPressRunnable = null
+        }
     }
 
     private fun handleKey(label: String) {
-        val input = currentInputConnection ?: return
+        val input = currentInputConnection
         when (label) {
             "shift" -> {
                 shifted = !shifted
                 refreshKeyboardChrome()
             }
             "back" -> {
-                if (!input.deleteSurroundingText(1, 0)) {
+                if (input == null) {
+                    VivoDockedExperiment.injectInput("⌫")
+                } else if (!input.deleteSurroundingText(1, 0)) {
                     keyEvent(KeyEvent.KEYCODE_DEL)
                 }
             }
             "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
-            "space" -> input.commitText(" ", 1)
-            "clicks" -> Unit
+            "space" -> commitValue(" ")
+            "clicks" -> openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
             "123" -> Unit
-            "." -> input.commitText(".", 1)
-            else -> input.commitText(if (shifted && label.length == 1) label.uppercase() else label, 1)
+            "." -> commitValue(".")
+            else -> commitValue(if (shifted && label.length == 1) label.uppercase() else label)
         }
     }
 
+    private fun openLauncherKeyboardAction(action: String) {
+        requestHideSelf(0)
+        runCatching { hideWindow() }
+        startActivity(Intent(this, MainActivity::class.java).apply {
+            this.action = action
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        })
+    }
+
+    private fun commitValue(value: String) {
+        val input = currentInputConnection
+        if (input != null) input.commitText(value, 1) else VivoDockedExperiment.injectInput(value)
+    }
+
     private fun keyEvent(code: Int) {
-        currentInputConnection?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
-        currentInputConnection?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+        val input = currentInputConnection
+        if (input != null) {
+            input.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
+            input.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
+        } else {
+            VivoDockedExperiment.injectInput(if (code == KeyEvent.KEYCODE_ENTER) "⏎" else "")
+        }
     }
 
     private fun keyHaptic(label: String) {
