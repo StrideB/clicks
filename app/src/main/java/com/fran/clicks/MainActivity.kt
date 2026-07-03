@@ -384,6 +384,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         initSpellChecker()
         hapticEngine = CustomHapticEngine(this)
         spatialScorer = SpatialScorer()
+        spatialScorer.setLearnedOffset(
+            prefs().getFloat(TOUCH_OFFSET_X_PREF, 0f).toDouble(),
+            prefs().getFloat(TOUCH_OFFSET_Y_PREF, 0f).toDouble()
+        )
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
         predictionEngine = PredictionEngine(emptyMap())
@@ -483,6 +487,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onPause() {
         cancelWidgetKeyboardSwap(resetTheme = true)
+        if (::spatialScorer.isInitialized) {
+            prefs().edit()
+                .putFloat(TOUCH_OFFSET_X_PREF, spatialScorer.learnedOffsetX().toFloat())
+                .putFloat(TOUCH_OFFSET_Y_PREF, spatialScorer.learnedOffsetY().toFloat())
+                .apply()
+        }
         super.onPause()
     }
 
@@ -6183,12 +6193,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         marginEnd = dp(4)
                     })
                 } else {
-                    // Key fills full row height for a larger invisible touch target.
-                    // Visual inset is applied via InsetDrawable inside key() instead.
-                    addView(key(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight).apply {
-                        marginStart = keyHorizontalInset()
-                        marginEnd = keyHorizontalInset()
-                    })
+                    // Touch target fills the full cell — no horizontal margins — so there are no
+                    // dead gaps between keys. The visual gap is drawn by the InsetDrawable in key().
+                    addView(key(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight))
                 }
             }
         }
@@ -6214,9 +6221,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setTextColor(keyTextColor(label))
             isClickable = true
             val vInset = keyVerticalInset()
+            val hInset = keyHorizontalInset()
             val needsInset = label != "enter" && label != "123"
-            fun idleBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyIdleBackground(label), 0, vInset, 0, vInset) else keyIdleBackground(label)
-            fun pressedBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyPressedBackground(label), 0, vInset, 0, vInset) else keyPressedBackground(label)
+            fun idleBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyIdleBackground(label), hInset, vInset, hInset, vInset) else keyIdleBackground(label)
+            fun pressedBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyPressedBackground(label), hInset, vInset, hInset, vInset) else keyPressedBackground(label)
             background = idleBg()
             if (keyboardTheme != KEYBOARD_THEME_DEFAULT) {
                 elevation = dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 5 else 3).toFloat()
@@ -6328,8 +6336,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                                 return@setOnTouchListener true
                             }
                         }
-                        // Fire key action here since we consume the event (return true below)
-                        if (label == "shift") handleShiftTap() else handleKey(label)
+                        // Fire key action. For letters, snap to the spatially-nearest key so edge /
+                        // near-miss taps still land on the intended letter (kills the dead-zone feel)
+                        // and feed the tap to the adaptive model so it learns this user's touch bias.
+                        if (label == "shift") handleShiftTap() else handleKey(resolveTapKey(label, event.rawX, event.rawY))
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         v.background = idleBg()
@@ -6764,6 +6774,15 @@ Reply format: ["word1","word2","word3"]"""
             )
         }
         clf.setLayout(keyInfos)
+    }
+
+    // Snap a letter tap to the spatially-nearest letter key (near-miss correction) and let the
+    // adaptive model learn this user's touch offset. Non-letters pass through untouched.
+    private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
+        if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
+        spatialScorer.recordTap(rawX, rawY)
+        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) ?: return label
+        return if (best.length == 1 && best[0].isLetter()) best else label
     }
 
     private fun keyAtPoint(rawX: Float, rawY: Float): String? {
@@ -12454,6 +12473,8 @@ $emailText"""
         private const val KeyHighlight = 0xFF3A3E4A.toInt()
         private const val PREFS_NAME = "clicks"
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
+        private const val TOUCH_OFFSET_X_PREF = "touch_offset_x"
+        private const val TOUCH_OFFSET_Y_PREF = "touch_offset_y"
         private const val APP_ICON_SIZE_PREF = "app_icon_size"
         private const val KEYBOARD_PLACEMENT_PREF = "keyboard_placement"
         private const val KEYBOARD_PLACEMENT_INTRO_PREF = "keyboard_placement_intro_shown"
