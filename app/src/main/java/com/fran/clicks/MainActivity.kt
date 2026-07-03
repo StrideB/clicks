@@ -7620,7 +7620,8 @@ Reply format: ["word1","word2","word3"]"""
 
     private fun handleGlideResult(results: List<String>) {
         haptic(contentFrame)
-        val topWord = results[0]
+        val ranked = rerankGlideByContext(results)
+        val topWord = ranked[0]
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) {
             val trimmed = composeText.trimEnd()
@@ -7633,9 +7634,29 @@ Reply format: ["word1","word2","word3"]"""
             val lastSpace = trimmed.lastIndexOf(' ')
             query = (if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)) + topWord + " "
         }
-        suggestions = results.take(3)
+        // Learn from the glide: record the committed word against its predecessor so the n-gram and
+        // context re-ranking keep improving as you swipe.
+        val toks = (if (pane?.kind == PaneKind.CHAT) composeText else query).trim().split(" ").filter { it.isNotEmpty() }
+        if (toks.size >= 2) ngramRepo.recordWord(toks.last(), toks[toks.size - 2])
+        ngramRepo.prefetchNextWords(topWord)
+        suggestions = ranked.take(3)
         updateSuggestionBar()
         renderRibbon()
+    }
+
+    // Among the shape-vetted glide candidates, promote the one you most often type after the
+    // preceding word (bigram context). It only reorders within the top few, so a strong shape match
+    // is never overridden by an implausible word — it just breaks close calls the way you actually type.
+    private fun rerankGlideByContext(results: List<String>): List<String> {
+        if (results.size < 2) return results
+        val ctx = ngramRepo.cachedNextWords(previousWordInCompose()).map { it.lowercase(Locale.US) }
+        if (ctx.isEmpty()) return results
+        val best = results.take(3).minByOrNull {
+            val i = ctx.indexOf(it.lowercase(Locale.US)); if (i < 0) Int.MAX_VALUE else i
+        }
+        return if (best != null && ctx.contains(best.lowercase(Locale.US)) && best != results[0])
+            listOf(best) + results.filter { it != best }
+        else results
     }
 
     private fun handleSwipeFallback(keys: List<String>) {
