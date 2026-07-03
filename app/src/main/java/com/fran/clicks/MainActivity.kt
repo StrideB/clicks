@@ -37,6 +37,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import com.fran.clicks.glide.KeyInfo
 import com.fran.clicks.glide.StatisticalGlideTypingClassifier
+import com.fran.clicks.hardware.ParallaxSensorEngine
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
@@ -309,6 +310,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var hubView: LinearLayout
     private lateinit var ribbonView: LinearLayout
     private lateinit var favoritesDockView: LinearLayout
+    private var parallaxEngine: ParallaxSensorEngine? = null
     private lateinit var homeGridView: FrameLayout
     private lateinit var rootView: LinearLayout
     private lateinit var contentFrame: FrameLayout
@@ -408,6 +410,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         initSpellChecker()
         hapticEngine = CustomHapticEngine(this)
         spatialScorer = SpatialScorer()
+        parallaxEngine = ParallaxSensorEngine(this) { pitch, roll -> applyDockParallax(pitch, roll) }
         spatialScorer.importState(prefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
@@ -517,6 +520,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onResume() {
         super.onResume()
+        syncDockParallax()
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
@@ -547,6 +551,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onPause() {
         cancelWidgetKeyboardSwap(resetTheme = true)
+        parallaxEngine?.stop()
         if (::spatialScorer.isInitialized) {
             prefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
         }
@@ -867,6 +872,50 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .show()
     }
 
+    // Start/stop the dock parallax sensor to match visibility — runs only on the home surface
+    // (dock present, no pane/library over it), and stops otherwise to keep it cheap.
+    private fun syncDockParallax() {
+        val engine = parallaxEngine ?: return
+        if (engine.isSupported && ::favoritesDockView.isInitialized && homeWidgetStackVisible() && !libraryOpen) {
+            engine.start()
+        } else {
+            engine.stop()
+            resetDockParallax()
+        }
+    }
+
+    private fun resetDockParallax() {
+        if (!::favoritesDockView.isInitialized) return
+        val dock = favoritesDockView
+        dock.translationX = 0f; dock.translationY = 0f
+        for (i in 0 until dock.childCount) {
+            dock.getChildAt(i).apply { translationX = 0f; translationY = 0f; rotationX = 0f; rotationY = 0f }
+        }
+    }
+
+    // Favorites-dock-only tilt parallax: the dock plate drifts subtly one way while the icons move
+    // the other with a slight 3D skew, for a floating, layered feel. Deliberately small.
+    private fun applyDockParallax(pitch: Float, roll: Float) {
+        if (!::favoritesDockView.isInitialized) return
+        val dock = favoritesDockView
+        if (dock.childCount == 0 || !dock.isShown) return
+        val tiltX = (roll / 0.3f).coerceIn(-1f, 1f)
+        val tiltY = (pitch / 0.3f).coerceIn(-1f, 1f)
+        val maxT = dp(7).toFloat()
+        dock.translationX = -tiltX * maxT * 0.35f
+        dock.translationY = -tiltY * maxT * 0.35f
+        val camDist = resources.displayMetrics.density * 8000f
+        for (i in 0 until dock.childCount) {
+            dock.getChildAt(i).apply {
+                cameraDistance = camDist
+                translationX = tiltX * maxT
+                translationY = tiltY * maxT
+                rotationX = -tiltY * 6f
+                rotationY = tiltX * 6f
+            }
+        }
+    }
+
     private fun render() {
         stopDeleteRepeat(clearFired = true)
         keyViews.clear()
@@ -886,7 +935,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val hideDockForPane = openPane?.kind == PaneKind.SETTINGS
         val showRootDock = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
         if (showRootDock && !hideDockForPane) {
-            root.addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
             keyboardDockView = FrameLayout(this).apply {
                 addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
@@ -898,6 +946,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         updateClock()
         renderHub()
         renderFavoritesDock()
+        syncDockParallax()
         renderRibbon()
         openPane?.let { showPane(it, animate = false) }
         if (libraryOpen) showLibrary(animate = false)
@@ -1276,7 +1325,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     topMargin = dp(2)
                     bottomMargin = dp(2)
                 })
-                addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.18f))
+                addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.22f))
                 favoritesDockView = LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER
@@ -1386,7 +1435,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             setPadding(dp(2), dp(4), dp(2), dp(0))
-            addView(typingStripView(), LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
             addView(keyboard(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         module.addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -6686,8 +6734,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            // Suggestion strip — standard placement at the top of the keyboard.
-            if (showSuggestionStrip()) addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+            if (showKeyboardTypingWell()) {
+                addView(typingStripView(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyboardTypingWellHeight()).apply {
+                    bottomMargin = dp(2)
+                })
+            }
             if (symbolsOpen) {
                 addKeyRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
                 addKeyRow(listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"))
@@ -7244,8 +7295,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private var suggestionStripView: LinearLayout? = null
 
-    private fun showSuggestionStrip() = !keyboardSettingsOpen && !numberPadOpen
-    private fun suggestionStripHeight() = if (showSuggestionStrip()) dp(38) else 0
+    private fun showSuggestionStrip() = false
+    private fun showKeyboardTypingWell() = !keyboardSettingsOpen
+    private fun keyboardTypingWellHeight() = dp(34)
+    private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(2) else 0
 
     private fun suggestionStrip(): View {
         val strip = LinearLayout(this).apply {
