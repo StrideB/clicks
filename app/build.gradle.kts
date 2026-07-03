@@ -31,6 +31,13 @@ android {
     }
 }
 
+// Export Room's schema JSON so future version bumps can be diffed and migrated explicitly
+// (paired with removing fallbackToDestructiveMigration in NgramDatabase). The generated
+// app/schemas/ files should be committed and included in the migration test source set later.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.activity:activity-compose:1.9.3")
@@ -43,6 +50,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.browser:browser:1.8.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.window:window:1.5.1")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
