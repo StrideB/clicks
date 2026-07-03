@@ -320,6 +320,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         contactsLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            preloadContactsCache()
             val pending = pendingTypeToDoCommand
             pendingTypeToDoCommand = null
             if (pending != null) executeTypeToDoCommand(pending) else renderRibbon()
@@ -468,6 +469,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val now = System.currentTimeMillis()
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
+        if (now - lastContactsLoadMs > 30_000) { preloadContactsCache(); lastContactsLoadMs = now }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
         if (::ribbonView.isInitialized) {
             updateClock()
@@ -9686,54 +9688,79 @@ Reply format: ["word1","word2","word3"]"""
         }
     }
 
+    // Contacts are cached in memory and filtered locally per keystroke. The old code ran two
+    // contentResolver LIKE '%q%' queries (leading-wildcard full scans) on the main thread on every
+    // keystroke — that was the search typing lag. The cache warms off the main thread on permission
+    // grant / resume / first use, and re-renders live search once it lands.
+    private var cachedContactPhones: List<ContactMatch> = emptyList()
+    private var cachedContactEmails: List<ContactMatch> = emptyList()
+    @Volatile private var contactsCacheLoaded = false
+    private var lastContactsLoadMs = 0L
+
+    private fun preloadContactsCache() {
+        if (!hasContactsPermission()) return
+        mediaUiScope.launch(Dispatchers.IO) {
+            val phones = loadAllContacts(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
+            val emails = loadAllContacts(
+                ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                ContactsContract.CommonDataKinds.Email.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Email.ADDRESS
+            )
+            withContext(Dispatchers.Main) {
+                cachedContactPhones = phones
+                cachedContactEmails = emails
+                contactsCacheLoaded = true
+                if (query.isNotBlank() && openPane == null) renderRibbon()  // show freshly loaded contacts
+            }
+        }
+    }
+
+    private fun loadAllContacts(uri: android.net.Uri, nameCol: String, valueCol: String): List<ContactMatch> {
+        val cursor = contentResolver.query(uri, arrayOf(nameCol, valueCol), null, null, nameCol) ?: return emptyList()
+        val out = ArrayList<ContactMatch>()
+        val seen = HashSet<String>()
+        cursor.use {
+            val nIdx = it.getColumnIndexOrThrow(nameCol)
+            val vIdx = it.getColumnIndexOrThrow(valueCol)
+            while (it.moveToNext()) {
+                val name = it.getString(nIdx)?.trim().orEmpty()
+                val value = it.getString(vIdx)?.trim().orEmpty()
+                if (name.isBlank() || value.isBlank()) continue
+                if (seen.add("$name:$value")) out.add(ContactMatch(name, value))
+            }
+        }
+        return out
+    }
+
+    private fun filterCachedContacts(source: List<ContactMatch>, q: String): List<ContactMatch> {
+        val n = q.trim()
+        if (n.isEmpty()) return emptyList()
+        return source.filter { it.name.contains(n, ignoreCase = true) || it.value.contains(n, ignoreCase = true) }
+            .sortedWith { left, right ->
+                val leftStarts = left.name.startsWith(n, ignoreCase = true)
+                val rightStarts = right.name.startsWith(n, ignoreCase = true)
+                when {
+                    leftStarts != rightStarts -> if (leftStarts) -1 else 1
+                    else -> collator.compare(left.name, right.name)
+                }
+            }
+            .take(6)
+    }
+
     private fun queryContactPhones(name: String): List<ContactMatch> {
         if (!hasContactsPermission()) return emptyList()
-        val projection = arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER)
-        val cursor = contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            projection,
-            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ? OR ${ContactsContract.CommonDataKinds.Phone.NUMBER} LIKE ?",
-            arrayOf("%$name%", "%$name%"),
-            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
-        ) ?: return emptyList()
-        return contactMatches(cursor, name, projection[0], projection[1])
+        if (!contactsCacheLoaded) { preloadContactsCache(); return emptyList() }
+        return filterCachedContacts(cachedContactPhones, name)
     }
 
     private fun queryContactEmails(name: String): List<ContactMatch> {
         if (!hasContactsPermission()) return emptyList()
-        val projection = arrayOf(ContactsContract.CommonDataKinds.Email.DISPLAY_NAME, ContactsContract.CommonDataKinds.Email.ADDRESS)
-        val cursor = contentResolver.query(
-            ContactsContract.CommonDataKinds.Email.CONTENT_URI,
-            projection,
-            "${ContactsContract.CommonDataKinds.Email.DISPLAY_NAME} LIKE ? OR ${ContactsContract.CommonDataKinds.Email.ADDRESS} LIKE ?",
-            arrayOf("%$name%", "%$name%"),
-            ContactsContract.CommonDataKinds.Email.DISPLAY_NAME
-        ) ?: return emptyList()
-        return contactMatches(cursor, name, projection[0], projection[1])
-    }
-
-    private fun contactMatches(cursor: android.database.Cursor, q: String, nameColumn: String, valueColumn: String): List<ContactMatch> {
-        return buildList {
-            val seen = mutableSetOf<String>()
-            cursor.use {
-                val nameIdx = it.getColumnIndexOrThrow(nameColumn)
-                val valueIdx = it.getColumnIndexOrThrow(valueColumn)
-                while (it.moveToNext() && size < 6) {
-                    val displayName = it.getString(nameIdx)?.trim().orEmpty()
-                    val value = it.getString(valueIdx)?.trim().orEmpty()
-                    if (displayName.isBlank() || value.isBlank()) continue
-                    val key = "$displayName:$value"
-                    if (seen.add(key)) add(ContactMatch(displayName, value))
-                }
-            }
-        }.sortedWith { left, right ->
-            val leftStarts = left.name.startsWith(q, ignoreCase = true)
-            val rightStarts = right.name.startsWith(q, ignoreCase = true)
-            when {
-                leftStarts != rightStarts -> if (leftStarts) -1 else 1
-                else -> collator.compare(left.name, right.name)
-            }
-        }
+        if (!contactsCacheLoaded) { preloadContactsCache(); return emptyList() }
+        return filterCachedContacts(cachedContactEmails, name)
     }
 
     private fun searchContacts(digits: String): List<RibbonEntry> {
