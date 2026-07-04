@@ -279,11 +279,22 @@ class ClicksImeService : InputMethodService() {
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, total)
                     }
+                    if (label == "123" || label == "abc") {
+                        // Long-press the mode key to open Keyboard Settings; a tap still flips
+                        // symbols/letters.
+                        val runnable = Runnable {
+                            clicksLongPressFired = true
+                            keyHaptic("enter")
+                            openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
+                        }
+                        clicksLongPressRunnable = runnable
+                        handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
+                    }
                     if (label == "back") startDeleteRepeat()
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if ((label == "clicks" || label == "enter" || label == "space") &&
+                    if ((label == "clicks" || label == "enter" || label == "space" || label == "123" || label == "abc") &&
                         (abs(event.rawX - downRawX) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop ||
                             abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
                         cancelClicksLongPress()
