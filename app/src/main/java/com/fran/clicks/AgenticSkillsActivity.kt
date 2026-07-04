@@ -78,6 +78,7 @@ class AgenticSkillsActivity : Activity() {
             ).apply { topMargin = dp(16) }
         }
         root.addView(list)
+        root.addView(buildReferenceSection())
         root.addView(addSkillCard())
 
         setContentView(ScrollView(this).apply {
@@ -145,6 +146,69 @@ class AgenticSkillsActivity : Activity() {
                 setOnCheckedChangeListener { _, checked -> setEnabled(s, checked) }
             })
         }
+    }
+
+    private data class RefRow(val emoji: String, val name: String, val trigger: String, val ok: Boolean, val need: String)
+
+    // A read-only catalog of the built-in typed-trigger skills, with a live "Ready / needs …" status
+    // so the whole catalog is discoverable instead of hidden behind keywords.
+    private fun buildReferenceSection(): View {
+        val p = getSharedPreferences("clicks", Context.MODE_PRIVATE)
+        fun has(pref: String) = !p.getString(pref, null).isNullOrBlank()
+        val gemini = has(GeminiClient.API_KEY_PREF)
+        val google = runCatching { GmailAuth(this).isConnected }.getOrDefault(false)
+        val refs = listOf(
+            RefRow("✨", "Humanize / tone", "<text> //human · //mid · //genz", gemini, "Add Gemini key"),
+            RefRow("↩", "Reply modes", "<text> //reply", gemini, "Add Gemini key"),
+            RefRow("😃", "Text → Emoji", "<text> //emoji", gemini, "Add Gemini key"),
+            RefRow("🧠", "Emotion Detection", "copy → mood", gemini, "Add Gemini key"),
+            RefRow("🌐", "Translation HUD", "copy → translate", gemini, "Add Gemini key"),
+            RefRow("𝕏", "Super X Reply", "copy → xreply snarky", gemini, "Add Gemini key"),
+            RefRow("📈", "Stock Sniffer", "\$AAPL", has(StockApi.KEY_PREF), "Add Finnhub key"),
+            RefRow("🏆", "World Cup Odds", "world cup", has(OddsApi.KEY_PREF), "Add odds key"),
+            RefRow("📹", "Google Meet", "meet", google, "Connect Google"),
+            RefRow("📄", "Notion Summon", "notion <keyword>", has(NotionApi.KEY_PREF), "Add Notion token")
+        )
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(24) }
+            addView(text("More skills", 17f, t.ink, bold = true))
+            addView(text("Built in — type the trigger, then hold go (or space for //commands).", 12.5f, t.inkDim).also {
+                (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(2); (it.layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(12)
+            })
+            for (r in refs) addView(referenceRow(r))
+        }
+    }
+
+    private fun referenceRow(r: RefRow): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = Neu.drawable(t, dp(16).toFloat(), NeuLevel.RAISED_SM)
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(10) }
+        addView(TextView(context).apply {
+            text = r.emoji; textSize = 20f; gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text(r.name, 15.5f, t.ink))
+            addView(text("type “${r.trigger}”", 12f, t.inkDim).also {
+                (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(1)
+            })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+        addView(TextView(context).apply {
+            text = if (r.ok) "Ready" else r.need
+            textSize = 11f
+            setTextColor(if (r.ok) 0xFF12A968.toInt() else 0xFFCF8A3A.toInt())
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(if (r.ok) 0x2212A968 else 0x22CF8A3A); cornerRadius = dp(9).toFloat()
+            }
+        })
     }
 
     private fun addSkillCard(): View {
