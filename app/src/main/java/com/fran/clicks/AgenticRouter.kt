@@ -7,96 +7,154 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.AlarmClock
 import android.provider.MediaStore
+import com.fran.clicks.db.SkillDatabase
+import com.fran.clicks.db.SkillEntity
 
 /**
- * The agentic brain: turn a line of typed text into an intent to execute. This is what makes the
- * space bar powerful — you type "play drake" or "nearest best buy", hold space, and Clicks routes
- * it to the right thing (your default music player, maps, a timer, a location drop, a web search).
+ * The agentic brain. Turns a typed line into an action to run: "play drake", "nearest best buy",
+ * "timer 5 min", "yt lofi", "translate hola"… hold space and Clicks routes it.
  *
- * On-device and deterministic: plain verb/pattern rules cover the common commands with no network
- * and no surprises. [SHARE_LOCATION] is handled by the caller (it inserts text into the field);
- * every other kind carries a ready-to-fire [Intent]. Callers show [label] as a preview and only
- * [execute] on an explicit tap — nothing launches without confirmation.
+ * Skills live in a Room database (see [SkillEntity]) so the catalog grows over time — built-ins are
+ * seeded on first run and users can add their own from the Skills screen, all without code changes.
+ * A process-wide cache is filled off the main thread so [classify] stays synchronous for the tap.
+ *
+ * Matching is deterministic and on-device. When nothing matches, the caller can ask Gemini to pick a
+ * skill from [catalogNames] and pass the choice back to [commandForSkill] — the model only ranks
+ * among real skills, so it can't invent an action.
  */
 object AgenticRouter {
 
-    enum class Kind { MUSIC, MAPS_SEARCH, MAPS_NAV, TIMER, WEB, SHARE_LOCATION }
+    enum class ActionType { MUSIC, MAPS, NAV, TIMER, WEB_SEARCH, LOCATION, URI }
 
-    data class Command(val kind: Kind, val label: String, val arg: String, val intent: Intent?)
-
-    private val LOCATION_PHRASES = setOf(
-        "my location", "send location", "share location", "send my location",
-        "share my location", "where i am", "location", "drop a pin"
+    data class Command(
+        val skillId: Long,
+        val label: String,
+        val arg: String,
+        val intent: Intent?,        // null only when [insertsLocation]
+        val insertsLocation: Boolean
     )
 
-    /** Classify [raw] into a command, or null when nothing confidently matches. */
+    private data class Skill(
+        val id: Long, val name: String, val emoji: String, val actionType: String,
+        val uriTemplate: String, val triggers: List<String>, val labelTemplate: String
+    )
+
+    @Volatile private var skills: List<Skill> = emptyList()
+    @Volatile private var loaded = false
+
+    /** Load the cache once (seeding built-ins if the table is empty). Cheap no-op after the first. */
+    fun ensureLoaded(context: Context) { if (!loaded) reload(context) }
+
+    /** Rebuild the cache from the DB, off the main thread. Call after editing skills. */
+    fun reload(context: Context) {
+        Thread {
+            runCatching {
+                ensureSeeded(context)
+                skills = SkillDatabase.get(context).skillDao().getEnabled().map { it.toSkill() }
+                loaded = true
+            }
+        }.start()
+    }
+
+    /** Seed the built-in skills if the table is empty. Synchronous — call off the main thread. */
+    fun ensureSeeded(context: Context) {
+        runCatching {
+            val dao = SkillDatabase.get(context).skillDao()
+            if (dao.count() == 0) dao.insertAll(BUILTINS)
+        }
+    }
+
+    private fun SkillEntity.toSkill() = Skill(
+        id, name, emoji, actionType, uriTemplate,
+        triggers.split(",").map { it.trim() }.filter { it.isNotEmpty() }, labelTemplate
+    )
+
+    /** Classify [raw] against the enabled skills, or null when nothing confidently matches. */
     fun classify(raw: String): Command? {
         val q = raw.trim()
-        if (q.isEmpty()) return Command(Kind.SHARE_LOCATION, "📍 Share your location", "", null)
+        val list = skills
+        if (q.isEmpty()) return list.firstOrNull { it.actionType == "LOCATION" }?.let { locationCommand(it) }
         val lower = q.lowercase()
-
-        strip(q, lower, "play ", "listen to ", "put on ")?.let {
-            return Command(Kind.MUSIC, "▶  Play $it", it, musicIntent(it))
-        }
-        strip(q, lower, "navigate to ", "directions to ", "take me to ", "drive to ", "navigate ")?.let {
-            return Command(Kind.MAPS_NAV, "🧭  Navigate to $it", it, navIntent(it))
-        }
-        val place = strip(q, lower, "nearest ", "closest ", "find ", "where is ", "where's ", "map ", "maps ")
-            ?: if (lower.endsWith(" near me")) q.dropLast(8).trim() else null
-        if (!place.isNullOrBlank()) {
-            return Command(Kind.MAPS_SEARCH, "📍  Find $place", place, mapsSearchIntent(place))
-        }
-        strip(q, lower, "timer ", "set timer ", "set a timer ")?.let { spec ->
-            timerIntent(spec)?.let { return Command(Kind.TIMER, "⏱  Timer $spec", spec, it) }
-        }
-        if (lower in LOCATION_PHRASES) return Command(Kind.SHARE_LOCATION, "📍 Share your location", "", null)
-        strip(q, lower, "search ", "google ", "look up ")?.let {
-            return Command(Kind.WEB, "🔍  Search $it", it, webIntent(it))
+        for (s in list) for (t in s.triggers) {
+            val arg = matchTrigger(q, lower, t) ?: continue
+            return buildCommand(s, arg)
         }
         return null
     }
 
-    /** Fire a launch command. Returns a status string to flash, or null if it couldn't run. */
+    /** Names of enabled skills, for the Gemini fallback prompt. */
+    fun catalogNames(): List<String> = skills.map { it.name }
+
+    /** Build a command from a Gemini-chosen skill name + extracted argument. */
+    fun commandForSkill(name: String, arg: String): Command? {
+        val s = skills.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) } ?: return null
+        return buildCommand(s, arg.trim())
+    }
+
+    /** Fire a launch command; returns a status to flash, or null on failure. Records the use. */
     fun execute(context: Context, cmd: Command): String? {
         val intent = cmd.intent ?: return null
+        recordUse(context, cmd.skillId)
         return try {
             context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             cmd.label
         } catch (_: ActivityNotFoundException) {
-            // No app handled it (e.g. no music player for PLAY_FROM_SEARCH) — fall back to the web.
             runCatching {
                 context.startActivity(webIntent(cmd.arg.ifBlank { cmd.label })
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }.getOrNull()?.let { "🔍  Searching ${cmd.arg}" }
-        } catch (_: Exception) {
-            null
+        } catch (_: Exception) { null }
+    }
+
+    fun recordUse(context: Context, id: Long) {
+        if (id <= 0) return
+        Thread { runCatching { SkillDatabase.get(context).skillDao().recordUse(id, System.currentTimeMillis()) } }.start()
+    }
+
+    // --- matching + intent building ---------------------------------------------------------------
+
+    private fun matchTrigger(q: String, lower: String, trigger: String): String? {
+        val t = trigger.lowercase()
+        return when {
+            t.startsWith("*") -> {                       // suffix: "* near me"
+                val suf = t.substring(1)
+                if (lower.endsWith(suf)) q.substring(0, q.length - suf.length).trim().ifBlank { null } else null
+            }
+            t.endsWith(" ") -> {                          // prefix + arg: "play "
+                if (lower.startsWith(t)) q.substring(t.length).trim().ifBlank { null } else null
+            }
+            else -> if (lower == t || lower.startsWith("$t ")) "" else null   // exact phrase, no arg
         }
     }
 
-    private fun strip(q: String, lower: String, vararg prefixes: String): String? {
-        for (p in prefixes) if (lower.startsWith(p)) {
-            val rest = q.substring(p.length).trim()
-            if (rest.isNotBlank()) return rest
+    private fun buildCommand(s: Skill, arg: String): Command {
+        if (s.actionType == "LOCATION") return locationCommand(s)
+        val label = s.labelTemplate.replace("{q}", arg).trim()
+        val intent = when (s.actionType) {
+            "MUSIC" -> musicIntent(arg)
+            "TIMER" -> timerIntent(arg)
+            "WEB_SEARCH" -> webIntent(arg)
+            else -> uriIntent(s.uriTemplate, arg)        // URI, MAPS, NAV all use a template
         }
-        return null
+        return Command(s.id, label, arg, intent, false)
     }
+
+    private fun locationCommand(s: Skill) =
+        Command(s.id, s.labelTemplate.replace("{q}", "").trim().ifBlank { "📍 Share your location" }, "", null, true)
 
     private fun musicIntent(q: String) = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
         putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
         putExtra(SearchManager.QUERY, q)
     }
 
-    private fun mapsSearchIntent(q: String) =
-        Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(q)))
-
-    private fun navIntent(q: String) =
-        Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=" + Uri.encode(q)))
-
     private fun webIntent(q: String) =
         Intent(Intent.ACTION_WEB_SEARCH).apply { putExtra(SearchManager.QUERY, q) }
 
-    private fun timerIntent(spec: String): Intent? {
-        val n = Regex("(\\d+)").find(spec)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+    private fun uriIntent(template: String, arg: String) =
+        Intent(Intent.ACTION_VIEW, Uri.parse(template.replace("{q}", Uri.encode(arg))))
+
+    private fun timerIntent(spec: String): Intent {
+        val n = Regex("(\\d+)").find(spec)?.groupValues?.get(1)?.toIntOrNull() ?: 5
         val seconds = when {
             spec.contains("hour") -> n * 3600
             spec.contains("sec") -> n
@@ -108,4 +166,33 @@ object AgenticRouter {
             putExtra(AlarmClock.EXTRA_MESSAGE, spec)
         }
     }
+
+    // --- seed catalog -----------------------------------------------------------------------------
+
+    private val BUILTINS = listOf(
+        SkillEntity(name = "Play music", emoji = "▶", actionType = "MUSIC",
+            triggers = "play ,listen to ,put on ", labelTemplate = "▶  Play {q}", builtin = true, sortOrder = 0),
+        SkillEntity(name = "Navigate", emoji = "🧭", actionType = "NAV",
+            uriTemplate = "google.navigation:q={q}", triggers = "navigate to ,directions to ,drive to ,navigate ",
+            labelTemplate = "🧭  Navigate to {q}", builtin = true, sortOrder = 1),
+        SkillEntity(name = "Find place", emoji = "📍", actionType = "MAPS",
+            uriTemplate = "geo:0,0?q={q}", triggers = "nearest ,closest ,find ,map ,maps ,* near me",
+            labelTemplate = "📍  Find {q}", builtin = true, sortOrder = 2),
+        SkillEntity(name = "Timer", emoji = "⏱", actionType = "TIMER",
+            triggers = "timer ,set timer ,set a timer ", labelTemplate = "⏱  Timer {q}", builtin = true, sortOrder = 3),
+        SkillEntity(name = "Share location", emoji = "📍", actionType = "LOCATION",
+            triggers = "share location,send location,my location,share my location,drop a pin,send my location",
+            labelTemplate = "📍 Share your location", builtin = true, sortOrder = 4),
+        SkillEntity(name = "Web search", emoji = "🔍", actionType = "WEB_SEARCH",
+            triggers = "search ,google ,look up ", labelTemplate = "🔍  Search {q}", builtin = true, sortOrder = 5),
+        SkillEntity(name = "YouTube", emoji = "📺", actionType = "URI",
+            uriTemplate = "https://www.youtube.com/results?search_query={q}", triggers = "youtube ,yt ",
+            labelTemplate = "📺  YouTube {q}", builtin = true, sortOrder = 6),
+        SkillEntity(name = "Wikipedia", emoji = "📖", actionType = "URI",
+            uriTemplate = "https://en.wikipedia.org/wiki/Special:Search?search={q}", triggers = "wiki ,wikipedia ",
+            labelTemplate = "📖  Wikipedia {q}", builtin = true, sortOrder = 7),
+        SkillEntity(name = "Translate", emoji = "🌐", actionType = "URI",
+            uriTemplate = "https://translate.google.com/?sl=auto&tl=en&op=translate&text={q}", triggers = "translate ",
+            labelTemplate = "🌐  Translate {q}", builtin = true, sortOrder = 8)
+    )
 }

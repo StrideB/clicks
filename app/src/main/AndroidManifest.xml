@@ -54,6 +54,12 @@
             android:label="Clicks Keyboard"
             android:theme="@style/AppTheme" />
 
+        <activity
+            android:name=".AgenticSkillsActivity"
+            android:exported="true"
+            android:label="Skills"
+            android:theme="@style/AppTheme" />
+
         <service
             android:name=".ClicksImeService"
             android:exported="true"

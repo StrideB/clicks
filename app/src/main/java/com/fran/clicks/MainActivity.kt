@@ -431,6 +431,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
         liveRouter.start()
         loadGlideWords()
+        AgenticRouter.ensureLoaded(this)
         syncVivoDockedExperiment()
         render()
         handleKeyboardActionIntent(intent)
@@ -7239,6 +7240,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 haptic(this); render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
 
+            addView(settingAction("AGENTIC SKILLS") {
+                keyboardSettingsOpen = false
+                startActivity(android.content.Intent(this@MainActivity, AgenticSkillsActivity::class.java))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
             addView(settingAction("CLICKS SETTINGS") {
                 keyboardSettingsOpen = false
                 openHere(clicksSettingsTarget())
@@ -7994,19 +7999,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (openPane?.kind == PaneKind.CHAT) composeText else query
 
     private fun runLauncherAgenticCommand() {
-        val cmd = AgenticRouter.classify(launcherCommandText())
-        if (cmd == null) {
-            android.widget.Toast.makeText(this, "Type a command \u2014 play, nearest, timer\u2026", android.widget.Toast.LENGTH_SHORT).show()
+        val raw = launcherCommandText()
+        val cmd = AgenticRouter.classify(raw)
+        if (cmd != null) { pendingLauncherCommand = cmd; updateSuggestionBar(); return }
+        // Free-form fallback: Gemini ranks the typed line onto a real skill (Pro + configured).
+        if (raw.isNotBlank() && ProManager.isUnlocked(this) && geminiConfigured()) {
+            val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+            val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+            val names = AgenticRouter.catalogNames()
+            android.widget.Toast.makeText(this, "\uD83E\uDD16 Thinking\u2026", android.widget.Toast.LENGTH_SHORT).show()
+            mediaUiScope.launch {
+                val match = withContext(Dispatchers.IO) { GeminiClient.fetchSkillMatch(key, model, raw, names) }
+                val c = match?.let { AgenticRouter.commandForSkill(it.first, it.second) }
+                if (c != null) { pendingLauncherCommand = c; updateSuggestionBar() }
+                else android.widget.Toast.makeText(this@MainActivity, "No command matched", android.widget.Toast.LENGTH_SHORT).show()
+            }
             return
         }
-        pendingLauncherCommand = cmd
-        updateSuggestionBar()
+        android.widget.Toast.makeText(this, "Type a command \u2014 play, nearest, timer\u2026", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     private fun applyLauncherCommand() {
         val cmd = pendingLauncherCommand ?: return
         pendingLauncherCommand = null
-        if (cmd.kind == AgenticRouter.Kind.SHARE_LOCATION) { insertLauncherLocation(); return }
+        if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherLocation(); return }
         val statusMsg = AgenticRouter.execute(this, cmd)
         if (openPane?.kind == PaneKind.CHAT) composeText = "" else query = ""
         suggestions = emptyList()

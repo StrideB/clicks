@@ -47,6 +47,27 @@ Reply format: ["word1","word2","word3"]"""
         return cleaned.ifBlank { null }
     }
 
+    /**
+     * Route a free-form command to exactly one skill by name and extract its argument. The model may
+     * only pick from [skills] (or NONE), so it ranks — it can't invent an action. Blocking.
+     */
+    fun fetchSkillMatch(apiKey: String, model: String, query: String, skills: List<String>): Pair<String, String>? {
+        if (query.isBlank() || skills.isEmpty()) return null
+        val prompt = """You route a phone keyboard command to exactly one skill.
+Skills: ${skills.joinToString(", ")}
+Command: "$query"
+Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","arg":"<the search text or target, may be empty>"}"""
+        val out = call(apiKey, model, prompt, maxTokens = 60, temperature = 0.0) ?: return null
+        val inner = out.substringAfter('{', "").substringBeforeLast('}')
+        if (inner.isBlank()) return null
+        return runCatching {
+            val obj = JSONObject("{$inner}")
+            val skill = obj.optString("skill").trim()
+            val arg = obj.optString("arg").trim()
+            if (skill.isBlank() || skill.equals("NONE", ignoreCase = true)) null else skill to arg
+        }.getOrNull()
+    }
+
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
     private fun call(apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double): String? {
         if (apiKey.isBlank()) return null

@@ -115,6 +115,22 @@ class ImeSettingsActivity : Activity() {
             })
         }
 
+        // Agentic
+        section("AGENTIC").also { c ->
+            c.addView(text("Type a command and hold the space bar to run it \u2014 music, maps, timers, and your own skills.", 12.5f, t.inkDim).apply {
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(10)
+            })
+            c.addView(TextView(this).apply {
+                text = "Manage skills"
+                gravity = Gravity.CENTER; textSize = 14.5f
+                setTextColor(0xFFF5F2FF.toInt())
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                setPadding(0, dp(11), 0, dp(11)); isClickable = true
+                background = android.graphics.drawable.GradientDrawable().apply { setColor(accent); cornerRadius = dp(12).toFloat() }
+                setOnClickListener { startActivity(android.content.Intent(this@ImeSettingsActivity, AgenticSkillsActivity::class.java)) }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+
         // Try it
         section("TRY IT").also { c ->
             c.addView(EditText(this).apply {

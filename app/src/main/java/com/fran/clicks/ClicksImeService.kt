@@ -75,6 +75,7 @@ class ClicksImeService : InputMethodService() {
         shifted = false
         ensureGlideClassifier()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
+        AgenticRouter.ensureLoaded(this)
         return buildKeyboard().also { deckView = it }
     }
 
@@ -741,13 +742,32 @@ class ClicksImeService : InputMethodService() {
     private fun runAgenticCommand() {
         val raw = currentInputConnection?.getTextBeforeCursor(200, 0)?.toString() ?: ""
         val cmd = AgenticRouter.classify(raw)
-        if (cmd == null) {
-            flashAgenticStatus("Type a command \u2014 play, nearest, timer\u2026", 2200)
+        if (cmd != null) {
+            pendingCommandText = raw
+            pendingCommand = cmd
+            updateStrip()
             return
         }
-        pendingCommandText = raw
-        pendingCommand = cmd
-        updateStrip()
+        // Free-form fallback: let Gemini pick a skill (Pro + configured). It only ranks among real
+        // skills, so "I wanna hear jazz" routes to Play music without inventing an action.
+        if (raw.isNotBlank() && ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs())) {
+            pendingCommandText = raw
+            agenticStatus = "\uD83E\uDD16 Thinking\u2026"
+            updateStrip()
+            val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
+            val names = AgenticRouter.catalogNames()
+            Thread {
+                val match = GeminiClient.fetchSkillMatch(key, model, raw, names)
+                handler.post {
+                    agenticStatus = null
+                    val c = match?.let { AgenticRouter.commandForSkill(it.first, it.second) }
+                    if (c != null) { pendingCommand = c; updateStrip() }
+                    else flashAgenticStatus("No command matched", 1800)
+                }
+            }.start()
+            return
+        }
+        flashAgenticStatus("Type a command \u2014 play, nearest, timer\u2026", 2200)
     }
 
     private fun applyPendingCommand() {
@@ -756,7 +776,7 @@ class ClicksImeService : InputMethodService() {
         pendingCommand = null
         // Clear the command text from the field — it was a command, not message content.
         if (raw.isNotEmpty()) currentInputConnection?.deleteSurroundingText(raw.length, 0)
-        if (cmd.kind == AgenticRouter.Kind.SHARE_LOCATION) { runAgenticLocation(); return }
+        if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); runAgenticLocation(); return }
         val statusMsg = AgenticRouter.execute(this, cmd)
         onTextChanged()
         flashAgenticStatus(statusMsg ?: "Couldn\u2019t run that", 1700)
