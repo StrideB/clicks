@@ -8178,6 +8178,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             ellipsize = android.text.TextUtils.TruncateAt.END
             setPadding(0, 0, 0, 0)
             setTextColor(keyTextColor(label))
+            // Show the swipe-down symbol at the bottom of letter keys.
+            if (isLetter && this is DynamicFlickKeyView) {
+                val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
+                setSymbolHint(sym, (keyTextColor(label) and 0x00FFFFFF) or (0x66 shl 24))
+            }
             isClickable = true
             val vInset = keyVerticalInset()
             val hInset = keyHorizontalInset()
@@ -9263,6 +9268,18 @@ Reply format: ["word1","word2","word3"]"""
                 MotionEvent.ACTION_UP -> {
                     glideGestureActive = false
                     val clf = glideClassifier
+                    // Swipe-DOWN on a key = insert its symbol (Apple-style; the symbol shown at the
+                    // key's bottom edge). Down doesn't collide with swipe-up-to-accept-prediction.
+                    val dyDn = ev.rawY - startRawY; val dxDn = ev.rawX - startRawX
+                    val dnKey = keyAtPoint(startRawX, startRawY)
+                    val dnSym = if (dnKey != null && dnKey.length == 1) com.fran.clicks.keyboard.KeyboardSymbols.keyUp[dnKey] else null
+                    if (dnSym != null && dyDn > dp(24) && dyDn >= abs(dxDn) * 1.4f && abs(dxDn) < dp(56) &&
+                        (clf == null || !clf.hasEnoughPoints)) {
+                        tracking = false; traced.clear(); trailLocal.clear(); glidePersisting = false; invalidate()
+                        clf?.clear()
+                        keyHaptic("space"); handleKey(dnSym)
+                        return true
+                    }
                     // Deliberate quick left-swipe = whole-word delete. A glide that spells a word has
                     // many sampled points (hasEnoughPoints), so it must never be read as a delete even
                     // when its path happens to end left of where it started (common for later words).

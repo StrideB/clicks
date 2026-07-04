@@ -21,6 +21,16 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         isFakeBoldText = true
     }
 
+    // Swipe-down symbol shown small at the bottom of the key (so users see where to flick down).
+    private var symbolHint: String? = null
+    private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+
+    fun setSymbolHint(sym: String?, color: Int) {
+        if (symbolHint != sym || symbolPaint.color != color) {
+            symbolHint = sym; symbolPaint.color = color; invalidate()
+        }
+    }
+
     fun updatePrediction(word: String?) {
         if (upWordHint != word) { upWordHint = word; invalidate() }
     }
@@ -37,6 +47,13 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        // Swipe-down symbol at the bottom edge.
+        symbolHint?.let { s ->
+            if (keyH > 0) {
+                symbolPaint.textSize = keyH * 0.19f
+                canvas.drawText(s, keyW / 2f, keyH - keyH * 0.08f, symbolPaint)
+            }
+        }
         val hint = upWordHint ?: return
         if (keyW == 0) return
         // Scale text down if the word is wider than the key (minus 4px margins each side)
