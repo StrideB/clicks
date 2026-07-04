@@ -140,6 +140,16 @@ class ImeSettingsActivity : Activity() {
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
 
+        // Skill connections — optional API keys (free tiers) that unlock more agentic skills.
+        section("SKILL CONNECTIONS").also { c ->
+            c.addView(text("Optional free API keys unlock more skills. Paste a key to turn it on.", 12.5f, t.inkDim).apply {
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(8)
+            })
+            c.addView(inputRow("Finnhub key — Stock Sniffer", StockApi.KEY_PREF, "finnhub.io (free)", secret = true))
+            c.addView(divider())
+            c.addView(inputRow("Odds API key — World Cup Odds", OddsApi.KEY_PREF, "the-odds-api.com (free)", secret = true))
+        }
+
         // Try it
         section("TRY IT").also { c ->
             c.addView(EditText(this).apply {
