@@ -77,6 +77,16 @@ class ClicksImeService : InputMethodService() {
     // Agentic emoji + smart symbols shown in the suggestion strip: (display, textToInsert, isEmoji).
     private var smartChips: List<Triple<String, String, Boolean>> = emptyList()
     private var emojiTriggerWord: String = ""
+
+    // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
+    private val keyUpSymbols = mapOf(
+        "q" to "1", "w" to "2", "e" to "3", "r" to "4", "t" to "5",
+        "y" to "6", "u" to "7", "i" to "8", "o" to "9", "p" to "0",
+        "a" to "@", "s" to "#", "d" to "$", "f" to "_", "g" to "&",
+        "h" to "-", "j" to "+", "k" to "(", "l" to ")",
+        "z" to "*", "x" to "\"", "c" to "'", "v" to ":", "b" to ";",
+        "n" to "!", "m" to "?"
+    )
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
@@ -1533,6 +1543,26 @@ class ClicksImeService : InputMethodService() {
                 }
                 MotionEvent.ACTION_UP -> {
                     val clf = glideClassifier
+                    // Swipe-up-for-symbol: a short, upward, vertical-dominant flick that started on a
+                    // key inserts that key's symbol instead of gliding — quick punctuation, no mode
+                    // switch. Gated on "not a real glide" so full glide words are untouched.
+                    val dyUp = ev.rawY - startRawY
+                    val dxUp = ev.rawX - startRawX
+                    val flickKey = keyAtPoint(startRawX, startRawY, letterOnly = true)
+                    val flickSymbol = if (flickKey != null) keyUpSymbols[flickKey] else null
+                    if (flickSymbol != null && dyUp < -dp(24) && abs(dyUp) >= abs(dxUp) * 1.4f &&
+                        abs(dxUp) < dp(56) && (clf == null || !clf.hasEnoughPoints)) {
+                        tracking = false
+                        traced.clear()
+                        clf?.clear()
+                        trailLocal.clear()
+                        glidePersisting = false
+                        invalidate()
+                        keyHaptic("space")
+                        commitValue(flickSymbol)
+                        onTextChanged()
+                        return true
+                    }
                     val quickLeftDelete = startRawX - ev.rawX > dp(52) && abs(ev.rawY - startRawY) < dp(36) && (clf == null || !clf.hasEnoughPoints)
                     val tracedKeys = traced.toList()
                     tracking = false
