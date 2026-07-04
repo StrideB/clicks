@@ -264,31 +264,28 @@ def main():
 
     encoder.eval(); decoder.eval()
 
-    # Export. Batch (B) and decoder length (L) are dynamic; T is fixed at MAX_TRAJ.
-    # IMPORTANT: the legacy TorchScript ONNX exporter constant-folds the batch dim when the example
-    # batch is 1, which bakes nn.MultiheadAttention's internal reshapes and then fails on-device at
-    # beam width > 1. Exporting the DECODER with an example batch of 2 keeps the batch axis symbolic.
-    # (The encoder is always run at batch 1 on-device, so batch 1 is fine there.)
+    # Export. Both graphs run at BATCH 1 on-device (the beam search calls the decoder once per beam),
+    # so only the decoder's sequence length L is dynamic. This deliberately avoids a dynamic batch
+    # axis: PyTorch's ONNX exporters constant-fold nn.MultiheadAttention's internal reshapes from the
+    # example batch, which then fails at batch > 1. Fixed batch = 1 sidesteps that entirely and keeps
+    # beam width freely tunable on-device (it's just a loop count).
     ex_feats = torch.zeros(1, MAX_TRAJ, FEATURE_DIM)
-    ex_mask1 = torch.ones(1, MAX_TRAJ, dtype=torch.int64)
-    ex_mask2 = torch.ones(2, MAX_TRAJ, dtype=torch.int64)
+    ex_mask = torch.ones(1, MAX_TRAJ, dtype=torch.int64)
     with torch.no_grad():
-        ex_memory2 = encoder(ex_feats.repeat(2, 1, 1).to(device), ex_mask2.to(device)).cpu()
-    ex_tgt2 = torch.tensor([[SOS, FIRST_LETTER], [SOS, FIRST_LETTER]], dtype=torch.int64)
+        ex_memory = encoder(ex_feats.to(device), ex_mask.to(device)).cpu()
+    ex_tgt = torch.tensor([[SOS, FIRST_LETTER]], dtype=torch.int64)   # batch 1, L 2
 
     enc_path = f"{args.out}/swipe_encoder.onnx"
     dec_path = f"{args.out}/swipe_decoder.onnx"
     torch.onnx.export(
-        encoder.cpu(), (ex_feats, ex_mask1), enc_path,
+        encoder.cpu(), (ex_feats, ex_mask), enc_path,
         input_names=["features", "src_mask"], output_names=["memory"],
-        dynamic_axes={"features": {0: "B"}, "src_mask": {0: "B"}, "memory": {0: "B"}},
         opset_version=args.opset,
     )
     torch.onnx.export(
-        decoder.cpu(), (ex_memory2, ex_mask2, ex_tgt2), dec_path,
+        decoder.cpu(), (ex_memory, ex_mask, ex_tgt), dec_path,
         input_names=["memory", "src_mask", "tgt"], output_names=["logits"],
-        dynamic_axes={"memory": {0: "B"}, "src_mask": {0: "B"},
-                      "tgt": {0: "B", 1: "L"}, "logits": {0: "B", 1: "L"}},
+        dynamic_axes={"tgt": {1: "L"}, "logits": {1: "L"}},
         opset_version=args.opset,
     )
     print(f"wrote {enc_path}\nwrote {dec_path}")
