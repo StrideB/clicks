@@ -3,6 +3,7 @@ package com.fran.clicks.keyboard
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.widget.TextView
 
 /**
@@ -24,11 +25,24 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
     // Swipe-down symbol shown small at the bottom of the key (so users see where to flick down).
     private var symbolHint: String? = null
     private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private var primaryLabel: String? = null
+    private var primaryColor: Int = currentTextColor
+    private var primaryTextSizePx: Float = 0f
+    private var primaryTypeface: Typeface? = null
 
     fun setSymbolHint(sym: String?, color: Int) {
         if (symbolHint != sym || symbolPaint.color != color) {
             symbolHint = sym; symbolPaint.color = color; invalidate()
         }
+    }
+
+    fun setDrawnPrimaryLabel(label: String?, color: Int, textSizePx: Float, typeface: Typeface?) {
+        primaryLabel = label
+        primaryColor = color
+        primaryTextSizePx = textSizePx
+        primaryTypeface = typeface
+        text = if (label == null) text else ""
+        invalidate()
     }
 
     fun updatePrediction(word: String?) {
@@ -54,15 +68,32 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
+        if (primaryLabel == null) super.onDraw(canvas)
+        val faceTop = faceInsetY
+        val faceBottom = keyH - faceInsetY
+        val faceHeight = (faceBottom - faceTop).coerceAtLeast(keyH * 0.58f)
         // Swipe-down symbol at the bottom edge.
         symbolHint?.let { s ->
             if (keyH > 0) {
-                val faceTop = faceInsetY
-                val faceBottom = keyH - faceInsetY
-                val faceHeight = (faceBottom - faceTop).coerceAtLeast(keyH * 0.58f)
-                symbolPaint.textSize = faceHeight * 0.16f
-                canvas.drawText(s, keyW / 2f, faceBottom - faceHeight * 0.16f, symbolPaint)
+                symbolPaint.textSize = faceHeight * 0.135f
+                symbolPaint.alpha = 130
+                canvas.drawText(s, keyW / 2f, faceTop + faceHeight * 0.25f, symbolPaint)
+                symbolPaint.alpha = 255
+            }
+        }
+        primaryLabel?.let { label ->
+            if (keyW > 0 && keyH > 0) {
+                hintPaint.color = primaryColor
+                hintPaint.typeface = primaryTypeface
+                hintPaint.isFakeBoldText = false
+                hintPaint.textSize = primaryTextSizePx.takeIf { it > 0f } ?: faceHeight * 0.44f
+                val metrics = hintPaint.fontMetrics
+                val centerY = faceTop + faceHeight * 0.54f
+                val baseline = centerY - (metrics.ascent + metrics.descent) / 2f
+                canvas.drawText(label, keyW / 2f, baseline, hintPaint)
+                hintPaint.typeface = null
+                hintPaint.color = 0xFF4ADE80.toInt()
+                hintPaint.isFakeBoldText = true
             }
         }
         val hint = upWordHint ?: return

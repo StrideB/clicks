@@ -2,7 +2,10 @@ package com.fran.clicks
 
 import android.app.Notification
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.Context
+import com.fran.clicks.brief.NotificationRecord
+import com.fran.clicks.brief.RawAction
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
@@ -15,11 +18,18 @@ import kotlin.math.abs
 
 class ClicksNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
+        instance = this
         activeNotifications.orEmpty().forEach { onNotificationPosted(it) }
+    }
+
+    /** Cancel a live notification by key (used by Today's long-press dismiss). Instance-scoped. */
+    fun cancelByKey(key: String) {
+        runCatching { cancelNotification(key) }
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
+        if (instance === this) instance = null
         // Iterating a synchronizedMap needs the lock held for the whole sweep, else a concurrent
         // post could mutate it mid-iteration and throw ConcurrentModificationException.
         synchronized(notificationAvatars) {
@@ -27,9 +37,16 @@ class ClicksNotificationListener : NotificationListenerService() {
             notificationAvatars.clear()
         }
         notificationIntents.clear()
+        synchronized(briefRecords) { briefRecords.clear() }
+        onBriefChanged?.invoke()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        // Brief capture runs for EVERY notification (not just hub candidates) so the "Today" brief
+        // can surface any of them with all their inline actions. This is independent of the hub
+        // widget-stack path below, which keeps its existing narrower filtering.
+        captureBriefRecord(sbn)
+
         if (!sbn.isHubCandidate()) return
 
         val extras = sbn.notification.extras
@@ -71,12 +88,80 @@ class ClicksNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         notificationIntents.remove(sbn.key)
+        // Reply PendingIntents die with the notification, so the brief must drop this record and
+        // re-collect. Do NOT recycle the avatar here — it is shared with notificationAvatars below.
+        val removedBrief = briefRecords.remove(sbn.key) != null
         notificationAvatars.remove(sbn.key)?.let { runCatching { it.recycle() } }
         val next = JSONArray()
         readMessages()
             .filterNot { it.optString("key") == sbn.key }
             .forEach { next.put(it) }
         prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
+        if (removedBrief) onBriefChanged?.invoke()
+    }
+
+    /**
+     * Snapshot every actionable notification into [briefRecords] with its contentIntent and every
+     * inline action (label + PendingIntent + RemoteInput). Skips group summaries and content-less
+     * notifications. Never serialized — PendingIntents are process-lifetime handles.
+     */
+    private fun captureBriefRecord(sbn: StatusBarNotification) {
+        val n = sbn.notification
+        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+        // Ongoing / non-dismissable notifications (security cams, transport controls, persistent
+        // status) can't be cleared and aren't "Today" items — skip them so the brief stays actionable.
+        if (!sbn.isClearable || n.flags and Notification.FLAG_ONGOING_EVENT != 0) return
+        val extras = n.extras
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val text = (extras.getCharSequence(Notification.EXTRA_TEXT)
+            ?: extras.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString()?.trim().orEmpty()
+        if (title.isBlank() && text.isBlank()) return
+
+        val actions = n.actions?.mapNotNull { a ->
+            val pi = a.actionIntent ?: return@mapNotNull null
+            val label = a.title?.toString()?.trim().orEmpty()
+            if (label.isBlank()) return@mapNotNull null
+            val remotes = a.remoteInputs
+            val free = remotes?.firstOrNull { it.allowFreeFormInput }
+            val extras2: Array<RemoteInput> = remotes?.filter { it !== free }?.toTypedArray() ?: emptyArray()
+            RawAction(label, pi, free, extras2)
+        }.orEmpty()
+
+        // Nothing to act on and nothing to open → not worth a card.
+        if (actions.isEmpty() && n.contentIntent == null) return
+
+        val record = NotificationRecord(
+            key = sbn.key,
+            packageName = sbn.packageName,
+            appLabel = packageManagerLabel(sbn.packageName),
+            title = title,
+            text = text,
+            category = briefCategory(sbn),
+            personName = title.takeIf { it.isNotBlank() },
+            whenMs = sbn.postTime,
+            contentIntent = n.contentIntent,
+            actions = actions,
+            avatar = notificationAvatars[sbn.key]
+        )
+
+        synchronized(briefRecords) {
+            briefRecords.remove(sbn.key)
+            if (briefRecords.size >= MAX_BRIEF) {
+                briefRecords.keys.firstOrNull()?.let { briefRecords.remove(it) }
+            }
+            briefRecords[sbn.key] = record
+        }
+        onBriefChanged?.invoke()
+    }
+
+    private fun briefCategory(sbn: StatusBarNotification): String {
+        val category = sbn.notification.category
+        return when {
+            category == Notification.CATEGORY_CALL || category == "missed_call" -> "call"
+            category == Notification.CATEGORY_EMAIL || sbn.packageName in EMAIL_PACKAGES -> "email"
+            category == Notification.CATEGORY_MESSAGE || sbn.packageName in MESSAGE_PACKAGES -> "message"
+            else -> "other"
+        }
     }
 
     private fun StatusBarNotification.isHubCandidate(): Boolean {
@@ -189,6 +274,31 @@ class ClicksNotificationListener : NotificationListenerService() {
             Collections.synchronizedMap(LinkedHashMap())
         val notificationAvatars: MutableMap<String, Bitmap> =
             Collections.synchronizedMap(LinkedHashMap())
+
+        // Full actionable snapshot of live notifications for the "Today" brief. Process-lifetime,
+        // never serialized (holds live PendingIntents). FIFO-evicted at MAX_BRIEF. Insertion order
+        // is preserved for the eviction below and for newest-first reads.
+        val briefRecords: MutableMap<String, NotificationRecord> =
+            Collections.synchronizedMap(LinkedHashMap())
+        private const val MAX_BRIEF = 40
+
+        /** Set by MainActivity to refresh the brief on notification post/remove. Debounce downstream. */
+        @Volatile
+        var onBriefChanged: (() -> Unit)? = null
+
+        @Volatile
+        private var instance: ClicksNotificationListener? = null
+
+        /** Dismiss a notification from Today: cancel it if connected, drop its record either way. */
+        fun dismiss(key: String) {
+            instance?.cancelByKey(key)
+            synchronized(briefRecords) { briefRecords.remove(key) }
+            onBriefChanged?.invoke()
+        }
+
+        /** Newest-first snapshot of captured notifications. Safe to call off the listener thread. */
+        fun briefSnapshot(): List<NotificationRecord> =
+            synchronized(briefRecords) { briefRecords.values.toList() }.asReversed()
 
         private val MESSAGE_PACKAGES = setOf(
             "com.google.android.apps.messaging",

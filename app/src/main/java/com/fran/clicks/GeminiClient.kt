@@ -81,6 +81,14 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
         }.getOrNull()
     }
 
+    /**
+     * General-purpose single-shot generation → the model's raw text reply, or null. Public wrapper
+     * over [call] for callers (e.g. the Today brief ranker) that build their own prompt and parse
+     * their own structured reply. Blocking — call off the main thread.
+     */
+    fun generate(apiKey: String, model: String, prompt: String, maxTokens: Int = 512, temperature: Double = 0.2): String? =
+        call(apiKey, model, prompt, maxTokens, temperature)
+
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
     private fun call(apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double): String? {
         if (apiKey.isBlank()) return null
