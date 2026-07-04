@@ -47,7 +47,32 @@ import com.fran.clicks.db.NgramRepository
 import java.util.Locale
 import kotlin.math.abs
 
-class ClicksImeService : InputMethodService() {
+class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.KeyboardHost {
+
+    // ── KeyboardHost (shared-core seam) — wraps the IME's existing InputConnection behavior ──
+    override fun commitText(text: String) = commitValue(text)
+    override fun deleteBeforeCursor(count: Int) { currentInputConnection?.deleteSurroundingText(count, 0) }
+    override fun textBeforeCursor(count: Int): String =
+        currentInputConnection?.getTextBeforeCursor(count, 0)?.toString().orEmpty()
+    override fun textAfterCursor(count: Int): String =
+        currentInputConnection?.getTextAfterCursor(count, 0)?.toString().orEmpty()
+    override fun moveCursor(right: Boolean) =
+        keyEvent(if (right) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
+    override fun editorPackage(): String? = currentEditorPackage
+    override fun isPasswordField(): Boolean {
+        val t = currentInputEditorInfo?.inputType ?: return false
+        val cls = t and android.text.InputType.TYPE_MASK_CLASS
+        val variation = t and android.text.InputType.TYPE_MASK_VARIATION
+        return (cls == android.text.InputType.TYPE_CLASS_TEXT &&
+            (variation == android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)) ||
+            (cls == android.text.InputType.TYPE_CLASS_NUMBER &&
+                variation == android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+    }
+    override val hostHapticsEnabled: Boolean get() = imePrefs().getBoolean(HAPTICS_PREF, true)
+    override fun onAgenticCommand(text: String) { runAgenticCommand() }
+    override fun openHostKeyboardSettings() = openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
     private var shifted = false
     private var symbolsMode = false
     private var capsLock = false

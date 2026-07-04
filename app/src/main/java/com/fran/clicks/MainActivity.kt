@@ -138,7 +138,43 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sqrt
 
-class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessionListener {
+class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessionListener,
+    com.fran.clicks.keyboard.KeyboardHost {
+
+    // ── KeyboardHost (shared-core seam) — wraps the launcher's in-memory query/composeText ──
+    private fun hostIsChat() = openPane?.kind == PaneKind.CHAT
+    private fun hostText(): String = if (hostIsChat()) composeText else query
+    private fun setHostText(v: String) { if (hostIsChat()) composeText = v else query = v }
+    override fun commitText(text: String) {
+        val cur = hostText(); val pos = cursorPos ?: cur.length
+        setHostText(cur.substring(0, pos) + text + cur.substring(pos))
+        if (cursorPos != null) cursorPos = pos + text.length
+    }
+    override fun deleteBeforeCursor(count: Int) {
+        val cur = hostText(); val pos = cursorPos ?: cur.length
+        val start = (pos - count).coerceAtLeast(0)
+        setHostText(cur.substring(0, start) + cur.substring(pos))
+        if (cursorPos != null) cursorPos = start
+    }
+    override fun textBeforeCursor(count: Int): String {
+        val cur = hostText(); val pos = cursorPos ?: cur.length
+        return cur.substring((pos - count).coerceAtLeast(0), pos)
+    }
+    override fun textAfterCursor(count: Int): String {
+        val cur = hostText(); val pos = cursorPos ?: cur.length
+        return cur.substring(pos, (pos + count).coerceAtMost(cur.length))
+    }
+    override fun moveCursor(right: Boolean) {
+        val cur = hostText(); val pos = cursorPos ?: cur.length
+        val np = (pos + if (right) 1 else -1).coerceIn(0, cur.length)
+        cursorPos = if (np == cur.length) null else np
+    }
+    override fun editorPackage(): String? = null          // launcher edits its own field
+    override fun isPasswordField(): Boolean = false
+    override val hostHapticsEnabled: Boolean get() = hapticsEnabled
+    override fun onAgenticCommand(text: String) { executeTypeToDoCommand(text) }
+    override fun openHostKeyboardSettings() { keyboardSettingsOpen = true; render() }
+
     private val collator = Collator.getInstance()
     private var query = ""
     private var apps: List<AppEntry> = emptyList()
