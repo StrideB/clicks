@@ -685,7 +685,6 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val r = Runnable {
             computeSmartChips(currentWord())
             val base = predictionCore.computeSuggestions()
-            android.util.Log.d("ClicksSugg", "word='${currentWord()}' base=$base stripVis=${suggestionStrip?.visibility} panelVis=${agenticPanel?.visibility}")
             suggestions = if (base.isEmpty()) {
                 // IME extra: notification quick-replies when the field is empty.
                 val ic = currentInputConnection
@@ -1180,6 +1179,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val canPolish = polishAvailable()
         val chips = smartChips
         if (shown.isEmpty() && !canPolish && chips.isEmpty()) { strip.background = null; return }
+        // The strip was being populated but stayed invisible whenever inline autofill (or the panel)
+        // had hidden it. Once we have real word suggestions/chips to show, make the strip visible and
+        // stand down the autofill row — typing a word takes priority.
+        suggestionStrip?.visibility = View.VISIBLE
+        inlineScroll?.visibility = View.GONE
         strip.background = stripWellBackground()
         shown.forEachIndexed { i, w ->
             strip.addView(TextView(this).apply {
