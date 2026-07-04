@@ -43,6 +43,7 @@ class ClicksImeService : InputMethodService() {
     private var lastShiftTapMs = 0L
     private val keyPreview by lazy { KeyPreviewManager(this) }
     private var polishing = false
+    private var agenticStatus: String? = null
     private var deckView: SwipeImeKeyboardLayout? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
@@ -235,11 +236,20 @@ class ClicksImeService : InputMethodService() {
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
                     }
+                    if (label == "space") {
+                        val runnable = Runnable {
+                            clicksLongPressFired = true
+                            keyHaptic("enter")
+                            runAgenticLocation()
+                        }
+                        clicksLongPressRunnable = runnable
+                        handler.postDelayed(runnable, (ViewConfiguration.getLongPressTimeout() * 1.25).toLong())
+                    }
                     if (label == "back") startDeleteRepeat()
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (label == "clicks" &&
+                    if ((label == "clicks" || label == "space") &&
                         (abs(event.rawX - downRawX) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop ||
                             abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
                         cancelClicksLongPress()
@@ -631,6 +641,16 @@ class ClicksImeService : InputMethodService() {
     private fun updateStrip() {
         val strip = suggestionStrip ?: return
         strip.removeAllViews()
+        val status = agenticStatus
+        if (status != null) {
+            strip.background = stripWellBackground()
+            strip.addView(TextView(this).apply {
+                text = status
+                gravity = Gravity.CENTER; textSize = 15f
+                setTextColor(0xFFCBB4FF.toInt())
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            return
+        }
         if (polishing) {
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
@@ -682,6 +702,37 @@ class ClicksImeService : InputMethodService() {
         val (content, instruction) = AiStyleCommands.match(before) ?: return false
         runAiTransform(before.length, content, instruction)
         return true
+    }
+
+    // Agentic quick-action: long-press space to drop your current location into the field — no maps
+    // app, no leaving the chat. Permission can't be requested from an IME, so if it's not already
+    // granted (e.g. via Clicks weather) we point the user there instead.
+    private fun runAgenticLocation() {
+        if (!AgenticLocation.hasPermission(this)) {
+            flashAgenticStatus("\uD83D\uDCCD Enable location in Clicks", 2600)
+            return
+        }
+        agenticStatus = "\uD83D\uDCCD Locating\u2026"
+        updateStrip()
+        Thread {
+            val text = AgenticLocation.currentLocationText(this)
+            handler.post {
+                agenticStatus = null
+                if (text != null) {
+                    currentInputConnection?.commitText(text, 1)
+                    onTextChanged()
+                    updateStrip()
+                } else {
+                    flashAgenticStatus("\uD83D\uDCCD Location unavailable", 2000)
+                }
+            }
+        }.start()
+    }
+
+    private fun flashAgenticStatus(message: String, ms: Long) {
+        agenticStatus = message
+        updateStrip()
+        handler.postDelayed({ agenticStatus = null; updateStrip() }, ms)
     }
 
     private fun runAiTransform(deleteLen: Int, content: String, instruction: String) {
