@@ -74,7 +74,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     }
     override val hostHapticsEnabled: Boolean get() = imePrefs().getBoolean(HAPTICS_PREF, true)
     override fun onAgenticCommand(text: String) { runAgenticCommand() }
-    override fun openHostKeyboardSettings() = openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
+    override fun openHostKeyboardSettings() = openImeSettings()
     private var shifted = false
     private var symbolsMode = false
     private var capsLock = false
@@ -154,7 +154,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             hideImeSurface()
             return
         }
-        refreshKeyboardChrome(rebuildBackgrounds = true)
+        refreshChromeOrRebuild()
         updateInputViewShown()
         clearInlineSuggestions()
         agenticHud = null
@@ -169,7 +169,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             return
         }
         shifted = shouldStartShifted(attribute)
-        refreshKeyboardChrome(rebuildBackgrounds = true)
+        refreshChromeOrRebuild()
     }
 
     override fun onWindowShown() {
@@ -207,6 +207,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun buildKeyboard(): SwipeImeKeyboardLayout {
         keyViews.clear()
+        lastBuiltTheme = keyboardTheme()
         return SwipeImeKeyboardLayout().apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -240,8 +241,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
     }
 
+    private var lastBuiltTheme: String? = null
+
     private fun rebuildDeck() {
+        lastBuiltTheme = keyboardTheme()
         setInputView(buildKeyboard().also { deckView = it })
+    }
+
+    // On focus, rebuild the whole deck (fresh cached backgrounds) only if the theme changed;
+    // otherwise a light text-only chrome refresh — keeps the cached key backgrounds valid.
+    private fun refreshChromeOrRebuild() {
+        if (keyboardTheme() != lastBuiltTheme) rebuildDeck() else refreshKeyboardChrome()
     }
 
     private fun keyRow(labels: List<String>, rowIndex: Int): LinearLayout {
@@ -276,7 +286,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun keyView(label: String): TextView {
         return TextView(this).apply {
             tag = label
-            text = visualLabel(label)
+            text = keyDisplayText(label)
             gravity = Gravity.CENTER
             includeFontPadding = false
             textSize = keyTextSize(label)
@@ -297,6 +307,10 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private var clicksLongPressFired = false
         private var spaceCursorLastX = 0f
         private var spaceCursorMoved = false
+        // Cache backgrounds once per key so press/release don't allocate a drawable every tap —
+        // that per-keystroke allocation was the main reason the IME felt slower than the launcher.
+        private val idleBg = visualKeyBackground(label, pressed = false)
+        private val pressedBg = visualKeyBackground(label, pressed = true)
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
@@ -306,7 +320,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     spaceCursorLastX = event.rawX
                     spaceCursorMoved = false
                     clicksLongPressFired = false
-                    v.background = visualKeyBackground(label, pressed = true)
+                    v.background = pressedBg
                     keyHaptic(label)
                     keyPreview.show(v, label)
                     v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(45L).start()
@@ -339,7 +353,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         val runnable = Runnable {
                             clicksLongPressFired = true
                             keyHaptic("enter")
-                            openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
+                            openImeSettings()
                         }
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
@@ -369,7 +383,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
-                    v.background = visualKeyBackground(label, pressed = false)
+                    v.background = idleBg
                     keyPreview.dismiss()
                     v.animate().scaleX(1f).scaleY(1f).setDuration(150L)
                         .setInterpolator(android.view.animation.OvershootInterpolator(2.4f)).start()
@@ -391,7 +405,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    v.background = visualKeyBackground(label, pressed = false)
+                    v.background = idleBg
                     keyPreview.dismiss()
                     v.animate().scaleX(1f).scaleY(1f).setDuration(120L).start()
                     cancelClicksLongPress()
@@ -450,7 +464,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 learnAndPredictAfterSpace()
                 updateAutoCap()
             }
-            "clicks" -> openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
+            "clicks" -> openImeSettings()
             "123" -> { symbolsMode = true; rebuildDeck() }
             "abc" -> { symbolsMode = false; rebuildDeck() }
             "." -> commitValue(".")
@@ -473,6 +487,15 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             this.action = action
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         })
+    }
+
+    // Open the IME's OWN settings (not the launcher's clicks settings) — the keyboard used in other
+    // apps should configure itself, not jump into the launcher.
+    private fun openImeSettings() {
+        requestHideSelf(0)
+        runCatching { hideWindow() }
+        startActivity(Intent(this, ImeSettingsActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
     }
 
     private fun commitValue(value: String) {
@@ -662,6 +685,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val r = Runnable {
             computeSmartChips(currentWord())
             val base = predictionCore.computeSuggestions()
+            android.util.Log.d("ClicksSugg", "word='${currentWord()}' base=$base stripVis=${suggestionStrip?.visibility} panelVis=${agenticPanel?.visibility}")
             suggestions = if (base.isEmpty()) {
                 // IME extra: notification quick-replies when the field is empty.
                 val ic = currentInputConnection
@@ -1541,7 +1565,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 for (keyIndex in 0 until row.childCount) {
                     val key = row.getChildAt(keyIndex) as? TextView ?: continue
                     val raw = key.tag as? String ?: continue
-                    key.text = visualLabel(raw)
+                    key.text = keyDisplayText(raw)
                     key.setTextColor(textColor(raw))
                     if (rebuildBackgrounds) key.background = visualKeyBackground(raw, pressed = false)
                 }
@@ -1666,14 +1690,14 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 }
                 MotionEvent.ACTION_UP -> {
                     val clf = glideClassifier
-                    // Swipe-up-for-symbol: a short, upward, vertical-dominant flick that started on a
+                    // Swipe-for-symbol: a short, vertical-dominant flick (up OR down, Apple-style) on a
                     // key inserts that key's symbol instead of gliding — quick punctuation, no mode
                     // switch. Gated on "not a real glide" so full glide words are untouched.
                     val dyUp = ev.rawY - startRawY
                     val dxUp = ev.rawX - startRawX
                     val flickKey = keyAtPoint(startRawX, startRawY, letterOnly = true)
                     val flickSymbol = if (flickKey != null) keyUpSymbols[flickKey] else null
-                    if (flickSymbol != null && dyUp < -dp(24) && abs(dyUp) >= abs(dxUp) * 1.4f &&
+                    if (flickSymbol != null && abs(dyUp) > dp(24) && abs(dyUp) >= abs(dxUp) * 1.4f &&
                         abs(dxUp) < dp(56) && (clf == null || !clf.hasEnoughPoints)) {
                         tracking = false
                         traced.clear()
@@ -1746,6 +1770,16 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             else -> if ((shifted || capsLock) && label.length == 1) label.uppercase() else label
         }
     }
+
+    // Key text with the swipe-down symbol shown small above the letter (so users see it).
+    private fun keyDisplayText(label: String): CharSequence {
+        val base = visualLabel(label)
+        return if (label.length == 1 && label[0].isLetter() && !symbolsMode)
+            com.fran.clicks.keyboard.keyLabelWithSymbol(base, label, symbolHintColor())
+        else base
+    }
+
+    private fun symbolHintColor(): Int = (textColor("q") and 0x00FFFFFF) or (0x72 shl 24)
 
     private fun textColor(label: String): Int {
         val theme = keyboardVisualTheme()

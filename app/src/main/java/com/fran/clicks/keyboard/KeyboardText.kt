@@ -21,6 +21,19 @@ object KeyboardSymbols {
     )
 }
 
+/**
+ * A key label with its swipe symbol shown small above the letter (Apple/Gboard style) so the user
+ * can see where to flick. Returns a plain string when the key has no symbol.
+ */
+fun keyLabelWithSymbol(letter: CharSequence, baseLetter: String, symbolColor: Int): CharSequence {
+    val sym = KeyboardSymbols.keyUp[baseLetter.lowercase()] ?: return letter
+    val s = android.text.SpannableString("$sym\n$letter")
+    val flag = android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+    s.setSpan(android.text.style.RelativeSizeSpan(0.52f), 0, sym.length, flag)
+    s.setSpan(android.text.style.ForegroundColorSpan(symbolColor), 0, sym.length, flag)
+    return s
+}
+
 /** Should the next letter auto-capitalize? True at the start of text or after sentence punctuation. */
 fun KeyboardHost.shouldAutoCapitalize(): Boolean {
     val before = textBeforeCursor(4).trimEnd()
