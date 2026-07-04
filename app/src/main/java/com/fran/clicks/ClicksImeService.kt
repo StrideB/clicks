@@ -78,6 +78,11 @@ class ClicksImeService : InputMethodService() {
     private var smartChips: List<Triple<String, String, Boolean>> = emptyList()
     private var emojiTriggerWord: String = ""
 
+    // A HUD result shown in the agentic panel (translation / mood read / drafted reply). [insert] is
+    // non-null when the result can be dropped into the field with an Insert button.
+    private data class Hud(val kicker: String, val body: String, val insert: String?)
+    private var agenticHud: Hud? = null
+
     // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
     private val keyUpSymbols = mapOf(
         "q" to "1", "w" to "2", "e" to "3", "r" to "4", "t" to "5",
@@ -121,6 +126,7 @@ class ClicksImeService : InputMethodService() {
         refreshKeyboardChrome()
         updateInputViewShown()
         clearInlineSuggestions()
+        agenticHud = null
         scheduleSuggestions()
     }
 
@@ -894,7 +900,57 @@ class ClicksImeService : InputMethodService() {
         pendingCommand = null
         pendingActions = emptyList()
         agenticStatus = null
+        agenticHud = null
         updateStrip()
+    }
+
+    // ── Clipboard AI skills (Phase 2) ────────────────────────────────────────────
+    private fun clipboardText(): String {
+        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return ""
+        val clip = cm.primaryClip ?: return ""
+        if (clip.itemCount == 0) return ""
+        return clip.getItemAt(0).coerceToText(this)?.toString()?.trim().orEmpty()
+    }
+
+    private fun aiReady(): Boolean {
+        if (!ProManager.isUnlocked(this)) { flashAgenticStatus("✨ This is a Pro feature", 2000); return false }
+        if (!GeminiClient.configured(imePrefs())) { flashAgenticStatus("Add a Gemini key in Clicks settings", 2400); return false }
+        return true
+    }
+
+    // Run a Gemini instruction on the clipboard text and show the result in the HUD.
+    private fun runClipboardSkill(need: String, status: String, kicker: String, instruction: String, insertable: Boolean) {
+        val text = clipboardText()
+        if (text.isBlank()) { flashAgenticStatus(need, 2600); return }
+        if (!aiReady()) return
+        agenticStatus = status
+        updateStrip()
+        val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
+        Thread {
+            val out = GeminiClient.fetchTransform(key, model, text, instruction)
+            handler.post {
+                agenticStatus = null
+                if (!out.isNullOrBlank()) { agenticHud = Hud(kicker, out, if (insertable) out else null); updateStrip() }
+                else flashAgenticStatus("Couldn’t do that — try again", 1800)
+            }
+        }.start()
+    }
+
+    private fun runEmotionDetection() = runClipboardSkill(
+        "Copy a message first, then hold go", "🧠 Reading the mood…", "EMOTION",
+        "Analyze the mood behind this message, then suggest how to respond. Reply in exactly two short " +
+            "lines: 'Mood: <one line>' and 'Reply: <one line>'. Be concise.", insertable = false)
+
+    private fun runTranslateHud() = runClipboardSkill(
+        "Copy text to translate, then hold go", "🌐 Translating…", "TRANSLATION",
+        "Translate this into natural, everyday English. Reply with ONLY the translation.", insertable = true)
+
+    private fun runSuperXReply(tone: String) {
+        val t = tone.ifBlank { "supportive" }
+        runClipboardSkill(
+            "Copy the post text first, then hold go", "𝕏 Drafting reply…", "X REPLY · $t",
+            "Write a short, context-aware reply to this social post in a $t tone. One or two sentences, " +
+                "no hashtags unless natural. Reply with ONLY the reply text.", insertable = true)
     }
 
     // Honor the system "remove animations" accessibility setting.
@@ -929,6 +985,40 @@ class ClicksImeService : InputMethodService() {
         val ctaInk = if (light) 0xFFFFFFFF.toInt() else 0xFF0A0C0F.toInt()
         val mint = if (light) 0xFF12A968.toInt() else 0xFF57E39A.toInt()
         val violet = if (light) 0xFF6D5FD6.toInt() else 0xFF9B8CFF.toInt()
+
+        val hud = agenticHud
+        if (hud != null) {
+            val wasHidden = panel.visibility != View.VISIBLE
+            panel.visibility = View.VISIBLE
+            panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
+            suggestionStrip?.visibility = View.GONE
+            panel.addView(View(this).apply {
+                background = GradientDrawable().apply { setColor(violet); cornerRadius = dp(2).toFloat() }
+            }, LinearLayout.LayoutParams(dp(3), dp(30)).apply { marginEnd = dp(11) })
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(TextView(this).apply {
+                text = hud.kicker; textSize = 9f; letterSpacing = 0.16f; setTextColor(kickerInk)
+            })
+            col.addView(TextView(this).apply {
+                text = hud.body; textSize = 13.5f; setTextColor(titleInk)
+                maxLines = 4; ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            panel.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
+            val insert = hud.insert
+            if (insert != null) {
+                panel.addView(agenticCta("Insert", violet, ctaInk) {
+                    keyHaptic("enter"); agenticHud = null
+                    currentInputConnection?.commitText(insert, 1); onTextChanged(); updateStrip()
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            }
+            panel.addView(TextView(this).apply {
+                text = "✕"; gravity = Gravity.CENTER; textSize = 13f; setTextColor(kickerInk)
+                setPadding(dp(10), dp(8), dp(6), dp(8)); isClickable = true
+                setOnClickListener { keyHaptic("back"); agenticHud = null; updateStrip() }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+            if (wasHidden) animateAgenticPanelIn(panel)
+            return
+        }
 
         val status = agenticStatus
         val pending = pendingCommand
@@ -1141,6 +1231,24 @@ class ClicksImeService : InputMethodService() {
     // location share or a hint. Tapping go/enter still sends/enters as normal.
     private fun runAgenticCommand() {
         val raw = currentInputConnection?.getTextBeforeCursor(200, 0)?.toString() ?: ""
+        // Clipboard skills (Phase 2): a bare trigger word operates on the COPIED text, not the field.
+        val t = raw.trim().lowercase()
+        val clipSkill: String? = when {
+            t == "mood" || t == "emotion" || t == "vibe" || t == "vibe check" || t == "read mood" -> "mood"
+            t == "translate" || t == "translate this" || t == "translate clipboard" || t == "tl" -> "translate"
+            t == "xreply" || t.startsWith("xreply ") || t.startsWith("x reply") || t.startsWith("reply x") -> "xreply"
+            else -> null
+        }
+        if (clipSkill != null) {
+            if (raw.isNotEmpty()) currentInputConnection?.deleteSurroundingText(raw.length, 0)
+            onTextChanged()
+            when (clipSkill) {
+                "mood" -> runEmotionDetection()
+                "translate" -> runTranslateHud()
+                "xreply" -> runSuperXReply(t.removePrefix("xreply").removePrefix("x reply").removePrefix("reply x").trim())
+            }
+            return
+        }
         val cmd = AgenticRouter.classify(raw)
         if (cmd != null) {
             pendingCommandText = raw
