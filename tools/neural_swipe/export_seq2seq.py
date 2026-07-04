@@ -173,18 +173,97 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, : x.size(1)]
 
 
+# We implement attention by hand rather than using nn.MultiheadAttention: the stock module's
+# internal reshapes constant-fold the batch AND sequence-length dims from the export example, which
+# then fails at any other length. Splitting heads via reshape(B, L, H, Dh) with B/L read symbolically
+# from `x.shape` keeps the sequence length dynamic in the exported ONNX graph.
+NEG_INF = -1e9
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model, nhead):
+        super().__init__()
+        assert d_model % nhead == 0
+        self.h = nhead
+        self.dh = d_model // nhead
+        self.q = nn.Linear(d_model, d_model)
+        self.k = nn.Linear(d_model, d_model)
+        self.v = nn.Linear(d_model, d_model)
+        self.o = nn.Linear(d_model, d_model)
+
+    def _split(self, x):                                  # [B,L,D] -> [B,H,L,Dh]
+        b, l = x.shape[0], x.shape[1]
+        return x.reshape(b, l, self.h, self.dh).transpose(1, 2)
+
+    def forward(self, q, k, v, key_padding=None, causal=False):
+        b = q.shape[0]
+        qs, ks, vs = self._split(self.q(q)), self._split(self.k(k)), self._split(self.v(v))
+        scores = (qs @ ks.transpose(-2, -1)) / math.sqrt(self.dh)   # [B,H,Lq,Lk]
+        if causal:
+            lq = q.shape[1]
+            i = torch.arange(lq, device=q.device)
+            fut = (i[None, :] > i[:, None])               # [Lq,Lk] True = future key
+            scores = scores.masked_fill(fut[None, None, :, :], NEG_INF)
+        if key_padding is not None:                       # [B,Lk] True = pad
+            scores = scores.masked_fill(key_padding[:, None, None, :], NEG_INF)
+        attn = scores.softmax(dim=-1)
+        out = attn @ vs                                   # [B,H,Lq,Dh]
+        lq = out.shape[2]
+        out = out.transpose(1, 2).reshape(b, lq, self.h * self.dh)
+        return self.o(out)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, d_model, ff):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(d_model, ff), nn.ReLU(), nn.Linear(ff, d_model))
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class EncoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, ff):
+        super().__init__()
+        self.attn = MultiHeadAttention(d_model, nhead)
+        self.ff = FeedForward(d_model, ff)
+        self.n1 = nn.LayerNorm(d_model)
+        self.n2 = nn.LayerNorm(d_model)
+
+    def forward(self, x, key_padding):
+        x = self.n1(x + self.attn(x, x, x, key_padding=key_padding))
+        return self.n2(x + self.ff(x))
+
+
+class DecoderLayer(nn.Module):
+    def __init__(self, d_model, nhead, ff):
+        super().__init__()
+        self.self_attn = MultiHeadAttention(d_model, nhead)
+        self.cross_attn = MultiHeadAttention(d_model, nhead)
+        self.ff = FeedForward(d_model, ff)
+        self.n1 = nn.LayerNorm(d_model)
+        self.n2 = nn.LayerNorm(d_model)
+        self.n3 = nn.LayerNorm(d_model)
+
+    def forward(self, y, memory, mem_key_padding):
+        y = self.n1(y + self.self_attn(y, y, y, causal=True))
+        y = self.n2(y + self.cross_attn(y, memory, memory, key_padding=mem_key_padding))
+        return self.n3(y + self.ff(y))
+
+
 class SwipeEncoder(nn.Module):
     def __init__(self, d_model, nhead, layers, ff):
         super().__init__()
         self.proj = nn.Linear(FEATURE_DIM, d_model)
         self.pos = PositionalEncoding(d_model)
-        layer = nn.TransformerEncoderLayer(d_model, nhead, ff, batch_first=True)
-        self.enc = nn.TransformerEncoder(layer, layers)
+        self.layers = nn.ModuleList([EncoderLayer(d_model, nhead, ff) for _ in range(layers)])
 
     def forward(self, features, src_mask):
-        key_padding = src_mask == 0                      # True = padding
+        key_padding = src_mask == 0                       # True = padding
         x = self.pos(self.proj(features))
-        return self.enc(x, src_key_padding_mask=key_padding)
+        for layer in self.layers:
+            x = layer(x, key_padding)
+        return x
 
 
 class SwipeDecoder(nn.Module):
@@ -192,18 +271,15 @@ class SwipeDecoder(nn.Module):
         super().__init__()
         self.emb = nn.Embedding(VOCAB_SIZE, d_model, padding_idx=PAD)
         self.pos = PositionalEncoding(d_model)
-        layer = nn.TransformerDecoderLayer(d_model, nhead, ff, batch_first=True)
-        self.dec = nn.TransformerDecoder(layer, layers)
+        self.layers = nn.ModuleList([DecoderLayer(d_model, nhead, ff) for _ in range(layers)])
         self.out = nn.Linear(d_model, VOCAB_SIZE)
 
     def forward(self, memory, src_mask, tgt):
-        key_padding = src_mask == 0
+        mem_key_padding = src_mask == 0
         y = self.pos(self.emb(tgt))
-        L = tgt.shape[1]
-        idx = torch.arange(L, device=tgt.device)
-        causal = idx[None, :] > idx[:, None]             # [L,L] bool, True = disallow (future)
-        h = self.dec(y, memory, tgt_mask=causal, memory_key_padding_mask=key_padding)
-        return self.out(h)
+        for layer in self.layers:
+            y = layer(y, memory, mem_key_padding)
+        return self.out(y)
 
 
 # ─────────────────────────────── train + export ───────────────────────────────
