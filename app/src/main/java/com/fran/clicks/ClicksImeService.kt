@@ -417,7 +417,7 @@ class ClicksImeService : InputMethodService() {
     private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
         if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
         spatialScorer.recordTap(rawX, rawY)
-        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true)
+        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) { predictionEngine.nextCharWeights(currentWord()) }
         return if (best != null && best.length == 1 && best[0].isLetter()) best
         else keyAtPoint(rawX, rawY, letterOnly = true) ?: label
     }

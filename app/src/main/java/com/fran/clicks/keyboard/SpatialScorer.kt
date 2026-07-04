@@ -46,22 +46,55 @@ class SpatialScorer {
     /**
      * Returns the best-matching key label for the given raw screen coordinates, scored against each
      * key's learned effective center. With [letterOnly] the winner is chosen among letter keys only.
+     *
+     * [contextWeights], when supplied, provides per-letter language weights (>= 1.0) used ONLY to
+     * break near-boundary ties: a confident tap — one key clearly closest — is always returned as-is
+     * (we never override where the finger obviously went). Only when the top two keys are spatially
+     * close do we let a linguistically-likely next-letter win, and since the weights only ever boost
+     * (never penalize), the decision is nudged toward a plausible neighbor, never away from the tap.
+     * The provider is a lambda so its cost is paid only on the rare ambiguous tap.
      */
-    fun bestKey(rawX: Float, rawY: Float, bigramWeights: Map<Char, Double> = emptyMap(), letterOnly: Boolean = false): String? {
-        var bestLabel: String? = null
-        var bestScore = -1.0
+    fun bestKey(
+        rawX: Float,
+        rawY: Float,
+        letterOnly: Boolean = false,
+        contextWeights: (() -> Map<Char, Double>)? = null
+    ): String? {
+        if (keys.isEmpty()) return null
+        val scores = ArrayList<Pair<KeyPoint, Double>>(keys.size)
+        var top: KeyPoint? = null
+        var topScore = -1.0
+        var runnerScore = -1.0
         for (key in keys) {
             if (letterOnly && (key.label.length != 1 || !key.label[0].isLetter())) continue
             val off = effOffset(key.label)
             val dx = rawX - (key.cx + off[0])
             val dy = rawY - (key.cy + off[1])
-            val spatialProb = exp(-((dx * dx) / (2 * sigmaX * sigmaX) + (dy * dy) / (2 * sigmaY * sigmaY)))
-            val langWeight = if (key.label.length == 1) bigramWeights[key.label[0]] ?: 1.0 else 1.0
-            val score = spatialProb * langWeight
-            if (score > bestScore) { bestScore = score; bestLabel = key.label }
+            val p = exp(-((dx * dx) / (2 * sigmaX * sigmaX) + (dy * dy) / (2 * sigmaY * sigmaY)))
+            scores.add(key to p)
+            when {
+                p > topScore -> { runnerScore = topScore; topScore = p; top = key }
+                p > runnerScore -> runnerScore = p
+            }
         }
-        return bestLabel
+        val best = top ?: return null
+        // Confident tap (or no context): trust geometry, never override.
+        if (contextWeights == null || runnerScore <= 0.0 || topScore / runnerScore >= DOMINANCE) return best.label
+        val weights = contextWeights()
+        if (weights.isEmpty()) return best.label
+        // Ambiguous: among the near-top candidates, let a likely continuation win.
+        var chosen = best.label
+        var chosenAdj = topScore * weightFor(best.label, weights)
+        for ((key, p) in scores) {
+            if (p < topScore * BAND) continue
+            val adj = p * weightFor(key.label, weights)
+            if (adj > chosenAdj) { chosenAdj = adj; chosen = key.label }
+        }
+        return chosen
     }
+
+    private fun weightFor(label: String, weights: Map<Char, Double>): Double =
+        if (label.length == 1) weights[label[0].lowercaseChar()] ?: 1.0 else 1.0
 
     /**
      * Learn from a confident letter tap: nudge the tapped key's per-key offset (and the global
@@ -135,5 +168,9 @@ class SpatialScorer {
     companion object {
         private const val LEARN_RATE = 0.06
         private const val GLOBAL_RATE = 0.02
+        // Tie-break tuning: only kick in when the top key is < DOMINANCE x the runner-up, and only
+        // reconsider candidates within BAND of the top spatial score.
+        private const val DOMINANCE = 1.6
+        private const val BAND = 0.65
     }
 }

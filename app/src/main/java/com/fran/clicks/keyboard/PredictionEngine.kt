@@ -34,6 +34,34 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
     }
 
     /**
+     * Per-letter weights for the NEXT character given what's typed so far, drawn from the frequency
+     * of dictionary words that extend [prefix]. Values are >= 1.0 (a likely continuation gets a
+     * boost, everything else stays neutral at 1.0), so a caller can use them to gently break a
+     * near-boundary touch tie without ever penalizing the key the finger actually hit. Empty when
+     * there's no prefix or no continuation. Cheap: skips all words whose first letter differs.
+     */
+    fun nextCharWeights(prefix: String): Map<Char, Double> {
+        if (prefix.isEmpty()) return emptyMap()
+        val p = prefix.lowercase()
+        if (!p[0].isLetter()) return emptyMap()
+        val fc = p[0]
+        val tally = HashMap<Char, Double>()
+        var total = 0.0
+        for ((w, f) in wordFrequencies) {
+            if (w.length <= p.length || w[0] != fc) continue
+            if (!w.startsWith(p)) continue
+            val nc = w[p.length]
+            val wt = f.toDouble() + 1e-3
+            tally[nc] = (tally[nc] ?: 0.0) + wt
+            total += wt
+        }
+        if (total <= 0.0) return emptyMap()
+        val out = HashMap<Char, Double>(tally.size)
+        for ((c, v) in tally) out[c] = 1.0 + NEXT_CHAR_BOOST * (v / total)
+        return out
+    }
+
+    /**
      * Predictions for the suggestion strip / live routing. [ngramBoost] holds personalized
      * next-word predictions for the *preceding* word (from the n-gram store). With nothing typed
      * yet they ARE the prediction; once the user starts a word, only the boost entries that extend
@@ -139,5 +167,9 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
             System.arraycopy(curr, 0, prev, 0, m + 1)
         }
         return prev[m]
+    }
+    private companion object {
+        // Max multiplicative boost a fully-dominant next-letter can add in an ambiguous tie-break.
+        private const val NEXT_CHAR_BOOST = 1.5
     }
 }

@@ -8307,7 +8307,7 @@ Reply format: ["word1","word2","word3"]"""
     private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
         if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
         spatialScorer.recordTap(rawX, rawY)
-        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) ?: return label
+        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) { predictionEngine.nextCharWeights(currentWordInCompose()) } ?: return label
         return if (best.length == 1 && best[0].isLetter()) best else label
     }
 
