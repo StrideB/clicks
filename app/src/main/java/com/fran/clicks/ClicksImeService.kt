@@ -830,6 +830,21 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
     }
 
+    /**
+     * Bias glide candidates toward the language the user is actually writing. The glide shape-matcher
+     * scores across the full multi-language union, so a similarly-shaped secondary-language word with
+     * a higher union frequency can beat the intended primary-language word (e.g. swiping English but
+     * getting Spanish). While the secondary language isn't active (the hysteresis in
+     * [updateActiveLanguage]), stably move primary-dictionary words ahead — never dropping any, so a
+     * word that only exists in the other language still works.
+     */
+    private fun languagePreferredOrder(words: List<String>): List<String> {
+        if (words.size < 2 || latentLanguageActive || !hasLatentLanguages) return words
+        val primary = words.filter { predictionEnginePrimary.isDictWord(it) }
+        return if (primary.isEmpty() || primary.size == words.size) words
+        else primary + words.filterNot { predictionEnginePrimary.isDictWord(it) }
+    }
+
     private fun learnAndPredictAfterSpace() {
         updateActiveLanguage()
         val tokens = wordsBeforeCursor()
@@ -1760,6 +1775,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private var glidePersisting = false
         private var glideFadeRunnable: Runnable? = null
         private val touchSlop = ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop
+        // A glide must clearly outrun a normal tap's finger-drift before it steals the touch from the
+        // key, otherwise a tap with a little slide reads as a phantom swipe and eats the keystroke.
+        private val glideActivationSlop = maxOf(touchSlop * 1.9f, dp(16).toFloat())
 
         private fun fadeGlideTrail() {
             glideFadeRunnable?.let { handler.removeCallbacks(it) }
@@ -1840,7 +1858,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!tracking && (abs(ev.rawX - startRawX) > touchSlop || abs(ev.rawY - startRawY) > touchSlop)) {
+                    if (!tracking && (abs(ev.rawX - startRawX) > glideActivationSlop || abs(ev.rawY - startRawY) > glideActivationSlop)) {
                         tracking = true
                         if (hapticsOn()) hapticEngine.glideStart()   // firm click on glide activation
                         android.util.Log.d("ClicksGlide", "glide start keyBounds=${keyBounds.size} clfReady=${glideClassifier != null}")
@@ -1922,14 +1940,16 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         glideScope.launch {
                             // Hybrid fuses neural + statistical (falls back to statistical-only when
                             // the neural model isn't present); geometric trace stays the last resort.
+                            // Ask for a few extra candidates so the intended active-language word is
+                            // in the pool for languagePreferredOrder to promote.
                             val statistical: suspend () -> List<String> = {
                                 withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    try { clf.getSuggestions(3, contextBoost) }
+                                    try { clf.getSuggestions(6, contextBoost) }
                                     catch (e: Throwable) { android.util.Log.e("ClicksGlide", "decode failed", e); emptyList() }
                                 }
                             }
                             val res = if (hybrid != null) {
-                                hybrid.decode(neuralPath, bounds, centers, freqs, 3, statistical)
+                                hybrid.decode(neuralPath, bounds, centers, freqs, 6, statistical)
                             } else {
                                 val s = statistical()
                                 com.fran.clicks.keyboard.neural.HybridResult(
@@ -1939,7 +1959,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                                 )
                             }
                             runCatching { clf.clear() }
-                            val results = res.words
+                            val results = languagePreferredOrder(res.words)
                             android.util.Log.d("ClicksGlide", "hybrid=${results.size} top=${results.firstOrNull()} src=${res.source} agreed=${res.agreed}")
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) hapticEngine.glideCommit()
@@ -1953,7 +1973,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         }
                     } else {
                         clf?.clear()
-                        if (tracedKeys.size >= 3) { keyHaptic("space"); handleSwipeFallback(tracedKeys) }
+                        val netX = abs(ev.rawX - startRawX); val netY = abs(ev.rawY - startRawY)
+                        when {
+                            tracedKeys.size >= 3 -> { keyHaptic("space"); handleSwipeFallback(tracedKeys) }
+                            // Tap recovery: a short drag that isn't a real glide would otherwise be
+                            // swallowed (the parent stole the touch from the key). Type the start key
+                            // so the keystroke isn't lost.
+                            netX < glideActivationSlop * 2f && netY < glideActivationSlop * 2f ->
+                                keyAtPoint(startRawX, startRawY, letterOnly = true)?.let {
+                                    handleKey(resolveTapKey(it, startRawX, startRawY))
+                                }
+                        }
                         fadeGlideTrail()
                     }
                 }

@@ -8015,7 +8015,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             if (showKeyboardTypingWell()) {
                 addView(typingStripView(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyboardTypingWellHeight()).apply {
-                    bottomMargin = dp(2)
+                    marginStart = dp(8)
+                    marginEnd = dp(8)
+                    topMargin = dp(8)
+                    bottomMargin = dp(1)
                 })
             }
             // Suggestion strip at the TOP of the keyboard (Gboard-style), above all key rows.
@@ -8650,8 +8653,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun showSuggestionStrip() = true
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
     private fun keyboardTypingWellHeight() = dp(36)
-    private fun keyboardSuggestionStripHeight() = dp(34)
-    private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(1) else 0
+    private fun keyboardSuggestionStripHeight() = dp(28)
+    private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(9) else 0
 
     private fun suggestionStrip(): View {
         val strip = LinearLayout(this).apply {
@@ -9519,7 +9522,9 @@ Reply format: ["word1","word2","word3"]"""
                 MotionEvent.ACTION_MOVE -> {
                     if (trackpadActive) return true
                     if (!tracking) {
-                        if (abs(ev.rawX - startRawX) > dp(10) || abs(ev.rawY - startRawY) > dp(10)) {
+                        // Require clear intent before a glide steals the touch from a key, so a tap
+                        // with a little finger-drift types its letter instead of a phantom swipe.
+                        if (abs(ev.rawX - startRawX) > dp(16) || abs(ev.rawY - startRawY) > dp(16)) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
