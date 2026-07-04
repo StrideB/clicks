@@ -74,6 +74,9 @@ class ClicksImeService : InputMethodService() {
     private var agenticPanel: LinearLayout? = null
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
     private var inlineRow: LinearLayout? = null
+    // Agentic emoji + smart symbols shown in the suggestion strip: (display, textToInsert, isEmoji).
+    private var smartChips: List<Triple<String, String, Boolean>> = emptyList()
+    private var emojiTriggerWord: String = ""
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
@@ -603,6 +606,7 @@ class ClicksImeService : InputMethodService() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
         val r = Runnable {
             val word = currentWord()
+            computeSmartChips(word)
             if (word.length < 2) {
                 val prev = previousWord()
                 val ic = currentInputConnection
@@ -626,6 +630,36 @@ class ClicksImeService : InputMethodService() {
         }
         suggestDebounce = r
         handler.postDelayed(r, 70L)
+    }
+
+    // Build emoji + smart-symbol chips for the current word/context. Emoji lead; symbols fill in.
+    private fun computeSmartChips(word: String) {
+        val chips = ArrayList<Triple<String, String, Boolean>>()
+        emojiTriggerWord = ""
+        if (word.length >= 2) {
+            emojiTriggerWord = word.lowercase()
+            SmartChips.emojiFor(imePrefs(), emojiTriggerWord).take(4).forEach { chips.add(Triple(it, it, true)) }
+        }
+        val before = currentInputConnection?.getTextBeforeCursor(24, 0)?.toString().orEmpty()
+        SmartChips.symbolsFor(before, word).forEach { s -> if (chips.none { it.first == s }) chips.add(Triple(s, s, false)) }
+        smartChips = chips.take(5)
+    }
+
+    // Insert an emoji/symbol chip. Emoji get a leading space when needed and record the pick so the
+    // ranking learns; symbols insert as-is.
+    private fun insertSmartChip(display: String, insert: String, emoji: Boolean) {
+        val ic = currentInputConnection ?: return
+        keyHaptic("space")
+        if (emoji) {
+            val prev = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
+            val sep = if (prev.isNotEmpty() && prev != " ") " " else ""
+            ic.commitText(sep + insert, 1)
+            if (emojiTriggerWord.isNotEmpty()) SmartChips.recordEmojiPick(imePrefs(), emojiTriggerWord, insert)
+        } else {
+            ic.commitText(insert, 1)
+        }
+        smartChips = emptyList()
+        onTextChanged()
     }
 
     private fun autocorrectEnabled() = imePrefs().getBoolean(IME_AUTOCORRECT_PREF, true)
@@ -1030,7 +1064,8 @@ class ClicksImeService : InputMethodService() {
         }
         val shown = suggestions.take(3)
         val canPolish = polishAvailable()
-        if (shown.isEmpty() && !canPolish) { strip.background = null; return }
+        val chips = smartChips
+        if (shown.isEmpty() && !canPolish && chips.isEmpty()) { strip.background = null; return }
         strip.background = stripWellBackground()
         shown.forEachIndexed { i, w ->
             strip.addView(TextView(this).apply {
@@ -1043,7 +1078,23 @@ class ClicksImeService : InputMethodService() {
                 isClickable = true
                 setOnClickListener { keyHaptic("space"); acceptSuggestion(w) }
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
-            if (i < shown.lastIndex || canPolish) {
+            if (i < shown.lastIndex || canPolish || chips.isNotEmpty()) {
+                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
+                    LinearLayout.LayoutParams(dp(1), dp(18)))
+            }
+        }
+        chips.forEachIndexed { i, (display, insert, emoji) ->
+            strip.addView(TextView(this).apply {
+                text = display
+                gravity = Gravity.CENTER
+                textSize = if (emoji) 18f else 16f
+                setTextColor(0xFFE9EDF2.toInt())
+                maxLines = 1
+                setPadding(dp(8), 0, dp(8), 0)
+                isClickable = true
+                setOnClickListener { insertSmartChip(display, insert, emoji) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            if (i < chips.lastIndex || canPolish) {
                 strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
                     LinearLayout.LayoutParams(dp(1), dp(18)))
             }
