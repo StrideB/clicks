@@ -442,11 +442,26 @@ class ClicksImeService : InputMethodService() {
 
     private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
         if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
+        if (!smartTouchEnabled()) return label
+        // Only let the language model reassign a tap that lands NEAR a key boundary. A confident
+        // center press is always taken at face value, so a clean tap never becomes a different
+        // letter — that "I hit the right key and got the wrong one" feeling was the model overriding
+        // good taps. recordTap only when smart touch is on, so the model can't drift while disabled.
         spatialScorer.recordTap(rawX, rawY)
+        val rect = keyBounds[label]
+        if (rect != null) {
+            val marginX = rect.width() * 0.24f
+            val marginY = rect.height() * 0.24f
+            val nearEdge = rawX < rect.left + marginX || rawX > rect.right - marginX ||
+                rawY < rect.top + marginY || rawY > rect.bottom - marginY
+            if (!nearEdge) return label
+        }
         val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) { predictionEngine.nextCharWeights(currentWord()) }
         return if (best != null && best.length == 1 && best[0].isLetter()) best
         else keyAtPoint(rawX, rawY, letterOnly = true) ?: label
     }
+
+    private fun smartTouchEnabled() = imePrefs().getBoolean(IME_SMART_TOUCH_PREF, true)
 
     private fun keyAtPoint(rawX: Float, rawY: Float, letterOnly: Boolean = false): String? {
         if (keyBounds.isEmpty()) captureKeyBounds()
@@ -516,10 +531,13 @@ class ClicksImeService : InputMethodService() {
     }
 
     private fun onTextChanged() {
+        // No immediate updateStrip: it would repaint the strip with stale suggestions (and pay a
+        // 1KB IPC read) on every keystroke, only to be repainted ~70ms later by scheduleSuggestions.
+        // One debounced repaint = half the per-key work and no flicker. Agentic state changes still
+        // call updateStrip directly, so previews/status stay instant.
         scheduleSuggestions()
         scheduleLiveCorrect()
         scheduleGemini()
-        updateStrip()
     }
 
     // Tier 2: blend Gemini's contextual next-word predictions into the strip (Pro + API key only).
@@ -800,9 +818,12 @@ class ClicksImeService : InputMethodService() {
     private fun fieldTextForPolish(): String =
         currentInputConnection?.getTextBeforeCursor(1000, 0)?.toString().orEmpty()
 
+    // Runs on every strip repaint, so keep it cheap: a short read is enough to see ≥3 words. The
+    // full field is only read (fieldTextForPolish) when a polish actually fires.
     private fun polishAvailable(): Boolean =
         ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs()) &&
-            fieldTextForPolish().trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
+            (currentInputConnection?.getTextBeforeCursor(200, 0)?.toString().orEmpty())
+                .trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
 
     private fun updateStrip() {
         val strip = suggestionStrip ?: return

@@ -22,6 +22,9 @@ import com.fran.clicks.keyboard.DictionaryLoader
 /** Toggle live autocorrect in the IME. Shared "clicks" pref, default on. */
 const val IME_AUTOCORRECT_PREF = "autocorrect_enabled"
 
+/** Smart touch: let the model reassign near-boundary taps. Off = taps are always taken literally. */
+const val IME_SMART_TOUCH_PREF = "smart_touch_enabled"
+
 /**
  * The IME's own settings screen — launched from Android's system keyboard settings (wired via
  * android:settingsActivity in clicks_input_method.xml). Built programmatically in the Neu design
@@ -87,6 +90,9 @@ class ImeSettingsActivity : Activity() {
             c.addView(divider())
             c.addView(toggleRow("Haptic feedback", "Vibrate on key press",
                 HAPTICS_PREF, true))
+            c.addView(divider())
+            c.addView(toggleRow("Smart touch", "Nudge near-edge taps to the likely key. Turn off for literal taps.",
+                IME_SMART_TOUCH_PREF, true))
         }
 
         // Languages
