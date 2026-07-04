@@ -57,11 +57,13 @@ object AgenticRouter {
         }.start()
     }
 
-    /** Seed the built-in skills if the table is empty. Synchronous — call off the main thread. */
+    /** Insert any built-in skills not already present (by name). Synchronous — call off main. */
     fun ensureSeeded(context: Context) {
         runCatching {
             val dao = SkillDatabase.get(context).skillDao()
-            if (dao.count() == 0) dao.insertAll(BUILTINS)
+            val existing = dao.getAll().map { it.name }.toHashSet()
+            val missing = BUILTINS.filter { it.name !in existing }
+            if (missing.isNotEmpty()) dao.insertAll(missing)
         }
     }
 
@@ -138,6 +140,7 @@ object AgenticRouter {
         val intent = when (s.actionType) {
             "MUSIC" -> musicIntent(arg)
             "TIMER" -> timerIntent(arg)
+            "EMAIL" -> emailIntent(arg)
             "WEB_SEARCH" -> webIntent(arg)
             else -> uriIntent(s.uriTemplate, arg)        // URI, MAPS, NAV all use a template
         }
@@ -154,6 +157,11 @@ object AgenticRouter {
 
     private fun webIntent(q: String) =
         Intent(Intent.ACTION_WEB_SEARCH).apply { putExtra(SearchManager.QUERY, q) }
+
+    private fun emailIntent(to: String) = Intent().apply {
+        setClassName("com.fran.clicks", "com.fran.clicks.EmailComposeActivity")
+        putExtra("to", to)
+    }
 
     private fun uriIntent(template: String, arg: String) =
         Intent(Intent.ACTION_VIEW, Uri.parse(template.replace("{q}", Uri.encode(arg))))
@@ -198,6 +206,8 @@ object AgenticRouter {
             labelTemplate = "📖  Wikipedia {q}", builtin = true, sortOrder = 7),
         SkillEntity(name = "Translate", emoji = "🌐", actionType = "URI",
             uriTemplate = "https://translate.google.com/?sl=auto&tl=en&op=translate&text={q}", triggers = "translate ",
-            labelTemplate = "🌐  Translate {q}", builtin = true, sortOrder = 8)
+            labelTemplate = "🌐  Translate {q}", builtin = true, sortOrder = 8),
+        SkillEntity(name = "Send email", emoji = "✉️", actionType = "EMAIL",
+            triggers = "email ,send email,compose email,mail ", labelTemplate = "✉️  Email {q}", builtin = true, sortOrder = 9)
     )
 }

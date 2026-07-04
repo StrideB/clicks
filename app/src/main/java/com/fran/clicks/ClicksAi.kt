@@ -61,13 +61,14 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.max
 
-private val AiScrim = Color(0xFF0A0A0C)
-private val AiSurface = Color(0xFF141417)
-private val AiSurfaceHigh = Color(0xFF1D1D22)
-private val AiHairline = Color.White.copy(alpha = 0.08f)
-private val AiText = Color(0xFFF2F2F5)
-private val AiTextDim = Color(0xFF9A9AA6)
-private val AiTextFaint = Color(0xFF6C6C78)
+private val AiScrim = Color(0xFF181B21)
+private val AiSurface = Color(0xFF181B21)
+private val AiSurfaceHigh = Color(0xFF2A2F3A)
+private val AiSurfaceLow = Color(0xFF05070A)
+private val AiHairline = Color.White.copy(alpha = 0.13f)
+private val AiText = Color(0xFFE8EBEF)
+private val AiTextDim = Color(0xFF899099)
+private val AiTextFaint = Color(0xFF565D66)
 private val GeminiBlue = Color(0xFF4285F4)
 private val GeminiViolet = Color(0xFF9B72F0)
 private val GeminiPink = Color(0xFFE8639B)
@@ -241,6 +242,7 @@ fun ClicksAiQueryFlow(
     answer: String,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    glassEffects: Boolean = true,
     loading: Boolean = false,
     askedActive: Boolean = false,
     calendarEvent: CalendarEvent? = null,
@@ -253,7 +255,7 @@ fun ClicksAiQueryFlow(
         Box(
             modifier
                 .fillMaxSize()
-                .background(AiScrim.copy(alpha = 0.72f))
+                .background(AiScrim.copy(alpha = 0.42f))
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             contentAlignment = Alignment.TopCenter
         ) {
@@ -262,8 +264,9 @@ fun ClicksAiQueryFlow(
                     .fillMaxWidth()
                     .shadow(22.dp, RoundedCornerShape(28.dp), ambientColor = Color.Black.copy(alpha = 0.55f), spotColor = Color.Black.copy(alpha = 0.85f))
                     .clip(RoundedCornerShape(28.dp))
-                    .machinedShell()
+                    .then(if (glassEffects) Modifier.machinedShell() else Modifier.machinedShellClassic())
                     .padding(12.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 ClicksAiHeader(onClose)
                 Spacer(Modifier.height(12.dp))
@@ -487,33 +490,74 @@ private fun GlassButton(
 private fun Modifier.machinedShell(): Modifier = drawWithContent {
     val radius = 28.dp.toPx()
     drawRoundRect(
-        Brush.verticalGradient(listOf(Color(0xFF26262C), AiSurface, Color(0xFF0D0D10))),
+        Brush.verticalGradient(
+            listOf(
+                Color.White.copy(alpha = 0.16f),
+                AiSurfaceHigh.copy(alpha = 0.58f),
+                AiSurface.copy(alpha = 0.50f),
+                AiSurfaceLow.copy(alpha = 0.76f)
+            )
+        ),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(
+        Brush.radialGradient(
+            listOf(Color.White.copy(alpha = 0.18f), Color.White.copy(alpha = 0.05f), Color.Transparent),
+            center = Offset(size.width * 0.46f, 24.dp.toPx()),
+            radius = size.width * 0.72f
+        ),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    drawRoundRect(Color.White.copy(alpha = 0.22f), size = Size(size.width, 1.4.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Color.Black.copy(alpha = 0.38f), topLeft = Offset(0f, size.height - 7.dp.toPx()), size = Size(size.width, 7.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(
+        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.28f), Color.White.copy(alpha = 0.05f), Color.Black.copy(alpha = 0.42f))),
+        style = Stroke(1.dp.toPx()),
+        cornerRadius = CornerRadius(radius, radius)
+    )
+    var sx = -size.height
+    while (sx < size.width + size.height) {
+        drawLine(
+            Color.White.copy(alpha = 0.07f),
+            Offset(sx, 18.dp.toPx()),
+            Offset(sx + size.height * 0.42f, size.height - 24.dp.toPx()),
+            strokeWidth = 1.dp.toPx()
+        )
+        sx += 86.dp.toPx()
+    }
+    drawContent()
+}
+
+private fun Modifier.machinedShellClassic(): Modifier = drawWithContent {
+    val radius = 28.dp.toPx()
+    drawRoundRect(
+        Brush.verticalGradient(listOf(Color(0xFF26262C), Color(0xFF141417), Color(0xFF0D0D10))),
         cornerRadius = CornerRadius(radius, radius)
     )
     drawRoundRect(Color.White.copy(alpha = 0.08f), size = Size(size.width, 1.2.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
     drawRoundRect(Color.Black.copy(alpha = 0.46f), topLeft = Offset(0f, size.height - 9.dp.toPx()), size = Size(size.width, 9.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
-    drawRoundRect(AiHairline, style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Color.White.copy(alpha = 0.08f), style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
     drawContent()
 }
 
 private fun Modifier.raisedPanel(): Modifier = drawWithContent {
     val radius = 22.dp.toPx()
     drawRoundRect(
-        Brush.verticalGradient(listOf(AiSurfaceHigh, Color(0xFF17171B), Color(0xFF101014))),
+        Brush.verticalGradient(listOf(AiSurfaceHigh.copy(alpha = 0.72f), AiSurface.copy(alpha = 0.66f), AiSurfaceLow.copy(alpha = 0.82f))),
         cornerRadius = CornerRadius(radius, radius)
     )
-    drawRoundRect(Color.White.copy(alpha = 0.075f), size = Size(size.width, 1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
-    drawRoundRect(Color.Black.copy(alpha = 0.34f), topLeft = Offset(0f, size.height - 5.dp.toPx()), size = Size(size.width, 5.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
-    drawRoundRect(AiHairline, style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.14f), Color.Transparent)), size = Size(size.width, size.height * 0.42f), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Color.Black.copy(alpha = 0.30f), topLeft = Offset(0f, size.height - 5.dp.toPx()), size = Size(size.width, 5.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.18f), Color.White.copy(alpha = 0.03f), Color.Black.copy(alpha = 0.38f))), style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
     drawContent()
 }
 
 private fun Modifier.pressedInset(): Modifier = drawWithContent {
     val radius = 18.dp.toPx()
-    drawRoundRect(Brush.verticalGradient(listOf(Color(0xFF09090C), Color(0xFF121217))), cornerRadius = CornerRadius(radius, radius))
-    drawRoundRect(Color.Black.copy(alpha = 0.65f), size = Size(size.width, 3.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
-    drawRoundRect(Color.White.copy(alpha = 0.04f), topLeft = Offset(0f, size.height - 1.dp.toPx()), size = Size(size.width, 1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
-    drawRoundRect(AiHairline, style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Brush.verticalGradient(listOf(AiSurfaceLow.copy(alpha = 0.88f), AiSurface.copy(alpha = 0.62f))), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Color.Black.copy(alpha = 0.78f), size = Size(size.width, 3.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Color.White.copy(alpha = 0.07f), topLeft = Offset(0f, size.height - 1.dp.toPx()), size = Size(size.width, 1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Color.White.copy(alpha = 0.10f), style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
     drawContent()
 }
 
@@ -523,11 +567,11 @@ private fun Modifier.glassButtonSurface(enabled: Boolean): Modifier = drawWithCo
     val radius = 16.dp.toPx()
     val alpha = if (enabled) 1f else 0.45f
     drawRoundRect(
-        Brush.verticalGradient(listOf(Color(0xFF2A2B31).copy(alpha = alpha), Color(0xFF15161A).copy(alpha = alpha))),
+        Brush.verticalGradient(listOf(AiSurfaceHigh.copy(alpha = 0.72f * alpha), AiSurface.copy(alpha = 0.58f * alpha), AiSurfaceLow.copy(alpha = 0.72f * alpha))),
         cornerRadius = CornerRadius(radius, radius)
     )
-    drawRoundRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.12f * alpha), Color.Transparent)), size = Size(size.width, size.height * 0.42f), cornerRadius = CornerRadius(radius, radius))
-    drawRoundRect(AiHairline.copy(alpha = AiHairline.alpha * alpha), style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.16f * alpha), Color.Transparent)), size = Size(size.width, size.height * 0.42f), cornerRadius = CornerRadius(radius, radius))
+    drawRoundRect(Color.White.copy(alpha = 0.14f * alpha), style = Stroke(1.dp.toPx()), cornerRadius = CornerRadius(radius, radius))
     drawContent()
 }
 

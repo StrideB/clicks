@@ -3,6 +3,7 @@ package com.fran.clicks
 import android.Manifest
 import android.animation.ValueAnimator
 import android.app.ActivityOptions
+import android.app.WallpaperManager
 import android.appwidget.AppWidgetHost
 import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
@@ -21,6 +22,7 @@ import android.content.pm.ResolveInfo
 import android.location.Location
 import android.location.LocationManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -32,6 +34,7 @@ import android.graphics.RadialGradient
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.app.AlertDialog
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -63,6 +66,7 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.Scroller
 import android.view.textservice.SentenceSuggestionsInfo
@@ -156,6 +160,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var libraryGridMode = true
     private var libraryView: View? = null
     private var libraryViewMode: NeuMode? = null
+    private var libraryViewGlass: Boolean? = null
     private var libraryContentArea: FrameLayout? = null
     private var libraryViewDirty = true
     private var libraryContentReady = false
@@ -310,6 +315,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var weatherIconView: AnimatedWeatherIconView
     private var weatherAmbientView: WeatherAmbientView? = null
     private var weatherDripView: WeatherDripView? = null
+    private var homeWallpaperDrawable: Drawable? = null
     private lateinit var weatherTempView: TextView
     private lateinit var weatherMetaView: TextView
     private lateinit var weatherFeelsView: TextView
@@ -395,6 +401,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, KEYBOARD_THEME_DEFAULT) ?: KEYBOARD_THEME_DEFAULT
         keyboardPlacement = prefs().getString(KEYBOARD_PLACEMENT_PREF, KEYBOARD_PLACEMENT_DOCKED) ?: KEYBOARD_PLACEMENT_DOCKED
         themeMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
+        homeWallpaperDrawable = loadHomeWallpaperDrawable()
         applyTheme()
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
@@ -1303,6 +1310,53 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         Toast.makeText(this, "Camera isn't available here", Toast.LENGTH_SHORT).show()
     }
 
+    private fun useLockscreenWallpaperOnHome(): Boolean =
+        prefs().getBoolean(HOME_LOCK_WALLPAPER_PREF, false)
+
+    private fun glassEffectsEnabled(): Boolean =
+        prefs().getBoolean(GLASS_EFFECTS_PREF, true)
+
+    private fun loadHomeWallpaperDrawable(): Drawable? {
+        if (!useLockscreenWallpaperOnHome()) return null
+        val manager = WallpaperManager.getInstance(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            runCatching {
+                val descriptor = manager.getWallpaperFile(WallpaperManager.FLAG_LOCK)
+                    ?: manager.getWallpaperFile(WallpaperManager.FLAG_SYSTEM)
+                descriptor?.use {
+                    BitmapFactory.decodeFileDescriptor(it.fileDescriptor)?.let { bitmap ->
+                        return BitmapDrawable(resources, bitmap)
+                    }
+                }
+            }
+        }
+        return runCatching { manager.drawable }.getOrNull()
+    }
+
+    private fun homeWallpaperLayer(): View? {
+        val wallpaper = homeWallpaperDrawable ?: loadHomeWallpaperDrawable()?.also { homeWallpaperDrawable = it } ?: return null
+        return FrameLayout(this).apply {
+            addView(ImageView(context).apply {
+                setImageDrawable(wallpaper.constantState?.newDrawable()?.mutate() ?: wallpaper)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                alpha = if (activeNeuTokens.mode == NeuMode.LIGHT) 0.66f else 0.54f
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    setRenderEffect(RenderEffect.createBlurEffect(dp(5).toFloat(), dp(5).toFloat(), Shader.TileMode.CLAMP))
+                }
+            }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            addView(View(context).apply {
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    if (activeNeuTokens.mode == NeuMode.LIGHT) {
+                        intArrayOf(0x66F4F5F1, 0x99EEF0EA.toInt(), 0xB8DADDD8.toInt())
+                    } else {
+                        intArrayOf(0xAA06080B.toInt(), 0x9912161C.toInt(), 0xCC050609.toInt())
+                    }
+                )
+            }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+    }
+
     private fun home(): View {
         homeTileViews.clear()
         widgetSearchContentArea = null
@@ -1363,6 +1417,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
+            homeWallpaperLayer()?.let {
+                addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
             weatherAmbientView = WeatherAmbientView(context).apply {
                 setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = animatedWeatherEnabled())
             }
@@ -1503,6 +1560,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         else -> "DEFAULT"
     }
 
+    private fun keyboardSwapAnimationMode(): String =
+        prefs().getString(KEYBOARD_SWAP_ANIMATION_PREF, KEYBOARD_SWAP_ANIMATION_DEFAULT)
+            ?: KEYBOARD_SWAP_ANIMATION_DEFAULT
+
+    private fun keyboardSwapPopOutEnabled(): Boolean =
+        keyboardSwapAnimationMode() == KEYBOARD_SWAP_ANIMATION_POPOUT
+
     private fun beginWidgetKeyboardDetach(dockKey: TextView) {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_WIDGET || widgetSwapState != WidgetKeyboardSwapState.SEATED) return
         val module = widgetKeyboardModule ?: return
@@ -1515,6 +1579,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         module.animate().cancel()
         module.elevation = dp(18).toFloat()
         module.cameraDistance = 12000f
+        if (keyboardSwapPopOutEnabled()) {
+            beginWidgetKeyboardDetachPopOut(module)
+            return
+        }
         module.animate()
             .translationY(-dp(118).toFloat())
             .translationX(0f)
@@ -1530,6 +1598,55 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 module.animate().translationY(-dp(112).toFloat()).setDuration(95L).withEndAction {
                     if (widgetSwapState == WidgetKeyboardSwapState.DETACHED) snapWidgetHoverPose()
                 }.start()
+            }
+            .start()
+    }
+
+    private fun beginWidgetKeyboardDetachPopOut(module: View) {
+        module.pivotX = module.width / 2f
+        module.pivotY = module.height.toFloat()
+        module.rotation = 0f
+        module.rotationX = 0f
+        module.scaleX = 1f
+        module.scaleY = 1f
+        module.translationX = 0f
+        module.translationY = 0f
+        widgetSocketView?.pulseGlow()
+        module.animate()
+            .translationY(-dp(22).toFloat())
+            .scaleX(1.012f)
+            .scaleY(1.018f)
+            .rotationX(-5f)
+            .setDuration(150L)
+            .setInterpolator(DecelerateInterpolator(1.8f))
+            .withEndAction {
+                if (widgetSwapState != WidgetKeyboardSwapState.DETACHING) return@withEndAction
+                haptic(module)
+                module.animate()
+                    .translationY(-dp(138).toFloat())
+                    .translationX(0f)
+                    .rotation(0f)
+                    .rotationX(15f)
+                    .scaleX(0.956f)
+                    .scaleY(0.948f)
+                    .setDuration(380L)
+                    .setInterpolator(android.view.animation.OvershootInterpolator(0.92f))
+                    .withEndAction {
+                        if (widgetSwapState != WidgetKeyboardSwapState.DETACHING) return@withEndAction
+                        widgetSwapState = WidgetKeyboardSwapState.DETACHED
+                        module.animate()
+                            .translationY(-dp(130).toFloat())
+                            .rotationX(12f)
+                            .scaleX(0.962f)
+                            .scaleY(0.952f)
+                            .setDuration(140L)
+                            .setInterpolator(DecelerateInterpolator(2.0f))
+                            .withEndAction {
+                                if (widgetSwapState == WidgetKeyboardSwapState.DETACHED) snapWidgetHoverPose()
+                            }
+                            .start()
+                    }
+                    .start()
             }
             .start()
     }
@@ -1633,10 +1750,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             module.alpha = 0.18f
             module.translationX = inX
             module.rotation = inX * 0.03f
-            module.translationY = -dp(118).toFloat()
-            module.rotationX = 9f
-            module.scaleX = 0.94f
-            module.scaleY = 0.94f
+            if (keyboardSwapPopOutEnabled()) {
+                module.translationY = -dp(132).toFloat()
+                module.rotationX = 12f
+                module.scaleX = 0.962f
+                module.scaleY = 0.952f
+            } else {
+                module.translationY = -dp(118).toFloat()
+                module.rotationX = 9f
+                module.scaleX = 0.94f
+                module.scaleY = 0.94f
+            }
             module.animate()
                 .alpha(1f)
                 .translationX(0f)
@@ -1710,6 +1834,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun snapWidgetHoverPose() {
         val module = widgetKeyboardModule ?: return
         if (widgetSwapState != WidgetKeyboardSwapState.DETACHED) return
+        if (keyboardSwapPopOutEnabled()) {
+            module.pivotX = module.width / 2f
+            module.pivotY = module.height.toFloat()
+            module.animate()
+                .translationY(-dp(132).toFloat())
+                .translationX(0f)
+                .rotation(0f)
+                .rotationX(12f)
+                .scaleX(0.962f)
+                .scaleY(0.952f)
+                .setDuration(190L)
+                .setInterpolator(DecelerateInterpolator(1.8f))
+                .start()
+            return
+        }
         module.animate()
             .translationY(-dp(118).toFloat())
             .translationX(0f)
@@ -1730,6 +1869,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         dismissWidgetCoach()
         widgetDotsView?.animate()?.alpha(0f)?.setDuration(140L)?.withEndAction { widgetDotsView?.visibility = View.GONE }?.start()
         module.animate().cancel()
+        if (keyboardSwapPopOutEnabled()) {
+            seatWidgetKeyboardPopOut(module)
+            return
+        }
         module.animate()
             .translationY(dp(14).toFloat())
             .translationX(0f)
@@ -1759,6 +1902,59 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             .scaleY(1f)
                             .setDuration(118L)
                             .setInterpolator(android.view.animation.OvershootInterpolator(0.55f))
+                            .withEndAction {
+                                keyboardTheme = widgetPreviewTheme
+                                prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
+                                widgetCommittedTheme = keyboardTheme
+                                module.elevation = 0f
+                                showWidgetLockedPill()
+                                widgetSwapState = WidgetKeyboardSwapState.SEATED
+                                handler.postDelayed({
+                                    hideWidgetSwapChrome()
+                                    widgetKeyboardModule?.let { populateWidgetKeyboardModule(it) }
+                                }, 680L)
+                            }
+                            .start()
+                    }
+                    .start()
+            }
+            .start()
+    }
+
+    private fun seatWidgetKeyboardPopOut(module: View) {
+        module.pivotX = module.width / 2f
+        module.pivotY = module.height.toFloat()
+        module.animate()
+            .translationY(dp(20).toFloat())
+            .translationX(0f)
+            .rotation(0f)
+            .rotationX(-13f)
+            .scaleX(1.018f)
+            .scaleY(1.025f)
+            .setDuration(210L)
+            .setInterpolator(android.view.animation.AccelerateInterpolator(1.45f))
+            .withEndAction {
+                haptic(module)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    module.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                }
+                widgetProngsView?.pulse()
+                widgetSocketView?.pulseGlow()
+                module.animate()
+                    .translationY(dp(4).toFloat())
+                    .rotationX(-6f)
+                    .scaleX(1.006f)
+                    .scaleY(1.012f)
+                    .setDuration(105L)
+                    .setInterpolator(DecelerateInterpolator(2.2f))
+                    .withEndAction {
+                        module.animate()
+                            .translationY(0f)
+                            .rotationX(0f)
+                            .scaleX(1f)
+                            .scaleY(1f)
+                            .setDuration(210L)
+                            .setInterpolator(android.view.animation.OvershootInterpolator(0.74f))
                             .withEndAction {
                                 keyboardTheme = widgetPreviewTheme
                                 prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
@@ -2300,8 +2496,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val dy = event.rawY - librarySwipeStartY
                 libraryDragTouchX = event.rawX
                 if (librarySwipeBlockedByWidget) {
-                    val wantsSideLibraryDrag = sideLibraryEnabled && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f &&
-                        ((dx < 0 && !libraryOpen && openPane == null) || (dx > 0 && libraryOpen))
+                    val wantsSideLibraryDrag = abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f &&
+                        (((sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null)) || (dx > 0 && libraryOpen))
                     if (wantsSideLibraryDrag) {
                         librarySwipeBlockedByWidget = false
                     } else {
@@ -2329,9 +2525,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                 }
                 // Start horizontal library motion as soon as the swipe is intentional, not on finger-up.
-                if (sideLibraryEnabled && !librarySwipeTriggered && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f) {
+                if (!librarySwipeTriggered && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f) {
                     when {
-                        dx < 0 && !libraryOpen && openPane == null -> {
+                        sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
                             librarySwipeTriggered = true
                             beginLibraryDrag(startedOpen = false)
                             updateLibraryDrag(dx)
@@ -2341,11 +2537,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             librarySwipeTriggered = true
                             beginLibraryDrag(startedOpen = true)
                             updateLibraryDrag(dx)
-                            return true
-                        }
-                        dx < 0 && libraryOpen -> {
-                            librarySwipeTriggered = true
-                            closeLibrary(slideLeft = true)
                             return true
                         }
                     }
@@ -2365,9 +2556,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val dx = event.rawX - librarySwipeStartX
                 val dy = event.rawY - librarySwipeStartY
                 // Deliberate horizontal threshold keeps vertical library scrolls and keyboard swipes separate.
-                if (sideLibraryEnabled && abs(dx) > dp(24) && abs(dx) > abs(dy) * 1.2f) {
+                if (abs(dx) > dp(24) && abs(dx) > abs(dy) * 1.2f) {
                     when {
-                        dx < 0 && !libraryOpen && openPane == null -> {
+                        sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
                             librarySwipeTriggered = true
                             openLibrary()
                             return true
@@ -2375,11 +2566,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         dx > 0 && libraryOpen -> {
                             librarySwipeTriggered = true
                             closeLibrary()
-                            return true
-                        }
-                        dx < 0 && libraryOpen -> {
-                            librarySwipeTriggered = true
-                            closeLibrary(slideLeft = true)
                             return true
                         }
                         dx > 0 && openPane == null -> {
@@ -2724,25 +2910,57 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (openPane != null) closePane()
         keyboardSettingsOpen = false
         setLauncherBlurred(true)
+        val startY = resources.displayMetrics.heightPixels.toFloat()
         val board = widgetBoard().apply {
-            alpha = 0f
-            translationY = dp(18).toFloat()
+            alpha = 1f
+            translationY = startY
+            (this as? WidgetBoardFrame)?.setGlassProgress(0f)
         }
         widgetBoardView = board
-        addContentView(board, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        board.animate().alpha(1f).translationY(0f).setDuration(210).setInterpolator(DecelerateInterpolator()).start()
+        addContentView(
+            board,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 360L
+            interpolator = android.view.animation.OvershootInterpolator(0.65f)
+            addUpdateListener { animator ->
+                val progress = (animator.animatedValue as Float).coerceIn(0f, 1f)
+                (board as? WidgetBoardFrame)?.setGlassProgress(progress)
+                board.alpha = 1f
+                board.translationY = startY * (1f - progress)
+            }
+            start()
+        }
     }
 
     private fun closeWidgetBoard() {
         closeWidgetPicker()
         val closing = widgetBoardView ?: return
         widgetBoardView = null
-        closing.animate().alpha(0f).translationY(dp(18).toFloat()).setDuration(170).setInterpolator(DecelerateInterpolator())
-            .withEndAction {
-                (closing.parent as? ViewGroup)?.removeView(closing)
-                setLauncherBlurred(false)
+        val startY = closing.translationY.coerceAtLeast(0f)
+        val endY = (closing.height.takeIf { it > 0 } ?: contentFrame.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
+        ValueAnimator.ofFloat(1f, 0f).apply {
+            duration = 230L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val progress = (animator.animatedValue as Float).coerceIn(0f, 1f)
+                (closing as? WidgetBoardFrame)?.setGlassProgress(progress)
+                val closeProgress = 1f - progress
+                closing.alpha = progress
+                closing.translationY = startY + (endY - startY) * closeProgress
             }
-            .start()
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    (closing.parent as? ViewGroup)?.removeView(closing)
+                    setLauncherBlurred(false)
+                }
+            })
+            start()
+        }
     }
 
     private fun setLauncherBlurred(blurred: Boolean) {
@@ -2755,7 +2973,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun widgetBoard(): View {
         return WidgetBoardFrame(this).apply {
-            background = widgetBoardScrimBackground()
+            setGlassProgress(1f)
+            installGlassPlate()
             addView(LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
                 clipChildren = false
@@ -2768,62 +2987,123 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private inner class WidgetBoardFrame(context: Context) : FrameLayout(context) {
+        private val glassPlate = DynamicGlassPlate(context, radiusDp = 0, strength = 1.75f, edgeInsetDp = 0)
         private var downX = 0f
         private var downY = 0f
+        private var dragStartY = 0f
+        private var dragging = false
+        private var velocityTracker: VelocityTracker? = null
         private var closing = false
 
+        init {
+            setWillNotDraw(false)
+            clipToOutline = false
+            clipChildren = false
+            clipToPadding = false
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+
+        fun installGlassPlate() {
+            if (glassPlate.parent == null) {
+                addView(glassPlate, 0, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
+        }
+
+        fun setGlassProgress(value: Float) {
+            glassPlate.setGlassProgress(value)
+        }
+
         override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            velocityTracker?.addMovement(event)
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
                     downY = event.rawY
+                    dragStartY = translationY
+                    dragging = false
                     closing = false
+                    velocityTracker?.recycle()
+                    velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - downX
                     val dy = event.rawY - downY
-                    if (!closing && dy > dp(84) && dy > abs(dx) * 1.2f) {
+                    if (widgetPickerView != null && !closing && dy > dp(84) && dy > abs(dx) * 1.2f) {
                         closing = true
                         haptic(this)
-                        if (widgetPickerView != null) closeWidgetPicker() else closeWidgetBoard()
+                        closeWidgetPicker()
                         return true
                     }
+                    if (widgetPickerView == null && !closing) {
+                        if (!dragging && dy > dp(14) && dy > abs(dx) * 1.18f) {
+                            dragging = true
+                            parent?.requestDisallowInterceptTouchEvent(true)
+                            haptic(this)
+                        }
+                        if (dragging) {
+                            val maxY = (height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
+                            val offset = (dragStartY + dy).coerceIn(0f, maxY)
+                            val progress = (1f - offset / maxY).coerceIn(0f, 1f)
+                            translationY = offset
+                            alpha = (0.74f + progress * 0.26f).coerceIn(0.74f, 1f)
+                            setGlassProgress(progress)
+                            return true
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) {
+                        velocityTracker?.computeCurrentVelocity(1000)
+                        val velocityY = velocityTracker?.yVelocity ?: 0f
+                        velocityTracker?.recycle()
+                        velocityTracker = null
+                        dragging = false
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        val shouldClose = event.actionMasked == MotionEvent.ACTION_CANCEL ||
+                            translationY > height * 0.22f ||
+                            velocityY > 1300f
+                        if (shouldClose) {
+                            haptic(this)
+                            closeWidgetBoard()
+                        } else {
+                            animateWidgetBoardToSeat(this)
+                        }
+                        return true
+                    }
+                    velocityTracker?.recycle()
+                    velocityTracker = null
                 }
             }
             return super.dispatchTouchEvent(event)
         }
     }
 
+    private fun animateWidgetBoardToSeat(board: WidgetBoardFrame) {
+        val startY = board.translationY.coerceAtLeast(0f)
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 260L
+            interpolator = android.view.animation.OvershootInterpolator(0.55f)
+            addUpdateListener { animator ->
+                val progress = (animator.animatedValue as Float).coerceIn(0f, 1f)
+                board.translationY = startY * (1f - progress)
+                board.alpha = (0.74f + progress * 0.26f).coerceIn(0.74f, 1f)
+                board.setGlassProgress(progress)
+            }
+            start()
+        }
+    }
+
     private inner class WidgetCellCanvas(context: Context) : FrameLayout(context) {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val rect = RectF()
         private val snapAnchor = GridSnappingAnchorView(context)
 
         init {
             setWillNotDraw(false)
-            background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.PRESSED_SM)
+            background = null
             addView(snapAnchor, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val specs = savedWidgetSpecs()
-            val metrics = widgetBoardMetrics(specs)
-            val dotRadius = dp(1).toFloat()
-            paint.color = adjustAlpha(activeNeuTokens.inkFaint, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.24f else 0.18f)
-            for (row in 0 until metrics.rows) {
-                for (col in 0 until WIDGET_BOARD_COLUMNS) {
-                    val cx = paddingLeft + metrics.leftForCell(col) + metrics.cellWidth / 2f
-                    val cy = paddingTop + metrics.topForCell(row) + metrics.cellHeight / 2f
-                    canvas.drawCircle(cx, cy, dotRadius, paint)
-                }
-            }
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(1).toFloat()
-            paint.color = adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.35f else 0.12f)
-            rect.set(0f, dp(4).toFloat(), width.toFloat(), height - dp(4).toFloat())
-            canvas.drawRoundRect(rect, dp(22).toFloat(), dp(22).toFloat(), paint)
-            paint.style = Paint.Style.FILL
         }
 
         fun showSnapAnchor(spec: WidgetSpec, valid: Boolean) {
@@ -3042,7 +3322,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun widgetTile(spec: WidgetSpec): View {
         val widgetId = spec.id
         val info = runCatching { appWidgetManager.getAppWidgetInfo(widgetId) }.getOrNull()
-        val title = info?.loadLabel(packageManager)?.ifBlank { "Widget" } ?: "Widget"
         val hostView = if (info != null) {
             appWidgetHost.createView(this, widgetId, info).apply {
                 setAppWidget(widgetId, info)
@@ -3057,31 +3336,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(mono("WIDGET UNAVAILABLE", 9f, InkDim).apply { gravity = Gravity.CENTER },
                     FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                isClickable = true
-                background = Neu.drawable(activeNeuTokens, dp(13).toFloat(), NeuLevel.RAISED_SM)
-                addView(mono(title.uppercase(Locale.US), 8f, InkDim).apply {
-                    letterSpacing = 0.12f
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-                addView(mono("${spec.spanX}x${spec.spanY}", 8f, Accent2).apply {
-                    gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
-                    letterSpacing = 0.08f
-                }, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.MATCH_PARENT))
-                setOnClickListener {
-                    haptic(this)
-                    showWidgetOptions(spec)
-                }
-                setOnLongClickListener {
-                    (parent as? ResizableWidgetContainer)?.showQuickMenu()
-                    true
-                }
-            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(22), Gravity.TOP).apply {
-                leftMargin = dp(10); rightMargin = dp(10); topMargin = dp(5)
-            })
             setOnLongClickListener {
                 showQuickMenu()
                 true
@@ -3150,6 +3404,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun ViewGroup.childrenList(): List<View> = (0 until childCount).map { getChildAt(it) }.filterIsInstance<TextView>()
 
+    private fun applyHighContrastTextProtection(widgetContainer: ViewGroup, textViews: List<TextView>) {
+        val blurSupported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                (getSystemService(Context.WINDOW_SERVICE) as WindowManager).isCrossWindowBlurEnabled
+            }.getOrDefault(true)
+        } else {
+            true
+        }
+        if (!blurSupported) {
+            textViews.forEach { text ->
+                text.setTextColor(if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFF20242B.toInt() else Color.WHITE)
+                text.setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), if (activeNeuTokens.mode == NeuMode.LIGHT) 0x55FFFFFF else 0x99000000.toInt())
+            }
+            return
+        }
+        textViews.forEach { text ->
+            text.setShadowLayer(dp(6).toFloat(), 0f, dp(2).toFloat(), 0x80000000.toInt())
+        }
+    }
+
     private inner class ResizableWidgetContainer(context: Context, private var spec: WidgetSpec) : FrameLayout(context) {
         private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private var editing = false
@@ -3167,8 +3441,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = true
             clipToPadding = true
             setWillNotDraw(false)
-            setPadding(dp(7), dp(28), dp(7), dp(7))
-            background = widgetTileBackground()
+            setPadding(0, 0, 0, 0)
+            background = null
             isClickable = true
             isLongClickable = true
         }
@@ -3193,6 +3467,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             super.onDraw(canvas)
             if (!editing && !moving && !resizing) return
             val accent = Accent2
+            val radius = dp(20).toFloat()
+            handlePaint.style = Paint.Style.FILL
+            handlePaint.shader = android.graphics.LinearGradient(
+                0f,
+                0f,
+                0f,
+                height.toFloat(),
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.12f else 0.08f),
+                    adjustAlpha(activeNeuTokens.baseLo, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.08f else 0.22f)
+                ),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(dp(3).toFloat(), dp(3).toFloat(), width - dp(3).toFloat(), height - dp(3).toFloat(), radius, radius, handlePaint)
+            handlePaint.shader = null
             handlePaint.style = Paint.Style.STROKE
             handlePaint.strokeWidth = dp(1).toFloat()
             handlePaint.color = adjustAlpha(accent, 0.82f)
@@ -3927,36 +4217,68 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         contentFrame.addView(overlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         if (animate) overlay.post {
             overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-            overlay.animate()
-                .translationX(0f)
-                .setDuration(190)
-                .setInterpolator(DecelerateInterpolator())
-                .withEndAction {
-                    overlay.setLayerType(View.LAYER_TYPE_NONE, null)
-                }
-                .start()
+            animateLibraryOpenSeamlessly(overlay)
         }
         scheduleLibraryPopulate(if (animate) 48L else 0L)
     }
 
+    private fun animateLibraryOpenSeamlessly(overlay: View) {
+        val axis = (contentFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+        ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 500L
+            interpolator = android.view.animation.OvershootInterpolator(0.8f)
+            addUpdateListener { animator ->
+                val progress = (animator.animatedValue as Float).coerceIn(0f, 1f)
+                overlay.translationX = axis * (1f - progress)
+                overlay.alpha = (0.90f + progress * 0.10f).coerceIn(0.90f, 1f)
+                updateLibraryGridDragEffects(progress, contentFrame.width * 0.5f)
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    overlay.translationX = 0f
+                    overlay.alpha = 1f
+                    overlay.setLayerType(View.LAYER_TYPE_NONE, null)
+                    updateLibraryGridDragEffects(1f, contentFrame.width * 0.5f)
+                }
+            })
+            start()
+        }
+    }
+
     private fun appLibrary(): View {
+        val glass = glassEffectsEnabled()
         val cached = libraryView as? FrameLayout
-        if (!libraryViewDirty && cached != null && libraryViewMode == activeNeuTokens.mode) {
+        if (
+            !libraryViewDirty &&
+            cached != null &&
+            libraryViewMode == activeNeuTokens.mode &&
+            libraryViewGlass == glass &&
+            (cached is LibraryDrawerView) == glass
+        ) {
             libraryContentArea = cached.findViewWithTag("library_content") as? FrameLayout
-            cached.setBackgroundColor(activeNeuTokens.base)
+            (cached as? LibraryDrawerView)?.setAmbient(weatherAmbientLightColor(), if (animatedWeatherEnabled()) 0.74f else 0.46f, activeNeuTokens.mode)
+            if (!glass) cached.setBackgroundColor(activeNeuTokens.base)
             return cached
         }
-        return FrameLayout(this).apply {
+        val shell = if (glass) LibraryDrawerView(this) else FrameLayout(this).apply { setBackgroundColor(activeNeuTokens.base) }
+        return shell.apply {
             setPadding(dp(14), dp(14), dp(14), dp(10))
-            setBackgroundColor(activeNeuTokens.base)
+            (this as? LibraryDrawerView)?.setAmbient(weatherAmbientLightColor(), if (animatedWeatherEnabled()) 0.74f else 0.46f, activeNeuTokens.mode)
             val contentArea = FrameLayout(context).apply { tag = "library_content" }
             libraryContentArea = contentArea
             showLibraryLoading(contentArea)
             addView(contentArea, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply {
-                topMargin = dp(38)
+                topMargin = dp(if (glass) 60 else 38)
             })
-            addView(libraryHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
+            val headerParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(if (glass) 44 else 46), Gravity.TOP)
+            if (glass) {
+                headerParams.topMargin = dp(8)
+                headerParams.leftMargin = dp(4)
+                headerParams.rightMargin = dp(4)
+            }
+            addView(libraryHeader(), headerParams)
             libraryViewMode = activeNeuTokens.mode
+            libraryViewGlass = glass
             libraryViewDirty = false
         }
     }
@@ -4014,7 +4336,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (query.isNotBlank()) {
             libraryView?.alpha = 1f
         }
-        val child = if (query.isNotBlank()) searchResultsGrid()
+        val child = if (query.isNotBlank()) {
+            if (glassEffectsEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
+        }
                     else if (libraryGridMode) libraryGrid() else bentoGrid()
         area.addView(child, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         libraryContentReady = query.isBlank()
@@ -4031,7 +4355,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!libraryGridMode || query.isNotBlank()) return
         val p = progress.coerceIn(0f, 1f)
         libraryGridLiquidBackdrop?.updateDragProgress(p, touchX)
-        libraryGridBlurView?.alpha = (0.72f * p).coerceIn(0f, 0.72f)
+        (libraryGridBlurView as? DynamicGlassPlate)?.setGlassProgress(p)
+            ?: run { libraryGridBlurView?.alpha = (0.72f * p).coerceIn(0f, 0.72f) }
         libraryGridScrollView?.let { scroll ->
             scroll.translationY = dp(30).toFloat() * (1f - p)
             val scale = 0.965f + p * 0.035f
@@ -4061,18 +4386,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun libraryHeader(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(12), 0, dp(10), 0)
+        val glass = glassEffectsEnabled()
+        setPadding(if (glass) dp(16) else dp(12), 0, if (glass) dp(12) else dp(10), 0)
         background = libraryHeaderBackground()
-        elevation = dp(10).toFloat()
+        elevation = dp(if (glass) 3 else 10).toFloat()
         addView(TextView(context).apply {
-            text = "App Library"; textSize = 17f
+            text = "App Library"; textSize = if (glass) 16.5f else 17f
             typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
             setTextColor(activeNeuTokens.ink); includeFontPadding = false
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         addView(TextView(context).apply {
             text = if (libraryGridMode) "Categories" else "Grid"
             gravity = Gravity.CENTER
-            textSize = 11f
+            textSize = if (glass) 10.5f else 11f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(activeNeuTokens.ink)
             includeFontPadding = false
@@ -4086,43 +4412,90 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 libraryContentReady = false
                 showLibrary(animate = false)
             }
-        }, LinearLayout.LayoutParams(dp(94), dp(30)).apply { marginEnd = dp(8) })
+        }, LinearLayout.LayoutParams(dp(if (glass) 92 else 94), dp(if (glass) 27 else 30)).apply {
+            marginEnd = dp(if (glass) 2 else 8)
+        })
     }
 
     private fun libraryHeaderBackground(): Drawable {
-        if (activeNeuTokens.mode == NeuMode.LIGHT) {
+        if (!glassEffectsEnabled()) {
             return Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
         }
-        val base = GradientDrawable(
+        val baseNeu = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        val glassFace = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(activeNeuTokens.baseHi, activeNeuTokens.base, activeNeuTokens.baseLo)
+            if (light) {
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, 0.34f),
+                    adjustAlpha(activeNeuTokens.baseHi, 0.22f),
+                    adjustAlpha(activeNeuTokens.base, 0.12f),
+                    adjustAlpha(activeNeuTokens.baseLo, 0.18f)
+                )
+            } else {
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, 0.16f),
+                    adjustAlpha(activeNeuTokens.baseHi, 0.36f),
+                    adjustAlpha(activeNeuTokens.base, 0.24f),
+                    adjustAlpha(activeNeuTokens.baseLo, 0.34f)
+                )
+            }
         ).apply {
             cornerRadius = dp(18).toFloat()
-            setStroke(dp(1), adjustAlpha(activeNeuTokens.baseHi, 0.22f))
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.42f else 0.16f))
         }
-        val rim = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.18f), Color.TRANSPARENT, adjustAlpha(activeNeuTokens.baseLo, 0.38f))
+        val bevel = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                adjustAlpha(Color.WHITE, if (light) 0.52f else 0.26f),
+                Color.TRANSPARENT,
+                adjustAlpha(Color.BLACK, if (light) 0.12f else 0.30f)
+            )
         ).apply { cornerRadius = dp(18).toFloat() }
-        return LayerDrawable(arrayOf(base, rim))
+        val seatedShade = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                adjustAlpha(activeNeuTokens.baseLo, if (light) 0.12f else 0.26f),
+                Color.TRANSPARENT,
+                adjustAlpha(Color.WHITE, if (light) 0.16f else 0.08f)
+            )
+        ).apply { cornerRadius = dp(18).toFloat() }
+        return LayerDrawable(arrayOf(baseNeu, glassFace, seatedShade, bevel))
     }
 
     private fun libraryModeToggleBackground(): Drawable {
-        if (activeNeuTokens.mode == NeuMode.LIGHT) {
+        if (!glassEffectsEnabled()) {
             return Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
         }
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
         val base = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(activeNeuTokens.baseLo, activeNeuTokens.base, activeNeuTokens.baseHi)
+            if (light) {
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, 0.22f),
+                    adjustAlpha(activeNeuTokens.base, 0.16f),
+                    adjustAlpha(activeNeuTokens.baseLo, 0.14f)
+                )
+            } else {
+                intArrayOf(
+                    adjustAlpha(activeNeuTokens.baseLo, 0.72f),
+                    adjustAlpha(activeNeuTokens.base, 0.52f),
+                    adjustAlpha(activeNeuTokens.baseHi, 0.30f)
+                )
+            }
         ).apply {
             cornerRadius = dp(15).toFloat()
-            setStroke(dp(1), adjustAlpha(activeNeuTokens.baseHi, 0.16f))
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.34f else 0.12f))
         }
         val wellShade = GradientDrawable(
             GradientDrawable.Orientation.BOTTOM_TOP,
-            intArrayOf(adjustAlpha(Color.BLACK, 0.42f), Color.TRANSPARENT)
+            intArrayOf(adjustAlpha(Color.BLACK, if (light) 0.10f else 0.24f), Color.TRANSPARENT)
         ).apply { cornerRadius = dp(15).toFloat() }
-        return LayerDrawable(arrayOf(base, wellShade))
+        val innerLight = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(adjustAlpha(Color.WHITE, if (light) 0.22f else 0.10f), Color.TRANSPARENT)
+        ).apply { cornerRadius = dp(15).toFloat() }
+        return LayerDrawable(arrayOf(base, wellShade, innerLight))
     }
 
     private fun isWidgetUniversalSearchActive(): Boolean =
@@ -4135,7 +4508,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun refreshWidgetSearchContent() {
         val area = widgetSearchContentArea ?: return
         area.removeAllViews()
-        val content = searchResultsList(widgetMode = true).apply {
+        val content = (if (glassEffectsEnabled()) glassSearchBackground(searchResultsList(widgetMode = true)) else searchResultsList(widgetMode = true)).apply {
             alpha = 0f
             translationY = dp(52).toFloat()
             animate()
@@ -4146,6 +4519,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 .start()
         }
         area.addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+    }
+
+    private fun glassSearchBackground(content: View): View {
+        return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(DynamicGlassPlate(context, radiusDp = 24).apply {
+                setGlassProgress(1f)
+            }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            content.setPadding(
+                content.paddingLeft + dp(10),
+                content.paddingTop + dp(10),
+                content.paddingRight + dp(10),
+                content.paddingBottom + dp(10)
+            )
+            addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
     }
 
     private fun searchResultsGrid(): View = ScrollView(this).apply {
@@ -4345,6 +4735,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun searchCardBackground(kind: SearchKind, isBest: Boolean, radiusDp: Int): Drawable {
+        if (!glassEffectsEnabled()) {
+            val base = Neu.drawable(activeNeuTokens, dp(radiusDp).toFloat(), if (isBest) NeuLevel.RAISED else NeuLevel.RAISED_SM)
+            if (!isBest) return base
+            val ring = GradientDrawable().apply {
+                setColor(Color.TRANSPARENT)
+                cornerRadius = dp(radiusDp).toFloat()
+                setStroke(dp(1), adjustAlpha(searchKindAccent(kind), 0.72f))
+            }
+            return LayerDrawable(arrayOf(base, ring))
+        }
         val solid = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
             if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFF1F3F6.toInt() else activeNeuTokens.baseHi,
             if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFE8EBF0.toInt() else activeNeuTokens.base,
@@ -4457,6 +4857,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun searchCommandBackground(): Drawable {
+        if (!glassEffectsEnabled()) {
+            val base = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED)
+            val ring = GradientDrawable().apply {
+                setColor(Color.TRANSPARENT)
+                cornerRadius = dp(15).toFloat()
+                setStroke(dp(1), adjustAlpha(Neu.GREEN, 0.72f))
+            }
+            return LayerDrawable(arrayOf(base, ring))
+        }
         val solid = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
             if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFF1F3F6.toInt() else activeNeuTokens.baseHi,
             if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFE8EBF0.toInt() else activeNeuTokens.base,
@@ -4591,28 +5000,44 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun bentoGrid(): View = ScrollView(this).apply {
+        if (!glassEffectsEnabled()) {
+            addView(classicBentoGridContent())
+            return@apply
+        }
+        isVerticalScrollBarEnabled = false
+        clipToPadding = false
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, dp(8))
-            libraryCategories().chunked(3).forEachIndexed { rowIndex, group ->
-                addView(categoryBentoRow(group, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(184)).apply {
-                    bottomMargin = dp(12)
+            setPadding(0, dp(6), 0, dp(18))
+            libraryCategories().chunked(2).forEachIndexed { rowIndex, group ->
+                addView(categoryBentoRow(group, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(142)).apply {
+                    bottomMargin = dp(10)
                 })
             }
         })
     }
 
-    private fun categoryBentoRow(group: List<LibraryCategory>, rowIndex: Int): View = LinearLayout(this).apply {
+    private fun classicBentoGridContent(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(0, dp(8), 0, dp(8))
+        libraryCategories().chunked(3).forEachIndexed { rowIndex, group ->
+            addView(classicCategoryBentoRow(group, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(184)).apply {
+                bottomMargin = dp(12)
+            })
+        }
+    }
+
+    private fun classicCategoryBentoRow(group: List<LibraryCategory>, rowIndex: Int): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         group.getOrNull(0)?.let { category ->
-            addView(categoryBentoCard(category, prominent = true, rowIndex * 3), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.28f).apply {
+            addView(classicCategoryBentoCard(category, prominent = true, rowIndex * 3), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.28f).apply {
                 marginEnd = dp(8)
             })
         }
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             group.drop(1).take(2).forEachIndexed { index, category ->
-                addView(categoryBentoCard(category, prominent = false, rowIndex * 3 + index + 1), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                addView(classicCategoryBentoCard(category, prominent = false, rowIndex * 3 + index + 1), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
                     if (index == 0) bottomMargin = dp(8)
                 })
             }
@@ -4622,7 +5047,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
     }
 
-    private fun categoryBentoCard(category: LibraryCategory, prominent: Boolean, index: Int): View = LinearLayout(this).apply {
+    private fun classicCategoryBentoCard(category: LibraryCategory, prominent: Boolean, index: Int): View = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER_VERTICAL
         isClickable = true
@@ -4686,6 +5111,130 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(categoryMiniGrid(category.apps.take(if (prominent) 8 else 2), if (prominent) 4 else 2), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
             topMargin = dp(if (prominent) 8 else 7)
         })
+    }
+
+    private fun categoryBentoRow(group: List<LibraryCategory>, rowIndex: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        group.forEachIndexed { index, category ->
+            addView(categoryBentoCard(category, prominent = group.size == 1, rowIndex * 2 + index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (index == 0 && group.size > 1) marginEnd = dp(10)
+            })
+        }
+        if (group.size == 1) addView(View(context), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+    }
+
+    private fun categoryBentoCard(category: LibraryCategory, prominent: Boolean, index: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.TOP
+        isClickable = true
+        elevation = dp(5).toFloat()
+        alpha = 0f
+        translationY = dp(8).toFloat()
+        setPadding(dp(13), dp(12), dp(13), dp(11))
+        background = categoryBentoBackground(category.accent)
+        postDelayed({
+            animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+        }, (index * 40L).coerceAtMost(260L))
+        setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.985f).scaleY(0.985f).setDuration(70).start()
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                    haptic(this)
+                    showCategoryFolder(category)
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                    true
+                }
+                else -> true
+            }
+        }
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(View(context).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(category.accent)
+                }
+            }, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(8) })
+            addView(TextView(context).apply {
+                text = category.name
+                textSize = 14.5f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(activeNeuTokens.ink)
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        addView(TextView(context).apply {
+            text = category.apps.take(3).joinToString("  ") { it.name }
+            textSize = 10.5f
+            setTextColor(activeNeuTokens.inkDim)
+            includeFontPadding = false
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(0, dp(5), 0, 0)
+        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        addView(categoryPreviewStrip(category.apps.take(if (prominent) 5 else 4)), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+            topMargin = dp(12)
+        })
+    }
+
+    private fun categoryBentoBackground(accent: Int): Drawable {
+        if (!glassEffectsEnabled()) {
+            return if (activeNeuTokens.mode == NeuMode.LIGHT) {
+                Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
+            } else {
+                roundedPanel(0xFF1A1D23.toInt(), dp(18), Line)
+            }
+        }
+        val base = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.24f else 0.12f),
+                adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.70f else 0.34f),
+                adjustAlpha(activeNeuTokens.baseLo, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.58f else 0.50f)
+            )
+        ).apply {
+            cornerRadius = dp(22).toFloat()
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.30f else 0.13f))
+        }
+        val glow = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(
+            adjustAlpha(accent, 0.18f),
+            Color.TRANSPARENT,
+            adjustAlpha(Color.BLACK, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.04f else 0.28f)
+        )).apply { cornerRadius = dp(22).toFloat() }
+        return LayerDrawable(arrayOf(base, glow))
+    }
+
+    private fun categoryPreviewStrip(items: List<LibraryApp>): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.BOTTOM or Gravity.LEFT
+        val count = items.size.coerceAtLeast(1)
+        items.forEach { app ->
+            addView(FrameLayout(context).apply {
+                elevation = dp(2).toFloat()
+                background = libraryIconButtonBackground(12, Line)
+                addView(ImageView(context).apply {
+                    setImageDrawable(iconFor(app))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    adjustViewBounds = true
+                    setPadding(dp(6), dp(6), dp(6), dp(6))
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+                marginEnd = if (items.indexOf(app) == items.lastIndex) 0 else dp(8)
+            })
+        }
+        repeat((4 - count).coerceAtLeast(0)) {
+            addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginEnd = dp(8) })
+        }
     }
 
     private fun categoryMiniGrid(items: List<LibraryApp>, columns: Int): View = LinearLayout(this).apply {
@@ -4953,6 +5502,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun libraryGrid(): View = ScrollView(this).apply {
+        if (!glassEffectsEnabled()) return classicLibraryGrid()
         val plainGrid = this
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -4964,10 +5514,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val liquid = LiquidGridBackdropView(context).apply {
                 updateTokens(activeNeuTokens)
             }
-            val blur = View(context).apply {
-                alpha = if (libraryOpen) 0.72f else 0f
-                background = libraryGridFrostBackground()
-            }
             val scroll = GridFishEyeScrollView(context).apply {
                 isVerticalScrollBarEnabled = false
                 overScrollMode = View.OVER_SCROLL_NEVER
@@ -4976,16 +5522,32 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setPadding(0, 0, 0, dp(8))
             }
             libraryGridLiquidBackdrop = liquid
-            libraryGridBlurView = blur
+            libraryGridBlurView = null
             libraryGridScrollView = scroll
             addView(liquid, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            addView(blur, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             addView(scroll, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             post {
                 val progress = if (libraryOpen) 1f else 0f
                 updateLibraryGridDragEffects(progress, width * 0.5f)
                 scroll.applyFishEye()
             }
+        }
+    }
+
+    private fun classicLibraryGrid(): View {
+        libraryGridLiquidBackdrop = null
+        libraryGridBlurView = null
+        libraryGridScrollView = null
+        return ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            clipToPadding = false
+            setBackgroundColor(activeNeuTokens.base)
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(12), 0, dp(8))
+                addView(tileGrid(apps.map { it.toLibraryApp() }, 4, gridPhysics = false))
+            })
         }
     }
 
@@ -9950,6 +10512,7 @@ Reply format: ["word1","word2","word3"]"""
                 ClicksAiQueryFlow(
                     query = displayedQuery,
                     answer = answer,
+                    glassEffects = glassEffectsEnabled(),
                     loading = configured && state.loading,
                     askedActive = aiDraftActive || aiDraftText.isNotBlank(),
                     onClose = {
@@ -10081,6 +10644,29 @@ Reply format: ["word1","word2","word3"]"""
             if (::weatherIconView.isInitialized) weatherIconView.setAnimationEnabled(next)
             renderPaneContent(clicksSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("GLASS EFFECTS", glassEffectsEnabled()) {
+            val next = !glassEffectsEnabled()
+            prefs().edit().putBoolean(GLASS_EFFECTS_PREF, next).apply()
+            haptic(this)
+            libraryView?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
+            libraryView = null
+            libraryContentArea = null
+            libraryViewMode = null
+            libraryViewGlass = null
+            libraryViewDirty = true
+            libraryContentReady = false
+            render()
+            openHere(clicksSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("LOCKSCREEN WALLPAPER HOME", useLockscreenWallpaperOnHome()) {
+            val next = !useLockscreenWallpaperOnHome()
+            prefs().edit().putBoolean(HOME_LOCK_WALLPAPER_PREF, next).apply()
+            homeWallpaperDrawable = loadHomeWallpaperDrawable()
+            haptic(this)
+            render()
+            openHere(clicksSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(keyboardSwapAnimationSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
         if (devExperimentsEnabled() && VivoDockedExperiment.isAvailable(this)) {
             parent.addView(vivoDockedExperimentSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
         }
@@ -10159,6 +10745,46 @@ Reply format: ["word1","word2","word3"]"""
                 gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
             }
             addView(valueView, LinearLayout.LayoutParams(dp(30), ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+    }
+
+    private fun keyboardSwapAnimationSelector(): View {
+        val current = keyboardSwapAnimationMode()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), 0)
+            addView(mono("POP OUT", 9.5f, InkDim).apply {
+                letterSpacing = 0.10f
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(dp(78), ViewGroup.LayoutParams.MATCH_PARENT))
+            listOf(
+                "DEFAULT" to KEYBOARD_SWAP_ANIMATION_DEFAULT,
+                "POP OUT" to KEYBOARD_SWAP_ANIMATION_POPOUT
+            ).forEach { (label, value) ->
+                addView(TextView(context).apply {
+                    text = label
+                    gravity = Gravity.CENTER
+                    textSize = 9.2f
+                    letterSpacing = 0.08f
+                    typeface = Typeface.MONOSPACE
+                    includeFontPadding = false
+                    setTextColor(if (current == value) activeNeuTokens.ink else activeNeuTokens.inkDim)
+                    background = if (current == value) {
+                        Neu.drawable(activeNeuTokens, dp(10).toFloat(), NeuLevel.PRESSED_SM)
+                    } else {
+                        Neu.drawable(activeNeuTokens, dp(10).toFloat(), NeuLevel.RAISED_SM)
+                    }
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        prefs().edit().putString(KEYBOARD_SWAP_ANIMATION_PREF, value).apply()
+                        renderPaneContent(clicksSettingsTarget())
+                    }
+                }, LinearLayout.LayoutParams(0, dp(28), 1f).apply {
+                    marginStart = dp(6)
+                })
+            }
         }
     }
 
@@ -10721,7 +11347,7 @@ Reply format: ["word1","word2","word3"]"""
             numberPadOpen && typedText.isBlank() -> "TYPE NUMBER  ·  CONTACTS APPEAR ABOVE  ·  GO = DIAL"
             pane?.kind == PaneKind.CHAT && typedText.isBlank() -> "→ ${pane.name.uppercase(Locale.US)}"
             pane?.kind == PaneKind.AI && typedText.isBlank() -> "ASK GEMINI  ·  TAP ASKED OR START TYPING"
-            else -> "SEARCHING APPS  ·  CLICKS FOR SETTINGS"
+            else -> "SEARCH  ·  CLICKS FOR SETTINGS"
         }
         if (typedText.isNotBlank() && !keyboardSettingsOpen) {
             searchHintView.textSize = 15f
@@ -12950,54 +13576,93 @@ $emailText"""
     }
 
     private fun widgetTileBackground(): Drawable {
-        val pocket = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xF020232A.toInt(),
-            0xF014171D.toInt(),
-            0xF00A0B0F.toInt()
-        )).apply {
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        val pocket = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
+            intArrayOf(
+                adjustAlpha(Color.WHITE, 0.18f),
+                adjustAlpha(activeNeuTokens.baseHi, 0.10f),
+                adjustAlpha(activeNeuTokens.baseLo, 0.14f)
+            )
+        } else {
+            intArrayOf(
+                adjustAlpha(activeNeuTokens.baseHi, 0.30f),
+                adjustAlpha(activeNeuTokens.base, 0.24f),
+                adjustAlpha(activeNeuTokens.baseLo, 0.38f)
+            )
+        }).apply {
             cornerRadius = dp(24).toFloat()
-            setStroke(dp(1), 0x0DFFFFFF)
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.34f else 0.16f))
         }
-        val lowerShade = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-            0x56000000,
-            0x00000000
+        val rim = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            adjustAlpha(Color.WHITE, if (light) 0.24f else 0.14f),
+            Color.TRANSPARENT,
+            adjustAlpha(Color.BLACK, if (light) 0.10f else 0.34f)
         )).apply { cornerRadius = dp(24).toFloat() }
-        return LayerDrawable(arrayOf(pocket, lowerShade)).apply {
-            setLayerInset(1, dp(1), dp(80), dp(1), dp(1))
+        val glow = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(
+            adjustAlpha(Accent2, if (light) 0.10f else 0.08f),
+            Color.TRANSPARENT,
+            adjustAlpha(Color.BLACK, if (light) 0.04f else 0.18f)
+        )).apply { cornerRadius = dp(24).toFloat() }
+        return LayerDrawable(arrayOf(pocket, glow, rim)).apply {
+            setLayerInset(1, 0, 0, 0, 0)
+            setLayerInset(2, dp(1), dp(1), dp(1), dp(1))
+        }
+    }
+
+    private fun widgetChromeBackground(): Drawable {
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
+            intArrayOf(adjustAlpha(Color.WHITE, 0.20f), adjustAlpha(Color.WHITE, 0.06f), Color.TRANSPARENT)
+        } else {
+            intArrayOf(adjustAlpha(Color.WHITE, 0.10f), adjustAlpha(activeNeuTokens.baseLo, 0.18f), Color.TRANSPARENT)
+        }).apply {
+            cornerRadius = dp(13).toFloat()
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.30f else 0.10f))
         }
     }
 
     private fun widgetPickerSheetBackground(): Drawable {
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFA20232A.toInt(),
-            0xFA12151A.toInt(),
-            0xFA08090D.toInt()
-        )).apply {
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
+            intArrayOf(
+                adjustAlpha(Color.WHITE, 0.30f),
+                adjustAlpha(activeNeuTokens.baseHi, 0.22f),
+                adjustAlpha(activeNeuTokens.baseLo, 0.20f)
+            )
+        } else {
+            intArrayOf(
+                adjustAlpha(activeNeuTokens.baseHi, 0.42f),
+                adjustAlpha(activeNeuTokens.base, 0.34f),
+                adjustAlpha(activeNeuTokens.baseLo, 0.48f)
+            )
+        }).apply {
             cornerRadius = dp(28).toFloat()
-            setStroke(dp(1), 0x0DFFFFFF)
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.40f else 0.16f))
         }
         return base
     }
 
     private fun widgetEmptyBackground(): Drawable {
-        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xBB20232A.toInt(),
-            0xAA111419.toInt(),
-            0x9908090D.toInt()
-        )).apply {
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
+            intArrayOf(adjustAlpha(Color.WHITE, 0.24f), adjustAlpha(activeNeuTokens.baseHi, 0.16f), adjustAlpha(activeNeuTokens.baseLo, 0.18f))
+        } else {
+            intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.34f), adjustAlpha(activeNeuTokens.base, 0.28f), adjustAlpha(activeNeuTokens.baseLo, 0.40f))
+        }).apply {
             cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), 0x0FFFFFFF)
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.34f else 0.16f))
         }
     }
 
     private fun widgetProviderRowBackground(): Drawable {
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xF01D2027.toInt(),
-            0xF013151A.toInt(),
-            0xF00B0C10.toInt()
-        )).apply {
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
+            intArrayOf(adjustAlpha(Color.WHITE, 0.20f), adjustAlpha(activeNeuTokens.baseHi, 0.13f), adjustAlpha(activeNeuTokens.baseLo, 0.16f))
+        } else {
+            intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.30f), adjustAlpha(activeNeuTokens.base, 0.24f), adjustAlpha(activeNeuTokens.baseLo, 0.34f))
+        }).apply {
             cornerRadius = dp(22).toFloat()
-            setStroke(dp(1), 0x0AFFFFFF)
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.30f else 0.13f))
         }
         return base
     }
@@ -14653,16 +15318,73 @@ $emailText"""
             val base = activeNeuTokens.base
             val baseHi = activeNeuTokens.baseHi
             val baseLo = activeNeuTokens.baseLo
+            val edgeInset = dp(3).toFloat()
+            val bodyRadius = dp(30).toFloat()
+            val body = RectF(edgeInset, edgeInset, width - edgeInset, height - edgeInset)
+
+            paint.style = Paint.Style.STROKE
+            repeat(4) { index ->
+                val grow = dp(index + 1).toFloat()
+                val alpha = (if (mode == NeuMode.LIGHT) 0.12f else 0.34f) * dragProgress / (index + 1)
+                paint.strokeWidth = grow
+                paint.color = adjustAlpha(if (mode == NeuMode.LIGHT) Color.WHITE else Color.BLACK, alpha)
+                canvas.drawRoundRect(
+                    RectF(body.left - grow, body.top - grow, body.right + grow, body.bottom + grow),
+                    bodyRadius + grow,
+                    bodyRadius + grow,
+                    paint
+                )
+            }
+            paint.style = Paint.Style.FILL
+
             paint.shader = android.graphics.LinearGradient(
-                0f, 0f, width.toFloat(), height.toFloat(),
-                intArrayOf(baseHi, base, baseLo),
+                body.left, body.top, body.right, body.bottom,
+                intArrayOf(
+                    adjustAlpha(baseHi, if (mode == NeuMode.LIGHT) 0.32f else 0.56f),
+                    adjustAlpha(base, if (mode == NeuMode.LIGHT) 0.22f else 0.46f),
+                    adjustAlpha(baseLo, if (mode == NeuMode.LIGHT) 0.30f else 0.66f)
+                ),
                 floatArrayOf(0f, 0.48f, 1f),
                 Shader.TileMode.CLAMP
             )
-            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+            canvas.drawRoundRect(body, bodyRadius, bodyRadius, paint)
             paint.shader = null
 
-            val glowAlpha = (if (mode == NeuMode.LIGHT) 0.12f else 0.23f) * ambientStrength * (0.45f + dragProgress * 0.55f)
+            paint.shader = android.graphics.LinearGradient(
+                0f,
+                body.top,
+                0f,
+                body.bottom,
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.22f else 0.28f),
+                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.08f else 0.12f),
+                    adjustAlpha(Color.BLACK, if (mode == NeuMode.LIGHT) 0.06f else 0.12f)
+                ),
+                floatArrayOf(0f, 0.28f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(body, bodyRadius, bodyRadius, paint)
+            paint.shader = null
+
+            paint.shader = RadialGradient(
+                width * 0.52f,
+                body.top + dp(28),
+                width * 0.78f,
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.18f else 0.18f),
+                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.05f else 0.06f),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 0.38f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.save()
+            canvas.clipPath(Path().apply { addRoundRect(body, bodyRadius, bodyRadius, Path.Direction.CW) })
+            canvas.drawCircle(width * 0.52f, body.top + dp(28), width * 0.78f, paint)
+            canvas.restore()
+            paint.shader = null
+
+            val glowAlpha = (if (mode == NeuMode.LIGHT) 0.16f else 0.23f) * ambientStrength * (0.45f + dragProgress * 0.55f)
             paint.shader = RadialGradient(
                 width * 0.24f,
                 height * 0.20f,
@@ -14675,8 +15397,41 @@ $emailText"""
                 floatArrayOf(0f, 0.42f, 1f),
                 Shader.TileMode.CLAMP
             )
+            canvas.save()
+            canvas.clipPath(Path().apply { addRoundRect(body, bodyRadius, bodyRadius, Path.Direction.CW) })
             canvas.drawCircle(width * 0.24f, height * 0.20f, width * 0.82f, paint)
+            canvas.restore()
             paint.shader = null
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.shader = android.graphics.LinearGradient(
+                0f, body.top, 0f, body.bottom,
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.42f else 0.36f),
+                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.11f else 0.08f),
+                    adjustAlpha(Color.BLACK, if (mode == NeuMode.LIGHT) 0.18f else 0.46f)
+                ),
+                floatArrayOf(0f, 0.52f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(body, bodyRadius, bodyRadius, paint)
+            paint.shader = null
+            paint.style = Paint.Style.FILL
+
+            canvas.save()
+            canvas.clipPath(Path().apply { addRoundRect(body, bodyRadius, bodyRadius, Path.Direction.CW) })
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.20f else 0.16f)
+            val streakGap = dp(96).toFloat()
+            var sx = -height.toFloat()
+            while (sx < width + height) {
+                canvas.drawLine(sx, body.top + dp(22), sx + height * 0.42f, body.bottom - dp(38), paint)
+                sx += streakGap
+            }
+            paint.style = Paint.Style.FILL
+            canvas.restore()
 
             val edgeWidth = dp(34).toFloat()
             rect.set(0f, dp(78).toFloat(), edgeWidth, height - dp(74).toFloat())
@@ -14715,6 +15470,113 @@ $emailText"""
             paint.style = Paint.Style.FILL
 
             super.onDraw(canvas)
+        }
+    }
+
+    private inner class DynamicGlassPlate(
+        context: Context,
+        private val radiusDp: Int,
+        private val strength: Float = 1f,
+        private val edgeInsetDp: Int = 3
+    ) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rect = RectF()
+        private var progress = 1f
+
+        init {
+            setWillNotDraw(false)
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        }
+
+        fun setGlassProgress(value: Float) {
+            val next = value.coerceIn(0f, 1f)
+            if (abs(next - progress) < 0.01f) return
+            progress = next
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            if (width <= 0 || height <= 0) return
+            val light = activeNeuTokens.mode == NeuMode.LIGHT
+            val radius = dp(radiusDp).toFloat()
+            val alphaBoost = strength.coerceIn(0.5f, 2.25f)
+            val edgeInset = dp(edgeInsetDp).toFloat()
+            rect.set(edgeInset, edgeInset, width - edgeInset, height - edgeInset)
+
+            paint.style = Paint.Style.STROKE
+            repeat(3) { index ->
+                val grow = dp(index + 1).toFloat()
+                paint.strokeWidth = grow
+                paint.color = adjustAlpha(
+                    if (light) Color.WHITE else Color.BLACK,
+                    ((if (light) 0.14f else 0.28f) * alphaBoost).coerceAtMost(0.74f) * progress / (index + 1)
+                )
+                canvas.drawRoundRect(
+                    RectF(rect.left - grow, rect.top - grow, rect.right + grow, rect.bottom + grow),
+                    radius + grow,
+                    radius + grow,
+                    paint
+                )
+            }
+            paint.style = Paint.Style.FILL
+
+            paint.shader = android.graphics.LinearGradient(
+                0f,
+                rect.top,
+                0f,
+                rect.bottom,
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, ((if (light) 0.30f else 0.16f) * alphaBoost).coerceAtMost(if (light) 0.72f else 0.38f) * progress),
+                    adjustAlpha(activeNeuTokens.baseHi, ((if (light) 0.20f else 0.12f) * alphaBoost).coerceAtMost(if (light) 0.52f else 0.32f) * progress),
+                    adjustAlpha(activeNeuTokens.baseLo, ((if (light) 0.22f else 0.38f) * alphaBoost).coerceAtMost(if (light) 0.60f else 0.82f) * progress)
+                ),
+                floatArrayOf(0f, 0.46f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            paint.shader = null
+
+            paint.shader = RadialGradient(
+                width * 0.18f,
+                height * 0.08f,
+                width * 0.88f,
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, ((if (light) 0.18f else 0.10f) * alphaBoost).coerceAtMost(if (light) 0.46f else 0.24f) * progress),
+                    Color.TRANSPARENT
+                ),
+                floatArrayOf(0f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.save()
+            canvas.clipPath(Path().apply { addRoundRect(rect, radius, radius, Path.Direction.CW) })
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            canvas.restore()
+            paint.shader = null
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.shader = android.graphics.LinearGradient(
+                0f,
+                0f,
+                0f,
+                height.toFloat(),
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, ((if (light) 0.44f else 0.30f) * alphaBoost).coerceAtMost(if (light) 0.78f else 0.54f) * progress),
+                    adjustAlpha(Color.WHITE, (0.04f * alphaBoost).coerceAtMost(0.12f) * progress),
+                    adjustAlpha(Color.BLACK, ((if (light) 0.10f else 0.42f) * alphaBoost).coerceAtMost(if (light) 0.22f else 0.82f) * progress)
+                ),
+                floatArrayOf(0f, 0.52f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            val hairlineInset = resources.displayMetrics.density * 0.5f
+            canvas.drawRoundRect(
+                RectF(rect.left + hairlineInset, rect.top + hairlineInset, rect.right - hairlineInset, rect.bottom - hairlineInset),
+                radius,
+                radius,
+                paint
+            )
+            paint.shader = null
+            paint.style = Paint.Style.FILL
         }
     }
 
@@ -15107,10 +15969,16 @@ $emailText"""
                 71, 73, 75, 77, 85, 86 -> drawCloud(canvas, cx, cy, 0xFFE8EDF7.toInt(), t, snow = true)
                 95, 96, 99 -> drawCloud(canvas, cx, cy, Accent, t, rain = true)
                 1, 2, 3 -> {
-                    drawSun(canvas, cx - dp(7), cy - dp(5), t)
+                    if (isWeatherNight()) {
+                        drawMoon(canvas, cx - dp(7), cy - dp(5), t)
+                    } else {
+                        drawSun(canvas, cx - dp(7), cy - dp(5), t)
+                    }
                     drawCloud(canvas, cx + dp(4), cy + dp(5), 0xFFD8DCE6.toInt(), t)
                 }
-                else -> drawSun(canvas, cx, cy, t)
+                else -> {
+                    if (isWeatherNight()) drawMoon(canvas, cx, cy, t) else drawSun(canvas, cx, cy, t)
+                }
             }
             if (running) postInvalidateOnAnimation()
         }
@@ -15121,6 +15989,27 @@ $emailText"""
             canvas.drawCircle(cx, cy, dp(12) * pulse, paint)
             paint.color = 0x33F5C451.toInt()
             canvas.drawCircle(cx, cy, dp(18) * pulse, paint)
+        }
+
+        private fun drawMoon(canvas: Canvas, cx: Float, cy: Float, t: Float) {
+            val pulse = 1f + kotlin.math.sin(t * Math.PI * 2).toFloat() * 0.018f
+            paint.shader = RadialGradient(
+                cx - dp(2),
+                cy - dp(3),
+                dp(22) * pulse,
+                intArrayOf(0x559DB4FF, 0x1A9DB4FF, 0x00000000),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawCircle(cx, cy, dp(22) * pulse, paint)
+            paint.shader = null
+            paint.color = 0xFFEAF1FF.toInt()
+            canvas.drawCircle(cx, cy, dp(12) * pulse, paint)
+            paint.color = if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFE7ECF2.toInt() else 0xFF141820.toInt()
+            canvas.drawCircle(cx + dp(5), cy - dp(4), dp(11) * pulse, paint)
+            paint.color = 0x99DCE6FF.toInt()
+            canvas.drawCircle(cx - dp(9), cy + dp(13), dp(1).toFloat(), paint)
+            canvas.drawCircle(cx + dp(13), cy - dp(13), dp(1).toFloat(), paint)
         }
 
         private fun drawCloud(canvas: Canvas, cx: Float, cy: Float, color: Int, t: Float, rain: Boolean = false, snow: Boolean = false, fog: Boolean = false) {
@@ -15207,6 +16096,9 @@ $emailText"""
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
         private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
+        private const val KEYBOARD_SWAP_ANIMATION_PREF = "keyboard_swap_animation"
+        private const val KEYBOARD_SWAP_ANIMATION_DEFAULT = "default"
+        private const val KEYBOARD_SWAP_ANIMATION_POPOUT = "pop_out"
         private const val MUSIC_THEME_PREF = "music_theme"
         private const val MUSIC_THEME_MUSIC1 = "music1"
         private const val MUSIC_THEME_BLACK = "music_black"
@@ -15222,6 +16114,8 @@ $emailText"""
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
         private const val DOCK_LABELS_PREF = "dock_labels"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
+        private const val GLASS_EFFECTS_PREF = "glass_effects"
+        private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
         private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
         private const val DOCK_APP_LIMIT = 5
         private const val APP_USAGE_PREF = "app_usage_counts"
