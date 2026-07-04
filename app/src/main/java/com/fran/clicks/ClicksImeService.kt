@@ -1186,6 +1186,7 @@ class ClicksImeService : InputMethodService() {
         // Clear the command text from the field — it was a command, not message content.
         if (raw.isNotEmpty()) currentInputConnection?.deleteSurroundingText(raw.length, 0)
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); runAgenticLocation(); return }
+        if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); runAgenticWeather(cmd.arg); return }
         if (cmd.insertText != null) {
             currentInputConnection?.commitText(cmd.insertText, 1)
             onTextChanged()
@@ -1318,6 +1319,24 @@ class ClicksImeService : InputMethodService() {
                     updateStrip()
                 } else {
                     flashAgenticStatus("\uD83D\uDCCD Location unavailable", 2000)
+                }
+            }
+        }.start()
+    }
+
+    private fun runAgenticWeather(query: String) {
+        agenticStatus = "⛅ Checking weather…"
+        updateStrip()
+        Thread {
+            val text = WeatherApi.lookup(query)
+            handler.post {
+                agenticStatus = null
+                if (text != null) {
+                    currentInputConnection?.commitText(text, 1)
+                    onTextChanged()
+                    updateStrip()
+                } else {
+                    flashAgenticStatus("⛅ Couldn’t get weather for “$query”", 2200)
                 }
             }
         }.start()

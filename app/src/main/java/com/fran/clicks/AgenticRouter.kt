@@ -24,15 +24,16 @@ import com.fran.clicks.db.SkillEntity
  */
 object AgenticRouter {
 
-    enum class ActionType { MUSIC, MAPS, NAV, TIMER, WEB_SEARCH, LOCATION, URI }
+    enum class ActionType { MUSIC, MAPS, NAV, TIMER, WEB_SEARCH, LOCATION, URI, EMAIL, WEATHER }
 
     data class Command(
         val skillId: Long,
         val label: String,
         val arg: String,
-        val intent: Intent?,        // null when [insertsLocation] or [insertText] is set
+        val intent: Intent?,        // null when [insertsLocation], [insertText], or [fetchWeather]
         val insertsLocation: Boolean,
-        val insertText: String? = null   // computed result to drop straight into the field (SmartCompute)
+        val insertText: String? = null,  // computed result to drop straight into the field (SmartCompute)
+        val fetchWeather: Boolean = false // async: fetch weather for [arg] and insert (WeatherApi)
     )
 
     private data class Skill(
@@ -137,6 +138,7 @@ object AgenticRouter {
     private fun buildCommand(s: Skill, arg: String): Command {
         if (s.actionType == "LOCATION") return locationCommand(s)
         val label = s.labelTemplate.replace("{q}", arg).trim()
+        if (s.actionType == "WEATHER") return Command(s.id, label, arg, null, false, fetchWeather = true)
         val intent = when (s.actionType) {
             "MUSIC" -> musicIntent(arg)
             "TIMER" -> timerIntent(arg)
@@ -208,6 +210,8 @@ object AgenticRouter {
             uriTemplate = "https://translate.google.com/?sl=auto&tl=en&op=translate&text={q}", triggers = "translate ",
             labelTemplate = "🌐  Translate {q}", builtin = true, sortOrder = 8),
         SkillEntity(name = "Send email", emoji = "✉️", actionType = "EMAIL",
-            triggers = "email ,send email,compose email,mail ", labelTemplate = "✉️  Email {q}", builtin = true, sortOrder = 9)
+            triggers = "email ,send email,compose email,mail ", labelTemplate = "✉️  Email {q}", builtin = true, sortOrder = 9),
+        SkillEntity(name = "Weather", emoji = "⛅", actionType = "WEATHER",
+            triggers = "weather ,forecast ,weather in ,weather for ", labelTemplate = "⛅  Weather {q}", builtin = true, sortOrder = 10)
     )
 }
