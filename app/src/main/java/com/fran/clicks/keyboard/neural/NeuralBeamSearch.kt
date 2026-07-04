@@ -10,8 +10,8 @@ import kotlin.math.ln
 /**
  * Dictionary-constrained beam search over the decoder.
  *
- * The decoder runs as one batched call per step (all beams share the encoder memory, tiled by
- * [OnnxSwipeModel.encode]). At each step a beam may only extend by a letter that keeps its prefix on
+ * The encoder runs once; the decoder is then run once per live beam per step (batch 1), all sharing
+ * the same encoder memory. At each step a beam may only extend by a letter that keeps its prefix on
  * a path to some real word (via [CharTrie]) and may only emit <eos> when its prefix is already a
  * complete word — so every finished hypothesis is guaranteed to be a dictionary word.
  *
@@ -41,29 +41,20 @@ class NeuralBeamSearch(
         topK: Int,
         maxLen: Int
     ): List<ScoredWord> {
-        val mem = model.encode(features, mask, beamWidth) ?: return emptyList()
+        val mem = model.encode(features, mask) ?: return emptyList()
         try {
             var beams = listOf(Beam(intArrayOf(SOS), "", trie.rootCursor(), 0f))
             val finished = ArrayList<ScoredWord>()
 
             for (step in 0 until maxLen) {
                 if (beams.isEmpty()) break
-                val len = beams[0].tokens.size   // all live beams share the same length each step
 
-                // Build the batched decoder input: one row per beam, padded up to beamWidth with a
-                // copy of beam 0 (those extra rows' logits are ignored).
-                val tgtFlat = LongArray(beamWidth * len)
-                for (b in 0 until beamWidth) {
-                    val src = if (b < beams.size) beams[b].tokens else beams[0].tokens
-                    for (j in 0 until len) tgtFlat[b * len + j] = src[j].toLong()
-                }
-                val stepLogits = model.decodeStep(mem, tgtFlat, len) ?: break
-
-                // Expand every live beam into (letter-extend) and (eos-finish) candidates.
-                val next = ArrayList<Beam>(beamWidth * KEY_COUNT)
-                for (b in beams.indices) {
-                    val beam = beams[b]
-                    val logp = logSoftmax(stepLogits[b])
+                // Expand every live beam into (letter-extend) and (eos-finish) candidates. Each beam
+                // gets its own decoder call at batch 1 (see OnnxSwipeModel).
+                val next = ArrayList<Beam>(beams.size * KEY_COUNT)
+                for (beam in beams) {
+                    val logits = model.decodeStep(mem, beam.tokens) ?: continue
+                    val logp = logSoftmax(logits)
                     // Finish this hypothesis if its prefix is a complete word.
                     if (beam.letters.isNotEmpty() && trie.isWord(beam.cursor)) {
                         val s = beam.score + logp[EOS]

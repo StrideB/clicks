@@ -45,6 +45,8 @@ import com.fran.clicks.hardware.ParallaxSensorEngine
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
+import android.app.PendingIntent
+import android.app.RemoteInput
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.os.Handler
@@ -106,6 +108,17 @@ import com.fran.clicks.db.NgramRepository
 import com.fran.clicks.db.WidgetPersistenceRepository
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import com.fran.clicks.brief.Brief
+import com.fran.clicks.brief.BriefAction
+import com.fran.clicks.brief.BriefCollector
+import com.fran.clicks.brief.BriefGenerator
+import com.fran.clicks.brief.BriefItem
+import com.fran.clicks.brief.BriefRepository
+import com.fran.clicks.brief.Fire
+import com.fran.clicks.brief.Launch
+import com.fran.clicks.brief.NotificationSignal
+import com.fran.clicks.brief.TodayAlert
+import com.fran.clicks.brief.TodayPage
 import androidx.compose.ui.platform.ComposeView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -301,6 +314,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // New encoder-decoder + beam-search decoder, wired via the same shared engine the IME uses.
     // Preferred over the legacy encoder-only [neuralSwipe] when a model is present and enabled.
     private var neuralGlideV2: com.fran.clicks.keyboard.neural.NeuralGlideEngine? = null
+    // Hybrid decoder fuses neural + statistical (shared with the IME); null until engines load.
+    private var hybridDecoderV2: com.fran.clicks.keyboard.neural.HybridGlideDecoder? = null
+    private val glideLearning by lazy { com.fran.clicks.keyboard.neural.GlideLearningStore(this) }
     private var glideRecognizedColor: Int? = null   // app brand color when a glided word names an app
     @Volatile private var glideGestureActive = false   // true while a keyboard glide owns the touch
     private var numberPadOpen = false
@@ -309,6 +325,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastMusicPlaying = false
     private lateinit var mediaSessionSource: MediaSessionSource
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // "Today" brief — a page to the left of home, plus a teaser below the widget stack.
+    private lateinit var briefRepository: BriefRepository
+    private var todayAlertView: ComposeView? = null
+    private var todayPageView: View? = null
+    private var todayOpen = false
     private var billingClient: com.android.billingclient.api.BillingClient? = null
     lateinit var spotifyAuth: SpotifyAuth
     lateinit var spotifyApi: SpotifyWebApi
@@ -450,6 +472,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
+        libraryOpen = appLibraryDefaultHome()
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
         migrateWidgetGestureDefault()
         apps = loadLaunchableApps()
@@ -459,6 +482,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         calendarEvents = loadCalendarEvents()
         prefs().registerOnSharedPreferenceChangeListener(prefsListener)
         mediaSessionSource = MediaSessionSource(this)
+        briefRepository = BriefRepository(
+            prefs = prefs(),
+            collector = BriefCollector(
+                calendarProvider = { calendarEvents },
+                weatherProvider = { weatherBriefSummary() }
+            ),
+            generator = BriefGenerator(prefs()),
+            scope = mediaUiScope
+        )
+        // Listener runs in-process; the callback can land on a binder thread, so hop to main where
+        // refreshDebounced mutates its Job field.
+        ClicksNotificationListener.onBriefChanged = { runOnUiThread { briefRepository.refreshDebounced() } }
+        briefRepository.startPeriodic()
+        briefRepository.refreshDebounced(300)
         spotifyAuth = SpotifyAuth(this)
         spotifyApi = SpotifyWebApi(spotifyAuth)
         gmailAuth = GmailAuth(this)
@@ -588,6 +625,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
         if (now - lastContactsLoadMs > 30_000) { preloadContactsCache(); lastContactsLoadMs = now }
+        if (::briefRepository.isInitialized) briefRepository.refreshDebounced(200)
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
         if (::ribbonView.isInitialized) {
             updateClock()
@@ -628,6 +666,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         runCatching { unregisterReceiver(packageChangeReceiver) }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
+        ClicksNotificationListener.onBriefChanged = null
+        if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         mediaUiScope.cancel()
         neuralGlideV2?.close()
         spellChecker?.close()
@@ -713,6 +753,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onBackPressed() {
+        if (todayOpen) { closeToday(); return }
         if (travelOverlay != null) { dismissTravelOverlay(); return }
         if (widgetPickerView != null) { closeWidgetPicker(); return }
         if (widgetBoardView != null) { closeWidgetBoard(); return }
@@ -728,6 +769,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
         imm?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
         // Dismiss overlays in order
+        if (todayOpen) closeToday()
         if (travelOverlay != null) dismissTravelOverlay()
         spotifyFullLibraryDismiss?.invoke()
         if (spotifyCompactOverlay != null) dismissCompactSpotifyLibrary()
@@ -1361,6 +1403,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun glassEffectsEnabled(): Boolean =
         prefs().getBoolean(GLASS_EFFECTS_PREF, true)
 
+    private fun appLibraryDefaultHome(): Boolean =
+        prefs().getBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, false)
+
     private fun loadHomeWallpaperDrawable(): Drawable? {
         if (!useLockscreenWallpaperOnHome()) return null
         val manager = WallpaperManager.getInstance(this)
@@ -1436,6 +1481,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()).apply {
                     topMargin = dp(2)
                     bottomMargin = dp(2)
+                })
+                // "Today" teaser lives in the space below the widget stack; collapses to 0dp when empty.
+                todayAlertView = ComposeView(context).apply {
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setTodayAlertContent()
+                }
+                addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(8)
                 })
                 addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.22f))
                 favoritesDockView = LinearLayout(context).apply {
@@ -2438,6 +2491,104 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    // ── Today brief ──────────────────────────────────────────────────────────
+
+    private fun ComposeView.setTodayAlertContent() {
+        setContent {
+            if (!::briefRepository.isInitialized) return@setContent
+            val brief by briefRepository.brief.collectAsState()
+            TodayAlert(
+                tokens = activeNeuTokens,
+                brief = brief,
+                onOpen = {
+                    haptic(this@setTodayAlertContent)
+                    openToday()
+                }
+            )
+        }
+    }
+
+    private fun weatherBriefSummary(): String? =
+        prefs().getString(WEATHER_TEMP_PREF, null)?.trim()?.takeIf { it.isNotBlank() && it != "--" }
+
+    private fun openToday() {
+        if (todayOpen || libraryOpen || openPane != null || !::contentFrame.isInitialized) return
+        todayOpen = true
+        briefRepository.refresh()
+        val overlay = ComposeView(this).apply {
+            setBackgroundColor(activeNeuTokens.base)
+            isClickable = true // swallow taps so they don't fall through to home
+            setContent {
+                val brief by briefRepository.brief.collectAsState()
+                TodayPage(
+                    tokens = activeNeuTokens,
+                    brief = brief,
+                    hasListenerPermission = isNotificationAccessEnabled(),
+                    onAction = { item, action, reply -> fireBriefAction(item, action, reply) },
+                    onDismiss = { item -> dismissBriefItem(item) },
+                    onGrantPermission = { openNotificationAccessSettings() }
+                )
+            }
+        }
+        todayPageView = overlay
+        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        val w = contentFrame.width.takeIf { it > 0 }?.toFloat() ?: resources.displayMetrics.widthPixels.toFloat()
+        overlay.translationX = -w
+        overlay.animate().translationX(0f).setDuration(240).setInterpolator(DecelerateInterpolator()).start()
+        haptic(contentFrame)
+    }
+
+    private fun closeToday() {
+        todayOpen = false
+        val overlay = todayPageView ?: return
+        todayPageView = null
+        val w = contentFrame.width.takeIf { it > 0 }?.toFloat() ?: resources.displayMetrics.widthPixels.toFloat()
+        overlay.animate().translationX(-w).setDuration(200).setInterpolator(DecelerateInterpolator())
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
+    }
+
+    private fun fireBriefAction(item: BriefItem, action: BriefAction, replyText: String?) {
+        haptic(contentFrame)
+        val ok = when (action) {
+            is Launch -> runCatching { startActivity(action.intent) }.isSuccess
+            is Fire -> sendFire(action, replyText)
+        }
+        val isReply = action is Fire && action.isReply
+        if (!ok) {
+            // Canceled PendingIntent → fall back to the notification's contentIntent.
+            (item.signal as? NotificationSignal)?.contentIntent?.let { runCatching { it.send() } }
+        } else if (isReply) {
+            Toast.makeText(this, "Sent", Toast.LENGTH_SHORT).show()
+        }
+        // Firing resolves the card; clear it (the notification itself usually cancels too).
+        briefRepository.removeItem(item.signalRef)
+        // Opening/launching leaves the launcher — don't leave Today sitting underneath on return.
+        if (!isReply) closeToday()
+    }
+
+    private fun sendFire(action: Fire, replyText: String?): Boolean = try {
+        val ri = action.remoteInput
+        if (ri != null && !replyText.isNullOrBlank()) {
+            val fill = Intent()
+            val results = Bundle().apply { putCharSequence(ri.resultKey, replyText) }
+            RemoteInput.addResultsToIntent(arrayOf(ri) + action.extraInputs, fill, results)
+            action.pendingIntent.send(this, 0, fill)
+        } else {
+            action.pendingIntent.send()
+        }
+        true
+    } catch (_: PendingIntent.CanceledException) {
+        false
+    }
+
+    private fun dismissBriefItem(item: BriefItem) {
+        haptic(contentFrame)
+        if (item.signal is NotificationSignal) {
+            ClicksNotificationListener.dismiss(item.signalRef)
+        }
+        briefRepository.removeItem(item.signalRef)
+    }
+
     private fun refreshNowPlayingCard() {
         if (::nowPlayingCardView.isInitialized && ::mediaSessionSource.isInitialized) {
             nowPlayingCardView.setNowPlayingCardContent()
@@ -2497,6 +2648,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return false
         }
         if (!::contentFrame.isInitialized) return false
+        // While Today is open, don't let home swipes (library/widgets) fire underneath it. Sniff for
+        // a decisive swipe-left to close; return false so taps/scroll still reach the Today page.
+        if (todayOpen) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    librarySwipeStartX = event.rawX
+                    librarySwipeStartY = event.rawY
+                }
+                MotionEvent.ACTION_UP -> {
+                    val dx = event.rawX - librarySwipeStartX
+                    val dy = event.rawY - librarySwipeStartY
+                    if (dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) closeToday()
+                }
+            }
+            return false
+        }
         if (widgetBoardView != null) return false
         if (homeEditMode) {
             librarySwipeTriggered = false
@@ -2614,8 +2781,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             return true
                         }
                         dx > 0 && openPane == null -> {
+                            // Swipe right reveals the "Today" page to the left of home. (This takes
+                            // over the old swipe-right gesture binding for now, per product req.)
                             librarySwipeTriggered = true
-                            performHomeGesture(gestureAction(GESTURE_RIGHT_PREF, GESTURE_NONE))
+                            openToday()
                             return true
                         }
                     }
@@ -2728,7 +2897,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     when {
                         abs(dy) > abs(dx) * 1.15f && dy < 0 -> performHomeGesture(gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS))
                         abs(dy) > abs(dx) * 1.15f && dy > 0 -> performHomeGesture(gestureAction(GESTURE_DOWN_PREF, GESTURE_NOTIFICATIONS))
-                        abs(dx) > abs(dy) * 1.15f && dx > 0 -> performHomeGesture(gestureAction(GESTURE_RIGHT_PREF, GESTURE_NONE))
+                        abs(dx) > abs(dy) * 1.15f && dx > 0 -> openToday()
                         !upOpensLibrary && abs(dx) > abs(dy) * 1.15f && dx < 0 && openPane == null && widgetBoardView == null -> openLibrary()
                     }
                 }
@@ -4381,12 +4550,96 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (query.isNotBlank()) {
             libraryView?.alpha = 1f
         }
-        val child = if (query.isNotBlank()) {
+        val gridChild = if (query.isNotBlank()) {
             if (glassEffectsEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
         }
                     else if (libraryGridMode) libraryGrid() else bentoGrid()
+        // When the App Library IS the home surface, it has no favorites dock of its own, so mount
+        // one (plus an "often used" row) above the grid. When it's just an overlay opened from the
+        // real homescreen, that homescreen already shows the dock — so we skip it here.
+        val homeStrip = if (query.isBlank()) libraryHomeStrip() else null
+        val child = if (homeStrip == null) gridChild else LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            addView(homeStrip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(10)
+            })
+            addView(gridChild, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
         area.addView(child, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         libraryContentReady = query.isBlank()
+    }
+
+    /**
+     * Favorites dock + "often used" row shown at the top of the App Library, but ONLY when the
+     * library is the default home surface. Returns null otherwise (the real homescreen owns the
+     * dock), or when there's nothing to show.
+     */
+    private fun libraryHomeStrip(): View? {
+        if (!appLibraryDefaultHome()) return null
+        val hidden = hiddenHomePackages()
+        val favPkgs = favoritePackages()
+        val favApps = apps.filter { it.packageName in favPkgs && it.packageName !in hidden }.take(DOCK_APP_LIMIT)
+        val usage = appUsageCounts()
+        val oftenApps = apps
+            .filter { it.packageName !in favPkgs && it.packageName !in hidden && (usage[it.packageName] ?: 0) > 0 }
+            .sortedWith { left, right ->
+                val byUsage = (usage[right.packageName] ?: 0).compareTo(usage[left.packageName] ?: 0)
+                if (byUsage != 0) byUsage else collator.compare(left.label, right.label)
+            }
+            .take(OFTEN_USED_LIMIT)
+
+        // Fave dock = Music + favorites only (no often-used filler — those live in the row below).
+        val music = HomeDockItem(null, musicTarget(), "Music", 0xFF57C98A.toInt())
+        val favItems = (listOf(music) + favApps.map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) })
+            .take(DOCK_APP_LIMIT)
+        if (favItems.isEmpty() && oftenApps.isEmpty()) return null
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                clipChildren = false
+                clipToPadding = false
+                setPadding(dp(14), dp(9), dp(14), dp(9))
+                background = recessedDockBackground()
+                favItems.forEachIndexed { index, item ->
+                    addView(dockItemButton(item, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                        if (index > 0) marginStart = dp(6)
+                    })
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64)))
+
+            if (oftenApps.isNotEmpty()) {
+                addView(mono("OFTEN USED", 8.5f, InkDim).apply {
+                    letterSpacing = 0.12f
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(12)
+                    bottomMargin = dp(4)
+                    marginStart = dp(4)
+                })
+                addView(HorizontalScrollView(context).apply {
+                    isHorizontalScrollBarEnabled = false
+                    clipChildren = false
+                    clipToPadding = false
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        clipChildren = false
+                        clipToPadding = false
+                        oftenApps.forEachIndexed { index, app ->
+                            val item = HomeDockItem(app, app.toPaneTarget(), app.shortName, app.brandColor)
+                            addView(dockItemButton(item, index), LinearLayout.LayoutParams(dp(66), dp(64)).apply {
+                                if (index > 0) marginStart = dp(4)
+                            })
+                        }
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(64)))
+            }
+        }
     }
 
     private fun refreshLibraryContent() {
@@ -8193,6 +8446,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
                 setKeyFaceInsets(hInset, vInset)
                 setSymbolHint(sym, (keyTextColor(label) and 0x00FFFFFF) or (0x66 shl 24))
+                setDrawnPrimaryLabel(
+                    keyLabel(label),
+                    keyTextColor(label),
+                    keyTextSize(label) * resources.displayMetrics.scaledDensity,
+                    typeface
+                )
             }
             isClickable = true
             val needsInset = label != "enter" && label != "123"
@@ -8942,7 +9201,19 @@ Reply format: ["word1","word2","word3"]"""
     private fun updateKeyLabels() {
         val upper = shiftState != ShiftState.OFF
         "qwertyuiopasdfghjklzxcvbnm".forEach { c ->
-            keyViews[c.toString()]?.text = if (upper) c.uppercaseChar().toString() else c.lowercaseChar().toString()
+            val label = c.toString()
+            val shown = if (upper) c.uppercaseChar().toString() else c.lowercaseChar().toString()
+            val key = keyViews[label]
+            if (key is DynamicFlickKeyView) {
+                key.setDrawnPrimaryLabel(
+                    shown,
+                    keyTextColor(label),
+                    keyTextSize(label) * resources.displayMetrics.scaledDensity,
+                    key.typeface
+                )
+            } else {
+                key?.text = shown
+            }
         }
         keyViews["shift"]?.setTextColor(when (shiftState) {
             ShiftState.OFF -> 0xFF7D8078.toInt()
@@ -8980,22 +9251,29 @@ Reply format: ["word1","word2","word3"]"""
                 // Union dictionary across the system's enabled languages — multi-language typing with
                 // no language switching (see DictionaryLoader).
                 val loaded = com.fran.clicks.keyboard.DictionaryLoader.load(this@MainActivity)
+                // Fold accepted-glide personal frequencies in so both decoders learn what you swipe (L3).
+                val personal = glideLearning.personalFrequencyBoost()
+                val freqs = if (personal.isEmpty()) loaded.freqs else HashMap<String, Float>(loaded.freqs).apply {
+                    for ((w, b) in personal) put(w, minOf(1f, (this[w] ?: 0f) + b))
+                }
                 val clf = StatisticalGlideTypingClassifier()
-                clf.setWordData(loaded.words, loaded.freqs)
+                clf.setWordData(loaded.words, freqs)
                 // Optional neural decoder — no-op (isReady=false) unless a trained model ships in assets.
                 val neural = com.fran.clicks.keyboard.NeuralSwipeEngine(this@MainActivity).also { it.tryLoad() }
                 // New encoder-decoder engine (shared with the IME). Shares the same dictionary; load()
                 // stays not-ready until model assets exist, so this changes nothing on its own.
                 val neuralV2 = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this@MainActivity).apply {
-                    setDictionary(loaded.words, loaded.freqs)
+                    setDictionary(loaded.words, freqs)
                     load()
                 }
+                android.util.Log.d("NeuralSwipe", "Widget neural engine ready=${neuralV2.isReady} personal=${personal.size}")
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
                     neuralSwipe = neural.takeIf { it.isReady }
                     neuralGlideV2 = neuralV2
-                    wordlistFrequencies = loaded.freqs
-                    predictionEngine = PredictionEngine(loaded.freqs)
+                    hybridDecoderV2 = com.fran.clicks.keyboard.neural.HybridGlideDecoder(neuralV2)
+                    wordlistFrequencies = freqs
+                    predictionEngine = PredictionEngine(freqs)
                     updateGlideLayout()
                 }
             }
@@ -9336,43 +9614,43 @@ Reply format: ["word1","word2","word3"]"""
                     invalidate()
                     if (clf != null && clf.hasEnoughPoints) {
                         val contextBoost = glideCore.contextBoost()
-                        // Preferred: new encoder-decoder + beam-search engine (shared with the IME).
-                        val neuralV2 = neuralGlideV2?.takeIf { it.enabled }
-                        val pathV2 = if (neuralV2 != null) snapshotTimedPath() else emptyList()
-                        val boundsV2 = if (neuralV2 != null) letterKeyBounds() else null
-                        val centersV2 = if (neuralV2 != null) letterKeyCenters() else emptyList()
-                        // Legacy encoder-only classifier, kept for A/B when V2 is off/not-ready.
-                        val neuralV1 = if (neuralV2 == null) neuralSwipe else null
-                        val rawPathV1 = if (neuralV1 != null)
-                            trailLocal.map { android.graphics.PointF(it.first + screenX, it.second + screenY) } else null
-                        val boundsV1 = if (neuralV1 != null) letterKeyBounds() else null
+                        // Snapshot inputs for the hybrid decoder (neural + statistical fusion, shared
+                        // with the IME). Falls back to statistical-only when no neural model is present.
+                        val hybrid = hybridDecoderV2
+                        val pathV2 = snapshotTimedPath()
+                        val bounds = letterKeyBounds()
+                        val centers = letterKeyCenters()
+                        val freqs = wordlistFrequencies
                         // One coroutine on the UI scope; heavy work runs off-main. try/finally guarantees
                         // the trail is always cleaned up even if a decoder throws.
                         mediaUiScope.launch {
-                            var results: List<String> = emptyList()
+                            var res: com.fran.clicks.keyboard.neural.HybridResult? = null
                             try {
-                                if (neuralV2 != null && boundsV2 != null && pathV2.size > 1) {
-                                    results = try {
-                                        neuralV2.decodeWords(pathV2, boundsV2[0], boundsV2[1], boundsV2[2], boundsV2[3], centersV2, 3)
-                                    } catch (_: Throwable) { emptyList() }
-                                }
-                                if (results.isEmpty()) {
-                                    results = kotlinx.coroutines.withContext(Dispatchers.Default) {
-                                        try {
-                                            val v1 = if (neuralV1 != null && rawPathV1 != null && boundsV1 != null)
-                                                neuralV1.decodeSwipePath(rawPathV1, boundsV1[0], boundsV1[1], boundsV1[2], boundsV1[3], wordlistFrequencies)
-                                                else emptyList()
-                                            v1.ifEmpty { clf.getSuggestions(3, contextBoost) }
-                                        } catch (_: Throwable) { emptyList() }
+                                val statistical: suspend () -> List<String> = {
+                                    kotlinx.coroutines.withContext(Dispatchers.Default) {
+                                        try { clf.getSuggestions(3, contextBoost) } catch (_: Throwable) { emptyList() }
                                     }
+                                }
+                                res = if (hybrid != null) {
+                                    hybrid.decode(pathV2, bounds, centers, freqs, 3, statistical)
+                                } else {
+                                    val s = statistical()
+                                    com.fran.clicks.keyboard.neural.HybridResult(
+                                        s, emptyList(), s, false, false,
+                                        if (s.isEmpty()) com.fran.clicks.keyboard.neural.GlideSource.NONE
+                                        else com.fran.clicks.keyboard.neural.GlideSource.STATISTICAL
+                                    )
                                 }
                             } finally {
                                 runCatching { clf.clear() }
                                 fadeGlideTrail()   // schedule the clear FIRST so a later throw can't strand the trail
+                                val results = res?.words ?: emptyList()
                                 if (results.isNotEmpty()) {
+                                    val top = glideCore.rerank(results)
                                     handleGlideResult(results)
                                     glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
                                     invalidate()
+                                    res?.let { glideLearning.recordAcceptance(top, pathV2, bounds, it.source, it.agreed) }
                                 } else if (t.size >= 3) handleSwipeFallback(t)
                             }
                         }
@@ -10726,6 +11004,20 @@ Reply format: ["word1","word2","word3"]"""
             prefs().edit().putBoolean(DOCK_LABELS_PREF, next).apply()
             haptic(this)
             renderFavoritesDock()
+            renderPaneContent(clicksSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("APP LIBRARY HOME", appLibraryDefaultHome()) {
+            val next = !appLibraryDefaultHome()
+            prefs().edit().putBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, next).apply()
+            haptic(this)
+            // Rebuild library content so the home strip (fave dock + often-used) appears/disappears.
+            libraryContentReady = false
+            libraryViewDirty = true
+            Toast.makeText(
+                this@MainActivity,
+                if (next) "App Library will open as home" else "Standard home restored",
+                Toast.LENGTH_SHORT
+            ).show()
             renderPaneContent(clicksSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingToggle("ANIMATED WEATHER", animatedWeatherEnabled()) {
@@ -16206,11 +16498,13 @@ $emailText"""
         private const val FAVORITE_APPS_PREF = "favorite_apps"
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
         private const val DOCK_LABELS_PREF = "dock_labels"
+        private const val APP_LIBRARY_DEFAULT_HOME_PREF = "app_library_default_home"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
         private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
         private const val DOCK_APP_LIMIT = 5
+        private const val OFTEN_USED_LIMIT = 8
         private const val APP_USAGE_PREF = "app_usage_counts"
         private const val APP_LAST_LAUNCH_PREF = "app_last_launch_times"
         private const val WEATHER_TEMP_PREF = "weather_temp"

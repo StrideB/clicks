@@ -9,8 +9,13 @@ package com.fran.clicks.keyboard.neural
  * [OnnxSwipeModel]). Treat this file and the exporter as two ends of one wire — change both together.
  *
  * Architecture: encoder-decoder transformer.
- *   encoder(features, src_mask) -> memory
- *   decoder(memory, src_mask, tgt) -> logits   (autoregressive; beam search drives it)
+ *   encoder(features, src_mask) -> memory                 (run once, batch 1)
+ *   decoder(memory, src_mask, tgt) -> logits              (autoregressive; batch 1 per beam)
+ *
+ * The decoder runs at batch 1, once per beam per step — NOT batched across beams. This is
+ * intentional: the transformer ONNX exporters constant-fold the batch axis, so a fixed batch of 1
+ * (only the sequence length dynamic) is what exports and runs reliably. Beam width stays a free
+ * runtime loop count.
  *
  * Everything is normalized/tokenized on the device so a single trained model works identically in
  * both the Docked (IME) and Widget (launcher) placements regardless of on-screen keyboard size.
@@ -26,11 +31,11 @@ object NeuralSwipeContract {
     const val IN_SRC_MASK = "src_mask"   // int64   [1, T]  (1 = real point, 0 = padding)
     // Encoder output read positionally (index 0): "memory" float32 [1, T, D]
 
-    // ── Decoder tensor names ──
-    const val IN_MEMORY = "memory"       // float32 [B, T, D]  (encoder memory, tiled across beams)
-    const val IN_MEM_MASK = "src_mask"   // int64   [B, T]     (same padding mask, tiled)
-    const val IN_TGT = "tgt"             // int64   [B, L]     (tokens generated so far)
-    // Decoder output read positionally (index 0): "logits" float32 [B, L, VOCAB_SIZE]
+    // ── Decoder tensor names ── (all at batch 1; only L is dynamic)
+    const val IN_MEMORY = "memory"       // float32 [1, T, D]  (encoder memory)
+    const val IN_MEM_MASK = "src_mask"   // int64   [1, T]     (same padding mask)
+    const val IN_TGT = "tgt"             // int64   [1, L]     (tokens generated so far)
+    // Decoder output read positionally (index 0): "logits" float32 [1, L, VOCAB_SIZE]
 
     // ── Trajectory / feature layout ──
     /** Max trajectory steps fed to the encoder; longer paths are uniformly subsampled, shorter padded. */

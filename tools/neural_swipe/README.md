@@ -80,21 +80,28 @@ To train on FUTO's MIT swipe corpus instead of synthetic data, replace `iter_bat
 that yields the same `(features, src_mask, tgt)` tensors; the model and export are unchanged.
 
 ## Contract with the device (`NeuralSwipeContract.kt` — do not drift)
+Both graphs run at **batch 1** on-device (the beam search calls the decoder once per beam), so the
+only dynamic axis is the decoder's sequence length `L`. This is intentional — see the note below.
+
 | | encoder | decoder |
 |---|---|---|
 | input `features` | float32 `[1, 200, 32]` | — |
-| input `src_mask` | int64 `[1, 200]` (1=real, 0=pad) | int64 `[B, 200]` |
-| input `memory` | — | float32 `[B, 200, D]` |
-| input `tgt` | — | int64 `[B, L]` |
-| output | `memory` float32 `[1, 200, D]` | `logits` float32 `[B, L, 29]` |
+| input `src_mask` | int64 `[1, 200]` (1=real, 0=pad) | int64 `[1, 200]` |
+| input `memory` | — | float32 `[1, 200, D]` |
+| input `tgt` | — | int64 `[1, L]` (dynamic `L`) |
+| output | `memory` float32 `[1, 200, D]` | `logits` float32 `[1, L, 29]` |
 
 - **Per-step feature vector (32):** `[x, y, vx, vy, ax, ay,` then `26-dim nearest-key one-hot]`.
   `x,y` normalized to `[0,1]` over the letter-key box; `v`/`a` are per-second derivatives from real
   event timestamps. The math lives in `SwipeFeaturizer.kt` and is mirrored in
   `features_from_path()` here — keep them identical.
 - **Character vocab (29):** `0=<pad> 1=<sos> 2=<eos> 3..28='a'..'z'` (index == logit column).
-- Batch dim `B` is dynamic (encoder runs at B=1; decoder at B=beamWidth). Trajectory length is fixed
-  at `MAX_TRAJ=200`; decoder length `L` is dynamic.
+- **Why batch 1 / custom attention:** PyTorch's ONNX exporters (both legacy and `dynamo`) constant-
+  fold `nn.MultiheadAttention`'s internal reshapes from the export example's batch **and** length,
+  so a dynamic batch axis fails at runtime. This script therefore uses a small hand-written attention
+  (`MultiHeadAttention`) and exports at batch 1 with only `L` dynamic. Beam width is still fully
+  tunable on-device (`NeuralGlideEngine.beamWidth`) — it's just how many batch-1 decoder calls run
+  per step. Verified with ONNX Runtime across `L = 1..8`.
 
 ## Tuning
 - The synthetic `dt` range (6–18 ms/sample) sets the velocity scale the model learns. If on-device

@@ -57,11 +57,17 @@ class NeuralGlideEngine(private val context: Context) {
      * @param boundsLeft/Top/Width/Height letter-key bounding box in the same screen space (for [0,1] norm).
      * @param keyCenters letter keys (screen-space centers) for the nearest-key feature.
      */
+    /**
+     * @param priorBoost optional per-word prior in [0,1] (e.g. from the statistical decoder's ranking)
+     *   that gently nudges the neural candidates toward geometrically-plausible words — the
+     *   "cross-priming" coupling. Empty = pure neural ranking.
+     */
     suspend fun decode(
         path: List<TimedPoint>,
         boundsLeft: Float, boundsTop: Float, boundsWidth: Float, boundsHeight: Float,
         keyCenters: List<KeyInfo>,
-        topK: Int = DEFAULT_TOP_K
+        topK: Int = DEFAULT_TOP_K,
+        priorBoost: Map<String, Float> = emptyMap()
     ): List<ScoredWord> = withContext(Dispatchers.Default) {
         if (!isReady) return@withContext emptyList()
         val feats = featurizer.featurize(path, boundsLeft, boundsTop, boundsWidth, boundsHeight, keyCenters)
@@ -69,9 +75,16 @@ class NeuralGlideEngine(private val context: Context) {
         val raw = NeuralBeamSearch(model, trie)
             .search(feats.features, feats.mask, beamWidth, topK * 2, MAX_DECODE_LEN)
         if (raw.isEmpty()) return@withContext emptyList()
-        // Blend a gentle frequency prior so common words break near-ties among model candidates,
-        // without letting frequency override a confident model prediction.
-        raw.map { ScoredWord(it.word, it.score + FREQ_WEIGHT * ln((freqs[it.word] ?: 0f) + 1e-3f)) }
+        // Blend a gentle frequency prior (so common words break near-ties among model candidates)
+        // and, if supplied, a shape prior from the statistical decoder (cross-priming), without
+        // letting either override a confident model prediction.
+        raw.map {
+            ScoredWord(
+                it.word,
+                it.score + FREQ_WEIGHT * ln((freqs[it.word] ?: 0f) + 1e-3f) +
+                    PRIOR_WEIGHT * (priorBoost[it.word] ?: 0f)
+            )
+        }
             .sortedByDescending { it.score }
             .take(topK)
     }
@@ -93,5 +106,7 @@ class NeuralGlideEngine(private val context: Context) {
         const val PREF_NEURAL_GLIDE = "kbd_neural_glide"
         /** Weight of the log-frequency prior relative to per-char log-prob; small = tiebreak only. */
         private const val FREQ_WEIGHT = 0.15f
+        /** Weight of the cross-priming shape prior from the statistical decoder. */
+        private const val PRIOR_WEIGHT = 0.5f
     }
 }

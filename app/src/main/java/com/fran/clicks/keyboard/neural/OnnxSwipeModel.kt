@@ -75,11 +75,15 @@ class OnnxSwipeModel(private val context: Context) {
         return o
     }
 
-    /** Encoder memory tiled across [beam] rows, plus the tiled padding mask. Close when decoding ends. */
+    /**
+     * The encoder memory (batch 1) plus its padding mask, held as reusable tensors for the whole
+     * decode. The decoder is run once per beam at batch 1 — this deliberately avoids a dynamic batch
+     * axis in the ONNX graph (which the transformer exporters mis-handle), so beam width stays a free
+     * runtime loop count. Close when decoding ends.
+     */
     class Memory(
         val memTensor: OnnxTensor,
         val maskTensor: OnnxTensor,
-        val beam: Int,
         val dModel: Int
     ) {
         fun close() {
@@ -88,11 +92,8 @@ class OnnxSwipeModel(private val context: Context) {
         }
     }
 
-    /**
-     * Runs the encoder once (batch 1) and tiles its memory across [beam] rows so the decoder can be
-     * driven as a single batched call per step during beam search.
-     */
-    fun encode(features: FloatArray, mask: LongArray, beam: Int): Memory? {
+    /** Runs the encoder once (batch 1); the resulting memory is reused across every decoder step. */
+    fun encode(features: FloatArray, mask: LongArray): Memory? {
         val enc = encoder ?: return null
         val t = MAX_TRAJ
         val featT = OnnxTensor.createTensor(
@@ -112,35 +113,30 @@ class OnnxSwipeModel(private val context: Context) {
         } finally {
             featT.close(); maskT.close()
         }
-
-        val tiledMem = FloatArray(beam * t * d)
-        val tiledMask = LongArray(beam * t)
-        for (b in 0 until beam) {
-            System.arraycopy(memFlat, 0, tiledMem, b * t * d, t * d)
-            System.arraycopy(mask, 0, tiledMask, b * t, t)
-        }
+        // Own copies fed to every decoder call (the encoder result above is closed on exit).
         val memTensor = OnnxTensor.createTensor(
-            env, FloatBuffer.wrap(tiledMem), longArrayOf(beam.toLong(), t.toLong(), d.toLong())
+            env, FloatBuffer.wrap(memFlat), longArrayOf(1, t.toLong(), d.toLong())
         )
         val maskTensor = OnnxTensor.createTensor(
-            env, LongBuffer.wrap(tiledMask), longArrayOf(beam.toLong(), t.toLong())
+            env, LongBuffer.wrap(mask.copyOf()), longArrayOf(1, t.toLong())
         )
-        return Memory(memTensor, maskTensor, beam, d)
+        return Memory(memTensor, maskTensor, d)
     }
 
     /**
-     * One decoder step over all [Memory.beam] rows. [tgtFlat] is row-major [beam, len]; returns the
-     * last-position logits for each beam row, shape [beam][VOCAB_SIZE].
+     * One decoder step for a single beam (batch 1). [tgt] is the token prefix (length L); returns the
+     * last-position logits, shape [VOCAB_SIZE].
      */
-    fun decodeStep(mem: Memory, tgtFlat: LongArray, len: Int): Array<FloatArray>? {
+    fun decodeStep(mem: Memory, tgt: IntArray): FloatArray? {
         val dec = decoder ?: return null
-        val b = mem.beam
-        val tgtT = OnnxTensor.createTensor(env, LongBuffer.wrap(tgtFlat), longArrayOf(b.toLong(), len.toLong()))
+        val len = tgt.size
+        val tgtLong = LongArray(len) { tgt[it].toLong() }
+        val tgtT = OnnxTensor.createTensor(env, LongBuffer.wrap(tgtLong), longArrayOf(1, len.toLong()))
         try {
             dec.run(mapOf(IN_MEMORY to mem.memTensor, IN_MEM_MASK to mem.maskTensor, IN_TGT to tgtT)).use { res ->
                 @Suppress("UNCHECKED_CAST")
-                val logits = res[0].value as Array<Array<FloatArray>>   // [B, L, V]
-                return Array(b) { row -> logits[row][len - 1] }
+                val logits = res[0].value as Array<Array<FloatArray>>   // [1, L, V]
+                return logits[0][len - 1]
             }
         } finally {
             tgtT.close()

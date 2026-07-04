@@ -98,6 +98,10 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     // assets; when present it decodes ahead of the statistical classifier. Wired identically in the
     // launcher's Widget keyboard via the same NeuralGlideEngine.
     private var neuralGlide: com.fran.clicks.keyboard.neural.NeuralGlideEngine? = null
+    // Hybrid decoder fuses neural + statistical (see HybridGlideDecoder); null until the engines load.
+    private var hybridDecoder: com.fran.clicks.keyboard.neural.HybridGlideDecoder? = null
+    private val glideLearning by lazy { com.fran.clicks.keyboard.neural.GlideLearningStore(this) }
+    private var glideFreqs: Map<String, Float> = emptyMap()
     private val glideScope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate
     )
@@ -310,6 +314,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 setKeyFaceInsets(dp(1), keyVerticalInset())
                 val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
                 setSymbolHint(sym, symbolHintColor())
+                setDrawnPrimaryLabel(
+                    visualLabel(label),
+                    textColor(label),
+                    keyTextSize(label) * resources.displayMetrics.scaledDensity,
+                    typeface
+                )
             }
             background = visualKeyBackground(label, pressed = false)
             isClickable = true
@@ -638,6 +648,13 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             KeyInfo(label[0], rect.exactCenterX(), rect.exactCenterY(), rect.width().toFloat(), rect.height().toFloat())
         }
 
+    private fun mergePersonalFreqs(base: Map<String, Float>, personal: Map<String, Float>): Map<String, Float> {
+        if (personal.isEmpty()) return base
+        val out = HashMap<String, Float>(base)
+        for ((w, b) in personal) out[w] = minOf(1f, (out[w] ?: 0f) + b)
+        return out
+    }
+
     private fun ensureGlideClassifier() {
         if (glideClassifier != null) return
         Thread {
@@ -645,19 +662,26 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             // extended dictionary that only takes over once the user writes a couple of its words
             // (see updateActiveLanguage). Glide can shape-match the full set so gestures work in any.
             val adaptive = com.fran.clicks.keyboard.DictionaryLoader.loadAdaptive(this)
+            // Online-learning loop: fold accepted-glide personal frequencies into the dictionary so
+            // both decoders rank the words you actually swipe higher (Level 3).
+            val personal = glideLearning.personalFrequencyBoost()
+            val extFreqs = mergePersonalFreqs(adaptive.extendedFreqs, personal)
             val clf = StatisticalGlideTypingClassifier()
-            clf.setWordData(adaptive.extendedWords, adaptive.extendedFreqs)
+            clf.setWordData(adaptive.extendedWords, extFreqs)
             // Neural decoder shares the same dictionary; load() is a no-op (stays not-ready) until a
             // model is placed in assets, so this never changes behavior on its own.
             val neural = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this).apply {
-                setDictionary(adaptive.extendedWords, adaptive.extendedFreqs)
+                setDictionary(adaptive.extendedWords, extFreqs)
                 load()
             }
+            android.util.Log.d("NeuralSwipe", "IME neural engine ready=${neural.isReady} personal=${personal.size}")
             handler.post {
                 glideClassifier = clf
                 neuralGlide = neural
+                hybridDecoder = com.fran.clicks.keyboard.neural.HybridGlideDecoder(neural)
+                glideFreqs = extFreqs
                 predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
-                predictionEngineExtended = PredictionEngine(adaptive.extendedFreqs)
+                predictionEngineExtended = PredictionEngine(extFreqs)
                 hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                 latentLanguageActive = false
                 predictionEngine = predictionEnginePrimary
@@ -1698,8 +1722,18 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 for (keyIndex in 0 until row.childCount) {
                     val key = row.getChildAt(keyIndex) as? TextView ?: continue
                     val raw = key.tag as? String ?: continue
-                    key.text = keyDisplayText(raw)
                     key.setTextColor(textColor(raw))
+                    if (key is com.fran.clicks.keyboard.DynamicFlickKeyView && raw.length == 1 && raw[0].isLetter() && !symbolsMode) {
+                        key.setSymbolHint(com.fran.clicks.keyboard.KeyboardSymbols.keyUp[raw.lowercase(Locale.US)], symbolHintColor())
+                        key.setDrawnPrimaryLabel(
+                            visualLabel(raw),
+                            textColor(raw),
+                            keyTextSize(raw) * resources.displayMetrics.scaledDensity,
+                            key.typeface
+                        )
+                    } else {
+                        key.text = keyDisplayText(raw)
+                    }
                     if (rebuildBackgrounds) key.background = visualKeyBackground(raw, pressed = false)
                 }
             }
@@ -1879,34 +1913,39 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     }
                     if (clf != null && clf.hasEnoughPoints) {
                         val contextBoost = glideCore.contextBoost()
-                        // Snapshot inputs for the optional neural decoder on the main thread (touch
-                        // state is about to be cleared). Null when neural is off/not-ready.
-                        val neural = neuralGlide?.takeIf { it.enabled }
-                        val neuralPath = if (neural != null) snapshotSwipePath() else emptyList()
-                        val bounds = if (neural != null) letterKeyBounds() else null
-                        val centers = if (neural != null) letterKeyCenters() else emptyList()
+                        // Snapshot inputs on the main thread (touch state is about to be cleared).
+                        val hybrid = hybridDecoder
+                        val neuralPath = snapshotSwipePath()
+                        val bounds = letterKeyBounds()
+                        val centers = letterKeyCenters()
+                        val freqs = glideFreqs
                         glideScope.launch {
-                            var results: List<String> = emptyList()
-                            // 1) Neural decode first (runs off-main inside the engine).
-                            if (neural != null && bounds != null && neuralPath.size > 1) {
-                                results = try {
-                                    neural.decodeWords(neuralPath, bounds[0], bounds[1], bounds[2], bounds[3], centers, 3)
-                                } catch (e: Throwable) {
-                                    android.util.Log.e("ClicksGlide", "neural decode failed", e); emptyList()
-                                }
-                            }
-                            // 2) Statistical fallback when neural is off or returns nothing.
-                            if (results.isEmpty()) {
-                                results = withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            // Hybrid fuses neural + statistical (falls back to statistical-only when
+                            // the neural model isn't present); geometric trace stays the last resort.
+                            val statistical: suspend () -> List<String> = {
+                                withContext(kotlinx.coroutines.Dispatchers.Default) {
                                     try { clf.getSuggestions(3, contextBoost) }
                                     catch (e: Throwable) { android.util.Log.e("ClicksGlide", "decode failed", e); emptyList() }
                                 }
                             }
+                            val res = if (hybrid != null) {
+                                hybrid.decode(neuralPath, bounds, centers, freqs, 3, statistical)
+                            } else {
+                                val s = statistical()
+                                com.fran.clicks.keyboard.neural.HybridResult(
+                                    s, emptyList(), s, false, false,
+                                    if (s.isEmpty()) com.fran.clicks.keyboard.neural.GlideSource.NONE
+                                    else com.fran.clicks.keyboard.neural.GlideSource.STATISTICAL
+                                )
+                            }
                             runCatching { clf.clear() }
-                            android.util.Log.d("ClicksGlide", "results=${results.size} top=${results.firstOrNull()} neural=${neural != null}")
+                            val results = res.words
+                            android.util.Log.d("ClicksGlide", "hybrid=${results.size} top=${results.firstOrNull()} src=${res.source} agreed=${res.agreed}")
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) hapticEngine.glideCommit()
-                                glideCore.commitWord(glideCore.rerank(results)); learnAndPredictAfterSpace()
+                                val top = glideCore.rerank(results)
+                                glideCore.commitWord(top); learnAndPredictAfterSpace()
+                                glideLearning.recordAcceptance(top, neuralPath, bounds, res.source, res.agreed)
                             } else if (tracedKeys.size >= 3) {
                                 keyHaptic("space"); handleSwipeFallback(tracedKeys)
                             }
