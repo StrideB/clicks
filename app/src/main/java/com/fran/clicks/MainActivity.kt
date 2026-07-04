@@ -8615,6 +8615,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val cmd = pendingLauncherCommand ?: return
         pendingLauncherCommand = null
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherLocation(); return }
+        if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherWeather(cmd.arg); return }
         if (cmd.insertText != null) {
             if (openPane?.kind == PaneKind.CHAT) composeText = cmd.insertText else query = cmd.insertText
             suggestions = emptyList(); updateAutoCapState(); updateKeyLabels(); render()
@@ -8634,6 +8635,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         mediaUiScope.launch {
             val text = withContext(Dispatchers.IO) { AgenticLocation.currentLocationText(this@MainActivity) } ?: return@launch
+            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
+            else query += text
+            updateKeyLabels(); render()
+        }
+    }
+
+    private fun insertLauncherWeather(place: String) {
+        mediaUiScope.launch {
+            val text = withContext(Dispatchers.IO) { WeatherApi.lookup(place) }
+            if (text == null) {
+                android.widget.Toast.makeText(this@MainActivity, "Couldn’t get weather for “$place”", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
             if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
             else query += text
             updateKeyLabels(); render()
