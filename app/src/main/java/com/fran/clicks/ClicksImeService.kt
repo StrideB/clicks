@@ -1026,6 +1026,11 @@ class ClicksImeService : InputMethodService() {
         // Clear the command text from the field — it was a command, not message content.
         if (raw.isNotEmpty()) currentInputConnection?.deleteSurroundingText(raw.length, 0)
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); runAgenticLocation(); return }
+        if (cmd.insertText != null) {
+            currentInputConnection?.commitText(cmd.insertText, 1)
+            onTextChanged()
+            return
+        }
         val statusMsg = AgenticRouter.execute(this, cmd)
         onTextChanged()
         flashAgenticStatus(statusMsg ?: "Couldn\u2019t run that", 1700)

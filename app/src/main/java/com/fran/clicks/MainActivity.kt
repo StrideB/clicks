@@ -7769,6 +7769,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var suggestionStripView: LinearLayout? = null
     private var launcherPolishing = false
     private var pendingLauncherCommand: AgenticRouter.Command? = null
+    private var pendingLauncherActions: List<Pair<String, String>> = emptyList()
 
     private fun showSuggestionStrip() = false
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
@@ -7830,6 +7831,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 isClickable = true
                 setOnClickListener { keyHaptic("space"); applyLauncherCommand() }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+            return
+        }
+        val pendingActs = pendingLauncherActions
+        if (pendingActs.isNotEmpty()) {
+            strip.removeAllViews()
+            strip.background = suggestionStripBackground(null, true)
+            pendingActs.forEachIndexed { i, action ->
+                strip.addView(TextView(this).apply {
+                    text = action.first
+                    gravity = Gravity.CENTER; textSize = 14f; includeFontPadding = false
+                    setTextColor(activeNeuTokens.ink); maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    isClickable = true
+                    setOnClickListener { keyHaptic("space"); runLauncherInlineTransform(action.second) }
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                if (i < pendingActs.lastIndex) {
+                    strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
+                        LinearLayout.LayoutParams(dp(1), dp(16)))
+                }
+            }
             return
         }
         val shown = suggestions.take(3)
@@ -8004,6 +8025,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val raw = launcherCommandText()
         val cmd = AgenticRouter.classify(raw)
         if (cmd != null) { pendingLauncherCommand = cmd; updateSuggestionBar(); return }
+        val geminiReady = raw.isNotBlank() && ProManager.isUnlocked(this) && geminiConfigured()
+        // A real message (not a command): offer inline AI actions — fix, translate — on it.
+        if (geminiReady && raw.trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3) {
+            pendingLauncherActions = buildLauncherMessageActions()
+            updateSuggestionBar()
+            return
+        }
         // Free-form fallback: Gemini ranks the typed line onto a real skill (Pro + configured).
         if (raw.isNotBlank() && ProManager.isUnlocked(this) && geminiConfigured()) {
             val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
@@ -8025,6 +8053,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val cmd = pendingLauncherCommand ?: return
         pendingLauncherCommand = null
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherLocation(); return }
+        if (cmd.insertText != null) {
+            if (openPane?.kind == PaneKind.CHAT) composeText = cmd.insertText else query = cmd.insertText
+            suggestions = emptyList(); updateAutoCapState(); updateKeyLabels(); render()
+            return
+        }
         val statusMsg = AgenticRouter.execute(this, cmd)
         if (openPane?.kind == PaneKind.CHAT) composeText = "" else query = ""
         suggestions = emptyList()
@@ -8042,6 +8075,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
             else query += text
             updateKeyLabels(); render()
+        }
+    }
+
+    private val langNamesLauncher = mapOf("es" to "Spanish", "fr" to "French", "de" to "German", "pt" to "Portuguese", "it" to "Italian", "en" to "English")
+    private fun launcherTranslateTarget(): String? {
+        val enabled = com.fran.clicks.keyboard.DictionaryLoader.enabledLanguages(this)
+        val primary = enabled.firstOrNull() ?: return null
+        val other = enabled.firstOrNull { it != primary } ?: return null
+        return langNamesLauncher[other]
+    }
+    private fun buildLauncherMessageActions(): List<Pair<String, String>> {
+        val actions = ArrayList<Pair<String, String>>()
+        actions.add("✨ Polish" to "Fix the spelling, grammar, capitalization and punctuation of this message. Keep the meaning and tone.")
+        launcherTranslateTarget()?.let { actions.add("🌐 → $it" to "Translate this message to $it. Reply with only the translation, nothing else.") }
+        return actions
+    }
+    private fun runLauncherInlineTransform(instruction: String) {
+        pendingLauncherActions = emptyList()
+        val text = launcherCommandText()
+        if (text.trim().length < 2) return
+        if (!ProManager.isUnlocked(this) || !geminiConfigured()) return
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+        launcherPolishing = true; updateSuggestionBar()
+        mediaUiScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { GeminiClient.fetchTransform(key, model, text, instruction) } }.getOrNull()
+            launcherPolishing = false
+            if (result != null && result != text) {
+                if (openPane?.kind == PaneKind.CHAT) composeText = result else query = result
+                updateAutoCapState(); updateKeyLabels(); openPane?.let { renderPaneContent(it) }
+            }
+            updateSuggestionBar(); render()
         }
     }
 
@@ -9252,6 +9317,7 @@ Reply format: ["word1","word2","word3"]"""
             return
         }
         pendingLauncherCommand = null
+        pendingLauncherActions = emptyList()
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) { handleChatKey(label, pane); return }
         if (pane?.kind == PaneKind.AI) { handleAiKey(label, pane); return }

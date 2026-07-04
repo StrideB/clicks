@@ -30,8 +30,9 @@ object AgenticRouter {
         val skillId: Long,
         val label: String,
         val arg: String,
-        val intent: Intent?,        // null only when [insertsLocation]
-        val insertsLocation: Boolean
+        val intent: Intent?,        // null when [insertsLocation] or [insertText] is set
+        val insertsLocation: Boolean,
+        val insertText: String? = null   // computed result to drop straight into the field (SmartCompute)
     )
 
     private data class Skill(
@@ -78,6 +79,10 @@ object AgenticRouter {
         for (s in list) for (t in s.triggers) {
             val arg = matchTrigger(q, lower, t) ?: continue
             return buildCommand(s, arg)
+        }
+        // On-device compute: a bare calculation or unit conversion becomes an inline insert.
+        SmartCompute.evaluate(q)?.let { (label, text) ->
+            return Command(0, label, text, null, false, insertText = text)
         }
         return null
     }
