@@ -12,7 +12,7 @@ import com.fran.clicks.db.SkillEntity
 
 /**
  * The agentic brain. Turns a typed line into an action to run: "play drake", "nearest best buy",
- * "timer 5 min", "yt lofi", "translate hola"… hold space and Clicks routes it.
+ * "timer 5 min", "yt lofi", "translate hola"… hold the go/enter key and Clicks routes it.
  *
  * Skills live in a Room database (see [SkillEntity]) so the catalog grows over time — built-ins are
  * seeded on first run and users can add their own from the Skills screen, all without code changes.

@@ -67,7 +67,7 @@ class AgenticSkillsActivity : Activity() {
             setPadding(dp(20), dp(24), dp(20), dp(40))
         }
         root.addView(text("Skills", 23f, t.ink, bold = true))
-        root.addView(text("Type a command, hold space to run it.", 13.5f, t.inkDim).also {
+        root.addView(text("Type a command, hold the go/enter key to run it.", 13.5f, t.inkDim).also {
             (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(2)
         })
 

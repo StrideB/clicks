@@ -7597,9 +7597,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val longPressAction: (() -> Unit)? = when {
                 isWidgetDockKey -> { -> beginWidgetKeyboardDetach(this@apply) }
                 isDockedClicksKey -> { -> beginDockedKeyboardPopToWidget(this@apply) }
-                label == "enter" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
+                // Hold go/enter to run the typed line as an agentic command (the powerful trigger).
+                label == "enter" -> { -> haptic(this@apply); runLauncherAgenticCommand() }
                 label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
-                label == "space" -> { -> haptic(this@apply); runLauncherAgenticCommand() }
+                // Space keeps cursor-drag; a stationary hold now offers Gemini smart-compose instead.
+                label == "space" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
                 isLetter -> { -> haptic(this@apply); handleLetterLongPress(label.lowercase(Locale.US)) }
                 else -> null
             }
@@ -7993,8 +7995,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return true
     }
 
-    // Agentic command bar: hold space in the type-first launcher to route the typed query to an
-    // action (music, maps, timer, location, web). Shows a preview chip; only runs on APPLY.
+    // Agentic command bar: hold the go/enter key in the type-first launcher to route the typed query
+    // to an action (music, maps, timer, location, web). Shows a preview chip; only runs on APPLY.
     private fun launcherCommandText(): String =
         if (openPane?.kind == PaneKind.CHAT) composeText else query
 

@@ -117,7 +117,7 @@ class ImeSettingsActivity : Activity() {
 
         // Agentic
         section("AGENTIC").also { c ->
-            c.addView(text("Type a command and hold the space bar to run it \u2014 music, maps, timers, and your own skills.", 12.5f, t.inkDim).apply {
+            c.addView(text("Type a command and hold the go/enter key to run it \u2014 music, maps, timers, and your own skills.", 12.5f, t.inkDim).apply {
                 (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(10)
             })
             c.addView(TextView(this).apply {

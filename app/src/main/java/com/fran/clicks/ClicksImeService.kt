@@ -240,7 +240,9 @@ class ClicksImeService : InputMethodService() {
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
                     }
-                    if (label == "space") {
+                    if (label == "enter") {
+                        // Hold the go/enter key to run the agentic command. A tap still sends/enters;
+                        // a hold turns the field text into an action (see runAgenticCommand).
                         val total = (ViewConfiguration.getLongPressTimeout() * 1.25).toLong()
                         startAgenticHapticRamp(total)
                         val runnable = Runnable {
@@ -255,7 +257,7 @@ class ClicksImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if ((label == "clicks" || label == "space") &&
+                    if ((label == "clicks" || label == "enter") &&
                         (abs(event.rawX - downRawX) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop ||
                             abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
                         cancelClicksLongPress()
@@ -756,12 +758,12 @@ class ClicksImeService : InputMethodService() {
         return true
     }
 
-    // Agentic quick-action: long-press space to drop your current location into the field — no maps
-    // app, no leaving the chat. Permission can't be requested from an IME, so if it's not already
-    // granted (e.g. via Clicks weather) we point the user there instead.
-    // Hold space -> read the typed line, classify it, and show a preview chip the user taps to run
+    // Agentic quick-action: hold the go/enter key to drop your current location into the field — no
+    // maps app, no leaving the chat. Permission can't be requested from an IME, so if it's not
+    // already granted (e.g. via Clicks weather) we point the user there instead.
+    // Hold go/enter -> read the typed line, classify it, and show a preview chip the user taps to run
     // (Acti-style: nothing launches without confirmation). Empty / unknown text falls through to a
-    // location share or a hint.
+    // location share or a hint. Tapping go/enter still sends/enters as normal.
     private fun runAgenticCommand() {
         val raw = currentInputConnection?.getTextBeforeCursor(200, 0)?.toString() ?: ""
         val cmd = AgenticRouter.classify(raw)
@@ -817,7 +819,7 @@ class ClicksImeService : InputMethodService() {
     private val vibrator by lazy { getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator }
     private val agenticHapticRunnables = ArrayList<Runnable>()
 
-    // Escalating buzz while the space bar is held toward an agentic action, then a strong confirm.
+    // Escalating buzz while the go/enter key is held toward an agentic action, then a strong confirm.
     private fun startAgenticHapticRamp(total: Long) {
         stopAgenticHapticRamp()
         listOf(0.30 to 45, 0.55 to 105, 0.80 to 175).forEach { (frac, amp) ->
@@ -846,7 +848,7 @@ class ClicksImeService : InputMethodService() {
         "pt" to "Portuguese", "it" to "Italian", "en" to "English"
     )
 
-    // Inline AI actions when you hold space over a real message: fix it, or translate it into your
+    // Inline AI actions when you hold go/enter over a real message: fix it, or translate it into your
     // other keyboard language — right where you type, no app switch (the "texting mom" case).
     private fun buildMessageActions(): List<Pair<String, String>> {
         val actions = ArrayList<Pair<String, String>>()
