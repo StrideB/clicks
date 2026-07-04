@@ -999,6 +999,42 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }.start()
     }
 
+    // ── OAuth skills (Phase 4) ────────────────────────────────────────────────────
+    private fun runMeet() {
+        if (!GmailAuth(this).isConnected) { flashAgenticStatus("Connect Google in the Clicks app first", 2800); return }
+        agenticStatus = "📹 Creating Meet link…"
+        updateStrip()
+        Thread {
+            val link = MeetApi.createMeeting(this)
+            handler.post {
+                agenticStatus = null
+                if (link != null) {
+                    currentInputConnection?.commitText(link, 1); onTextChanged(); updateStrip()
+                } else flashAgenticStatus("Couldn’t create a Meet link — reconnect Google (Calendar)", 2800)
+            }
+        }.start()
+    }
+
+    private fun runNotion(query: String) {
+        val token = imePrefs().getString(NotionApi.KEY_PREF, null)?.trim().orEmpty()
+        if (token.isBlank()) { flashAgenticStatus("Add a Notion token in Clicks settings", 2800); return }
+        val q = query.ifBlank { clipboardText() }.trim()
+        if (q.isBlank()) { flashAgenticStatus("Type what to find, e.g. “notion roadmap”", 2600); return }
+        agenticStatus = "🔎 Finding in Notion…"
+        updateStrip()
+        Thread {
+            val found = NotionApi.summon(q, token)
+            handler.post {
+                agenticStatus = null
+                if (found != null) {
+                    val (title, url) = found
+                    val body = if (title.isNotBlank()) "$title\n$url" else url
+                    agenticHud = Hud("NOTION", body, url); updateStrip()
+                } else flashAgenticStatus("No Notion page for “$q”", 2200)
+            }
+        }.start()
+    }
+
     // Honor the system "remove animations" accessibility setting.
     private fun animationsEnabled(): Boolean = runCatching {
         android.provider.Settings.Global.getFloat(
@@ -1291,6 +1327,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             t.startsWith("stock ") || t.startsWith("ticker ") ||
                 (t.startsWith("$") && t.length in 2..6 && t.drop(1).all { it.isLetterOrDigit() }) -> "stock"
             t == "worldcup" || t == "world cup" || t == "wc" || t == "wc odds" || t == "world cup odds" || t == "odds" -> "odds"
+            t == "meet" || t == "google meet" || t == "new meet" || t == "gmeet" -> "meet"
+            t.startsWith("notion ") || t == "notion" -> "notion"
             else -> null
         }
         if (clipSkill != null) {
@@ -1308,6 +1346,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     }.trim()
                 )
                 "odds" -> runWorldCupOdds()
+                "meet" -> runMeet()
+                "notion" -> runNotion(t.removePrefix("notion").trim())
             }
             return
         }

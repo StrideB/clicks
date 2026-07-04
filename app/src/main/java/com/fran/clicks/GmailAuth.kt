@@ -32,8 +32,11 @@ import java.security.SecureRandom
 // ─────────────────────────────────────────────────────────────────────────────
 const val GMAIL_CLIENT_ID = "YOUR_IOS_CLIENT_ID.apps.googleusercontent.com"
 
-// gmail.readonly is enough to search + read messages and fetch attachments.
-private const val GMAIL_SCOPES = "https://www.googleapis.com/auth/gmail.readonly"
+// gmail.readonly for mail; calendar.events lets the Google Meet skill create an instant meeting.
+// Enabling this scope needs the "Google Calendar API" enabled in the same Cloud project, and users
+// must reconnect once to grant it. (Meet links are created by inserting a Calendar event.)
+private const val GMAIL_SCOPES =
+    "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.events"
 
 // Reversed-client-id custom scheme, e.g. com.googleusercontent.apps.1234-abcd
 val GMAIL_REDIRECT_SCHEME: String
