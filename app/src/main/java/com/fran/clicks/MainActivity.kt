@@ -175,6 +175,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onAgenticCommand(text: String) { executeTypeToDoCommand(text) }
     override fun openHostKeyboardSettings() { keyboardSettingsOpen = true; render() }
 
+    private val autocorrectCore by lazy {
+        com.fran.clicks.keyboard.AutocorrectCore(
+            host = this,
+            engine = { predictionEngine },
+            contextNextWords = { ngramRepo.cachedNextWords(it) },
+            useFallback = true
+        )
+    }
+
     private val collator = Collator.getInstance()
     private var query = ""
     private var apps: List<AppEntry> = emptyList()
@@ -249,17 +258,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteRepeatActive = false
     private var deleteRepeatFired = false
-    // Autocorrect undo — stores what was replaced so backspace immediately after reverts it
-    private data class AutocorrectUndo(val original: String, val corrected: String, val trailingSpace: Boolean = true)
-    private var pendingAutocorrectUndo: AutocorrectUndo? = null
-    // Corrections the user explicitly undid (original word -> replacements they rejected). Once
-    // rejected, that fix is never auto-applied again — the keyboard stops fighting the user.
-    private val rejectedCorrections = HashMap<String, MutableSet<String>>()
-
-    private fun rememberRejectedCorrection(undo: AutocorrectUndo) {
-        rejectedCorrections.getOrPut(undo.original.lowercase(Locale.US)) { HashSet() }
-            .add(undo.corrected.lowercase(Locale.US))
-    }
+    // Autocorrect (correction, undo, rejected memory) now lives in the shared AutocorrectCore.
     // Cursor position within query/composeText (null = end)
     private var cursorPos: Int? = null
     // Gemini suggestions debounce
@@ -8788,32 +8787,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // [live] = fired from the pause debounce with no space typed. In that mode we ONLY rewrite a
     // "dead-end" word (one no real word extends), so we never rewrite a word still being typed, and
     // we don't add a trailing space. Non-live is the on-space path and behaves as before.
+    // Autocorrect now runs through the shared AutocorrectCore. `live` (mid-typing) rewriting stays
+    // disabled — correct only on space/punctuation; the core commits the corrected word (no trailing
+    // space) and the space handler adds the space, matching the previous behavior.
     private fun tryAutocorrect(live: Boolean = false) {
-        val word = currentWordInCompose().trimEnd()
-        if (word.length < 2) return
-        if (live && (word.length < 3 || predictionEngine.isPrefixOfDictWord(word))) return
-        // bestCorrection is already Damerau-aware (a transposition like teh→the or an adjacent-key
-        // slip counts as ~1 edit) and confidence-bounded, so trust its result directly. Only the
-        // looser getSuggestions fallback — which can return a longer completion — needs the plain
-        // edit-distance<=1 guard to avoid over-correcting. Applying that guard to bestCorrection was
-        // the bug: plain Levenshtein scores a transposition as 2, so common typos were never fixed.
-        val context = ngramRepo.cachedNextWords(previousWordInCompose())
-        val top = predictionEngine.bestCorrection(word, context) ?: run {
-            if (live) return                    // live mode trusts only the confident correction
-            val g = predictionEngine.getSuggestions(word, 1).firstOrNull() ?: return
-            if (editDistance(word, g) > 1) return
-            g
-        }
-        if (top.equals(word, ignoreCase = true)) return
-        if (rejectedCorrections[word.lowercase(Locale.US)]?.contains(top.lowercase(Locale.US)) == true) return
-        pendingAutocorrectUndo = AutocorrectUndo(word, top, trailingSpace = !live)
-        val suffix = if (live) "" else " "
-        if (openPane?.kind == PaneKind.CHAT) {
-            composeText = composeText.dropLast(word.length) + top + suffix
-        } else {
-            query = query.dropLast(word.length) + top + suffix
-        }
-        if (live) { renderRibbon(); scheduleSpellCheck() }   // reflect the inline rewrite + refresh strip
+        if (live) return
+        autocorrectCore.correctBeforeCommit()
     }
 
     private var liveCorrectDebounce: Runnable? = null
@@ -9989,18 +9968,8 @@ Reply format: ["word1","word2","word3"]"""
 
         when (label) {
             "back" -> {
-                // Undo autocorrect: if last action was a correction, restore original word
-                val undo = pendingAutocorrectUndo
-                if (undo != null && !libraryOpen) {
-                    pendingAutocorrectUndo = null
-                    rememberRejectedCorrection(undo)
-                    query = query.dropLast(undo.corrected.length + (if (undo.trailingSpace) 1 else 0)) + undo.original  // strip "corrected " and restore
-                    if (openPane?.kind == PaneKind.CHAT) {
-                        composeText = composeText.dropLast(undo.corrected.length + (if (undo.trailingSpace) 1 else 0)) + undo.original
-                    }
-                    renderRibbon(); return
-                }
-                pendingAutocorrectUndo = null
+                // Undo autocorrect via the shared core (restore original + remember rejection).
+                if (!libraryOpen && autocorrectCore.undoOnBackspace()) { renderRibbon(); return }
                 val pos = cursorPos
                 if (pos != null && pos > 0) {
                     query = query.removeRange(pos - 1, pos)
@@ -10016,7 +9985,7 @@ Reply format: ["word1","word2","word3"]"""
                 if (!libraryOpen) scheduleSpellCheck()
             }
             "space" -> {
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 if (libraryOpen) {
                     if (query.isNotBlank()) query += " "
                 } else {
@@ -10040,7 +10009,7 @@ Reply format: ["word1","word2","word3"]"""
                 }
             }
             "period" -> {
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 if (libraryOpen) { if (query.isNotBlank()) query += "." }
                 else {
                     tryAutocorrect()
@@ -10119,7 +10088,7 @@ Reply format: ["word1","word2","word3"]"""
                     }
                     renderRibbon(); return
                 }
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
                 if (!libraryOpen && openPane == null && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
                     // Auto-open library in docked mode so search shows full-screen results.
@@ -10142,7 +10111,7 @@ Reply format: ["word1","word2","word3"]"""
     private fun handleAiKey(label: String, pane: PaneTarget) {
         when (label) {
             "back" -> {
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 aiDraftText = aiDraftText.dropLast(1)
                 aiDraftActive = true
             }
@@ -10187,7 +10156,7 @@ Reply format: ["word1","word2","word3"]"""
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 aiDraftText += char
                 aiDraftActive = true
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
             }
         }
@@ -10210,19 +10179,12 @@ Reply format: ["word1","word2","word3"]"""
     private fun handleChatKey(label: String, pane: PaneTarget) {
         when (label) {
             "back" -> {
-                val undo = pendingAutocorrectUndo
-                if (undo != null) {
-                    pendingAutocorrectUndo = null
-                    rememberRejectedCorrection(undo)
-                    composeText = composeText.dropLast(undo.corrected.length + (if (undo.trailingSpace) 1 else 0)) + undo.original
-                    updateAutoCapState(); updateKeyLabels(); return
-                }
-                pendingAutocorrectUndo = null
+                if (autocorrectCore.undoOnBackspace()) { updateAutoCapState(); updateKeyLabels(); return }
                 composeText = composeText.dropLast(1)
                 updateAutoCapState(); updateKeyLabels(); scheduleSpellCheck()
             }
             "space" -> {
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 if (maybeRunLauncherAiCommand()) return
                 val now = System.currentTimeMillis()
                 if (now - lastSpaceMs < 500 && composeText.isNotEmpty() && composeText.last() == ' ') {
@@ -10238,7 +10200,7 @@ Reply format: ["word1","word2","word3"]"""
                 lastSpaceMs = now
             }
             "period" -> {
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 tryAutocorrect()
                 composeText = composeText.trimEnd() + "."
                 shiftState = ShiftState.ONCE; updateKeyLabels()
@@ -10257,7 +10219,7 @@ Reply format: ["word1","word2","word3"]"""
             }
             "enter" -> postComposeBubble(pane)
             else -> {
-                pendingAutocorrectUndo = null
+                autocorrectCore.clearPending()
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 composeText += char
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }

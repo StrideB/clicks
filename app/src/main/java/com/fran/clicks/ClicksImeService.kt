@@ -96,6 +96,14 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private val spatialScorer = SpatialScorer()
     private val ngramRepo by lazy { NgramRepository(this) }
     private val hapticEngine by lazy { com.fran.clicks.keyboard.CustomHapticEngine(this) }
+    private val autocorrect by lazy {
+        com.fran.clicks.keyboard.AutocorrectCore(
+            host = this,
+            engine = { predictionEngine },
+            contextNextWords = { ngramRepo.cachedNextWords(it) },
+            extendedEngine = { predictionEngineExtended }
+        )
+    }
     private var suggestionStrip: LinearLayout? = null
     private var agenticPanel: LinearLayout? = null
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
@@ -122,10 +130,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
     private var geminiDebounce: Runnable? = null
-    private var pendingOriginal: String? = null
-    private var pendingCorrected: String? = null
     private var lastSpaceMs = 0L
-    private val rejectedCorrections = HashMap<String, MutableSet<String>>()
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteRepeatActive = false
     private var deleteRepeatFired = false
@@ -423,24 +428,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 refreshKeyboardChrome()
             }
             "back" -> {
-                // Undo autocorrect: if the last action was a correction and it's still right before
-                // the cursor, backspace restores the original word and remembers the rejection so it
-                // is never re-applied to that word. This is what lets the user "be" after retyping.
-                val orig = pendingOriginal; val corr = pendingCorrected
-                pendingOriginal = null; pendingCorrected = null
-                if (orig != null && corr != null && input != null) {
-                    val before = input.getTextBeforeCursor(corr.length + 1, 0)?.toString().orEmpty()
-                    val hasSpace = before.endsWith("$corr ")
-                    if (hasSpace || before.endsWith(corr)) {
-                        input.beginBatchEdit()
-                        input.deleteSurroundingText(corr.length + if (hasSpace) 1 else 0, 0)
-                        input.commitText(orig, 1)
-                        input.endBatchEdit()
-                        rejectedCorrections.getOrPut(orig.lowercase(Locale.US)) { HashSet() }.add(corr.lowercase(Locale.US))
-                        onTextChanged()
-                        return
-                    }
-                }
+                // Undo autocorrect via the shared core (restore original + remember rejection).
+                if (input != null && autocorrect.undoOnBackspace()) { onTextChanged(); return }
                 if (input == null) {
                     VivoDockedExperiment.injectInput("⌫")
                 } else if (!input.deleteSurroundingText(1, 0)) {
@@ -462,7 +451,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     return
                 }
                 lastSpaceMs = now
-                if (autocorrectEnabled()) tryAutocorrect(live = false)
+                if (autocorrectEnabled()) autocorrect.correctBeforeCommit()
                 commitValue(" ")
                 learnAndPredictAfterSpace()
                 updateAutoCap()
@@ -472,6 +461,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             "abc" -> { symbolsMode = false; rebuildDeck() }
             "." -> commitValue(".")
             else -> {
+                autocorrect.clearPending()
                 commitValue(if ((shifted || capsLock) && label.length == 1) label.uppercase() else label)
                 if (shifted && !capsLock && label.length == 1 && label[0].isLetter()) {
                     shifted = false
@@ -763,26 +753,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         liveCorrectDebounce?.let { handler.removeCallbacks(it) }
     }
 
-    private fun tryAutocorrect(live: Boolean): Boolean {
-        val ic = currentInputConnection ?: return false
-        val word = currentWord()
-        if (word.length < 2) return false
-        // Never "correct away" a word that's real in ANY of the user's languages — even while the
-        // primary language is active. This is what stops a genuine secondary-language word (e.g. the
-        // first "hola" before the language flips) from being mangled into a primary-language word.
-        if (predictionEngineExtended.isDictWord(word)) return false
-        if (live && (word.length < 3 || predictionEngine.isPrefixOfDictWord(word))) return false
-        val context = ngramRepo.cachedNextWords(previousWord())
-        val top = predictionEngine.bestCorrection(word, context) ?: return false
-        if (top.equals(word, ignoreCase = true)) return false
-        if (rejectedCorrections[word.lowercase(Locale.US)]?.contains(top.lowercase(Locale.US)) == true) return false
-        ic.beginBatchEdit()
-        ic.deleteSurroundingText(word.length, 0)
-        ic.commitText(top, 1)
-        ic.endBatchEdit()
-        pendingOriginal = word; pendingCorrected = top
-        return true
-    }
+    // Autocorrect now lives in the shared AutocorrectCore (see `autocorrect`).
 
     // Auto-language: start in the primary language and only switch a secondary phone language ON
     // when the last few words are clearly written in it (>= 2 words valid in that language but not
