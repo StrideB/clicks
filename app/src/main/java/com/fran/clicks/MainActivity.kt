@@ -40,6 +40,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import com.fran.clicks.glide.KeyInfo
 import com.fran.clicks.glide.StatisticalGlideTypingClassifier
+import com.fran.clicks.keyboard.neural.TimedPoint
 import com.fran.clicks.hardware.ParallaxSensorEngine
 import android.net.Uri
 import android.os.Build
@@ -297,6 +298,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetSwapHasDown = false
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
     private var neuralSwipe: com.fran.clicks.keyboard.NeuralSwipeEngine? = null
+    // New encoder-decoder + beam-search decoder, wired via the same shared engine the IME uses.
+    // Preferred over the legacy encoder-only [neuralSwipe] when a model is present and enabled.
+    private var neuralGlideV2: com.fran.clicks.keyboard.neural.NeuralGlideEngine? = null
     private var glideRecognizedColor: Int? = null   // app brand color when a glided word names an app
     @Volatile private var glideGestureActive = false   // true while a keyboard glide owns the touch
     private var numberPadOpen = false
@@ -625,6 +629,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
         mediaUiScope.cancel()
+        neuralGlideV2?.close()
         spellChecker?.close()
         handler.removeCallbacksAndMessages(null)
         billingClient?.endConnection()
@@ -7762,8 +7767,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             // Suggestion strip at the TOP of the keyboard (Gboard-style), above all key rows.
             if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen) {
-                addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)).apply {
-                    bottomMargin = dp(2)
+                addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyboardSuggestionStripHeight()).apply {
+                    marginStart = dp(8)
+                    marginEnd = dp(8)
+                    topMargin = dp(2)
+                    bottomMargin = 0
                 })
             }
             if (symbolsOpen) {
@@ -8178,14 +8186,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             ellipsize = android.text.TextUtils.TruncateAt.END
             setPadding(0, 0, 0, 0)
             setTextColor(keyTextColor(label))
+            val vInset = keyVerticalInset()
+            val hInset = keyHorizontalInset()
             // Show the swipe-down symbol at the bottom of letter keys.
             if (isLetter && this is DynamicFlickKeyView) {
                 val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
+                setKeyFaceInsets(hInset, vInset)
                 setSymbolHint(sym, (keyTextColor(label) and 0x00FFFFFF) or (0x66 shl 24))
             }
             isClickable = true
-            val vInset = keyVerticalInset()
-            val hInset = keyHorizontalInset()
             val needsInset = label != "enter" && label != "123"
             fun idleBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyIdleBackground(label), hInset, vInset, hInset, vInset) else keyIdleBackground(label)
             fun pressedBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyPressedBackground(label), hInset, vInset, hInset, vInset) else keyPressedBackground(label)
@@ -8381,14 +8390,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun showSuggestionStrip() = true
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
-    private fun keyboardTypingWellHeight() = dp(34)
-    private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(2) else 0
+    private fun keyboardTypingWellHeight() = dp(36)
+    private fun keyboardSuggestionStripHeight() = dp(34)
+    private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(1) else 0
 
     private fun suggestionStrip(): View {
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), dp(3), dp(6), dp(3))
+            setPadding(dp(10), dp(2), dp(10), dp(2))
         }
         suggestionStripView = strip
         updateSuggestionBar()
@@ -8974,9 +8984,16 @@ Reply format: ["word1","word2","word3"]"""
                 clf.setWordData(loaded.words, loaded.freqs)
                 // Optional neural decoder — no-op (isReady=false) unless a trained model ships in assets.
                 val neural = com.fran.clicks.keyboard.NeuralSwipeEngine(this@MainActivity).also { it.tryLoad() }
+                // New encoder-decoder engine (shared with the IME). Shares the same dictionary; load()
+                // stays not-ready until model assets exist, so this changes nothing on its own.
+                val neuralV2 = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this@MainActivity).apply {
+                    setDictionary(loaded.words, loaded.freqs)
+                    load()
+                }
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
                     neuralSwipe = neural.takeIf { it.isReady }
+                    neuralGlideV2 = neuralV2
                     wordlistFrequencies = loaded.freqs
                     predictionEngine = PredictionEngine(loaded.freqs)
                     updateGlideLayout()
@@ -9061,6 +9078,13 @@ Reply format: ["word1","word2","word3"]"""
         return floatArrayOf(left, top, right - left, bottom - top)
     }
 
+    // Letter-key centers (screen space) for the neural decoder's nearest-key feature.
+    private fun letterKeyCenters(): List<KeyInfo> =
+        keyBounds.mapNotNull { (label, rect) ->
+            if (label.length != 1 || !label[0].isLetter()) return@mapNotNull null
+            KeyInfo(label[0], rect.exactCenterX(), rect.exactCenterY(), rect.width().toFloat(), rect.height().toFloat())
+        }
+
     private fun handleGlideResult(results: List<String>) {
         if (hapticsEnabled) hapticEngine.glideCommit() else haptic(contentFrame)
         val pane = openPane
@@ -9120,6 +9144,8 @@ Reply format: ["word1","word2","word3"]"""
         private var tracking = false
         private val traced = mutableListOf<String>()
         private val trailLocal = mutableListOf<Pair<Float, Float>>()
+        // Event timestamps parallel to trailLocal — for the neural decoder's velocity/accel features.
+        private val trailTimes = mutableListOf<Long>()
         private var screenX = 0f
         private var screenY = 0f
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -9135,7 +9161,7 @@ Reply format: ["word1","word2","word3"]"""
         // then fade it out — so it "stays after finishing" instead of vanishing the instant you lift.
         private fun fadeGlideTrail() {
             glideFadeRunnable?.let { handler.removeCallbacks(it) }
-            val r = Runnable { glidePersisting = false; trailLocal.clear(); glideRecognizedColor = null; invalidate() }
+            val r = Runnable { glidePersisting = false; trailLocal.clear(); trailTimes.clear(); glideRecognizedColor = null; invalidate() }
             glideFadeRunnable = r
             handler.postDelayed(r, 900)
         }
@@ -9144,9 +9170,20 @@ Reply format: ["word1","word2","word3"]"""
             tracking = false
             traced.clear()
             trailLocal.clear()
+            trailTimes.clear()
             trackpadActive = false
             glideClassifier?.clear()
             invalidate()
+        }
+
+        /** Snapshot the raw screen-space path (with timestamps) for the neural decoder. */
+        fun snapshotTimedPath(): List<TimedPoint> {
+            val n = minOf(trailLocal.size, trailTimes.size)
+            val out = ArrayList<TimedPoint>(n)
+            for (i in 0 until n) {
+                out.add(TimedPoint(trailLocal[i].first + screenX, trailLocal[i].second + screenY, trailTimes[i]))
+            }
+            return out
         }
 
         override fun dispatchDraw(canvas: Canvas) {
@@ -9195,7 +9232,7 @@ Reply format: ["word1","word2","word3"]"""
                     startRawX = ev.rawX; startRawY = ev.rawY
                     glideFadeRunnable?.let { handler.removeCallbacks(it) }
                     glidePersisting = false; glideRecognizedColor = null
-                    tracking = false; traced.clear(); trailLocal.clear()
+                    tracking = false; traced.clear(); trailLocal.clear(); trailTimes.clear()
                     val loc = IntArray(2); getLocationOnScreen(loc)
                     screenX = loc[0].toFloat(); screenY = loc[1].toFloat()
                     trackpadActive = false
@@ -9210,6 +9247,7 @@ Reply format: ["word1","word2","word3"]"""
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
                             keyAtPoint(startRawX, startRawY)?.let { k -> if (k.length == 1) traced.add(k) }
                             trailLocal.add(startRawX - screenX to startRawY - screenY)
+                            trailTimes.add(ev.eventTime)
                             glideClassifier?.addGesturePoint(startRawX, startRawY)
                             return true
                         }
@@ -9262,6 +9300,7 @@ Reply format: ["word1","word2","word3"]"""
                     val k = keyAtPoint(ev.rawX, ev.rawY)
                     if (k != null && k.length == 1 && (traced.isEmpty() || traced.last() != k)) traced.add(k)
                     trailLocal.add(ev.rawX - screenX to ev.rawY - screenY)
+                    trailTimes.add(ev.eventTime)
                     glideClassifier?.addGesturePoint(ev.rawX, ev.rawY)
                     invalidate()
                 }
@@ -9296,37 +9335,47 @@ Reply format: ["word1","word2","word3"]"""
                     glidePersisting = trailLocal.size > 1   // hold the trail through recognition
                     invalidate()
                     if (clf != null && clf.hasEnoughPoints) {
-                        // Snapshot the raw screen-space path for the optional neural decoder.
-                        val neural = neuralSwipe
-                        val rawPath = if (neural != null)
-                            trailLocal.map { android.graphics.PointF(it.first + screenX, it.second + screenY) }
-                            else null
-                        val bounds = if (neural != null) letterKeyBounds() else null
                         val contextBoost = glideCore.contextBoost()
-                        Thread {
-                            // Decode in a try/finally so the trail ALWAYS gets cleaned up — even if the
-                            // neural or statistical decoder throws. Otherwise glidePersisting stays true
-                            // and the trail sticks on screen forever.
+                        // Preferred: new encoder-decoder + beam-search engine (shared with the IME).
+                        val neuralV2 = neuralGlideV2?.takeIf { it.enabled }
+                        val pathV2 = if (neuralV2 != null) snapshotTimedPath() else emptyList()
+                        val boundsV2 = if (neuralV2 != null) letterKeyBounds() else null
+                        val centersV2 = if (neuralV2 != null) letterKeyCenters() else emptyList()
+                        // Legacy encoder-only classifier, kept for A/B when V2 is off/not-ready.
+                        val neuralV1 = if (neuralV2 == null) neuralSwipe else null
+                        val rawPathV1 = if (neuralV1 != null)
+                            trailLocal.map { android.graphics.PointF(it.first + screenX, it.second + screenY) } else null
+                        val boundsV1 = if (neuralV1 != null) letterKeyBounds() else null
+                        // One coroutine on the UI scope; heavy work runs off-main. try/finally guarantees
+                        // the trail is always cleaned up even if a decoder throws.
+                        mediaUiScope.launch {
                             var results: List<String> = emptyList()
                             try {
-                                val neuralResults = if (neural != null && rawPath != null && bounds != null)
-                                    neural.decodeSwipePath(rawPath, bounds[0], bounds[1], bounds[2], bounds[3], wordlistFrequencies)
-                                    else emptyList()
-                                results = neuralResults.ifEmpty { clf.getSuggestions(3, contextBoost) }
-                            } catch (_: Throwable) {
-                                results = emptyList()
+                                if (neuralV2 != null && boundsV2 != null && pathV2.size > 1) {
+                                    results = try {
+                                        neuralV2.decodeWords(pathV2, boundsV2[0], boundsV2[1], boundsV2[2], boundsV2[3], centersV2, 3)
+                                    } catch (_: Throwable) { emptyList() }
+                                }
+                                if (results.isEmpty()) {
+                                    results = kotlinx.coroutines.withContext(Dispatchers.Default) {
+                                        try {
+                                            val v1 = if (neuralV1 != null && rawPathV1 != null && boundsV1 != null)
+                                                neuralV1.decodeSwipePath(rawPathV1, boundsV1[0], boundsV1[1], boundsV1[2], boundsV1[3], wordlistFrequencies)
+                                                else emptyList()
+                                            v1.ifEmpty { clf.getSuggestions(3, contextBoost) }
+                                        } catch (_: Throwable) { emptyList() }
+                                    }
+                                }
                             } finally {
                                 runCatching { clf.clear() }
-                                handler.post {
-                                    fadeGlideTrail()   // schedule the clear FIRST so a later throw can't strand the trail
-                                    if (results.isNotEmpty()) {
-                                        handleGlideResult(results)
-                                        glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
-                                        invalidate()
-                                    } else if (t.size >= 3) handleSwipeFallback(t)
-                                }
+                                fadeGlideTrail()   // schedule the clear FIRST so a later throw can't strand the trail
+                                if (results.isNotEmpty()) {
+                                    handleGlideResult(results)
+                                    glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
+                                    invalidate()
+                                } else if (t.size >= 3) handleSwipeFallback(t)
                             }
-                        }.start()
+                        }
                     } else {
                         clf?.clear()
                         if (t.size >= 3) handleSwipeFallback(t)
@@ -9334,7 +9383,7 @@ Reply format: ["word1","word2","word3"]"""
                     }
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    tracking = false; glideGestureActive = false; traced.clear(); trailLocal.clear()
+                    tracking = false; glideGestureActive = false; traced.clear(); trailLocal.clear(); trailTimes.clear()
                     glideClassifier?.clear(); invalidate()
                 }
             }
@@ -11397,11 +11446,13 @@ Reply format: ["word1","word2","word3"]"""
             searchHintView.letterSpacing = 0f
             searchHintView.ellipsize = android.text.TextUtils.TruncateAt.START
             searchHintView.gravity = Gravity.CENTER_VERTICAL
-            searchHintView.includeFontPadding = false
-            searchHintView.setPadding(dp(16), dp(3), dp(16), dp(4))
+            searchHintView.includeFontPadding = true
+            searchHintView.translationY = dp(1).toFloat()
+            searchHintView.setPadding(dp(16), dp(5), dp(16), dp(1))
             searchHintView.setTextColor(activeNeuTokens.ink)
             searchHintView.text = styledTypedCommand(typedText)
         } else {
+            searchHintView.translationY = 0f
             searchHintView.textSize = if (isVivoDevice()) 8.6f else 9.5f
             searchHintView.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
             searchHintView.letterSpacing = if (isVivoDevice()) 0.14f else 0.18f

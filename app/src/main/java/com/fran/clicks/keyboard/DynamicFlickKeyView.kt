@@ -37,6 +37,14 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
 
     private var keyW = 0
     private var keyH = 0
+    private var faceInsetX = 0f
+    private var faceInsetY = 0f
+
+    fun setKeyFaceInsets(horizontalInsetPx: Int, verticalInsetPx: Int) {
+        faceInsetX = horizontalInsetPx.toFloat().coerceAtLeast(0f)
+        faceInsetY = verticalInsetPx.toFloat().coerceAtLeast(0f)
+        invalidate()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -50,18 +58,21 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         // Swipe-down symbol at the bottom edge.
         symbolHint?.let { s ->
             if (keyH > 0) {
-                symbolPaint.textSize = keyH * 0.19f
-                canvas.drawText(s, keyW / 2f, keyH - keyH * 0.08f, symbolPaint)
+                val faceTop = faceInsetY
+                val faceBottom = keyH - faceInsetY
+                val faceHeight = (faceBottom - faceTop).coerceAtLeast(keyH * 0.58f)
+                symbolPaint.textSize = faceHeight * 0.16f
+                canvas.drawText(s, keyW / 2f, faceBottom - faceHeight * 0.16f, symbolPaint)
             }
         }
         val hint = upWordHint ?: return
         if (keyW == 0) return
         // Scale text down if the word is wider than the key (minus 4px margins each side)
-        val maxWidth = (keyW - 8).toFloat()
+        val maxWidth = (keyW - faceInsetX * 2f - 8f).coerceAtLeast(8f)
         val measured = hintPaint.measureText(hint)
         val savedSize = hintPaint.textSize
         if (measured > maxWidth) hintPaint.textSize = savedSize * (maxWidth / measured)
-        val y = hintPaint.textSize + 2f
+        val y = faceInsetY + hintPaint.textSize + 2f
         canvas.drawText(hint, keyW / 2f, y, hintPaint)
         hintPaint.textSize = savedSize
     }

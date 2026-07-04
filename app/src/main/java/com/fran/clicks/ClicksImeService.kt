@@ -45,7 +45,11 @@ import com.fran.clicks.keyboard.applyDoubleSpacePeriod
 import com.fran.clicks.keyboard.shouldAutoCapitalize
 import com.fran.clicks.keyboard.PredictionEngine
 import com.fran.clicks.keyboard.SpatialScorer
+import com.fran.clicks.keyboard.neural.TimedPoint
 import com.fran.clicks.db.NgramRepository
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
 
@@ -90,6 +94,13 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = linkedMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
+    // Optional neural glide decoder (encoder-decoder + beam search). No-op until a model ships in
+    // assets; when present it decodes ahead of the statistical classifier. Wired identically in the
+    // launcher's Widget keyboard via the same NeuralGlideEngine.
+    private var neuralGlide: com.fran.clicks.keyboard.neural.NeuralGlideEngine? = null
+    private val glideScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate
+    )
     private var predictionEngine = PredictionEngine(emptyMap())         // active pointer (primary or extended)
     private var predictionEnginePrimary = PredictionEngine(emptyMap())  // primary language only
     private var predictionEngineExtended = PredictionEngine(emptyMap()) // primary + secondary phone languages
@@ -202,6 +213,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     override fun onDestroy() {
         stopDeleteRepeat(clearFired = true)
         imePrefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
+        glideScope.cancel()
+        neuralGlide?.close()
         super.onDestroy()
     }
 
@@ -284,14 +297,20 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     }
 
     private fun keyView(label: String): TextView {
-        return TextView(this).apply {
+        val isLetter = label.length == 1 && label[0].isLetter() && !symbolsMode
+        return (if (isLetter) com.fran.clicks.keyboard.DynamicFlickKeyView(this) else TextView(this)).apply {
             tag = label
-            text = keyDisplayText(label)
+            text = if (isLetter) visualLabel(label) else keyDisplayText(label)
             gravity = Gravity.CENTER
             includeFontPadding = false
             textSize = keyTextSize(label)
             typeface = if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
+            if (isLetter && this is com.fran.clicks.keyboard.DynamicFlickKeyView) {
+                setKeyFaceInsets(dp(1), keyVerticalInset())
+                val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
+                setSymbolHint(sym, symbolHintColor())
+            }
             background = visualKeyBackground(label, pressed = false)
             isClickable = true
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -600,6 +619,25 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             ?.key
     }
 
+    // Screen-space [left, top, width, height] of the letter keys — used to normalize a glide into
+    // [0,1] so the neural decoder is independent of Docked vs. Widget keyboard size.
+    private fun letterKeyBounds(): FloatArray? {
+        val rects = keyBounds.filterKeys { it.length == 1 && it[0].isLetter() }.values
+        if (rects.isEmpty()) return null
+        val left = rects.minOf { it.left }.toFloat()
+        val top = rects.minOf { it.top }.toFloat()
+        val right = rects.maxOf { it.right }.toFloat()
+        val bottom = rects.maxOf { it.bottom }.toFloat()
+        return floatArrayOf(left, top, right - left, bottom - top)
+    }
+
+    // Letter-key centers (screen space) for the neural decoder's nearest-key feature.
+    private fun letterKeyCenters(): List<KeyInfo> =
+        keyBounds.mapNotNull { (label, rect) ->
+            if (label.length != 1 || !label[0].isLetter()) return@mapNotNull null
+            KeyInfo(label[0], rect.exactCenterX(), rect.exactCenterY(), rect.width().toFloat(), rect.height().toFloat())
+        }
+
     private fun ensureGlideClassifier() {
         if (glideClassifier != null) return
         Thread {
@@ -609,8 +647,15 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             val adaptive = com.fran.clicks.keyboard.DictionaryLoader.loadAdaptive(this)
             val clf = StatisticalGlideTypingClassifier()
             clf.setWordData(adaptive.extendedWords, adaptive.extendedFreqs)
+            // Neural decoder shares the same dictionary; load() is a no-op (stays not-ready) until a
+            // model is placed in assets, so this never changes behavior on its own.
+            val neural = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this).apply {
+                setDictionary(adaptive.extendedWords, adaptive.extendedFreqs)
+                load()
+            }
             handler.post {
                 glideClassifier = clf
+                neuralGlide = neural
                 predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
                 predictionEngineExtended = PredictionEngine(adaptive.extendedFreqs)
                 hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
@@ -1667,6 +1712,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private var tracking = false
         private val traced = mutableListOf<String>()
         private val trailLocal = mutableListOf<Pair<Float, Float>>()
+        // Event timestamps parallel to trailLocal — needed for the neural decoder's velocity/accel
+        // features (the statistical classifier doesn't use them).
+        private val trailTimes = mutableListOf<Long>()
         private var screenX = 0f
         private var screenY = 0f
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1684,6 +1732,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             val r = Runnable {
                 glidePersisting = false
                 trailLocal.clear()
+                trailTimes.clear()
                 invalidate()
             }
             glideFadeRunnable = r
@@ -1694,8 +1743,19 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             tracking = false
             traced.clear()
             trailLocal.clear()
+            trailTimes.clear()
             glideClassifier?.clear()
             invalidate()
+        }
+
+        /** Snapshot the raw screen-space path (with timestamps) for the neural decoder. */
+        fun snapshotSwipePath(): List<TimedPoint> {
+            val n = minOf(trailLocal.size, trailTimes.size)
+            val out = ArrayList<TimedPoint>(n)
+            for (i in 0 until n) {
+                out.add(TimedPoint(trailLocal[i].first + screenX, trailLocal[i].second + screenY, trailTimes[i]))
+            }
+            return out
         }
 
         override fun dispatchDraw(canvas: Canvas) {
@@ -1737,6 +1797,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     tracking = false
                     traced.clear()
                     trailLocal.clear()
+                    trailTimes.clear()
                     val loc = IntArray(2)
                     getLocationOnScreen(loc)
                     screenX = loc[0].toFloat()
@@ -1752,6 +1813,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         parent?.requestDisallowInterceptTouchEvent(true)
                         keyAtPoint(startRawX, startRawY, letterOnly = true)?.let { traced.add(it) }
                         trailLocal.add(startRawX - screenX to startRawY - screenY)
+                        trailTimes.add(ev.eventTime)
                         glideClassifier?.addGesturePoint(startRawX, startRawY)
                         return true
                     }
@@ -1773,6 +1835,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         if (traced.isEmpty() || traced.last() != key) traced.add(key)
                     }
                     trailLocal.add(ev.rawX - screenX to ev.rawY - screenY)
+                    trailTimes.add(ev.eventTime)
                     glideClassifier?.addGesturePoint(ev.rawX, ev.rawY)
                     invalidate()
                 }
@@ -1791,6 +1854,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         traced.clear()
                         clf?.clear()
                         trailLocal.clear()
+                        trailTimes.clear()
                         glidePersisting = false
                         invalidate()
                         keyHaptic("space")
@@ -1815,26 +1879,39 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     }
                     if (clf != null && clf.hasEnoughPoints) {
                         val contextBoost = glideCore.contextBoost()
-                        Thread {
+                        // Snapshot inputs for the optional neural decoder on the main thread (touch
+                        // state is about to be cleared). Null when neural is off/not-ready.
+                        val neural = neuralGlide?.takeIf { it.enabled }
+                        val neuralPath = if (neural != null) snapshotSwipePath() else emptyList()
+                        val bounds = if (neural != null) letterKeyBounds() else null
+                        val centers = if (neural != null) letterKeyCenters() else emptyList()
+                        glideScope.launch {
                             var results: List<String> = emptyList()
-                            try {
-                                results = clf.getSuggestions(3, contextBoost)
-                            } catch (e: Throwable) {
-                                android.util.Log.e("ClicksGlide", "decode failed", e)
-                            } finally {
-                                runCatching { clf.clear() }
-                                handler.post {
-                                    android.util.Log.d("ClicksGlide", "results=${results.size} top=${results.firstOrNull()} icNull=${currentInputConnection == null}")
-                                    if (results.isNotEmpty()) {
-                                        if (hapticsOn()) hapticEngine.glideCommit()
-                                        glideCore.commitWord(glideCore.rerank(results)); learnAndPredictAfterSpace()
-                                    } else if (tracedKeys.size >= 3) {
-                                        keyHaptic("space"); handleSwipeFallback(tracedKeys)
-                                    }
-                                    fadeGlideTrail()
+                            // 1) Neural decode first (runs off-main inside the engine).
+                            if (neural != null && bounds != null && neuralPath.size > 1) {
+                                results = try {
+                                    neural.decodeWords(neuralPath, bounds[0], bounds[1], bounds[2], bounds[3], centers, 3)
+                                } catch (e: Throwable) {
+                                    android.util.Log.e("ClicksGlide", "neural decode failed", e); emptyList()
                                 }
                             }
-                        }.start()
+                            // 2) Statistical fallback when neural is off or returns nothing.
+                            if (results.isEmpty()) {
+                                results = withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    try { clf.getSuggestions(3, contextBoost) }
+                                    catch (e: Throwable) { android.util.Log.e("ClicksGlide", "decode failed", e); emptyList() }
+                                }
+                            }
+                            runCatching { clf.clear() }
+                            android.util.Log.d("ClicksGlide", "results=${results.size} top=${results.firstOrNull()} neural=${neural != null}")
+                            if (results.isNotEmpty()) {
+                                if (hapticsOn()) hapticEngine.glideCommit()
+                                glideCore.commitWord(glideCore.rerank(results)); learnAndPredictAfterSpace()
+                            } else if (tracedKeys.size >= 3) {
+                                keyHaptic("space"); handleSwipeFallback(tracedKeys)
+                            }
+                            fadeGlideTrail()
+                        }
                     } else {
                         clf?.clear()
                         if (tracedKeys.size >= 3) { keyHaptic("space"); handleSwipeFallback(tracedKeys) }

@@ -1,0 +1,299 @@
+"""
+Train + export the ENCODER-DECODER neural swipe model (Track C) for the Clicks keyboard.
+
+This is separate from the legacy encoder-only pipeline (synth.py / train.py, Track B). It produces the
+two ONNX graphs that `app/src/main/java/com/fran/clicks/keyboard/neural/` loads:
+
+    swipe_encoder.onnx   encoder(features, src_mask) -> memory
+    swipe_decoder.onnx   decoder(memory, src_mask, tgt) -> logits   (autoregressive; beam search on device)
+
+The feature layout, tensor names, shapes, and character vocabulary MUST match
+`NeuralSwipeContract.kt` EXACTLY — that file and this script are the two ends of one wire. The
+constants below are copied from it; if you change one, change both.
+
+Why synthetic data: there is no large, permissively-licensed English-QWERTY swipe corpus with real
+coordinates, so we synthesize realistic gestures from the app's own lexicon + key geometry (same
+approach as IndicSwipe). To train on the MIT-licensed FUTO corpus instead, replace `iter_batch()`
+with a loader that yields the same (features, src_mask, tgt) tensors — the model/export are unchanged.
+
+Run (CPU is fine for a small model; GPU speeds it up):
+
+    pip install torch numpy onnx
+    python export_seq2seq.py \
+        --wordlist ../../app/src/main/assets/dict/en_wordlist.txt \
+        --vocab-size 20000 --steps 4000 --batch 128 \
+        --out ../../app/src/main/assets
+
+Then rebuild the app. `NeuralGlideEngine.isReady` flips true automatically and glide routes through
+the neural decoder (statistical decoder stays as fallback). No app code changes are needed.
+"""
+
+import argparse
+import math
+import numpy as np
+import torch
+import torch.nn as nn
+
+from layout import word_key_path, KEY_CENTERS, KEY_W, KEY_H
+
+# ── Contract constants — keep in lockstep with NeuralSwipeContract.kt ──
+MAX_TRAJ = 200
+BASE_FEATURES = 6
+KEY_COUNT = 26
+FEATURE_DIM = BASE_FEATURES + KEY_COUNT      # 32
+PAD, SOS, EOS = 0, 1, 2
+FIRST_LETTER = 3
+VOCAB_SIZE = FIRST_LETTER + KEY_COUNT        # 29
+MAX_DECODE_LEN = 24
+
+# Ordered letters for the nearest-key one-hot (index 0..25 == 'a'..'z').
+_LETTERS = [chr(ord("a") + i) for i in range(KEY_COUNT)]
+_KEY_XY = np.array([KEY_CENTERS[c] for c in _LETTERS], dtype=np.float32)  # (26, 2), already in [0,1]
+
+
+# ─────────────────────────────── synthetic gestures ───────────────────────────────
+
+def _catmull_rom(points, samples_per_seg):
+    pts = np.asarray(points, dtype=np.float64)
+    if len(pts) == 1:
+        return np.repeat(pts, 2, axis=0)
+    p = np.vstack([pts[0], pts, pts[-1]])
+    out = []
+    for i in range(1, len(p) - 2):
+        p0, p1, p2, p3 = p[i - 1], p[i], p[i + 1], p[i + 2]
+        for t in np.linspace(0, 1, samples_per_seg, endpoint=False):
+            t2, t3 = t * t, t * t * t
+            out.append(0.5 * ((2 * p1) + (-p0 + p2) * t +
+                              (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+                              (-p0 + 3 * p1 - 3 * p2 + p3) * t3))
+    out.append(pts[-1])
+    return np.asarray(out)
+
+
+def synth_path(word, rng):
+    """A noisy [N,2] swipe path in [0,1] with per-point timestamps [N] (ms). None if unusable."""
+    ctrl = word_key_path(word)
+    if len(ctrl) < 1:
+        return None, None
+    ctrl = np.asarray(ctrl, dtype=np.float64)
+    sx, sy = KEY_W * rng.uniform(0.10, 0.28), KEY_H * rng.uniform(0.10, 0.28)
+    ctrl = ctrl + rng.normal(0, [sx, sy], size=ctrl.shape)
+    ctrl[0] += rng.normal(0, [sx * 1.4, sy * 1.4], size=2)
+    ctrl[-1] += rng.normal(0, [sx * 1.4, sy * 1.4], size=2)
+    path = _catmull_rom(ctrl, samples_per_seg=int(rng.integers(8, 16)))
+    path = path + rng.normal(0, KEY_W * 0.03, size=path.shape)
+    path = np.clip(path, 0.0, 1.0)
+
+    # Cap length like the device (uniform subsample, keep endpoints).
+    if len(path) > MAX_TRAJ:
+        idx = np.round(np.linspace(0, len(path) - 1, MAX_TRAJ)).astype(int)
+        path = path[idx]
+
+    # Timestamps: randomize the sampling interval so the model sees a range of velocity scales
+    # (real devices sample anywhere from ~60Hz to ~120Hz; dt jitter mimics human speed variation).
+    dt = rng.uniform(6.0, 18.0)
+    times = np.cumsum(rng.normal(dt, dt * 0.15, size=len(path))).astype(np.float32)
+    times[0] = 0.0
+    return path.astype(np.float32), times
+
+
+def features_from_path(path, times):
+    """[MAX_TRAJ, FEATURE_DIM] features + [MAX_TRAJ] int mask. IDENTICAL math to SwipeFeaturizer.kt."""
+    n = len(path)
+    feats = np.zeros((MAX_TRAJ, FEATURE_DIM), dtype=np.float32)
+    mask = np.zeros((MAX_TRAJ,), dtype=np.int64)
+    x, y = path[:, 0], path[:, 1]
+    vx = np.zeros(n, dtype=np.float32); vy = np.zeros(n, dtype=np.float32)
+    for i in range(1, n):
+        dt_sec = max((times[i] - times[i - 1]), 1.0) / 1000.0
+        vx[i] = (x[i] - x[i - 1]) / dt_sec
+        vy[i] = (y[i] - y[i - 1]) / dt_sec
+    for i in range(n):
+        dt_sec = (max((times[i] - times[i - 1]), 1.0) / 1000.0) if i > 0 else 1.0
+        feats[i, 0] = x[i]
+        feats[i, 1] = y[i]
+        feats[i, 2] = vx[i]
+        feats[i, 3] = vy[i]
+        feats[i, 4] = (vx[i] - vx[i - 1]) / dt_sec if i > 0 else 0.0
+        feats[i, 5] = (vy[i] - vy[i - 1]) / dt_sec if i > 0 else 0.0
+        nearest = int(np.argmin(((_KEY_XY[:, 0] - x[i]) ** 2) + ((_KEY_XY[:, 1] - y[i]) ** 2)))
+        feats[i, BASE_FEATURES + nearest] = 1.0
+        mask[i] = 1
+    return feats, mask
+
+
+def word_tokens(word):
+    """[SOS, chars..., EOS] token ids; None if the word has a non 'a'..'z' char."""
+    toks = [SOS]
+    for c in word.lower():
+        if "a" <= c <= "z":
+            toks.append(FIRST_LETTER + (ord(c) - ord("a")))
+        else:
+            return None
+    toks.append(EOS)
+    return toks
+
+
+def iter_batch(words, rng, batch, max_word_len):
+    feats, masks, tgts = [], [], []
+    while len(feats) < batch:
+        w = words[int(rng.integers(0, len(words)))]
+        if not (1 <= len(w) <= max_word_len):
+            continue
+        toks = word_tokens(w)
+        if toks is None:
+            continue
+        path, times = synth_path(w, rng)
+        if path is None or len(path) < 2:
+            continue
+        f, m = features_from_path(path, times)
+        feats.append(f); masks.append(m); tgts.append(toks)
+    tlen = max(len(t) for t in tgts)
+    tgt = np.full((batch, tlen), PAD, dtype=np.int64)
+    for i, t in enumerate(tgts):
+        tgt[i, : len(t)] = t
+    return (torch.from_numpy(np.stack(feats)),
+            torch.from_numpy(np.stack(masks)),
+            torch.from_numpy(tgt))
+
+
+# ─────────────────────────────── model ───────────────────────────────
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=MAX_TRAJ + MAX_DECODE_LEN):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        pos = torch.arange(0, max_len).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer("pe", pe.unsqueeze(0))
+
+    def forward(self, x):
+        return x + self.pe[:, : x.size(1)]
+
+
+class SwipeEncoder(nn.Module):
+    def __init__(self, d_model, nhead, layers, ff):
+        super().__init__()
+        self.proj = nn.Linear(FEATURE_DIM, d_model)
+        self.pos = PositionalEncoding(d_model)
+        layer = nn.TransformerEncoderLayer(d_model, nhead, ff, batch_first=True)
+        self.enc = nn.TransformerEncoder(layer, layers)
+
+    def forward(self, features, src_mask):
+        key_padding = src_mask == 0                      # True = padding
+        x = self.pos(self.proj(features))
+        return self.enc(x, src_key_padding_mask=key_padding)
+
+
+class SwipeDecoder(nn.Module):
+    def __init__(self, d_model, nhead, layers, ff):
+        super().__init__()
+        self.emb = nn.Embedding(VOCAB_SIZE, d_model, padding_idx=PAD)
+        self.pos = PositionalEncoding(d_model)
+        layer = nn.TransformerDecoderLayer(d_model, nhead, ff, batch_first=True)
+        self.dec = nn.TransformerDecoder(layer, layers)
+        self.out = nn.Linear(d_model, VOCAB_SIZE)
+
+    def forward(self, memory, src_mask, tgt):
+        key_padding = src_mask == 0
+        y = self.pos(self.emb(tgt))
+        L = tgt.shape[1]
+        idx = torch.arange(L, device=tgt.device)
+        causal = idx[None, :] > idx[:, None]             # [L,L] bool, True = disallow (future)
+        h = self.dec(y, memory, tgt_mask=causal, memory_key_padding_mask=key_padding)
+        return self.out(h)
+
+
+# ─────────────────────────────── train + export ───────────────────────────────
+
+def load_words(path, cap):
+    words = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            w = line.strip().split()[0].lower() if line.strip() else ""
+            if w and all("a" <= c <= "z" for c in w):
+                words.append(w)
+            if len(words) >= cap:
+                break
+    return words
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--wordlist", required=True)
+    ap.add_argument("--out", required=True, help="assets dir to write the two .onnx files into")
+    ap.add_argument("--vocab-size", type=int, default=20000)
+    ap.add_argument("--steps", type=int, default=4000)
+    ap.add_argument("--batch", type=int, default=128)
+    ap.add_argument("--d-model", type=int, default=128)
+    ap.add_argument("--nhead", type=int, default=4)
+    ap.add_argument("--layers", type=int, default=3)
+    ap.add_argument("--ff", type=int, default=256)
+    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--max-word-len", type=int, default=MAX_DECODE_LEN - 2)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--opset", type=int, default=17)
+    args = ap.parse_args()
+
+    rng = np.random.default_rng(args.seed)
+    torch.manual_seed(args.seed)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    words = load_words(args.wordlist, args.vocab_size)
+    print(f"loaded {len(words)} words; device={device}")
+
+    encoder = SwipeEncoder(args.d_model, args.nhead, args.layers, args.ff).to(device)
+    decoder = SwipeDecoder(args.d_model, args.nhead, args.layers, args.ff).to(device)
+    opt = torch.optim.AdamW(list(encoder.parameters()) + list(decoder.parameters()), lr=args.lr)
+    loss_fn = nn.CrossEntropyLoss(ignore_index=PAD)
+
+    encoder.train(); decoder.train()
+    for step in range(1, args.steps + 1):
+        feats, masks, tgt = iter_batch(words, rng, args.batch, args.max_word_len)
+        feats, masks, tgt = feats.to(device), masks.to(device), tgt.to(device)
+        memory = encoder(feats, masks)
+        logits = decoder(memory, masks, tgt[:, :-1])            # teacher forcing
+        loss = loss_fn(logits.reshape(-1, VOCAB_SIZE), tgt[:, 1:].reshape(-1))
+        opt.zero_grad(); loss.backward()
+        nn.utils.clip_grad_norm_(list(encoder.parameters()) + list(decoder.parameters()), 1.0)
+        opt.step()
+        if step % 200 == 0 or step == 1:
+            print(f"step {step:5d}/{args.steps}  loss {loss.item():.4f}")
+
+    encoder.eval(); decoder.eval()
+
+    # Export. Batch (B) and decoder length (L) are dynamic; T is fixed at MAX_TRAJ.
+    # IMPORTANT: the legacy TorchScript ONNX exporter constant-folds the batch dim when the example
+    # batch is 1, which bakes nn.MultiheadAttention's internal reshapes and then fails on-device at
+    # beam width > 1. Exporting the DECODER with an example batch of 2 keeps the batch axis symbolic.
+    # (The encoder is always run at batch 1 on-device, so batch 1 is fine there.)
+    ex_feats = torch.zeros(1, MAX_TRAJ, FEATURE_DIM)
+    ex_mask1 = torch.ones(1, MAX_TRAJ, dtype=torch.int64)
+    ex_mask2 = torch.ones(2, MAX_TRAJ, dtype=torch.int64)
+    with torch.no_grad():
+        ex_memory2 = encoder(ex_feats.repeat(2, 1, 1).to(device), ex_mask2.to(device)).cpu()
+    ex_tgt2 = torch.tensor([[SOS, FIRST_LETTER], [SOS, FIRST_LETTER]], dtype=torch.int64)
+
+    enc_path = f"{args.out}/swipe_encoder.onnx"
+    dec_path = f"{args.out}/swipe_decoder.onnx"
+    torch.onnx.export(
+        encoder.cpu(), (ex_feats, ex_mask1), enc_path,
+        input_names=["features", "src_mask"], output_names=["memory"],
+        dynamic_axes={"features": {0: "B"}, "src_mask": {0: "B"}, "memory": {0: "B"}},
+        opset_version=args.opset,
+    )
+    torch.onnx.export(
+        decoder.cpu(), (ex_memory2, ex_mask2, ex_tgt2), dec_path,
+        input_names=["memory", "src_mask", "tgt"], output_names=["logits"],
+        dynamic_axes={"memory": {0: "B"}, "src_mask": {0: "B"},
+                      "tgt": {0: "B", 1: "L"}, "logits": {0: "B", 1: "L"}},
+        opset_version=args.opset,
+    )
+    print(f"wrote {enc_path}\nwrote {dec_path}")
+    print("Rebuild the app; NeuralGlideEngine.isReady will flip true automatically.")
+
+
+if __name__ == "__main__":
+    main()
