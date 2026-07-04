@@ -84,6 +84,55 @@ object DictionaryLoader {
     /** Load + merge the enabled languages into one union dictionary. Call off the main thread. */
     fun load(context: Context): Loaded {
         val langs = enabledLanguages(context)
+        val freqs = merge(context, langs)
+        return Loaded(capWords(freqs), freqs, langs)
+    }
+
+    /**
+     * Active primary dictionary plus an [extendedFreqs] superset that folds in the phone's secondary
+     * bundled languages. Lets the keyboard type in the primary language by default and only switch a
+     * latent language ON once the user actually writes a couple of its words — so a secondary phone
+     * locale never silently rewrites the primary language. [latentLangs] is empty when the user has
+     * explicitly picked languages in-app (their choice is honored as-is) or has no secondary locale.
+     */
+    data class Adaptive(
+        val primaryFreqs: Map<String, Float>,
+        val extendedFreqs: Map<String, Float>,
+        val extendedWords: List<String>,
+        val activeLangs: List<String>,
+        val latentLangs: List<String>
+    )
+
+    fun loadAdaptive(context: Context): Adaptive {
+        val active = enabledLanguages(context)
+        val primaryFreqs = merge(context, active)
+        val latent = systemBundledLanguages(context).filter { it !in active }
+        if (latent.isEmpty()) {
+            return Adaptive(primaryFreqs, primaryFreqs, capWords(primaryFreqs), active, emptyList())
+        }
+        val extendedFreqs = merge(context, active + latent)
+        return Adaptive(primaryFreqs, extendedFreqs, capWords(extendedFreqs), active, latent)
+    }
+
+    /** Every bundled language present in the phone's locale list, primary first. */
+    fun systemBundledLanguages(context: Context): List<String> {
+        val out = LinkedHashSet<String>()
+        val cfg = context.resources.configuration
+        if (Build.VERSION.SDK_INT >= 24) {
+            val locales = cfg.locales
+            for (i in 0 until locales.size()) {
+                val lang = locales.get(i).language.lowercase()
+                if (lang in BUNDLED) out.add(lang)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val lang = cfg.locale.language.lowercase()
+            if (lang in BUNDLED) out.add(lang)
+        }
+        return out.toList()
+    }
+
+    private fun merge(context: Context, langs: List<String>): Map<String, Float> {
         val assets = context.assets
         val merged = HashMap<String, Float>(langs.size * 22000)
         for (lang in langs) {
@@ -109,8 +158,10 @@ object DictionaryLoader {
                 if (prev == null || f > prev) merged[w] = f
             }
         }
-        val words = if (merged.size <= GLIDE_WORD_CAP) merged.keys.toList()
-        else merged.entries.sortedByDescending { it.value }.take(GLIDE_WORD_CAP).map { it.key }
-        return Loaded(words, merged, langs)
+        return merged
     }
+
+    private fun capWords(freqs: Map<String, Float>): List<String> =
+        if (freqs.size <= GLIDE_WORD_CAP) freqs.keys.toList()
+        else freqs.entries.sortedByDescending { it.value }.take(GLIDE_WORD_CAP).map { it.key }
 }

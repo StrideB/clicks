@@ -52,7 +52,11 @@ class ClicksImeService : InputMethodService() {
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = linkedMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
-    private var predictionEngine = PredictionEngine(emptyMap())
+    private var predictionEngine = PredictionEngine(emptyMap())         // active pointer (primary or extended)
+    private var predictionEnginePrimary = PredictionEngine(emptyMap())  // primary language only
+    private var predictionEngineExtended = PredictionEngine(emptyMap()) // primary + secondary phone languages
+    private var hasLatentLanguages = false
+    private var latentLanguageActive = false
     private val spatialScorer = SpatialScorer()
     private val ngramRepo by lazy { NgramRepository(this) }
     private var suggestionStrip: LinearLayout? = null
@@ -483,14 +487,19 @@ class ClicksImeService : InputMethodService() {
     private fun ensureGlideClassifier() {
         if (glideClassifier != null) return
         Thread {
-            // Union dictionary across the system's enabled languages — corrects & predicts in all of
-            // them at once, no language switching (see DictionaryLoader).
-            val loaded = com.fran.clicks.keyboard.DictionaryLoader.load(this)
+            // Primary language is active by default; secondary phone languages load as a latent
+            // extended dictionary that only takes over once the user writes a couple of its words
+            // (see updateActiveLanguage). Glide can shape-match the full set so gestures work in any.
+            val adaptive = com.fran.clicks.keyboard.DictionaryLoader.loadAdaptive(this)
             val clf = StatisticalGlideTypingClassifier()
-            clf.setWordData(loaded.words, loaded.freqs)
+            clf.setWordData(adaptive.extendedWords, adaptive.extendedFreqs)
             handler.post {
                 glideClassifier = clf
-                predictionEngine = PredictionEngine(loaded.freqs)
+                predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                predictionEngineExtended = PredictionEngine(adaptive.extendedFreqs)
+                hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
+                latentLanguageActive = false
+                predictionEngine = predictionEnginePrimary
                 updateGlideLayout()
             }
         }.start()
@@ -610,6 +619,10 @@ class ClicksImeService : InputMethodService() {
         val ic = currentInputConnection ?: return false
         val word = currentWord()
         if (word.length < 2) return false
+        // Never "correct away" a word that's real in ANY of the user's languages — even while the
+        // primary language is active. This is what stops a genuine secondary-language word (e.g. the
+        // first "hola" before the language flips) from being mangled into a primary-language word.
+        if (predictionEngineExtended.isDictWord(word)) return false
         if (live && (word.length < 3 || predictionEngine.isPrefixOfDictWord(word))) return false
         val context = ngramRepo.cachedNextWords(previousWord())
         val top = predictionEngine.bestCorrection(word, context) ?: return false
@@ -623,7 +636,30 @@ class ClicksImeService : InputMethodService() {
         return true
     }
 
+    // Auto-language: start in the primary language and only switch a secondary phone language ON
+    // when the last few words are clearly written in it (>= 2 words valid in that language but not
+    // the primary). Reverts as soon as the user is back to all-primary words, so English is never
+    // "corrected" into a language the user isn't actually writing. 1 latent word holds the current
+    // state (hysteresis) so a lone shared/borrowed word doesn't flip the engine mid-sentence.
+    private fun updateActiveLanguage() {
+        if (!hasLatentLanguages) return
+        val before = currentInputConnection?.getTextBeforeCursor(96, 0)?.toString()?.lowercase().orEmpty()
+        val words = before.split(Regex("[^\\p{L}]+")).filter { it.length >= 2 }.takeLast(4)
+        if (words.isEmpty()) return
+        val latentHits = words.count { predictionEngineExtended.isDictWord(it) && !predictionEnginePrimary.isDictWord(it) }
+        val active = when {
+            latentHits >= 2 -> true
+            latentHits == 0 -> false
+            else -> latentLanguageActive
+        }
+        if (active != latentLanguageActive) {
+            latentLanguageActive = active
+            predictionEngine = if (active) predictionEngineExtended else predictionEnginePrimary
+        }
+    }
+
     private fun learnAndPredictAfterSpace() {
+        updateActiveLanguage()
         val tokens = wordsBeforeCursor()
         if (tokens.size >= 2) ngramRepo.recordWord(tokens[tokens.size - 1], tokens[tokens.size - 2])
         val last = tokens.lastOrNull().orEmpty()
@@ -1040,9 +1076,12 @@ class ClicksImeService : InputMethodService() {
         return actions
     }
     private fun translateTargetLanguage(): String? {
-        val enabled = com.fran.clicks.keyboard.DictionaryLoader.enabledLanguages(this)
-        val primary = enabled.firstOrNull() ?: return null
-        val other = enabled.firstOrNull { it != primary } ?: return null
+        // Consider in-app selection plus the phone's other bundled locales, so "translate to X" still
+        // offers a secondary language even though corrections default to the primary only.
+        val loader = com.fran.clicks.keyboard.DictionaryLoader
+        val langs = (loader.enabledLanguages(this) + loader.systemBundledLanguages(this)).distinct()
+        val primary = langs.firstOrNull() ?: return null
+        val other = langs.firstOrNull { it != primary } ?: return null
         return langNames[other]
     }
 
