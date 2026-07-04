@@ -240,15 +240,16 @@ class ClicksImeService : InputMethodService() {
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
                     }
-                    if (label == "enter") {
-                        // Hold the go/enter key to run the agentic command. A tap still sends/enters;
-                        // a hold turns the field text into an action (see runAgenticCommand).
+                    if (label == "enter" || label == "space") {
+                        // Two hold triggers, one ramp. Go/enter runs the typed line as an agentic
+                        // command; space asks Gemini to keep writing. Taps are unaffected.
+                        val holdLabel = label
                         val total = (ViewConfiguration.getLongPressTimeout() * 1.25).toLong()
                         startAgenticHapticRamp(total)
                         val runnable = Runnable {
                             clicksLongPressFired = true
                             agenticConfirmHaptic()
-                            runAgenticCommand()
+                            if (holdLabel == "space") runGeminiCompose() else runAgenticCommand()
                         }
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, total)
@@ -257,7 +258,7 @@ class ClicksImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if ((label == "clicks" || label == "enter") &&
+                    if ((label == "clicks" || label == "enter" || label == "space") &&
                         (abs(event.rawX - downRawX) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop ||
                             abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
                         cancelClicksLongPress()
@@ -889,6 +890,31 @@ class ClicksImeService : InputMethodService() {
                 }
                 onTextChanged()
                 updateStrip()
+            }
+        }.start()
+    }
+
+    // Hold the space bar for Gemini writing assist: continue / draft from what's already in the
+    // field and commit the result inline — the "help me write this" companion to go/enter's command
+    // trigger. No app switch, so you keep writing without chasing another tool.
+    private fun runGeminiCompose() {
+        if (!ProManager.isUnlocked(this)) { flashAgenticStatus("✨ Gemini writing is a Pro feature", 2200); return }
+        if (!GeminiClient.configured(imePrefs())) { flashAgenticStatus("Add a Gemini key in Clicks settings", 2400); return }
+        val context = currentInputConnection?.getTextBeforeCursor(600, 0)?.toString().orEmpty()
+        if (context.isBlank()) { flashAgenticStatus("Type a little, then hold space for Gemini", 2200); return }
+        agenticStatus = "✨ Writing…"
+        updateStrip()
+        val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
+        Thread {
+            val draft = GeminiClient.fetchCompose(key, model, context)
+            handler.post {
+                agenticStatus = null
+                if (!draft.isNullOrBlank()) {
+                    val sep = if (context.isNotEmpty() && !context.last().isWhitespace()) " " else ""
+                    currentInputConnection?.commitText(sep + draft, 1)
+                    onTextChanged()
+                    updateStrip()
+                } else flashAgenticStatus("✨ Nothing to add", 1600)
             }
         }.start()
     }

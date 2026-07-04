@@ -118,6 +118,9 @@ class ImeSettingsActivity : Activity() {
         // Agentic
         section("AGENTIC").also { c ->
             c.addView(text("Type a command and hold the go/enter key to run it \u2014 music, maps, timers, and your own skills.", 12.5f, t.inkDim).apply {
+                (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(4)
+            })
+            c.addView(text("Hold the space bar for Gemini to keep writing \u2014 drafts and replies right in the field.", 12.5f, t.inkDim).apply {
                 (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(10)
             })
             c.addView(TextView(this).apply {

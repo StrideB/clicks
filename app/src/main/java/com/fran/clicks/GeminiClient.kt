@@ -48,6 +48,19 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     /**
+     * Writing assist: continue [context] with a short, natural draft to append (compose / smart
+     * autocomplete). Returns only the continuation, or null on failure/no-op. Blocking.
+     */
+    fun fetchCompose(apiKey: String, model: String, context: String): String? {
+        if (context.isBlank()) return null
+        val prompt = "Continue this text naturally in one short sentence. Reply with ONLY the text to " +
+            "append — no preamble, no quotes, no explanation, and do not repeat what is already written.\n\n$context"
+        val out = call(apiKey, model, prompt, maxTokens = 80, temperature = 0.7) ?: return null
+        val cleaned = out.trim().removeSurrounding("\"").trim()
+        return cleaned.ifBlank { null }
+    }
+
+    /**
      * Route a free-form command to exactly one skill by name and extract its argument. The model may
      * only pick from [skills] (or NONE), so it ranks — it can't invent an action. Blocking.
      */
