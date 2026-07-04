@@ -309,7 +309,7 @@ class ClicksImeService : InputMethodService() {
             "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
             "space" -> {
                 if (maybeRunAiCommand()) return
-                tryAutocorrect(live = false)
+                if (autocorrectEnabled()) tryAutocorrect(live = false)
                 commitValue(" ")
                 learnAndPredictAfterSpace()
                 updateAutoCap()
@@ -354,6 +354,7 @@ class ClicksImeService : InputMethodService() {
     }
 
     private fun keyHaptic(label: String) {
+        if (!imePrefs().getBoolean(HAPTICS_PREF, true)) return
         val constant = when (label) {
             "back" -> HapticFeedbackConstants.KEYBOARD_RELEASE
             "enter" -> HapticFeedbackConstants.CONFIRM
@@ -546,8 +547,11 @@ class ClicksImeService : InputMethodService() {
         handler.postDelayed(r, 70L)
     }
 
+    private fun autocorrectEnabled() = imePrefs().getBoolean(IME_AUTOCORRECT_PREF, true)
+
     private fun scheduleLiveCorrect() {
         liveCorrectDebounce?.let { handler.removeCallbacks(it) }
+        if (!autocorrectEnabled()) return
         val word = currentWord()
         if (word.length < 3) return
         val r = Runnable {
@@ -1424,6 +1428,7 @@ class ClicksImeService : InputMethodService() {
     private companion object {
         private const val PREFS_NAME = "clicks"
         private const val TOUCH_MODEL_PREF = "touch_model_v1"
+        private const val HAPTICS_PREF = "haptics"
         private const val THEME_MODE_PREF = "theme_mode"
         private const val THEME_MODE_DARK = "dark"
         private const val THEME_MODE_LIGHT = "light"

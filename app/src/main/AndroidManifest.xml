@@ -48,6 +48,12 @@
             android:enabled="true"
             android:exported="false" />
 
+        <activity
+            android:name=".ImeSettingsActivity"
+            android:exported="true"
+            android:label="Clicks Keyboard"
+            android:theme="@style/AppTheme" />
+
         <service
             android:name=".ClicksImeService"
             android:exported="true"
