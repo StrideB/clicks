@@ -49,6 +49,7 @@ class ClicksImeService : InputMethodService() {
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
+    private var geminiDebounce: Runnable? = null
     private var pendingOriginal: String? = null
     private var pendingCorrected: String? = null
     private val rejectedCorrections = HashMap<String, MutableSet<String>>()
@@ -460,6 +461,29 @@ class ClicksImeService : InputMethodService() {
     private fun onTextChanged() {
         scheduleSuggestions()
         scheduleLiveCorrect()
+        scheduleGemini()
+    }
+
+    // Tier 2: blend Gemini's contextual next-word predictions into the strip (Pro + API key only).
+    // On-device fills the strip instantly at 70ms; Gemini upgrades it a beat later.
+    private fun scheduleGemini() {
+        geminiDebounce?.let { handler.removeCallbacks(it) }
+        if (!ProManager.isUnlocked(this) || !GeminiClient.configured(imePrefs())) return
+        val ctx = currentInputConnection?.getTextBeforeCursor(80, 0)?.toString()?.trim().orEmpty()
+        if (ctx.length < 2) return
+        val key = GeminiClient.apiKey(imePrefs())
+        val model = GeminiClient.model(imePrefs())
+        val r = Runnable {
+            Thread {
+                val g = GeminiClient.fetchSuggestions(key, model, ctx)
+                if (g.isNotEmpty()) handler.post {
+                    suggestions = (g + suggestions).distinct().take(3)
+                    updateStrip()
+                }
+            }.start()
+        }
+        geminiDebounce = r
+        handler.postDelayed(r, 260L)
     }
 
     private fun scheduleSuggestions() {

@@ -7902,7 +7902,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 withContext(Dispatchers.IO) { fetchGeminiSuggestions(context) }
             }.getOrNull() ?: return@launch
             if (result.isNotEmpty()) {
-                suggestions = result
+                // Blend: Gemini's contextual predictions ride in front of the instant on-device ones.
+                suggestions = (result + suggestions).distinct().take(3)
                 updateSuggestionBar()
             }
         }
