@@ -14,8 +14,19 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
 import android.inputmethodservice.InputMethodService
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Size
+import android.view.ViewGroup
+import android.view.inputmethod.InlineSuggestionsRequest
+import android.view.inputmethod.InlineSuggestionsResponse
+import android.widget.HorizontalScrollView
+import android.widget.inline.InlinePresentationSpec
+import androidx.autofill.inline.UiVersions
+import androidx.autofill.inline.common.TextViewStyle
+import androidx.autofill.inline.common.ViewStyle
+import androidx.autofill.inline.v1.InlineSuggestionUi
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
@@ -61,6 +72,8 @@ class ClicksImeService : InputMethodService() {
     private val ngramRepo by lazy { NgramRepository(this) }
     private var suggestionStrip: LinearLayout? = null
     private var agenticPanel: LinearLayout? = null
+    private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
+    private var inlineRow: LinearLayout? = null
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
@@ -94,6 +107,7 @@ class ClicksImeService : InputMethodService() {
         }
         refreshKeyboardChrome()
         updateInputViewShown()
+        clearInlineSuggestions()
         scheduleSuggestions()
     }
 
@@ -152,6 +166,9 @@ class ClicksImeService : InputMethodService() {
             addView(buildSuggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
             addView(buildAgenticPanel(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 leftMargin = dp(4); rightMargin = dp(4); topMargin = dp(1); bottomMargin = dp(2)
+            })
+            addView(buildInlineAutofillRow(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply {
+                leftMargin = dp(4); rightMargin = dp(4)
             })
             val rows = if (symbolsMode) listOf(
                 "1234567890".map { it.toString() },
@@ -717,6 +734,77 @@ class ClicksImeService : InputMethodService() {
         agenticPanel = panel
         renderAgenticPanel()
         return panel
+    }
+
+    // ── Inline autofill (Gboard-style) ──────────────────────────────────────────
+    // The system autofill provider (e.g. Google Password Manager) supplies credential/address/OTP
+    // chips; we declare support, hand it a styled request, and render the chips it inflates in a
+    // dedicated row above the keys. Clicks never sees the credentials — the fill goes provider->field.
+
+    private fun buildInlineAutofillRow(): HorizontalScrollView {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        inlineRow = row
+        inlineScroll = scroll
+        return scroll
+    }
+
+    private fun clearInlineSuggestions() {
+        inlineRow?.removeAllViews()
+        inlineScroll?.visibility = View.GONE
+        if (agenticPanel?.visibility != View.VISIBLE) suggestionStrip?.visibility = View.VISIBLE
+    }
+
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest {
+        val light = agenticPanelLight()
+        val chipBg = if (light) 0xFFEDEFF4.toInt() else 0xFF20232A.toInt()
+        val titleInk = if (light) 0xFF14161B.toInt() else 0xFFF5F2FF.toInt()
+        val subInk = if (light) 0xFF6B7280.toInt() else 0xFF9AA2B1.toInt()
+        val style = InlineSuggestionUi.newStyleBuilder()
+            .setChipStyle(
+                ViewStyle.Builder()
+                    .setBackgroundColor(chipBg)
+                    .setPadding(dp(14), dp(0), dp(14), dp(0))
+                    .build()
+            )
+            .setTitleStyle(TextViewStyle.Builder().setTextColor(titleInk).setTextSize(14f).build())
+            .setSubtitleStyle(TextViewStyle.Builder().setTextColor(subInk).setTextSize(12f).build())
+            .build()
+        val stylesBundle = UiVersions.newStylesBuilder().addStyle(style).build()
+        val spec = InlinePresentationSpec.Builder(Size(dp(64), dp(36)), Size(dp(360), dp(44)))
+            .setStyle(stylesBundle)
+            .build()
+        return InlineSuggestionsRequest.Builder(listOf(spec))
+            .setMaxSuggestionCount(6)
+            .build()
+    }
+
+    override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
+        val row = inlineRow ?: return false
+        val suggestions = response.inlineSuggestions
+        row.removeAllViews()
+        if (suggestions.isEmpty()) { clearInlineSuggestions(); return false }
+        inlineScroll?.visibility = View.VISIBLE
+        suggestionStrip?.visibility = View.GONE
+        agenticPanel?.visibility = View.GONE
+        val size = Size(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
+        for (suggestion in suggestions) {
+            runCatching {
+                suggestion.inflate(this, size, mainExecutor) { view ->
+                    if (view != null) {
+                        row.addView(view, LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT
+                        ).apply { marginEnd = dp(6) })
+                        inlineScroll?.visibility = View.VISIBLE
+                    }
+                }
+            }
+        }
+        return true
     }
 
     // The panel follows the same light/dark signal as the keyboard deck, so on the default theme it

@@ -54,6 +54,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.browser:browser:1.8.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.autofill:autofill:1.1.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.window:window:1.5.1")
     implementation("androidx.room:room-runtime:2.6.1")
