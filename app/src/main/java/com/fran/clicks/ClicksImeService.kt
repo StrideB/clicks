@@ -665,14 +665,19 @@ class ClicksImeService : InputMethodService() {
         return panel
     }
 
-    private fun agenticCardBackground() = GradientDrawable(
-        GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF20232A.toInt(), 0xFF14161B.toInt())
-    ).apply { cornerRadius = dp(16).toFloat() }
+    // The panel follows the same light/dark signal as the keyboard deck, so on the default theme it
+    // tracks the system theme. HYPER3D_BLACK stays dark by design (matches deckBackground).
+    private fun agenticPanelLight(): Boolean =
+        selectedNeuTokens().mode == NeuMode.LIGHT && keyboardVisualTheme() != KEYBOARD_THEME_HYPER3D_BLACK
 
-    private fun agenticCta(label: String, accent: Int, onClick: () -> Unit) = TextView(this).apply {
+    private fun agenticCardBackground(top: Int, bottom: Int, stroke: Int) = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom)
+    ).apply { cornerRadius = dp(16).toFloat(); setStroke(dp(1), stroke) }
+
+    private fun agenticCta(label: String, accent: Int, ink: Int, onClick: () -> Unit) = TextView(this).apply {
         text = label; gravity = Gravity.CENTER; textSize = 12.5f
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        setTextColor(0xFF0A0C0F.toInt())
+        setTextColor(ink)
         setPadding(dp(15), dp(8), dp(15), dp(8))
         maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
         background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(11).toFloat() }
@@ -680,9 +685,9 @@ class ClicksImeService : InputMethodService() {
         setOnClickListener { onClick() }
     }
 
-    private fun agenticDismiss() = TextView(this).apply {
+    private fun agenticDismiss(ink: Int) = TextView(this).apply {
         text = "✕"; gravity = Gravity.CENTER; textSize = 13f
-        setTextColor(0xFF767C89.toInt())
+        setTextColor(ink)
         setPadding(dp(10), dp(8), dp(6), dp(8))
         isClickable = true
         setOnClickListener { keyHaptic("back"); dismissAgentic() }
@@ -695,18 +700,46 @@ class ClicksImeService : InputMethodService() {
         updateStrip()
     }
 
+    // Honor the system "remove animations" accessibility setting.
+    private fun animationsEnabled(): Boolean = runCatching {
+        android.provider.Settings.Global.getFloat(
+            contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
+    }.getOrDefault(true)
+
+    private fun animateAgenticPanelIn(panel: View) {
+        if (!animationsEnabled()) { panel.alpha = 1f; panel.translationY = 0f; panel.scaleX = 1f; panel.scaleY = 1f; return }
+        panel.alpha = 0f
+        panel.translationY = dp(10).toFloat()
+        panel.scaleX = 0.98f; panel.scaleY = 0.98f
+        panel.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+            .setDuration(190L)
+            .setInterpolator(android.view.animation.OvershootInterpolator(1.5f))
+            .start()
+    }
+
     // Render the active agentic state into the card, or hide it and restore the strip when idle.
     private fun renderAgenticPanel() {
         val panel = agenticPanel ?: return
         panel.removeAllViews()
 
+        val light = agenticPanelLight()
+        val cardTop = if (light) 0xFFFFFFFF.toInt() else 0xFF20232A.toInt()
+        val cardBottom = if (light) 0xFFECEFF4.toInt() else 0xFF14161B.toInt()
+        val cardStroke = if (light) 0x14000000 else 0x1EFFFFFF
+        val tileBg = if (light) 0xFFF3F5F9.toInt() else 0xFF16181D.toInt()
+        val titleInk = if (light) 0xFF14161B.toInt() else 0xFFF5F2FF.toInt()
+        val kickerInk = if (light) 0xFF6B7280.toInt() else 0xFF767C89.toInt()
+        val ctaInk = if (light) 0xFFFFFFFF.toInt() else 0xFF0A0C0F.toInt()
+        val mint = if (light) 0xFF12A968.toInt() else 0xFF57E39A.toInt()
+        val violet = if (light) 0xFF6D5FD6.toInt() else 0xFF9B8CFF.toInt()
+
         val status = agenticStatus
         val pending = pendingCommand
         val accent: Int; val glyph: String; val kicker: String; val title: String
         when {
-            status != null -> { accent = 0xFF9B8CFF.toInt(); glyph = "✦"; kicker = "CLICKS"; title = status }
+            status != null -> { accent = violet; glyph = "✦"; kicker = "CLICKS"; title = status }
             pending != null -> {
-                accent = 0xFF57E39A.toInt()
+                accent = mint
                 val parts = pending.label.split("  ", limit = 2)
                 glyph = if (parts.size == 2) parts[0].trim() else "▶"
                 kicker = "COMMAND"
@@ -720,8 +753,9 @@ class ClicksImeService : InputMethodService() {
             }
         }
 
+        val wasHidden = panel.visibility != View.VISIBLE
         panel.visibility = View.VISIBLE
-        panel.background = agenticCardBackground()
+        panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
         suggestionStrip?.visibility = View.GONE
 
         panel.addView(View(this).apply {
@@ -732,7 +766,7 @@ class ClicksImeService : InputMethodService() {
             text = glyph; gravity = Gravity.CENTER; textSize = 15f
             setTextColor(accent)
             background = GradientDrawable().apply {
-                setColor(0xFF16181D.toInt()); cornerRadius = dp(10).toFloat()
+                setColor(tileBg); cornerRadius = dp(10).toFloat()
                 setStroke(dp(1), (accent and 0x00FFFFFF) or 0x55000000)
             }
         }, LinearLayout.LayoutParams(dp(32), dp(32)))
@@ -740,11 +774,11 @@ class ClicksImeService : InputMethodService() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(TextView(this).apply {
             text = kicker; textSize = 9f; letterSpacing = 0.16f
-            setTextColor(0xFF767C89.toInt())
+            setTextColor(kickerInk)
         })
         col.addView(TextView(this).apply {
             text = title; textSize = 14.5f
-            setTextColor(0xFFF5F2FF.toInt())
+            setTextColor(titleInk)
             maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         })
@@ -754,11 +788,13 @@ class ClicksImeService : InputMethodService() {
 
         // A pending command is confirm-before-run; a working status is in-flight (no controls).
         if (pending != null && status == null) {
-            panel.addView(agenticCta("Run", accent) { keyHaptic("enter"); applyPendingCommand() },
+            panel.addView(agenticCta("Run", accent, ctaInk) { keyHaptic("enter"); applyPendingCommand() },
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-            panel.addView(agenticDismiss(),
+            panel.addView(agenticDismiss(kickerInk),
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
         }
+
+        if (wasHidden) animateAgenticPanelIn(panel)
     }
 
     private fun fieldTextForPolish(): String =
