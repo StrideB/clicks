@@ -10,7 +10,7 @@ import java.net.URLEncoder
 
 /**
  * Shared, context-agnostic Gemini client used by BOTH the launcher keyboard and the IME so they
- * stay in parity. Network calls are blocking — call [fetchSuggestions] off the main thread.
+ * stay in parity. Network calls are blocking — call off the main thread.
  */
 object GeminiClient {
     const val API_KEY_PREF = "gemini_api_key"
@@ -24,32 +24,49 @@ object GeminiClient {
 
     /** Up to 3 next-word predictions for [context]. Empty on any failure. Blocking. */
     fun fetchSuggestions(apiKey: String, model: String, context: String): List<String> {
-        if (apiKey.isBlank() || context.isBlank()) return emptyList()
+        if (context.isBlank()) return emptyList()
         val prompt = """You are a keyboard autocomplete engine. Given this text the user is typing, reply with exactly 3 next-word predictions as a JSON array of strings. Nothing else — no explanation, just the array.
 Text: "$context"
 Reply format: ["word1","word2","word3"]"""
+        val text = call(apiKey, model, prompt, maxTokens = 24, temperature = 0.2) ?: return emptyList()
+        return parseArray(text)
+    }
+
+    /** Rewrite/polish [text] into clean, natural prose. Returns null on failure or no-op. Blocking. */
+    fun fetchRewrite(apiKey: String, model: String, text: String): String? {
+        if (text.isBlank()) return null
+        val prompt = """Rewrite the following message so it reads clearly and naturally, with correct spelling, punctuation and capitalization. Keep the original meaning, tone, and roughly the same length. Reply with ONLY the rewritten message — no preamble, no quotes, no explanation.
+
+$text"""
+        val out = call(apiKey, model, prompt, maxTokens = 400, temperature = 0.4) ?: return null
+        val cleaned = out.trim().removeSurrounding("\"").trim()
+        return cleaned.ifBlank { null }
+    }
+
+    /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
+    private fun call(apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double): String? {
+        if (apiKey.isBlank()) return null
         val url = URL(
             "https://generativelanguage.googleapis.com/v1beta/models/" +
                 "${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(apiKey, "UTF-8")}"
         )
         val body = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-            .put("generationConfig", JSONObject().put("temperature", 0.2).put("maxOutputTokens", 24))
+            .put("generationConfig", JSONObject().put("temperature", temperature).put("maxOutputTokens", maxTokens))
         val conn = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 6_000; readTimeout = 8_000
+            requestMethod = "POST"; connectTimeout = 6_000; readTimeout = 15_000
             setRequestProperty("Content-Type", "application/json"); doOutput = true
         }
         return try {
             OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-            if (conn.responseCode !in 200..299) return emptyList()
+            if (conn.responseCode !in 200..299) return null
             val raw = conn.inputStream.bufferedReader().use { it.readText() }
-            val text = JSONObject(raw)
+            JSONObject(raw)
                 .optJSONArray("candidates")?.optJSONObject(0)
                 ?.optJSONObject("content")?.optJSONArray("parts")
-                ?.optJSONObject(0)?.optString("text")?.trim() ?: return emptyList()
-            parseArray(text)
+                ?.optJSONObject(0)?.optString("text")?.trim()
         } catch (_: Exception) {
-            emptyList()
+            null
         } finally {
             conn.disconnect()
         }

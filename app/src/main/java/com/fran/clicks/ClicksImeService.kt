@@ -42,6 +42,7 @@ class ClicksImeService : InputMethodService() {
     private var capsLock = false
     private var lastShiftTapMs = 0L
     private val keyPreview by lazy { KeyPreviewManager(this) }
+    private var polishing = false
     private var deckView: SwipeImeKeyboardLayout? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
@@ -504,6 +505,7 @@ class ClicksImeService : InputMethodService() {
         scheduleSuggestions()
         scheduleLiveCorrect()
         scheduleGemini()
+        updateStrip()
     }
 
     // Tier 2: blend Gemini's contextual next-word predictions into the strip (Pro + API key only).
@@ -618,14 +620,33 @@ class ClicksImeService : InputMethodService() {
         return strip
     }
 
+    private fun stripWellBackground() = android.graphics.drawable.GradientDrawable().apply {
+        setColor(0x14FFFFFF); cornerRadius = dp(10).toFloat()
+    }
+
+    private fun fieldTextForPolish(): String =
+        currentInputConnection?.getTextBeforeCursor(1000, 0)?.toString().orEmpty()
+
+    private fun polishAvailable(): Boolean =
+        ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs()) &&
+            fieldTextForPolish().trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
+
     private fun updateStrip() {
         val strip = suggestionStrip ?: return
         strip.removeAllViews()
-        val shown = suggestions.take(3)
-        if (shown.isEmpty()) { strip.background = null; return }
-        strip.background = android.graphics.drawable.GradientDrawable().apply {
-            setColor(0x14FFFFFF); cornerRadius = dp(10).toFloat()
+        if (polishing) {
+            strip.background = stripWellBackground()
+            strip.addView(TextView(this).apply {
+                text = "✨ Polishing…"
+                gravity = Gravity.CENTER; textSize = 15f
+                setTextColor(0xFFCBB4FF.toInt())
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            return
         }
+        val shown = suggestions.take(3)
+        val canPolish = polishAvailable()
+        if (shown.isEmpty() && !canPolish) { strip.background = null; return }
+        strip.background = stripWellBackground()
         shown.forEachIndexed { i, w ->
             strip.addView(TextView(this).apply {
                 text = w
@@ -637,11 +658,49 @@ class ClicksImeService : InputMethodService() {
                 isClickable = true
                 setOnClickListener { keyHaptic("space"); acceptSuggestion(w) }
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
-            if (i < shown.lastIndex) {
+            if (i < shown.lastIndex || canPolish) {
                 strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
                     LinearLayout.LayoutParams(dp(1), dp(18)))
             }
         }
+        if (canPolish) {
+            strip.addView(TextView(this).apply {
+                text = "✨"
+                gravity = Gravity.CENTER
+                textSize = 17f
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0x338B5CF6); cornerRadius = dp(9).toFloat()
+                }
+                isClickable = true
+                setOnClickListener { polishField() }
+            }, LinearLayout.LayoutParams(dp(46), LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+        }
+    }
+
+    // AI Polish: rewrite the whole field with Gemini (Pro + API key), shown as a sparkle in the strip.
+    private fun polishField() {
+        if (polishing) return
+        val ic = currentInputConnection ?: return
+        val text = fieldTextForPolish()
+        if (text.trim().length < 3) return
+        val key = GeminiClient.apiKey(imePrefs())
+        val model = GeminiClient.model(imePrefs())
+        polishing = true
+        keyHaptic("enter")
+        updateStrip()
+        Thread {
+            val result = GeminiClient.fetchRewrite(key, model, text)
+            handler.post {
+                polishing = false
+                if (result != null && result != text) {
+                    ic.beginBatchEdit()
+                    ic.deleteSurroundingText(text.length, 0)
+                    ic.commitText(result, 1)
+                    ic.endBatchEdit()
+                }
+                onTextChanged()
+            }
+        }.start()
     }
 
     private fun handleSwipeFallback(keys: List<String>) {
