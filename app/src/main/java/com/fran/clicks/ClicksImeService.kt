@@ -441,29 +441,14 @@ class ClicksImeService : InputMethodService() {
     private fun ensureGlideClassifier() {
         if (glideClassifier != null) return
         Thread {
+            // Union dictionary across the system's enabled languages — corrects & predicts in all of
+            // them at once, no language switching (see DictionaryLoader).
+            val loaded = com.fran.clicks.keyboard.DictionaryLoader.load(this)
             val clf = StatisticalGlideTypingClassifier()
-            val words = mutableListOf<String>()
-            val counts = mutableMapOf<String, Long>()
-            runCatching {
-                assets.open("dict/en_wordlist.txt").bufferedReader().useLines { lines ->
-                    lines.forEach { line ->
-                        val sp = line.trim().split(" ")
-                        if (sp.size >= 2) {
-                            val w = sp[0].lowercase(Locale.US)
-                            if (w.length in 2..20 && w.all { it.isLetter() }) {
-                                words.add(w)
-                                counts[w] = sp[1].toLongOrNull() ?: 1L
-                            }
-                        }
-                    }
-                }
-            }
-            val maxCount = counts.values.maxOrNull() ?: 1L
-            clf.setWordData(words, counts.mapValues { it.value.toFloat() / maxCount })
-            val freq = counts.mapValues { it.value.toFloat() / maxCount }
+            clf.setWordData(loaded.words, loaded.freqs)
             handler.post {
                 glideClassifier = clf
-                predictionEngine = PredictionEngine(freq)
+                predictionEngine = PredictionEngine(loaded.freqs)
                 updateGlideLayout()
             }
         }.start()

@@ -7207,6 +7207,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(keyboardThemeSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
             addView(keyboardPlacementSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
             addView(launcherThemeModeSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
+            addView(keyboardLanguageSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
 
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, 0)
@@ -7317,6 +7318,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }, LinearLayout.LayoutParams(0, dp(28), 1f).apply { marginStart = dp(6) })
             }
         }
+    }
+
+    // Multi-language without switching: toggle which bundled languages are merged into the union
+    // dictionary. Selecting several lets you type in all of them with no language key. Empty = auto
+    // (follow the system locales). Applies to both the launcher keyboard and the IME.
+    private fun keyboardLanguageSelector(): View {
+        val labels = listOf("en" to "EN", "es" to "ES", "fr" to "FR", "de" to "DE", "pt" to "PT", "it" to "IT")
+        val selected = com.fran.clicks.keyboard.DictionaryLoader.enabledLanguages(this).toSet()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, 0)
+            addView(mono("LANGS", 9f, InkDim).apply { letterSpacing = 0.12f },
+                LinearLayout.LayoutParams(dp(54), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    labels.forEach { (code, label) ->
+                        val on = code in selected
+                        addView(TextView(context).apply {
+                            text = label
+                            gravity = Gravity.CENTER
+                            textSize = 9.2f
+                            letterSpacing = 0.08f
+                            typeface = Typeface.MONOSPACE
+                            setTextColor(if (on) Ink else InkDim)
+                            background = if (on) keyboardThemePillBackground(KEYBOARD_THEME_GOKEYS) else border(Line)
+                            isClickable = true
+                            setOnClickListener { haptic(this); toggleKeyboardLanguage(code) }
+                        }, LinearLayout.LayoutParams(dp(42), dp(28)).apply { marginStart = dp(6) })
+                    }
+                }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(0, dp(32), 1f))
+        }
+    }
+
+    private fun toggleKeyboardLanguage(code: String) {
+        val order = com.fran.clicks.keyboard.DictionaryLoader.available()
+        val cur = com.fran.clicks.keyboard.DictionaryLoader.enabledLanguages(this).toMutableSet()
+        if (code in cur) { if (cur.size > 1) cur.remove(code) } else cur.add(code)
+        val ordered = order.filter { it in cur }
+        prefs().edit().putString(com.fran.clicks.keyboard.DictionaryLoader.LANGUAGES_PREF, ordered.joinToString(",")).apply()
+        loadGlideWords()   // rebuild the union dictionary + glide model for the new language set
+        render()
     }
 
     private fun launcherThemeModeSelector(): View {
@@ -8198,27 +8245,15 @@ Reply format: ["word1","word2","word3"]"""
     private fun loadGlideWords() {
         mediaUiScope.launch(Dispatchers.IO) {
             runCatching {
+                // Union dictionary across the system's enabled languages — multi-language typing with
+                // no language switching (see DictionaryLoader).
+                val loaded = com.fran.clicks.keyboard.DictionaryLoader.load(this@MainActivity)
                 val clf = StatisticalGlideTypingClassifier()
-                val words = mutableListOf<String>()
-                val counts = mutableMapOf<String, Long>()
-                assets.open("dict/en_wordlist.txt").bufferedReader().forEachLine { line ->
-                    val sp = line.trim().split(" ")
-                    if (sp.size >= 2) {
-                        val w = sp[0].lowercase()
-                        if (w.length in 2..20 && w.all { it.isLetter() }) {
-                            words.add(w)
-                            counts[w] = sp[1].toLongOrNull() ?: 1L
-                        }
-                    }
-                }
-                val maxCount = counts.values.maxOrNull() ?: 1L
-                val freqs = counts.mapValues { it.value.toFloat() / maxCount }
-                clf.setWordData(words, freqs)
-                val freqMap = freqs.mapValues { it.value }
+                clf.setWordData(loaded.words, loaded.freqs)
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
-                    wordlistFrequencies = freqMap
-                    predictionEngine = PredictionEngine(freqMap)
+                    wordlistFrequencies = loaded.freqs
+                    predictionEngine = PredictionEngine(loaded.freqs)
                     updateGlideLayout()
                 }
             }
