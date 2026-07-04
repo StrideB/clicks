@@ -84,6 +84,7 @@ class ClicksImeService : InputMethodService() {
         }
         refreshKeyboardChrome()
         updateInputViewShown()
+        scheduleSuggestions()
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
@@ -537,9 +538,15 @@ class ClicksImeService : InputMethodService() {
             val word = currentWord()
             if (word.length < 2) {
                 val prev = previousWord()
-                val before = currentInputConnection?.getTextBeforeCursor(2, 0)?.toString().orEmpty()
+                val ic = currentInputConnection
+                val before = ic?.getTextBeforeCursor(2, 0)?.toString().orEmpty()
                 val justSpaced = before.isNotEmpty() && before.last() == ' '
-                suggestions = if (justSpaced && prev.isNotEmpty()) ngramRepo.cachedNextWords(prev).take(3) else emptyList()
+                val fieldEmpty = before.isEmpty() && (ic?.getTextAfterCursor(1, 0)?.isEmpty() != false)
+                suggestions = when {
+                    justSpaced && prev.isNotEmpty() -> ngramRepo.cachedNextWords(prev).take(3)
+                    fieldEmpty -> NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis())
+                    else -> emptyList()
+                }
                 updateStrip(); return@Runnable
             }
             val prev = previousWord()
