@@ -9024,12 +9024,15 @@ Reply format: ["word1","word2","word3"]"""
 
     // Snap a letter tap to the spatially-nearest letter key (near-miss correction) and let the
     // adaptive model learn this user's touch offset. Non-letters pass through untouched.
-    private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
-        if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
-        spatialScorer.recordTap(rawX, rawY)
-        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) { predictionEngine.nextCharWeights(currentWordInCompose()) } ?: return label
-        return if (best.length == 1 && best[0].isLetter()) best else label
-    }
+    private val tapResolver by lazy { com.fran.clicks.keyboard.TapResolver(spatialScorer) }
+
+    // Now uses the shared resolver — including the IME's near-edge gate, so a confident center tap
+    // is never re-assigned (fixes "right key, wrong letter").
+    private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String = tapResolver.resolve(
+        label, rawX, rawY, keyBounds, smartEnabled = true,
+        nextCharWeights = { predictionEngine.nextCharWeights(currentWordInCompose()) },
+        fallback = { x, y -> keyAtPoint(x, y) }
+    )
 
     private fun keyAtPoint(rawX: Float, rawY: Float): String? {
         if (keyBounds.isEmpty()) {

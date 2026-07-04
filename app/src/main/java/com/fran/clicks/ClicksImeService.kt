@@ -550,26 +550,13 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         clf.setLayout(keyInfos)
     }
 
-    private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
-        if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
-        if (!smartTouchEnabled()) return label
-        // Only let the language model reassign a tap that lands NEAR a key boundary. A confident
-        // center press is always taken at face value, so a clean tap never becomes a different
-        // letter — that "I hit the right key and got the wrong one" feeling was the model overriding
-        // good taps. recordTap only when smart touch is on, so the model can't drift while disabled.
-        spatialScorer.recordTap(rawX, rawY)
-        val rect = keyBounds[label]
-        if (rect != null) {
-            val marginX = rect.width() * 0.24f
-            val marginY = rect.height() * 0.24f
-            val nearEdge = rawX < rect.left + marginX || rawX > rect.right - marginX ||
-                rawY < rect.top + marginY || rawY > rect.bottom - marginY
-            if (!nearEdge) return label
-        }
-        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) { predictionEngine.nextCharWeights(currentWord()) }
-        return if (best != null && best.length == 1 && best[0].isLetter()) best
-        else keyAtPoint(rawX, rawY, letterOnly = true) ?: label
-    }
+    private val tapResolver by lazy { com.fran.clicks.keyboard.TapResolver(spatialScorer) }
+
+    private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String = tapResolver.resolve(
+        label, rawX, rawY, keyBounds, smartTouchEnabled(),
+        nextCharWeights = { predictionEngine.nextCharWeights(currentWord()) },
+        fallback = { x, y -> keyAtPoint(x, y, letterOnly = true) }
+    )
 
     private fun smartTouchEnabled() = imePrefs().getBoolean(IME_SMART_TOUCH_PREF, true)
 
