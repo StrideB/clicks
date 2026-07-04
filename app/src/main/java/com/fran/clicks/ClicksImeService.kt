@@ -307,6 +307,7 @@ class ClicksImeService : InputMethodService() {
             }
             "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
             "space" -> {
+                if (maybeRunAiCommand()) return
                 tryAutocorrect(live = false)
                 commitValue(" ")
                 learnAndPredictAfterSpace()
@@ -675,6 +676,50 @@ class ClicksImeService : InputMethodService() {
                 setOnClickListener { polishField() }
             }, LinearLayout.LayoutParams(dp(46), LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
         }
+    }
+
+    private val aiCommands = mapOf(
+        "polish" to "Rewrite this message so it reads clearly and naturally, with correct grammar and punctuation.",
+        "fix" to "Fix the spelling, grammar, and punctuation of this message.",
+        "formal" to "Rewrite this message in a polished, professional, formal tone.",
+        "casual" to "Rewrite this message in a relaxed, friendly, casual tone.",
+        "short" to "Rewrite this message to be shorter and more concise.",
+        "shorter" to "Rewrite this message to be shorter and more concise.",
+        "funny" to "Rewrite this message to be witty and lightly humorous.",
+        "expand" to "Expand this brief message into a fuller, more detailed one."
+    )
+
+    // Inline AI command: "<text> //formal" + space -> transform the text with that style. Only fires
+    // on a KNOWN command word, so URLs/code never trigger it. Pro + API key gated.
+    private fun maybeRunAiCommand(): Boolean {
+        if (polishing || !ProManager.isUnlocked(this) || !GeminiClient.configured(imePrefs())) return false
+        val before = currentInputConnection?.getTextBeforeCursor(600, 0)?.toString() ?: return false
+        val m = Regex("^(.*\\S)\\s*//(\\w+)\\s*$", RegexOption.DOT_MATCHES_ALL).find(before) ?: return false
+        val instruction = aiCommands[m.groupValues[2].lowercase()] ?: return false
+        val content = m.groupValues[1].trim()
+        if (content.length < 2) return false
+        runAiTransform(before.length, content, instruction)
+        return true
+    }
+
+    private fun runAiTransform(deleteLen: Int, content: String, instruction: String) {
+        val ic = currentInputConnection ?: return
+        val key = GeminiClient.apiKey(imePrefs())
+        val model = GeminiClient.model(imePrefs())
+        polishing = true
+        keyHaptic("enter")
+        updateStrip()
+        Thread {
+            val result = GeminiClient.fetchTransform(key, model, content, instruction)
+            handler.post {
+                polishing = false
+                ic.beginBatchEdit()
+                ic.deleteSurroundingText(deleteLen, 0)
+                ic.commitText((result ?: content) + " ", 1)
+                ic.endBatchEdit()
+                onTextChanged()
+            }
+        }.start()
     }
 
     // AI Polish: rewrite the whole field with Gemini (Pro + API key), shown as a sparkle in the strip.

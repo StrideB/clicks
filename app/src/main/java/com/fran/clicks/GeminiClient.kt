@@ -33,12 +33,16 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     /** Rewrite/polish [text] into clean, natural prose. Returns null on failure or no-op. Blocking. */
-    fun fetchRewrite(apiKey: String, model: String, text: String): String? {
-        if (text.isBlank()) return null
-        val prompt = """Rewrite the following message so it reads clearly and naturally, with correct spelling, punctuation and capitalization. Keep the original meaning, tone, and roughly the same length. Reply with ONLY the rewritten message — no preamble, no quotes, no explanation.
+    fun fetchRewrite(apiKey: String, model: String, text: String): String? = fetchTransform(
+        apiKey, model, text,
+        "Rewrite this message so it reads clearly and naturally, with correct spelling, punctuation and capitalization. Keep the original meaning, tone, and roughly the same length."
+    )
 
-$text"""
-        val out = call(apiKey, model, prompt, maxTokens = 400, temperature = 0.4) ?: return null
+    /** Apply an arbitrary [instruction] to [text] (tone shift, shorten, fix, etc.). Blocking. */
+    fun fetchTransform(apiKey: String, model: String, text: String, instruction: String): String? {
+        if (text.isBlank()) return null
+        val prompt = "$instruction Keep the original meaning. Reply with ONLY the rewritten message — no preamble, no quotes, no explanation.\n\n$text"
+        val out = call(apiKey, model, prompt, maxTokens = 400, temperature = 0.5) ?: return null
         val cleaned = out.trim().removeSurrounding("\"").trim()
         return cleaned.ifBlank { null }
     }
