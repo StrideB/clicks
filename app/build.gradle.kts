@@ -62,4 +62,5 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
     implementation("androidx.dynamicanimation:dynamicanimation-ktx:1.0.0-alpha03")
     implementation("com.android.billingclient:billing-ktx:7.1.1")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
 }

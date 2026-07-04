@@ -257,6 +257,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetSwapDownY = 0f
     private var widgetSwapHasDown = false
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
+    private var neuralSwipe: com.fran.clicks.keyboard.NeuralSwipeEngine? = null
     private var glideRecognizedColor: Int? = null   // app brand color when a glided word names an app
     @Volatile private var glideGestureActive = false   // true while a keyboard glide owns the touch
     private var numberPadOpen = false
@@ -7720,13 +7721,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     bottomMargin = dp(2)
                 })
             }
+            // Suggestion strip at the TOP of the keyboard (Gboard-style), above all key rows.
+            if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen) {
+                addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)).apply {
+                    bottomMargin = dp(2)
+                })
+            }
             if (symbolsOpen) {
                 addKeyRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
                 addKeyRow(listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"))
                 addKeyRow(listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"), dp(8))
-                // FEATURE (disabled): strip just above the space row — thumb-height, closer to the
-                // fingers. Uncomment this (and remove the top placement above) to move it down.
-                // if (showSuggestionStrip()) addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
                 addKeyRow(listOf("abc", "clicks", "space", "period", "enter"), dp(15))
             } else if (numberPadOpen) {
                 addKeyRow(listOf("1", "2", "3"))
@@ -7737,8 +7741,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow("qwertyuiop".map { it.toString() })
                 addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
                 addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
-                // FEATURE (disabled): strip just above the space row — thumb-height. See note above.
-                // if (showSuggestionStrip()) addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
                 addKeyRow(listOf("123", "clicks", "space", "period", "enter"), dp(15))
             }
         }
@@ -8333,7 +8335,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var pendingLauncherCommand: AgenticRouter.Command? = null
     private var pendingLauncherActions: List<Pair<String, String>> = emptyList()
 
-    private fun showSuggestionStrip() = false
+    private fun showSuggestionStrip() = true
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
     private fun keyboardTypingWellHeight() = dp(34)
     private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(2) else 0
@@ -8415,7 +8417,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             return
         }
-        val shown = suggestions.take(3)
+        var shown = suggestions.take(3)
+        // Always keep the strip alive: if there are no word candidates, fall back to next-word
+        // predictions for the last completed word so it "always shows what you'll type next".
+        if (shown.isEmpty()) {
+            val raw = if (openPane?.kind == PaneKind.CHAT) composeText else query
+            if (raw.isNotEmpty() && raw.last() == ' ') {
+                val lastWord = raw.trim().substringAfterLast(' ')
+                if (lastWord.length >= 2) {
+                    val next = ngramRepo.cachedNextWords(lastWord)
+                    if (next.isEmpty()) ngramRepo.prefetchNextWords(lastWord) else shown = next.take(3)
+                }
+            }
+        }
         val pro = ProManager.isUnlocked(this)
         val canPolish = launcherPolishAvailable()
         val appColor = suggestionStripAppColor(shown)
@@ -8691,7 +8705,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         scheduleLiveAutocorrect()
         val word = currentWordInCompose()
         if (word.length < 2) {
-            suggestions = emptyList(); updateSuggestionBar()
+            suggestions = emptyList(); updateSuggestionBar()   // strip falls back to next-word preds
             liveRouter.onTextChanged("")
             return
         }
@@ -8772,19 +8786,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // (a dead-end that can't extend into any real word) with a confident fix, rewrite it in place.
     // The dead-end guard in tryAutocorrect(live=true) is what makes this safe mid-sentence.
     private fun scheduleLiveAutocorrect() {
+        // Disabled: rewriting a word mid-typing (before you press space) fights the user — it changes
+        // letters while you're still on the word and re-triggers when you go back to retype. Like
+        // Gboard, we now only correct on space/punctuation, and surface candidates in the strip so
+        // YOU choose. The on-space path (tryAutocorrect) still runs and is undoable via backspace.
         liveCorrectDebounce?.let { handler.removeCallbacks(it) }
-        val raw = if (openPane?.kind == PaneKind.CHAT) composeText else query
-        if (raw.isEmpty() || raw.last() == ' ' || libraryOpen) return
-        val word = currentWordInCompose().trimEnd()
-        if (word.length < 3) return
-        val r = Runnable {
-            val curRaw = if (openPane?.kind == PaneKind.CHAT) composeText else query
-            if (curRaw.isEmpty() || curRaw.last() == ' ') return@Runnable
-            if (currentWordInCompose().trimEnd() != word) return@Runnable   // user kept typing
-            tryAutocorrect(live = true)
-        }
-        liveCorrectDebounce = r
-        handler.postDelayed(r, 600)
     }
 
     private fun editDistance(a: String, b: String): Int {
@@ -8954,8 +8960,11 @@ Reply format: ["word1","word2","word3"]"""
                 val loaded = com.fran.clicks.keyboard.DictionaryLoader.load(this@MainActivity)
                 val clf = StatisticalGlideTypingClassifier()
                 clf.setWordData(loaded.words, loaded.freqs)
+                // Optional neural decoder — no-op (isReady=false) unless a trained model ships in assets.
+                val neural = com.fran.clicks.keyboard.NeuralSwipeEngine(this@MainActivity).also { it.tryLoad() }
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
+                    neuralSwipe = neural.takeIf { it.isReady }
                     wordlistFrequencies = loaded.freqs
                     predictionEngine = PredictionEngine(loaded.freqs)
                     updateGlideLayout()
@@ -9023,8 +9032,32 @@ Reply format: ["word1","word2","word3"]"""
         return spatialScorer.bestKey(rawX, rawY)
     }
 
+    // Context boost: words the user tends to type after the previous word get amplified so the glide
+    // decoder agrees with sentence context (their/there, to/ti, form/from…). Empty = no bias.
+    private fun glideContextBoost(): Map<String, Float> {
+        val prev = (if (openPane?.kind == PaneKind.CHAT) composeText else query).trimEnd()
+            .substringAfterLast(' ').lowercase()
+        if (prev.length < 2) return emptyMap()
+        val next = ngramRepo.cachedNextWords(prev)
+        if (next.isEmpty()) { ngramRepo.prefetchNextWords(prev); return emptyMap() }
+        // Rank-decreasing weight: top prediction gets the strongest boost.
+        return next.mapIndexed { i, w -> w.lowercase() to (1f - i * 0.12f).coerceAtLeast(0.2f) }.toMap()
+    }
+
+    // Screen-space bounding box [left, top, width, height] of the letter keys — used to normalize a
+    // glide path into [0,1] so the neural decoder is independent of docked vs. widget size.
+    private fun letterKeyBounds(): FloatArray? {
+        val rects = keyBounds.filterKeys { it.length == 1 && it[0].isLetter() }.values
+        if (rects.isEmpty()) return null
+        val left = rects.minOf { it.left }.toFloat()
+        val top = rects.minOf { it.top }.toFloat()
+        val right = rects.maxOf { it.right }.toFloat()
+        val bottom = rects.maxOf { it.bottom }.toFloat()
+        return floatArrayOf(left, top, right - left, bottom - top)
+    }
+
     private fun handleGlideResult(results: List<String>) {
-        haptic(contentFrame)
+        if (hapticsEnabled) hapticEngine.glideCommit() else haptic(contentFrame)
         val ranked = rerankGlideByContext(results)
         val topWord = ranked[0]
         val pane = openPane
@@ -9194,6 +9227,7 @@ Reply format: ["word1","word2","word3"]"""
                         if (abs(ev.rawX - startRawX) > dp(10) || abs(ev.rawY - startRawY) > dp(10)) {
                             tracking = true
                             glideGestureActive = true
+                            if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
                             keyAtPoint(startRawX, startRawY)?.let { k -> if (k.length == 1) traced.add(k) }
                             trailLocal.add(startRawX - screenX to startRawY - screenY)
                             glideClassifier?.addGesturePoint(startRawX, startRawY)
@@ -9270,16 +9304,35 @@ Reply format: ["word1","word2","word3"]"""
                     glidePersisting = trailLocal.size > 1   // hold the trail through recognition
                     invalidate()
                     if (clf != null && clf.hasEnoughPoints) {
+                        // Snapshot the raw screen-space path for the optional neural decoder.
+                        val neural = neuralSwipe
+                        val rawPath = if (neural != null)
+                            trailLocal.map { android.graphics.PointF(it.first + screenX, it.second + screenY) }
+                            else null
+                        val bounds = if (neural != null) letterKeyBounds() else null
+                        val contextBoost = glideContextBoost()
                         Thread {
-                            val results = clf.getSuggestions(3)
-                            clf.clear()
-                            handler.post {
-                                if (results.isNotEmpty()) {
-                                    handleGlideResult(results)
-                                    glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
-                                    invalidate()
-                                } else if (t.size >= 3) handleSwipeFallback(t)
-                                fadeGlideTrail()
+                            // Decode in a try/finally so the trail ALWAYS gets cleaned up — even if the
+                            // neural or statistical decoder throws. Otherwise glidePersisting stays true
+                            // and the trail sticks on screen forever.
+                            var results: List<String> = emptyList()
+                            try {
+                                val neuralResults = if (neural != null && rawPath != null && bounds != null)
+                                    neural.decodeSwipePath(rawPath, bounds[0], bounds[1], bounds[2], bounds[3], wordlistFrequencies)
+                                    else emptyList()
+                                results = neuralResults.ifEmpty { clf.getSuggestions(3, contextBoost) }
+                            } catch (_: Throwable) {
+                                results = emptyList()
+                            } finally {
+                                runCatching { clf.clear() }
+                                handler.post {
+                                    fadeGlideTrail()   // schedule the clear FIRST so a later throw can't strand the trail
+                                    if (results.isNotEmpty()) {
+                                        handleGlideResult(results)
+                                        glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
+                                        invalidate()
+                                    } else if (t.size >= 3) handleSwipeFallback(t)
+                                }
                             }
                         }.start()
                     } else {

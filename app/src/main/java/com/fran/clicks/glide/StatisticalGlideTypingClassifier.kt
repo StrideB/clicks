@@ -28,6 +28,8 @@ class StatisticalGlideTypingClassifier {
         private const val SAMPLING_POINTS = 200
         private const val SHAPE_STD = 22.08f
         private const val LOCATION_STD_FACTOR = 0.5109f
+        // How strongly the previous-word n-gram context amplifies a candidate's language prior.
+        private const val CONTEXT_WEIGHT = 6f
     }
 
     private val gesture = Gesture()
@@ -74,16 +76,25 @@ class StatisticalGlideTypingClassifier {
 
     val hasEnoughPoints: Boolean get() = gesture.size >= 6
 
-    fun getSuggestions(maxCount: Int): List<String> {
-        val cacheKey = gesture.hashCode() * 31 + maxCount
+    /**
+     * @param contextBoost per-word multiplier drawn from what the user types after the *previous*
+     *   word (n-gram store). A word in context gets its language prior amplified, so the shape
+     *   model and context agree on the answer — the core reliability win over shape+frequency alone.
+     */
+    fun getSuggestions(maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> {
+        val cacheKey = (gesture.hashCode() * 31 + maxCount) * 31 + contextBoost.hashCode()
         return suggestionCache.get(cacheKey) ?: run {
-            val r = computeSuggestions(maxCount)
+            val r = computeSuggestions(maxCount, contextBoost)
             suggestionCache.put(cacheKey, r)
             r
         }
     }
 
-    private fun computeSuggestions(maxCount: Int): List<String> {
+    /** Scored variant: (word, confidenceMargin) where margin>0 means the top pick clearly beats #2. */
+    fun getScoredSuggestions(maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> =
+        computeSuggestions(maxCount, contextBoost)
+
+    private fun computeSuggestions(maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> {
         val p = pruner ?: return emptyList()
         if (gesture.size < 2) return emptyList()
 
@@ -102,7 +113,9 @@ class StatisticalGlideTypingClassifier {
                 val wordNormalized = wordResampled.normalizeByBoxSide()
                 val shapeProb = gaussianProb(calcShapeDistance(wordNormalized, userNormalized), 0f, SHAPE_STD)
                 val locProb = gaussianProb(calcLocationDistance(wordResampled, userResampled), 0f, LOCATION_STD_FACTOR * keyRadius)
-                val freq = 255f * (wordFrequencies[word] ?: 0.005f)
+                // Language prior = unigram frequency amplified by n-gram context for the previous word.
+                val ctx = contextBoost[word] ?: 0f
+                val freq = 255f * (wordFrequencies[word] ?: 0.005f) * (1f + CONTEXT_WEIGHT * ctx)
                 val confidence = 1f / (shapeProb * locProb * freq + 1e-10f)
 
                 var pos = 0

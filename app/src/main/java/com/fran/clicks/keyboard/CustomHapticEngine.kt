@@ -68,6 +68,36 @@ class CustomHapticEngine(context: Context) {
         }
     }
 
+    /** Firm click the instant a swipe crosses the slop threshold into glide mode. */
+    fun glideStart() {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                v.vibrate(
+                    VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.7f)
+                        .compose()
+                )
+            }.onFailure { pulse(10L, 150) }
+        } else pulse(10L, 150)
+    }
+
+    /** Light confirmation when a glided word is recognized and committed. */
+    fun glideCommit() {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                v.vibrate(
+                    VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.55f)
+                        .compose()
+                )
+            }.onFailure { pulse(6L, 110) }
+        } else pulse(6L, 110)
+    }
+
     /** Progressive hold feedback for the widget-mode DOCK key. */
     fun dockHoldStage(stage: Int) {
         val v = vibrator ?: return

@@ -70,6 +70,7 @@ class ClicksImeService : InputMethodService() {
     private var latentLanguageActive = false
     private val spatialScorer = SpatialScorer()
     private val ngramRepo by lazy { NgramRepository(this) }
+    private val hapticEngine by lazy { com.fran.clicks.keyboard.CustomHapticEngine(this) }
     private var suggestionStrip: LinearLayout? = null
     private var agenticPanel: LinearLayout? = null
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
@@ -98,6 +99,7 @@ class ClicksImeService : InputMethodService() {
     private var geminiDebounce: Runnable? = null
     private var pendingOriginal: String? = null
     private var pendingCorrected: String? = null
+    private var lastSpaceMs = 0L
     private val rejectedCorrections = HashMap<String, MutableSet<String>>()
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteRepeatActive = false
@@ -123,7 +125,7 @@ class ClicksImeService : InputMethodService() {
             hideImeSurface()
             return
         }
-        refreshKeyboardChrome()
+        refreshKeyboardChrome(rebuildBackgrounds = true)
         updateInputViewShown()
         clearInlineSuggestions()
         agenticHud = null
@@ -138,7 +140,7 @@ class ClicksImeService : InputMethodService() {
             return
         }
         shifted = shouldStartShifted(attribute)
-        refreshKeyboardChrome()
+        refreshKeyboardChrome(rebuildBackgrounds = true)
     }
 
     override fun onWindowShown() {
@@ -375,7 +377,24 @@ class ClicksImeService : InputMethodService() {
                 refreshKeyboardChrome()
             }
             "back" -> {
+                // Undo autocorrect: if the last action was a correction and it's still right before
+                // the cursor, backspace restores the original word and remembers the rejection so it
+                // is never re-applied to that word. This is what lets the user "be" after retyping.
+                val orig = pendingOriginal; val corr = pendingCorrected
                 pendingOriginal = null; pendingCorrected = null
+                if (orig != null && corr != null && input != null) {
+                    val before = input.getTextBeforeCursor(corr.length + 1, 0)?.toString().orEmpty()
+                    val hasSpace = before.endsWith("$corr ")
+                    if (hasSpace || before.endsWith(corr)) {
+                        input.beginBatchEdit()
+                        input.deleteSurroundingText(corr.length + if (hasSpace) 1 else 0, 0)
+                        input.commitText(orig, 1)
+                        input.endBatchEdit()
+                        rejectedCorrections.getOrPut(orig.lowercase(Locale.US)) { HashSet() }.add(corr.lowercase(Locale.US))
+                        onTextChanged()
+                        return
+                    }
+                }
                 if (input == null) {
                     VivoDockedExperiment.injectInput("⌫")
                 } else if (!input.deleteSurroundingText(1, 0)) {
@@ -386,6 +405,17 @@ class ClicksImeService : InputMethodService() {
             "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
             "space" -> {
                 if (maybeRunAiCommand()) return
+                // Double-space → ". " (parity with the launcher keyboard).
+                val now = System.currentTimeMillis()
+                val before = input?.getTextBeforeCursor(1, 0)?.toString()
+                if (now - lastSpaceMs < 500L && before == " ") {
+                    input.deleteSurroundingText(1, 0)
+                    input.commitText(". ", 1)
+                    lastSpaceMs = 0L
+                    updateAutoCap()
+                    return
+                }
+                lastSpaceMs = now
                 if (autocorrectEnabled()) tryAutocorrect(live = false)
                 commitValue(" ")
                 learnAndPredictAfterSpace()
@@ -432,13 +462,12 @@ class ClicksImeService : InputMethodService() {
 
     private fun keyHaptic(label: String) {
         if (!imePrefs().getBoolean(HAPTICS_PREF, true)) return
-        val constant = when (label) {
-            "back" -> HapticFeedbackConstants.KEYBOARD_RELEASE
-            "enter" -> HapticFeedbackConstants.CONFIRM
-            else -> HapticFeedbackConstants.KEYBOARD_TAP
-        }
-        deckView?.performHapticFeedback(constant)
+        // Tuned per-label composition primitives (parity with the launcher keyboard) instead of the
+        // coarse system constants.
+        hapticEngine.tap(label)
     }
+
+    private fun hapticsOn() = imePrefs().getBoolean(HAPTICS_PREF, true)
 
     private fun startDeleteRepeat() {
         stopDeleteRepeat(clearFired = true)
@@ -547,6 +576,7 @@ class ClicksImeService : InputMethodService() {
                 hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                 latentLanguageActive = false
                 predictionEngine = predictionEnginePrimary
+                android.util.Log.d("ClicksGlide", "classifier loaded words=${adaptive.extendedWords.size}")
                 updateGlideLayout()
             }
         }.start()
@@ -681,16 +711,10 @@ class ClicksImeService : InputMethodService() {
     private fun autocorrectEnabled() = imePrefs().getBoolean(IME_AUTOCORRECT_PREF, true)
 
     private fun scheduleLiveCorrect() {
+        // Disabled: rewriting a word mid-typing (before space) fights the user and re-triggers when
+        // they go back to retype. Correct only on space/punctuation (undoable via backspace) and show
+        // candidates in the strip — matching Gboard. See scheduleLiveAutocorrect in the launcher.
         liveCorrectDebounce?.let { handler.removeCallbacks(it) }
-        if (!autocorrectEnabled()) return
-        val word = currentWord()
-        if (word.length < 3) return
-        val r = Runnable {
-            if (currentWord() != word) return@Runnable
-            if (tryAutocorrect(live = true)) scheduleSuggestions()
-        }
-        liveCorrectDebounce = r
-        handler.postDelayed(r, 600L)
     }
 
     private fun tryAutocorrect(live: Boolean): Boolean {
@@ -762,6 +786,16 @@ class ClicksImeService : InputMethodService() {
         if (ctx.isEmpty()) return results.first()
         val best = results.take(3).minByOrNull { val i = ctx.indexOf(it.lowercase(Locale.US)); if (i < 0) Int.MAX_VALUE else i }
         return if (best != null && ctx.contains(best.lowercase(Locale.US))) best else results.first()
+    }
+
+    // Boost candidates the user tends to type after the previous word, so glide decode agrees with
+    // sentence context (parity with the launcher). Empty = no bias.
+    private fun glideContextBoost(): Map<String, Float> {
+        val prev = previousWord()
+        if (prev.length < 2) return emptyMap()
+        val next = ngramRepo.cachedNextWords(prev)
+        if (next.isEmpty()) { ngramRepo.prefetchNextWords(prev); return emptyMap() }
+        return next.mapIndexed { i, w -> w.lowercase(Locale.US) to (1f - i * 0.12f).coerceAtLeast(0.2f) }.toMap()
     }
 
     private fun buildSuggestionStrip(): LinearLayout {
@@ -1539,9 +1573,13 @@ class ClicksImeService : InputMethodService() {
         return intArrayOf(adjustAlpha(core, 0x20), tail, core, adjustAlpha(core, 0x22))
     }
 
-    private fun refreshKeyboardChrome() {
+    // [rebuildBackgrounds] is only needed on a theme change. Shift / auto-cap flips just change the
+    // letter case, so rebuilding every key's background drawable on each of those (which happens
+    // constantly while typing) was wasted UI-thread allocation — the main IME sluggishness. Default
+    // to a light text-only refresh.
+    private fun refreshKeyboardChrome(rebuildBackgrounds: Boolean = false) {
         deckView?.let { deck ->
-            deck.background = deckBackground()
+            if (rebuildBackgrounds) deck.background = deckBackground()
             for (rowIndex in 0 until deck.childCount) {
                 val row = deck.getChildAt(rowIndex) as? LinearLayout ?: continue
                 for (keyIndex in 0 until row.childCount) {
@@ -1549,7 +1587,7 @@ class ClicksImeService : InputMethodService() {
                     val raw = key.tag as? String ?: continue
                     key.text = visualLabel(raw)
                     key.setTextColor(textColor(raw))
-                    key.background = visualKeyBackground(raw, pressed = false)
+                    if (rebuildBackgrounds) key.background = visualKeyBackground(raw, pressed = false)
                 }
             }
         }
@@ -1641,6 +1679,8 @@ class ClicksImeService : InputMethodService() {
                 MotionEvent.ACTION_MOVE -> {
                     if (!tracking && (abs(ev.rawX - startRawX) > touchSlop || abs(ev.rawY - startRawY) > touchSlop)) {
                         tracking = true
+                        if (hapticsOn()) hapticEngine.glideStart()   // firm click on glide activation
+                        android.util.Log.d("ClicksGlide", "glide start keyBounds=${keyBounds.size} clfReady=${glideClassifier != null}")
                         parent?.requestDisallowInterceptTouchEvent(true)
                         keyAtPoint(startRawX, startRawY, letterOnly = true)?.let { traced.add(it) }
                         trailLocal.add(startRawX - screenX to startRawY - screenY)
@@ -1690,40 +1730,45 @@ class ClicksImeService : InputMethodService() {
                         onTextChanged()
                         return true
                     }
-                    val quickLeftDelete = startRawX - ev.rawX > dp(52) && abs(ev.rawY - startRawY) < dp(36) && (clf == null || !clf.hasEnoughPoints)
+                    // Only treat a left swipe as delete when the classifier is READY and decided the
+                    // path isn't a word. If clf is still loading (null), a normal glide must never be
+                    // misread as a word-delete — that silently ate typing in some apps.
+                    val quickLeftDelete = clf != null && !clf.hasEnoughPoints &&
+                        startRawX - ev.rawX > dp(52) && abs(ev.rawY - startRawY) < dp(36)
                     val tracedKeys = traced.toList()
                     tracking = false
                     traced.clear()
                     glidePersisting = trailLocal.size > 1
                     invalidate()
+                    android.util.Log.d("ClicksGlide", "UP pkg=$currentEditorPackage clfReady=${clf != null} " +
+                        "enoughPts=${clf?.hasEnoughPoints} traced=${tracedKeys.size} quickDel=$quickLeftDelete")
                     if (quickLeftDelete) {
-                        keyHaptic("back")
-                        deleteWord()
-                        clf?.clear()
-                        fadeGlideTrail()
-                        return true
+                        keyHaptic("back"); deleteWord(); clf?.clear(); fadeGlideTrail(); return true
                     }
                     if (clf != null && clf.hasEnoughPoints) {
+                        val contextBoost = glideContextBoost()
                         Thread {
-                            val results = clf.getSuggestions(3)
-                            clf.clear()
-                            handler.post {
-                                if (results.isNotEmpty()) {
-                                    keyHaptic("space")
-                                    commitGlideWord(rerankGlide(results))
-                                } else if (tracedKeys.size >= 3) {
-                                    keyHaptic("space")
-                                    handleSwipeFallback(tracedKeys)
+                            var results: List<String> = emptyList()
+                            try {
+                                results = clf.getSuggestions(3, contextBoost)
+                            } catch (e: Throwable) {
+                                android.util.Log.e("ClicksGlide", "decode failed", e)
+                            } finally {
+                                runCatching { clf.clear() }
+                                handler.post {
+                                    android.util.Log.d("ClicksGlide", "results=${results.size} top=${results.firstOrNull()} icNull=${currentInputConnection == null}")
+                                    if (results.isNotEmpty()) {
+                                        if (hapticsOn()) hapticEngine.glideCommit(); commitGlideWord(rerankGlide(results))
+                                    } else if (tracedKeys.size >= 3) {
+                                        keyHaptic("space"); handleSwipeFallback(tracedKeys)
+                                    }
+                                    fadeGlideTrail()
                                 }
-                                fadeGlideTrail()
                             }
                         }.start()
                     } else {
                         clf?.clear()
-                        if (tracedKeys.size >= 3) {
-                            keyHaptic("space")
-                            handleSwipeFallback(tracedKeys)
-                        }
+                        if (tracedKeys.size >= 3) { keyHaptic("space"); handleSwipeFallback(tracedKeys) }
                         fadeGlideTrail()
                     }
                 }
