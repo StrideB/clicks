@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -43,3 +43,16 @@ jobs:
           name: clicks-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # On main, also publish the APK to a rolling "debug-latest" Release so there's a stable,
+      # direct app-debug.apk download link (no zip) — friendlier to grab from a phone.
+      - name: Publish APK to a Release (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: debug-latest
+          name: Latest debug APK
+          body: Auto-published debug build of the latest main. Install on Android (allow unknown sources).
+          prerelease: true
+          make_latest: true
+          files: app/build/outputs/apk/debug/app-debug.apk
