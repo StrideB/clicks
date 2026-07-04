@@ -74,6 +74,19 @@ class ClicksImeService : InputMethodService() {
     private var agenticPanel: LinearLayout? = null
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
     private var inlineRow: LinearLayout? = null
+    // Agentic emoji + smart symbols shown in the suggestion strip: (display, textToInsert, isEmoji).
+    private var smartChips: List<Triple<String, String, Boolean>> = emptyList()
+    private var emojiTriggerWord: String = ""
+
+    // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
+    private val keyUpSymbols = mapOf(
+        "q" to "1", "w" to "2", "e" to "3", "r" to "4", "t" to "5",
+        "y" to "6", "u" to "7", "i" to "8", "o" to "9", "p" to "0",
+        "a" to "@", "s" to "#", "d" to "$", "f" to "_", "g" to "&",
+        "h" to "-", "j" to "+", "k" to "(", "l" to ")",
+        "z" to "*", "x" to "\"", "c" to "'", "v" to ":", "b" to ";",
+        "n" to "!", "m" to "?"
+    )
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
@@ -279,11 +292,22 @@ class ClicksImeService : InputMethodService() {
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, total)
                     }
+                    if (label == "123" || label == "abc") {
+                        // Long-press the mode key to open Keyboard Settings; a tap still flips
+                        // symbols/letters.
+                        val runnable = Runnable {
+                            clicksLongPressFired = true
+                            keyHaptic("enter")
+                            openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
+                        }
+                        clicksLongPressRunnable = runnable
+                        handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
+                    }
                     if (label == "back") startDeleteRepeat()
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if ((label == "clicks" || label == "enter" || label == "space") &&
+                    if ((label == "clicks" || label == "enter" || label == "space" || label == "123" || label == "abc") &&
                         (abs(event.rawX - downRawX) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop ||
                             abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
                         cancelClicksLongPress()
@@ -592,6 +616,7 @@ class ClicksImeService : InputMethodService() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
         val r = Runnable {
             val word = currentWord()
+            computeSmartChips(word)
             if (word.length < 2) {
                 val prev = previousWord()
                 val ic = currentInputConnection
@@ -615,6 +640,36 @@ class ClicksImeService : InputMethodService() {
         }
         suggestDebounce = r
         handler.postDelayed(r, 70L)
+    }
+
+    // Build emoji + smart-symbol chips for the current word/context. Emoji lead; symbols fill in.
+    private fun computeSmartChips(word: String) {
+        val chips = ArrayList<Triple<String, String, Boolean>>()
+        emojiTriggerWord = ""
+        if (word.length >= 2) {
+            emojiTriggerWord = word.lowercase()
+            SmartChips.emojiFor(imePrefs(), emojiTriggerWord).take(4).forEach { chips.add(Triple(it, it, true)) }
+        }
+        val before = currentInputConnection?.getTextBeforeCursor(24, 0)?.toString().orEmpty()
+        SmartChips.symbolsFor(before, word).forEach { s -> if (chips.none { it.first == s }) chips.add(Triple(s, s, false)) }
+        smartChips = chips.take(5)
+    }
+
+    // Insert an emoji/symbol chip. Emoji get a leading space when needed and record the pick so the
+    // ranking learns; symbols insert as-is.
+    private fun insertSmartChip(display: String, insert: String, emoji: Boolean) {
+        val ic = currentInputConnection ?: return
+        keyHaptic("space")
+        if (emoji) {
+            val prev = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
+            val sep = if (prev.isNotEmpty() && prev != " ") " " else ""
+            ic.commitText(sep + insert, 1)
+            if (emojiTriggerWord.isNotEmpty()) SmartChips.recordEmojiPick(imePrefs(), emojiTriggerWord, insert)
+        } else {
+            ic.commitText(insert, 1)
+        }
+        smartChips = emptyList()
+        onTextChanged()
     }
 
     private fun autocorrectEnabled() = imePrefs().getBoolean(IME_AUTOCORRECT_PREF, true)
@@ -1019,7 +1074,8 @@ class ClicksImeService : InputMethodService() {
         }
         val shown = suggestions.take(3)
         val canPolish = polishAvailable()
-        if (shown.isEmpty() && !canPolish) { strip.background = null; return }
+        val chips = smartChips
+        if (shown.isEmpty() && !canPolish && chips.isEmpty()) { strip.background = null; return }
         strip.background = stripWellBackground()
         shown.forEachIndexed { i, w ->
             strip.addView(TextView(this).apply {
@@ -1032,7 +1088,23 @@ class ClicksImeService : InputMethodService() {
                 isClickable = true
                 setOnClickListener { keyHaptic("space"); acceptSuggestion(w) }
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
-            if (i < shown.lastIndex || canPolish) {
+            if (i < shown.lastIndex || canPolish || chips.isNotEmpty()) {
+                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
+                    LinearLayout.LayoutParams(dp(1), dp(18)))
+            }
+        }
+        chips.forEachIndexed { i, (display, insert, emoji) ->
+            strip.addView(TextView(this).apply {
+                text = display
+                gravity = Gravity.CENTER
+                textSize = if (emoji) 18f else 16f
+                setTextColor(0xFFE9EDF2.toInt())
+                maxLines = 1
+                setPadding(dp(8), 0, dp(8), 0)
+                isClickable = true
+                setOnClickListener { insertSmartChip(display, insert, emoji) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            if (i < chips.lastIndex || canPolish) {
                 strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
                     LinearLayout.LayoutParams(dp(1), dp(18)))
             }
@@ -1471,6 +1543,26 @@ class ClicksImeService : InputMethodService() {
                 }
                 MotionEvent.ACTION_UP -> {
                     val clf = glideClassifier
+                    // Swipe-up-for-symbol: a short, upward, vertical-dominant flick that started on a
+                    // key inserts that key's symbol instead of gliding — quick punctuation, no mode
+                    // switch. Gated on "not a real glide" so full glide words are untouched.
+                    val dyUp = ev.rawY - startRawY
+                    val dxUp = ev.rawX - startRawX
+                    val flickKey = keyAtPoint(startRawX, startRawY, letterOnly = true)
+                    val flickSymbol = if (flickKey != null) keyUpSymbols[flickKey] else null
+                    if (flickSymbol != null && dyUp < -dp(24) && abs(dyUp) >= abs(dxUp) * 1.4f &&
+                        abs(dxUp) < dp(56) && (clf == null || !clf.hasEnoughPoints)) {
+                        tracking = false
+                        traced.clear()
+                        clf?.clear()
+                        trailLocal.clear()
+                        glidePersisting = false
+                        invalidate()
+                        keyHaptic("space")
+                        commitValue(flickSymbol)
+                        onTextChanged()
+                        return true
+                    }
                     val quickLeftDelete = startRawX - ev.rawX > dp(52) && abs(ev.rawY - startRawY) < dp(36) && (clf == null || !clf.hasEnoughPoints)
                     val tracedKeys = traced.toList()
                     tracking = false
