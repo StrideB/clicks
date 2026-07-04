@@ -29,6 +29,7 @@ import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.StateListDrawable
 import com.fran.clicks.glide.KeyInfo
 import com.fran.clicks.glide.StatisticalGlideTypingClassifier
+import com.fran.clicks.keyboard.KeyPreviewManager
 import com.fran.clicks.keyboard.PredictionEngine
 import com.fran.clicks.keyboard.SpatialScorer
 import com.fran.clicks.db.NgramRepository
@@ -38,6 +39,7 @@ import kotlin.math.abs
 class ClicksImeService : InputMethodService() {
     private var shifted = false
     private var symbolsMode = false
+    private val keyPreview by lazy { KeyPreviewManager(this) }
     private var deckView: SwipeImeKeyboardLayout? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
@@ -218,6 +220,8 @@ class ClicksImeService : InputMethodService() {
                     clicksLongPressFired = false
                     v.background = visualKeyBackground(label, pressed = true)
                     keyHaptic(label)
+                    keyPreview.show(v, label)
+                    v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(45L).start()
                     if (label == "clicks") {
                         val runnable = Runnable {
                             clicksLongPressFired = true
@@ -240,6 +244,9 @@ class ClicksImeService : InputMethodService() {
                 }
                 MotionEvent.ACTION_UP -> {
                     v.background = visualKeyBackground(label, pressed = false)
+                    keyPreview.dismiss()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(150L)
+                        .setInterpolator(android.view.animation.OvershootInterpolator(2.4f)).start()
                     cancelClicksLongPress()
                     if (clicksLongPressFired) {
                         clicksLongPressFired = false
@@ -255,6 +262,8 @@ class ClicksImeService : InputMethodService() {
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     v.background = visualKeyBackground(label, pressed = false)
+                    keyPreview.dismiss()
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(120L).start()
                     cancelClicksLongPress()
                     clicksLongPressFired = false
                     if (label == "back") stopDeleteRepeat(clearFired = true)
