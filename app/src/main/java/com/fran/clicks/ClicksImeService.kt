@@ -56,6 +56,7 @@ class ClicksImeService : InputMethodService() {
     private val spatialScorer = SpatialScorer()
     private val ngramRepo by lazy { NgramRepository(this) }
     private var suggestionStrip: LinearLayout? = null
+    private var agenticPanel: LinearLayout? = null
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
@@ -145,6 +146,9 @@ class ClicksImeService : InputMethodService() {
             background = deckBackground()
             minimumHeight = imeKeyboardHeight()
             addView(buildSuggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+            addView(buildAgenticPanel(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                leftMargin = dp(4); rightMargin = dp(4); topMargin = dp(1); bottomMargin = dp(2)
+            })
             val rows = if (symbolsMode) listOf(
                 "1234567890".map { it.toString() },
                 listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"),
@@ -643,6 +647,120 @@ class ClicksImeService : InputMethodService() {
         setColor(0x14FFFFFF); cornerRadius = dp(10).toFloat()
     }
 
+    // ── Agentic panel ──────────────────────────────────────────────────────────
+    // One elegant glass card for every agentic action. Idle -> GONE, so the resting keyboard is
+    // untouched; a pending command or working status elevates into the card and hides the plain
+    // suggestion strip. Each action gets its own accent spine (Clicks' colored-spine language).
+    // Command / Files / Email render here as they land; typing suggestions stay in the strip.
+
+    private fun buildAgenticPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(dp(12), dp(8), dp(10), dp(8))
+        }
+        agenticPanel = panel
+        renderAgenticPanel()
+        return panel
+    }
+
+    private fun agenticCardBackground() = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFF20232A.toInt(), 0xFF14161B.toInt())
+    ).apply { cornerRadius = dp(16).toFloat() }
+
+    private fun agenticCta(label: String, accent: Int, onClick: () -> Unit) = TextView(this).apply {
+        text = label; gravity = Gravity.CENTER; textSize = 12.5f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        setTextColor(0xFF0A0C0F.toInt())
+        setPadding(dp(15), dp(8), dp(15), dp(8))
+        maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+        background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(11).toFloat() }
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
+
+    private fun agenticDismiss() = TextView(this).apply {
+        text = "✕"; gravity = Gravity.CENTER; textSize = 13f
+        setTextColor(0xFF767C89.toInt())
+        setPadding(dp(10), dp(8), dp(6), dp(8))
+        isClickable = true
+        setOnClickListener { keyHaptic("back"); dismissAgentic() }
+    }
+
+    private fun dismissAgentic() {
+        pendingCommand = null
+        pendingActions = emptyList()
+        agenticStatus = null
+        updateStrip()
+    }
+
+    // Render the active agentic state into the card, or hide it and restore the strip when idle.
+    private fun renderAgenticPanel() {
+        val panel = agenticPanel ?: return
+        panel.removeAllViews()
+
+        val status = agenticStatus
+        val pending = pendingCommand
+        val accent: Int; val glyph: String; val kicker: String; val title: String
+        when {
+            status != null -> { accent = 0xFF9B8CFF.toInt(); glyph = "✦"; kicker = "CLICKS"; title = status }
+            pending != null -> {
+                accent = 0xFF57E39A.toInt()
+                val parts = pending.label.split("  ", limit = 2)
+                glyph = if (parts.size == 2) parts[0].trim() else "▶"
+                kicker = "COMMAND"
+                title = if (parts.size == 2) parts[1].trim() else pending.label
+            }
+            else -> {
+                panel.visibility = View.GONE
+                panel.background = null
+                suggestionStrip?.visibility = View.VISIBLE
+                return
+            }
+        }
+
+        panel.visibility = View.VISIBLE
+        panel.background = agenticCardBackground()
+        suggestionStrip?.visibility = View.GONE
+
+        panel.addView(View(this).apply {
+            background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(2).toFloat() }
+        }, LinearLayout.LayoutParams(dp(3), dp(30)).apply { marginEnd = dp(11) })
+
+        panel.addView(TextView(this).apply {
+            text = glyph; gravity = Gravity.CENTER; textSize = 15f
+            setTextColor(accent)
+            background = GradientDrawable().apply {
+                setColor(0xFF16181D.toInt()); cornerRadius = dp(10).toFloat()
+                setStroke(dp(1), (accent and 0x00FFFFFF) or 0x55000000)
+            }
+        }, LinearLayout.LayoutParams(dp(32), dp(32)))
+
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(this).apply {
+            text = kicker; textSize = 9f; letterSpacing = 0.16f
+            setTextColor(0xFF767C89.toInt())
+        })
+        col.addView(TextView(this).apply {
+            text = title; textSize = 14.5f
+            setTextColor(0xFFF5F2FF.toInt())
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        })
+        panel.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(11); marginEnd = dp(8)
+        })
+
+        // A pending command is confirm-before-run; a working status is in-flight (no controls).
+        if (pending != null && status == null) {
+            panel.addView(agenticCta("Run", accent) { keyHaptic("enter"); applyPendingCommand() },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            panel.addView(agenticDismiss(),
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+        }
+    }
+
     private fun fieldTextForPolish(): String =
         currentInputConnection?.getTextBeforeCursor(1000, 0)?.toString().orEmpty()
 
@@ -652,6 +770,9 @@ class ClicksImeService : InputMethodService() {
 
     private fun updateStrip() {
         val strip = suggestionStrip ?: return
+        // Elevate command previews and working status into the elegant panel; it toggles the strip's
+        // visibility. The strip is still populated below as the fallback surface when the panel idles.
+        renderAgenticPanel()
         strip.removeAllViews()
         val status = agenticStatus
         if (status != null) {
