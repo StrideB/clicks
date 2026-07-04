@@ -186,6 +186,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val predictionCore by lazy {
         com.fran.clicks.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
     }
+    private val glideCore by lazy { com.fran.clicks.keyboard.GlideCore(this, ngramRepo) }
 
     private val collator = Collator.getInstance()
     private var query = ""
@@ -9038,17 +9039,7 @@ Reply format: ["word1","word2","word3"]"""
         return spatialScorer.bestKey(rawX, rawY)
     }
 
-    // Context boost: words the user tends to type after the previous word get amplified so the glide
-    // decoder agrees with sentence context (their/there, to/ti, form/from…). Empty = no bias.
-    private fun glideContextBoost(): Map<String, Float> {
-        val prev = (if (openPane?.kind == PaneKind.CHAT) composeText else query).trimEnd()
-            .substringAfterLast(' ').lowercase()
-        if (prev.length < 2) return emptyMap()
-        val next = ngramRepo.cachedNextWords(prev)
-        if (next.isEmpty()) { ngramRepo.prefetchNextWords(prev); return emptyMap() }
-        // Rank-decreasing weight: top prediction gets the strongest boost.
-        return next.mapIndexed { i, w -> w.lowercase() to (1f - i * 0.12f).coerceAtLeast(0.2f) }.toMap()
-    }
+    // Glide context/rerank/placement now live in the shared GlideCore.
 
     // Screen-space bounding box [left, top, width, height] of the letter keys — used to normalize a
     // glide path into [0,1] so the neural decoder is independent of docked vs. widget size.
@@ -9064,43 +9055,18 @@ Reply format: ["word1","word2","word3"]"""
 
     private fun handleGlideResult(results: List<String>) {
         if (hapticsEnabled) hapticEngine.glideCommit() else haptic(contentFrame)
-        val ranked = rerankGlideByContext(results)
-        val topWord = ranked[0]
         val pane = openPane
-        if (pane?.kind == PaneKind.CHAT) {
-            val trimmed = composeText.trimEnd()
-            val lastSpace = trimmed.lastIndexOf(' ')
-            composeText = (if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)) + topWord + " "
-            updateAutoCapState(); updateKeyLabels()
-            renderPaneContent(pane)
-        } else {
-            val trimmed = query.trimEnd()
-            val lastSpace = trimmed.lastIndexOf(' ')
-            query = (if (lastSpace < 0) "" else trimmed.substring(0, lastSpace + 1)) + topWord + " "
-        }
+        val topWord = glideCore.rerank(results)         // shared context rerank
+        glideCore.commitWord(topWord)                   // shared append-vs-replace placement
+        if (pane?.kind == PaneKind.CHAT) { updateAutoCapState(); updateKeyLabels(); renderPaneContent(pane) }
         // Learn from the glide: record the committed word against its predecessor so the n-gram and
         // context re-ranking keep improving as you swipe.
         val toks = (if (pane?.kind == PaneKind.CHAT) composeText else query).trim().split(" ").filter { it.isNotEmpty() }
         if (toks.size >= 2) ngramRepo.recordWord(toks.last(), toks[toks.size - 2])
         ngramRepo.prefetchNextWords(topWord)
-        suggestions = ranked.take(3)
+        suggestions = (listOf(topWord) + results.filter { it != topWord }).distinct().take(3)
         updateSuggestionBar()
         renderRibbon()
-    }
-
-    // Among the shape-vetted glide candidates, promote the one you most often type after the
-    // preceding word (bigram context). It only reorders within the top few, so a strong shape match
-    // is never overridden by an implausible word — it just breaks close calls the way you actually type.
-    private fun rerankGlideByContext(results: List<String>): List<String> {
-        if (results.size < 2) return results
-        val ctx = ngramRepo.cachedNextWords(previousWordInCompose()).map { it.lowercase(Locale.US) }
-        if (ctx.isEmpty()) return results
-        val best = results.take(3).minByOrNull {
-            val i = ctx.indexOf(it.lowercase(Locale.US)); if (i < 0) Int.MAX_VALUE else i
-        }
-        return if (best != null && ctx.contains(best.lowercase(Locale.US)) && best != results[0])
-            listOf(best) + results.filter { it != best }
-        else results
     }
 
     private fun handleSwipeFallback(keys: List<String>) {
@@ -9316,7 +9282,7 @@ Reply format: ["word1","word2","word3"]"""
                             trailLocal.map { android.graphics.PointF(it.first + screenX, it.second + screenY) }
                             else null
                         val bounds = if (neural != null) letterKeyBounds() else null
-                        val contextBoost = glideContextBoost()
+                        val contextBoost = glideCore.contextBoost()
                         Thread {
                             // Decode in a try/finally so the trail ALWAYS gets cleaned up — even if the
                             // neural or statistical decoder throws. Otherwise glidePersisting stays true

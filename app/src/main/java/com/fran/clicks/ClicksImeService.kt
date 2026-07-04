@@ -109,6 +109,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private val predictionCore by lazy {
         com.fran.clicks.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
     }
+    private val glideCore by lazy { com.fran.clicks.keyboard.GlideCore(this, ngramRepo) }
     private var suggestionStrip: LinearLayout? = null
     private var agenticPanel: LinearLayout? = null
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
@@ -611,14 +612,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }.start()
     }
 
-    private fun commitGlideWord(word: String) {
-        val input = currentInputConnection ?: return
-        val before = input.getTextBeforeCursor(64, 0)?.toString().orEmpty()
-        val currentWordLength = before.takeLastWhile { it.isLetter() }.length
-        if (currentWordLength > 0) input.deleteSurroundingText(currentWordLength, 0)
-        input.commitText("$word ", 1)
-        learnAndPredictAfterSpace()
-    }
+    // Glide word placement/rerank/context now live in the shared GlideCore.
 
     // ── Prediction / autocorrect / learning — parity with the launcher keyboard ──
     private fun imePrefs() = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -771,24 +765,6 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         if (currentInputConnection == null) return
         predictionCore.replaceCurrentWord(word)
         learnAndPredictAfterSpace()
-    }
-
-    private fun rerankGlide(results: List<String>): String {
-        if (results.size < 2) return results.first()
-        val ctx = ngramRepo.cachedNextWords(previousWord()).map { it.lowercase(Locale.US) }
-        if (ctx.isEmpty()) return results.first()
-        val best = results.take(3).minByOrNull { val i = ctx.indexOf(it.lowercase(Locale.US)); if (i < 0) Int.MAX_VALUE else i }
-        return if (best != null && ctx.contains(best.lowercase(Locale.US))) best else results.first()
-    }
-
-    // Boost candidates the user tends to type after the previous word, so glide decode agrees with
-    // sentence context (parity with the launcher). Empty = no bias.
-    private fun glideContextBoost(): Map<String, Float> {
-        val prev = previousWord()
-        if (prev.length < 2) return emptyMap()
-        val next = ngramRepo.cachedNextWords(prev)
-        if (next.isEmpty()) { ngramRepo.prefetchNextWords(prev); return emptyMap() }
-        return next.mapIndexed { i, w -> w.lowercase(Locale.US) to (1f - i * 0.12f).coerceAtLeast(0.2f) }.toMap()
     }
 
     private fun buildSuggestionStrip(): LinearLayout {
@@ -1739,7 +1715,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         keyHaptic("back"); deleteWord(); clf?.clear(); fadeGlideTrail(); return true
                     }
                     if (clf != null && clf.hasEnoughPoints) {
-                        val contextBoost = glideContextBoost()
+                        val contextBoost = glideCore.contextBoost()
                         Thread {
                             var results: List<String> = emptyList()
                             try {
@@ -1751,7 +1727,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                                 handler.post {
                                     android.util.Log.d("ClicksGlide", "results=${results.size} top=${results.firstOrNull()} icNull=${currentInputConnection == null}")
                                     if (results.isNotEmpty()) {
-                                        if (hapticsOn()) hapticEngine.glideCommit(); commitGlideWord(rerankGlide(results))
+                                        if (hapticsOn()) hapticEngine.glideCommit()
+                                        glideCore.commitWord(glideCore.rerank(results)); learnAndPredictAfterSpace()
                                     } else if (tracedKeys.size >= 3) {
                                         keyHaptic("space"); handleSwipeFallback(tracedKeys)
                                     }
