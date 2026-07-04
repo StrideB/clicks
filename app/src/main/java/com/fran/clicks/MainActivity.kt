@@ -183,6 +183,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             useFallback = true
         )
     }
+    private val predictionCore by lazy {
+        com.fran.clicks.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
+    }
 
     private val collator = Collator.getInstance()
     private var query = ""
@@ -8543,16 +8546,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun acceptSuggestion(word: String) {
         val pane = openPane
+        predictionCore.replaceCurrentWord(word)   // shared word-replace via the host
         if (pane?.kind == PaneKind.CHAT) {
-            val text = composeText.trimEnd()
-            val lastSpace = text.lastIndexOf(' ')
-            composeText = (if (lastSpace < 0) "" else text.substring(0, lastSpace + 1)) + word + " "
             updateAutoCapState(); updateKeyLabels()
             renderPaneContent(pane)
-        } else {
-            val text = query.trimEnd()
-            val lastSpace = text.lastIndexOf(' ')
-            query = (if (lastSpace < 0) "" else text.substring(0, lastSpace + 1)) + word + " "
         }
         // Learn the pick: record the accepted word against its preceding word so the n-gram ranks
         // what you actually choose, and warm next-word predictions for it.
@@ -8748,13 +8745,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val prev = previousWordInCompose()
         val r = Runnable {
             lastSuggestWord = word
-            // Warm the n-gram cache: `prev` boosts the current word's completions now; `word` is
-            // pre-fetched so its next-word predictions are ready the moment it's committed.
-            if (prev.isNotEmpty()) ngramRepo.prefetchNextWords(prev)
-            ngramRepo.prefetchNextWords(word)
-            val chord = AbbreviationExpander.expand(word)
-            val localSuggs = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
-            suggestions = ((if (chord != null) listOf(chord) else emptyList()) + localSuggs).distinct().take(3)
+            suggestions = predictionCore.computeSuggestions()   // shared candidate computation
             updateSuggestionBar()
             spellChecker?.getSuggestions(TextInfo(word), 5)
         }

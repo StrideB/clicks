@@ -106,6 +106,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             extendedEngine = { predictionEngineExtended }
         )
     }
+    private val predictionCore by lazy {
+        com.fran.clicks.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
+    }
     private var suggestionStrip: LinearLayout? = null
     private var agenticPanel: LinearLayout? = null
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
@@ -676,27 +679,15 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun scheduleSuggestions() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
         val r = Runnable {
-            val word = currentWord()
-            computeSmartChips(word)
-            if (word.length < 2) {
-                val prev = previousWord()
+            computeSmartChips(currentWord())
+            val base = predictionCore.computeSuggestions()
+            suggestions = if (base.isEmpty()) {
+                // IME extra: notification quick-replies when the field is empty.
                 val ic = currentInputConnection
                 val before = ic?.getTextBeforeCursor(2, 0)?.toString().orEmpty()
-                val justSpaced = before.isNotEmpty() && before.last() == ' '
                 val fieldEmpty = before.isEmpty() && (ic?.getTextAfterCursor(1, 0)?.isEmpty() != false)
-                suggestions = when {
-                    justSpaced && prev.isNotEmpty() -> ngramRepo.cachedNextWords(prev).take(3)
-                    fieldEmpty -> NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis())
-                    else -> emptyList()
-                }
-                updateStrip(); return@Runnable
-            }
-            val prev = previousWord()
-            if (prev.isNotEmpty()) ngramRepo.prefetchNextWords(prev)
-            ngramRepo.prefetchNextWords(word)
-            val chord = AbbreviationExpander.expand(word)
-            val base = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
-            suggestions = ((if (chord != null) listOf(chord) else emptyList()) + base).distinct().take(3)
+                if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
+            } else base
             updateStrip()
         }
         suggestDebounce = r
@@ -777,12 +768,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     }
 
     private fun acceptSuggestion(word: String) {
-        val ic = currentInputConnection ?: return
-        val cur = currentWord()
-        ic.beginBatchEdit()
-        if (cur.isNotEmpty()) ic.deleteSurroundingText(cur.length, 0)
-        ic.commitText("$word ", 1)
-        ic.endBatchEdit()
+        if (currentInputConnection == null) return
+        predictionCore.replaceCurrentWord(word)
         learnAndPredictAfterSpace()
     }
 
