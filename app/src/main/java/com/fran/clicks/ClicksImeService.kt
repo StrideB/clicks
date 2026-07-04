@@ -1,9 +1,7 @@
 package com.fran.clicks
 
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
@@ -31,6 +29,9 @@ import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.StateListDrawable
 import com.fran.clicks.glide.KeyInfo
 import com.fran.clicks.glide.StatisticalGlideTypingClassifier
+import com.fran.clicks.keyboard.PredictionEngine
+import com.fran.clicks.keyboard.SpatialScorer
+import com.fran.clicks.db.NgramRepository
 import java.util.Locale
 import kotlin.math.abs
 
@@ -41,63 +42,57 @@ class ClicksImeService : InputMethodService() {
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = linkedMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
+    private var predictionEngine = PredictionEngine(emptyMap())
+    private val spatialScorer = SpatialScorer()
+    private val ngramRepo by lazy { NgramRepository(this) }
+    private var suggestionStrip: LinearLayout? = null
+    private var suggestions: List<String> = emptyList()
+    private var suggestDebounce: Runnable? = null
+    private var liveCorrectDebounce: Runnable? = null
+    private var pendingOriginal: String? = null
+    private var pendingCorrected: String? = null
+    private val rejectedCorrections = HashMap<String, MutableSet<String>>()
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteRepeatActive = false
     private var deleteRepeatFired = false
-    private var dockedSystemSurfaceVisible = false
-
-    private val dockedVisibilityReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != InputInjectionService.ACTION_SET_DOCKED_OVERLAY_VISIBLE) return
-            val keyboardAllowed = intent.getBooleanExtra(InputInjectionService.EXTRA_VISIBLE, true)
-            dockedSystemSurfaceVisible = !keyboardAllowed
-            if (!keyboardAllowed) {
-                stopDeleteRepeat(clearFired = true)
-                requestHideSelf(0)
-                runCatching { hideWindow() }
-            } else {
-                forceVisibleIfAllowed()
-            }
-        }
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        val filter = IntentFilter(InputInjectionService.ACTION_SET_DOCKED_OVERLAY_VISIBLE)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(dockedVisibilityReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(dockedVisibilityReceiver, filter)
-        }
-    }
+    private var currentEditorPackage: String? = null
 
     override fun onEvaluateInputViewShown(): Boolean {
-        return !dockedSystemSurfaceVisible
+        return !isLauncherEditorActive()
     }
 
     override fun onCreateInputView(): View {
         shifted = false
         ensureGlideClassifier()
+        spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         return buildKeyboard().also { deckView = it }
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        currentEditorPackage = info?.packageName?.toString() ?: currentEditorPackage
+        if (isLauncherEditorActive()) {
+            hideImeSurface()
+            return
+        }
         refreshKeyboardChrome()
-        forceVisibleIfAllowed()
         updateInputViewShown()
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        currentEditorPackage = attribute?.packageName?.toString()
+        if (isLauncherEditorActive()) {
+            hideImeSurface()
+            return
+        }
         shifted = shouldStartShifted(attribute)
         refreshKeyboardChrome()
     }
 
     override fun onWindowShown() {
         super.onWindowShown()
-        forceVisibleIfAllowed()
+        if (isLauncherEditorActive()) hideImeSurface()
     }
 
     override fun onUpdateSelection(
@@ -109,18 +104,22 @@ class ClicksImeService : InputMethodService() {
         candidatesEnd: Int
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
-        forceVisibleIfAllowed()
+        if (!isLauncherEditorActive()) scheduleSuggestions()
     }
 
-    private fun forceVisibleIfAllowed() {
-        if (!dockedSystemSurfaceVisible) {
-            VivoDockedExperiment.forceImeVisible(this)
-        }
+    private fun isLauncherEditorActive(): Boolean {
+        return currentEditorPackage == packageName
+    }
+
+    private fun hideImeSurface() {
+        stopDeleteRepeat(clearFired = true)
+        requestHideSelf(0)
+        runCatching { hideWindow() }
     }
 
     override fun onDestroy() {
-        runCatching { unregisterReceiver(dockedVisibilityReceiver) }
         stopDeleteRepeat(clearFired = true)
+        imePrefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
         super.onDestroy()
     }
 
@@ -132,6 +131,7 @@ class ClicksImeService : InputMethodService() {
             setPadding(dp(10), dp(10), dp(10), dp(8))
             background = deckBackground()
             minimumHeight = imeKeyboardHeight()
+            addView(buildSuggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
             listOf(
                 "qwertyuiop".map { it.toString() },
                 "asdfghjkl".map { it.toString() },
@@ -266,18 +266,27 @@ class ClicksImeService : InputMethodService() {
                 refreshKeyboardChrome()
             }
             "back" -> {
+                pendingOriginal = null; pendingCorrected = null
                 if (input == null) {
                     VivoDockedExperiment.injectInput("⌫")
                 } else if (!input.deleteSurroundingText(1, 0)) {
                     keyEvent(KeyEvent.KEYCODE_DEL)
                 }
+                onTextChanged()
             }
             "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
-            "space" -> commitValue(" ")
+            "space" -> {
+                tryAutocorrect(live = false)
+                commitValue(" ")
+                learnAndPredictAfterSpace()
+            }
             "clicks" -> openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
             "123" -> Unit
             "." -> commitValue(".")
-            else -> commitValue(if (shifted && label.length == 1) label.uppercase() else label)
+            else -> {
+                commitValue(if (shifted && label.length == 1) label.uppercase() else label)
+                onTextChanged()
+            }
         }
     }
 
@@ -345,6 +354,7 @@ class ClicksImeService : InputMethodService() {
             view.getLocationOnScreen(loc)
             keyBounds[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
         }
+        spatialScorer.setKeys(keyBounds)
         updateGlideLayout()
     }
 
@@ -365,8 +375,11 @@ class ClicksImeService : InputMethodService() {
     }
 
     private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
-        if (label.length != 1 || !label[0].isLetter()) return label
-        return keyAtPoint(rawX, rawY, letterOnly = true) ?: label
+        if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
+        spatialScorer.recordTap(rawX, rawY)
+        val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true)
+        return if (best != null && best.length == 1 && best[0].isLetter()) best
+        else keyAtPoint(rawX, rawY, letterOnly = true) ?: label
     }
 
     private fun keyAtPoint(rawX: Float, rawY: Float, letterOnly: Boolean = false): String? {
@@ -408,8 +421,10 @@ class ClicksImeService : InputMethodService() {
             }
             val maxCount = counts.values.maxOrNull() ?: 1L
             clf.setWordData(words, counts.mapValues { it.value.toFloat() / maxCount })
+            val freq = counts.mapValues { it.value.toFloat() / maxCount }
             handler.post {
                 glideClassifier = clf
+                predictionEngine = PredictionEngine(freq)
                 updateGlideLayout()
             }
         }.start()
@@ -421,6 +436,144 @@ class ClicksImeService : InputMethodService() {
         val currentWordLength = before.takeLastWhile { it.isLetter() }.length
         if (currentWordLength > 0) input.deleteSurroundingText(currentWordLength, 0)
         input.commitText("$word ", 1)
+        learnAndPredictAfterSpace()
+    }
+
+    // ── Prediction / autocorrect / learning — parity with the launcher keyboard ──
+    private fun imePrefs() = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+    private fun currentWord(): String =
+        currentInputConnection?.getTextBeforeCursor(48, 0)?.toString().orEmpty().takeLastWhile { it.isLetter() }
+
+    private fun wordsBeforeCursor(): List<String> {
+        val before = currentInputConnection?.getTextBeforeCursor(96, 0)?.toString().orEmpty()
+        return Regex("[A-Za-z]+").findAll(before).map { it.value }.toList()
+    }
+
+    private fun previousWord(): String {
+        val before = currentInputConnection?.getTextBeforeCursor(96, 0)?.toString().orEmpty()
+        val tokens = Regex("[A-Za-z]+").findAll(before).map { it.value }.toList()
+        val endsLetter = before.isNotEmpty() && before.last().isLetter()
+        return if (endsLetter) tokens.getOrElse(tokens.size - 2) { "" } else tokens.lastOrNull().orEmpty()
+    }
+
+    private fun onTextChanged() {
+        scheduleSuggestions()
+        scheduleLiveCorrect()
+    }
+
+    private fun scheduleSuggestions() {
+        suggestDebounce?.let { handler.removeCallbacks(it) }
+        val r = Runnable {
+            val word = currentWord()
+            if (word.length < 2) {
+                val prev = previousWord()
+                val before = currentInputConnection?.getTextBeforeCursor(2, 0)?.toString().orEmpty()
+                val justSpaced = before.isNotEmpty() && before.last() == ' '
+                suggestions = if (justSpaced && prev.isNotEmpty()) ngramRepo.cachedNextWords(prev).take(3) else emptyList()
+                updateStrip(); return@Runnable
+            }
+            val prev = previousWord()
+            if (prev.isNotEmpty()) ngramRepo.prefetchNextWords(prev)
+            ngramRepo.prefetchNextWords(word)
+            suggestions = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
+            updateStrip()
+        }
+        suggestDebounce = r
+        handler.postDelayed(r, 70L)
+    }
+
+    private fun scheduleLiveCorrect() {
+        liveCorrectDebounce?.let { handler.removeCallbacks(it) }
+        val word = currentWord()
+        if (word.length < 3) return
+        val r = Runnable {
+            if (currentWord() != word) return@Runnable
+            if (tryAutocorrect(live = true)) scheduleSuggestions()
+        }
+        liveCorrectDebounce = r
+        handler.postDelayed(r, 600L)
+    }
+
+    private fun tryAutocorrect(live: Boolean): Boolean {
+        val ic = currentInputConnection ?: return false
+        val word = currentWord()
+        if (word.length < 2) return false
+        if (live && (word.length < 3 || predictionEngine.isPrefixOfDictWord(word))) return false
+        val context = ngramRepo.cachedNextWords(previousWord())
+        val top = predictionEngine.bestCorrection(word, context) ?: return false
+        if (top.equals(word, ignoreCase = true)) return false
+        if (rejectedCorrections[word.lowercase(Locale.US)]?.contains(top.lowercase(Locale.US)) == true) return false
+        ic.beginBatchEdit()
+        ic.deleteSurroundingText(word.length, 0)
+        ic.commitText(top, 1)
+        ic.endBatchEdit()
+        pendingOriginal = word; pendingCorrected = top
+        return true
+    }
+
+    private fun learnAndPredictAfterSpace() {
+        val tokens = wordsBeforeCursor()
+        if (tokens.size >= 2) ngramRepo.recordWord(tokens[tokens.size - 1], tokens[tokens.size - 2])
+        val last = tokens.lastOrNull().orEmpty()
+        if (last.isNotEmpty()) ngramRepo.prefetchNextWords(last)
+        suggestions = if (last.isNotEmpty()) ngramRepo.cachedNextWords(last).take(3) else emptyList()
+        updateStrip()
+    }
+
+    private fun acceptSuggestion(word: String) {
+        val ic = currentInputConnection ?: return
+        val cur = currentWord()
+        ic.beginBatchEdit()
+        if (cur.isNotEmpty()) ic.deleteSurroundingText(cur.length, 0)
+        ic.commitText("$word ", 1)
+        ic.endBatchEdit()
+        learnAndPredictAfterSpace()
+    }
+
+    private fun rerankGlide(results: List<String>): String {
+        if (results.size < 2) return results.first()
+        val ctx = ngramRepo.cachedNextWords(previousWord()).map { it.lowercase(Locale.US) }
+        if (ctx.isEmpty()) return results.first()
+        val best = results.take(3).minByOrNull { val i = ctx.indexOf(it.lowercase(Locale.US)); if (i < 0) Int.MAX_VALUE else i }
+        return if (best != null && ctx.contains(best.lowercase(Locale.US))) best else results.first()
+    }
+
+    private fun buildSuggestionStrip(): LinearLayout {
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(6), dp(3), dp(6), dp(3))
+        }
+        suggestionStrip = strip
+        updateStrip()
+        return strip
+    }
+
+    private fun updateStrip() {
+        val strip = suggestionStrip ?: return
+        strip.removeAllViews()
+        val shown = suggestions.take(3)
+        if (shown.isEmpty()) { strip.background = null; return }
+        strip.background = android.graphics.drawable.GradientDrawable().apply {
+            setColor(0x14FFFFFF); cornerRadius = dp(10).toFloat()
+        }
+        shown.forEachIndexed { i, w ->
+            strip.addView(TextView(this).apply {
+                text = w
+                gravity = Gravity.CENTER
+                textSize = 15f
+                setTextColor(0xFFE9EDF2.toInt())
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                isClickable = true
+                setOnClickListener { keyHaptic("space"); acceptSuggestion(w) }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            if (i < shown.lastIndex) {
+                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
+                    LinearLayout.LayoutParams(dp(1), dp(18)))
+            }
+        }
     }
 
     private fun handleSwipeFallback(keys: List<String>) {
@@ -611,7 +764,7 @@ class ClicksImeService : InputMethodService() {
                             handler.post {
                                 if (results.isNotEmpty()) {
                                     keyHaptic("space")
-                                    commitGlideWord(results.first())
+                                    commitGlideWord(rerankGlide(results))
                                 } else if (tracedKeys.size >= 3) {
                                     keyHaptic("space")
                                     handleSwipeFallback(tracedKeys)
@@ -710,7 +863,7 @@ class ClicksImeService : InputMethodService() {
     private fun imeKeyboardHeight(): Int {
         val size = KeyboardSettings.keyboardSize(this)
         val rowCount = 4
-        return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6)
+        return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6) + dp(38)
     }
 
     private fun keyRowHeight(): Int {
@@ -1120,6 +1273,7 @@ class ClicksImeService : InputMethodService() {
 
     private companion object {
         private const val PREFS_NAME = "clicks"
+        private const val TOUCH_MODEL_PREF = "touch_model_v1"
         private const val THEME_MODE_PREF = "theme_mode"
         private const val THEME_MODE_DARK = "dark"
         private const val THEME_MODE_LIGHT = "light"
