@@ -57,6 +57,8 @@ class InputInjectionService : AccessibilityService() {
                 focusedEditable = findEditableTarget()
                 if (focusedEditable != null && !isSystemRecentsSurface(event)) {
                     setDockedOverlayVisible(true)
+                } else {
+                    focusedEditable = null
                 }
             }
         }
