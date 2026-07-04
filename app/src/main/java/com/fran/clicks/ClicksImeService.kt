@@ -542,7 +542,9 @@ class ClicksImeService : InputMethodService() {
             val prev = previousWord()
             if (prev.isNotEmpty()) ngramRepo.prefetchNextWords(prev)
             ngramRepo.prefetchNextWords(word)
-            suggestions = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
+            val chord = AbbreviationExpander.expand(word)
+            val base = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
+            suggestions = ((if (chord != null) listOf(chord) else emptyList()) + base).distinct().take(3)
             updateStrip()
         }
         suggestDebounce = r

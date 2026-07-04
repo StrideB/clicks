@@ -939,6 +939,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         rootView = root
         contentFrame = FrameLayout(this).apply {
             addView(home(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            post { applyLibraryEdgeGestureExclusion() }
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
@@ -960,6 +961,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         renderRibbon()
         openPane?.let { showPane(it, animate = false) }
         if (libraryOpen) showLibrary(animate = false)
+        if (!libraryOpen && openPane == null) contentFrame.postDelayed({ prewarmLibraryView() }, 140L)
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
         root.post { captureKeyBounds() }
@@ -2227,6 +2229,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private var librarySwipeFromKeyboard = false
 
+    private fun applyLibraryEdgeGestureExclusion() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || !::contentFrame.isInitialized) return
+        val width = contentFrame.width
+        val height = contentFrame.height
+        if (width <= 0 || height <= 0) return
+        val edgeWidth = dp(64).coerceAtLeast((width * 0.08f).toInt())
+        contentFrame.systemGestureExclusionRects = listOf(
+            Rect((width - edgeWidth).coerceAtLeast(0), 0, width, height)
+        )
+    }
+
+    private fun isLibraryRightEdgeStart(rawX: Float, rawY: Float, contentLeft: Int, contentTop: Int): Boolean {
+        if (!::contentFrame.isInitialized || contentFrame.width <= 0 || contentFrame.height <= 0) return false
+        if (rawY < contentTop || rawY > contentTop + contentFrame.height) return false
+        val localX = rawX - contentLeft
+        val edgeWidth = dp(64).toFloat().coerceAtLeast(contentFrame.width * 0.08f)
+        return localX >= contentFrame.width - edgeWidth
+    }
+
     private fun handleLibrarySwipe(event: MotionEvent): Boolean {
         if (widgetKeyboardSwapActive()) {
             librarySwipeTriggered = false
@@ -2245,6 +2266,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val inContent = event.rawY >= loc[1] && event.rawY <= loc[1] + contentFrame.height
         val upOpensLibrary = gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS) == GESTURE_LIBRARY
         val sideLibraryEnabled = !upOpensLibrary
+        val rightEdgeStart = sideLibraryEnabled &&
+            isLibraryRightEdgeStart(event.rawX, event.rawY, loc[0], loc[1])
 
         // A gesture that starts on the keyboard (docked dock or widget keyboard module) is typing /
         // glide, not a launcher swipe — ignore it so widget-mode glides don't open the library or
@@ -2261,6 +2284,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
                 librarySwipeFromKeyboard = isInsideKeyboard(event.rawX, event.rawY)
+                if (rightEdgeStart && !librarySwipeFromKeyboard && !libraryOpen && openPane == null) {
+                    librarySwipeTriggered = true
+                    librarySwipeBlockedByWidget = false
+                    beginLibraryDrag(startedOpen = false, fastPath = true)
+                    updateLibraryDrag(0f)
+                    contentFrame.parent?.requestDisallowInterceptTouchEvent(true)
+                    return true
+                }
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!inContent) return false
@@ -2505,7 +2536,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshNowPlayingCard()
     }
 
-    private fun beginLibraryDrag(startedOpen: Boolean, vertical: Boolean = false) {
+    private fun beginLibraryDrag(startedOpen: Boolean, vertical: Boolean = false, fastPath: Boolean = false) {
         if (openPane != null && !startedOpen) return
         libraryDragActive = true
         libraryDragStartedOpen = startedOpen
@@ -2524,7 +2555,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             overlay.alpha = if (activeNeuTokens.mode == NeuMode.LIGHT) 0.92f else 0.88f
             overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
             contentFrame.addView(overlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-            scheduleLibraryPopulate(24L)
+            scheduleLibraryPopulate(if (fastPath) 0L else 24L)
             updateLibraryGridDragEffects(0f, libraryDragTouchX)
             libraryDragHaptic(1)
         } else {
@@ -3926,6 +3957,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(libraryHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(46), Gravity.TOP))
             libraryViewMode = activeNeuTokens.mode
             libraryViewDirty = false
+        }
+    }
+
+    private fun prewarmLibraryView() {
+        if (libraryOpen || openPane != null || !::contentFrame.isInitialized || query.isNotBlank()) return
+        if (!libraryViewDirty && libraryView is FrameLayout && libraryContentReady) return
+        val previousView = libraryView
+        val previousArea = libraryContentArea
+        val overlay = appLibrary()
+        libraryView = overlay
+        libraryContentArea?.let { area ->
+            libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
+            libraryPopulateRunnable = null
+            fillLibraryContent(area)
+            libraryContentReady = true
+        }
+        if (overlay.parent != null) {
+            (overlay.parent as? ViewGroup)?.removeView(overlay)
+        }
+        if (libraryOpen || openPane != null) {
+            libraryView = previousView
+            libraryContentArea = previousArea
         }
     }
 
@@ -7796,8 +7849,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // pre-fetched so its next-word predictions are ready the moment it's committed.
             if (prev.isNotEmpty()) ngramRepo.prefetchNextWords(prev)
             ngramRepo.prefetchNextWords(word)
+            val chord = AbbreviationExpander.expand(word)
             val localSuggs = predictionEngine.getSuggestions(word, 3, ngramBoost = ngramRepo.cachedNextWords(prev))
-            suggestions = localSuggs; updateSuggestionBar()
+            suggestions = ((if (chord != null) listOf(chord) else emptyList()) + localSuggs).distinct().take(3)
+            updateSuggestionBar()
             spellChecker?.getSuggestions(TextInfo(word), 5)
         }
         suggestDebounce = r
