@@ -266,12 +266,16 @@ class ClicksImeService : InputMethodService() {
         private var downRawY = 0f
         private var clicksLongPressRunnable: Runnable? = null
         private var clicksLongPressFired = false
+        private var spaceCursorLastX = 0f
+        private var spaceCursorMoved = false
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX
                     downRawY = event.rawY
+                    spaceCursorLastX = event.rawX
+                    spaceCursorMoved = false
                     clicksLongPressFired = false
                     v.background = visualKeyBackground(label, pressed = true)
                     keyHaptic(label)
@@ -320,6 +324,19 @@ class ClicksImeService : InputMethodService() {
                             abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
                         cancelClicksLongPress()
                     }
+                    // Space-swipe cursor control (parity with the launcher): drag left/right on the
+                    // space bar to move the caret a character at a time via DPAD key events.
+                    if (label == "space") {
+                        val step = dp(9).toFloat()
+                        var delta = event.rawX - spaceCursorLastX
+                        while (abs(delta) >= step) {
+                            keyEvent(if (delta > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
+                            spaceCursorMoved = true
+                            spaceCursorLastX += if (delta > 0) step else -step
+                            delta = event.rawX - spaceCursorLastX
+                            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        }
+                    }
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
@@ -331,6 +348,10 @@ class ClicksImeService : InputMethodService() {
                     if (clicksLongPressFired) {
                         clicksLongPressFired = false
                         return true
+                    }
+                    if (label == "space" && spaceCursorMoved) {
+                        spaceCursorMoved = false
+                        return true   // it was a cursor drag, not a space insert
                     }
                     if (label == "back") {
                         val repeated = deleteRepeatFired
