@@ -39,6 +39,8 @@ import kotlin.math.abs
 class ClicksImeService : InputMethodService() {
     private var shifted = false
     private var symbolsMode = false
+    private var capsLock = false
+    private var lastShiftTapMs = 0L
     private val keyPreview by lazy { KeyPreviewManager(this) }
     private var deckView: SwipeImeKeyboardLayout? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -283,7 +285,14 @@ class ClicksImeService : InputMethodService() {
         val input = currentInputConnection
         when (label) {
             "shift" -> {
-                shifted = !shifted
+                val now = System.currentTimeMillis()
+                when {
+                    capsLock -> { capsLock = false; shifted = false }
+                    shifted && now - lastShiftTapMs < 350L -> capsLock = true   // double-tap = lock
+                    shifted -> shifted = false
+                    else -> shifted = true
+                }
+                lastShiftTapMs = now
                 refreshKeyboardChrome()
             }
             "back" -> {
@@ -300,13 +309,18 @@ class ClicksImeService : InputMethodService() {
                 tryAutocorrect(live = false)
                 commitValue(" ")
                 learnAndPredictAfterSpace()
+                updateAutoCap()
             }
             "clicks" -> openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
             "123" -> { symbolsMode = true; rebuildDeck() }
             "abc" -> { symbolsMode = false; rebuildDeck() }
             "." -> commitValue(".")
             else -> {
-                commitValue(if (shifted && label.length == 1) label.uppercase() else label)
+                commitValue(if ((shifted || capsLock) && label.length == 1) label.uppercase() else label)
+                if (shifted && !capsLock && label.length == 1 && label[0].isLetter()) {
+                    shifted = false
+                    refreshKeyboardChrome()
+                }
                 onTextChanged()
             }
         }
@@ -463,6 +477,13 @@ class ClicksImeService : InputMethodService() {
 
     // ── Prediction / autocorrect / learning — parity with the launcher keyboard ──
     private fun imePrefs() = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+    private fun updateAutoCap() {
+        if (capsLock) return
+        val before = currentInputConnection?.getTextBeforeCursor(4, 0)?.toString().orEmpty().trimEnd()
+        val cap = before.isEmpty() || before.endsWith('.') || before.endsWith('!') || before.endsWith('?')
+        if (shifted != cap) { shifted = cap; refreshKeyboardChrome() }
+    }
 
     private fun currentWord(): String =
         currentInputConnection?.getTextBeforeCursor(48, 0)?.toString().orEmpty().takeLastWhile { it.isLetter() }
@@ -836,11 +857,11 @@ class ClicksImeService : InputMethodService() {
 
     private fun visualLabel(label: String): String {
         return when (label) {
-            "shift" -> if (shifted) "⇧" else "↑"
+            "shift" -> if (capsLock) "⇪" else if (shifted) "⇧" else "↑"
             "back" -> "⌫"
             "enter" -> "GO"
             "space" -> "space"
-            else -> if (shifted && label.length == 1) label.uppercase() else label
+            else -> if ((shifted || capsLock) && label.length == 1) label.uppercase() else label
         }
     }
 
