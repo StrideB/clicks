@@ -148,6 +148,11 @@ class ImeSettingsActivity : Activity() {
             c.addView(inputRow("Finnhub key — Stock Sniffer", StockApi.KEY_PREF, "finnhub.io (free)", secret = true))
             c.addView(divider())
             c.addView(inputRow("Odds API key — World Cup Odds", OddsApi.KEY_PREF, "the-odds-api.com (free)", secret = true))
+            c.addView(divider())
+            c.addView(inputRow("Notion token — Notion Summon", NotionApi.KEY_PREF, "notion.so/my-integrations", secret = true))
+            c.addView(text("Google Meet uses your Google connection — connect Google in the Clicks app, then type “meet” and hold go.", 12f, t.inkDim).apply {
+                (layoutParams as LinearLayout.LayoutParams).topMargin = dp(10)
+            })
         }
 
         // Try it
