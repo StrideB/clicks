@@ -966,6 +966,39 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 "no hashtags unless natural. Reply with ONLY the reply text.", insertable = true)
     }
 
+    // ── API skills (Phase 3) — need a free key pasted in settings ─────────────────
+    private fun runStockSniffer(ticker: String) {
+        val key = imePrefs().getString(StockApi.KEY_PREF, null)?.trim().orEmpty()
+        if (key.isBlank()) { flashAgenticStatus("Add a Finnhub key in Clicks settings", 2600); return }
+        val sym = ticker.ifBlank { clipboardText() }.trim()
+        if (sym.isBlank()) { flashAgenticStatus("Type or copy a ticker first", 2400); return }
+        agenticStatus = "📈 Checking $sym…"
+        updateStrip()
+        Thread {
+            val out = StockApi.lookup(sym, key)
+            handler.post {
+                agenticStatus = null
+                if (out != null) { agenticHud = Hud("STOCK", out, out); updateStrip() }
+                else flashAgenticStatus("Couldn’t find “$sym”", 2000)
+            }
+        }.start()
+    }
+
+    private fun runWorldCupOdds() {
+        val key = imePrefs().getString(OddsApi.KEY_PREF, null)?.trim().orEmpty()
+        if (key.isBlank()) { flashAgenticStatus("Add an odds API key in Clicks settings", 2600); return }
+        agenticStatus = "🏆 Getting odds…"
+        updateStrip()
+        Thread {
+            val out = OddsApi.worldCup(key)
+            handler.post {
+                agenticStatus = null
+                if (out != null) { agenticHud = Hud("WORLD CUP", out, null); updateStrip() }
+                else flashAgenticStatus("Couldn’t get odds", 2000)
+            }
+        }.start()
+    }
+
     // Honor the system "remove animations" accessibility setting.
     private fun animationsEnabled(): Boolean = runCatching {
         android.provider.Settings.Global.getFloat(
@@ -1014,7 +1047,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             })
             col.addView(TextView(this).apply {
                 text = hud.body; textSize = 13.5f; setTextColor(titleInk)
-                maxLines = 4; ellipsize = android.text.TextUtils.TruncateAt.END
+                maxLines = 6; ellipsize = android.text.TextUtils.TruncateAt.END
             })
             panel.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
             val insert = hud.insert
@@ -1255,6 +1288,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             t == "mood" || t == "emotion" || t == "vibe" || t == "vibe check" || t == "read mood" -> "mood"
             t == "translate" || t == "translate this" || t == "translate clipboard" || t == "tl" -> "translate"
             t == "xreply" || t.startsWith("xreply ") || t.startsWith("x reply") || t.startsWith("reply x") -> "xreply"
+            t.startsWith("stock ") || t.startsWith("ticker ") ||
+                (t.startsWith("$") && t.length in 2..6 && t.drop(1).all { it.isLetterOrDigit() }) -> "stock"
+            t == "worldcup" || t == "world cup" || t == "wc" || t == "wc odds" || t == "world cup odds" || t == "odds" -> "odds"
             else -> null
         }
         if (clipSkill != null) {
@@ -1264,6 +1300,14 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 "mood" -> runEmotionDetection()
                 "translate" -> runTranslateHud()
                 "xreply" -> runSuperXReply(t.removePrefix("xreply").removePrefix("x reply").removePrefix("reply x").trim())
+                "stock" -> runStockSniffer(
+                    when {
+                        t.startsWith("stock ") -> t.removePrefix("stock ")
+                        t.startsWith("ticker ") -> t.removePrefix("ticker ")
+                        else -> t.removePrefix("$")
+                    }.trim()
+                )
+                "odds" -> runWorldCupOdds()
             }
             return
         }
