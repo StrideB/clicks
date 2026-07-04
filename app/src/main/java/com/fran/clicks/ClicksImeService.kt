@@ -37,6 +37,7 @@ import kotlin.math.abs
 
 class ClicksImeService : InputMethodService() {
     private var shifted = false
+    private var symbolsMode = false
     private var deckView: SwipeImeKeyboardLayout? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
@@ -133,18 +134,28 @@ class ClicksImeService : InputMethodService() {
             background = deckBackground()
             minimumHeight = imeKeyboardHeight()
             addView(buildSuggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
-            listOf(
+            val rows = if (symbolsMode) listOf(
+                "1234567890".map { it.toString() },
+                listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"),
+                listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"),
+                listOf("abc", "clicks", "space", ".", "enter")
+            ) else listOf(
                 "qwertyuiop".map { it.toString() },
                 "asdfghjkl".map { it.toString() },
                 listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"),
                 listOf("123", "clicks", "space", ".", "enter")
-            ).forEachIndexed { rowIndex, row ->
+            )
+            rows.forEachIndexed { rowIndex, row ->
                 addView(keyRow(row, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight()).apply {
                     if (rowIndex > 0) topMargin = -keyRowOverlap()
                 })
             }
             post { captureKeyBounds() }
         }
+    }
+
+    private fun rebuildDeck() {
+        setInputView(buildKeyboard().also { deckView = it })
     }
 
     private fun keyRow(labels: List<String>, rowIndex: Int): LinearLayout {
@@ -282,7 +293,8 @@ class ClicksImeService : InputMethodService() {
                 learnAndPredictAfterSpace()
             }
             "clicks" -> openLauncherKeyboardAction(ClicksKeyboardActions.OPEN_KEYBOARD_SETTINGS)
-            "123" -> Unit
+            "123" -> { symbolsMode = true; rebuildDeck() }
+            "abc" -> { symbolsMode = false; rebuildDeck() }
             "." -> commitValue(".")
             else -> {
                 commitValue(if (shifted && label.length == 1) label.uppercase() else label)
