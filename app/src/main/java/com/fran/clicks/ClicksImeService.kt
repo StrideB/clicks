@@ -685,26 +685,12 @@ class ClicksImeService : InputMethodService() {
         }
     }
 
-    private val aiCommands = mapOf(
-        "polish" to "Rewrite this message so it reads clearly and naturally, with correct grammar and punctuation.",
-        "fix" to "Fix the spelling, grammar, and punctuation of this message.",
-        "formal" to "Rewrite this message in a polished, professional, formal tone.",
-        "casual" to "Rewrite this message in a relaxed, friendly, casual tone.",
-        "short" to "Rewrite this message to be shorter and more concise.",
-        "shorter" to "Rewrite this message to be shorter and more concise.",
-        "funny" to "Rewrite this message to be witty and lightly humorous.",
-        "expand" to "Expand this brief message into a fuller, more detailed one."
-    )
-
-    // Inline AI command: "<text> //formal" + space -> transform the text with that style. Only fires
-    // on a KNOWN command word, so URLs/code never trigger it. Pro + API key gated.
+    // Inline AI command: "<text> //formal" + space -> transform the text with that style (shared with
+    // the launcher via AiStyleCommands). Only fires on a KNOWN command. Pro + API key gated.
     private fun maybeRunAiCommand(): Boolean {
         if (polishing || !ProManager.isUnlocked(this) || !GeminiClient.configured(imePrefs())) return false
         val before = currentInputConnection?.getTextBeforeCursor(600, 0)?.toString() ?: return false
-        val m = Regex("^(.*\\S)\\s*//(\\w+)\\s*$", RegexOption.DOT_MATCHES_ALL).find(before) ?: return false
-        val instruction = aiCommands[m.groupValues[2].lowercase()] ?: return false
-        val content = m.groupValues[1].trim()
-        if (content.length < 2) return false
+        val (content, instruction) = AiStyleCommands.match(before) ?: return false
         runAiTransform(before.length, content, instruction)
         return true
     }

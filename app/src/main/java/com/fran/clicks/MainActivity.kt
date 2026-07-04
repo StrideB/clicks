@@ -7712,6 +7712,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Suggestions ──────────────────────────────────────────────────────────
 
     private var suggestionStripView: LinearLayout? = null
+    private var launcherPolishing = false
 
     private fun showSuggestionStrip() = false
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
@@ -7743,16 +7744,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun updateSuggestionBar() {
         val strip = suggestionStripView ?: return
+        // AI Polish in flight: hold the strip on a soft "Polishing…" banner until the rewrite lands.
+        if (launcherPolishing) {
+            strip.removeAllViews()
+            strip.background = suggestionStripBackground(null, true)
+            strip.addView(TextView(this).apply {
+                text = "✨ Polishing…"; gravity = Gravity.CENTER; textSize = 14.5f
+                includeFontPadding = false; setTextColor(0xFFCBB4FF.toInt())
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            return
+        }
         val shown = suggestions.take(3)
         val pro = ProManager.isUnlocked(this)
+        val canPolish = launcherPolishAvailable()
         val appColor = suggestionStripAppColor(shown)
         val fieldBlank = (if (openPane?.kind == PaneKind.CHAT) composeText else query).isBlank()
         // Persist: after a glide / word commit there may be nothing new to show, but keep the last
         // strip content (esp. the swipe result) until the user clears the field or fresh ones arrive.
-        if (shown.isEmpty() && appColor == null && !fieldBlank && strip.childCount > 0) return
+        if (shown.isEmpty() && appColor == null && !canPolish && !fieldBlank && strip.childCount > 0) return
         val wasEmpty = strip.childCount == 0
         strip.removeAllViews()
-        if (shown.isEmpty() && appColor == null) { strip.background = null; return }
+        if (shown.isEmpty() && appColor == null && !canPolish) { strip.background = null; return }
         strip.background = suggestionStripBackground(appColor, pro)
         if (shown.isNotEmpty()) {
             val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
@@ -7769,11 +7781,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     isClickable = true
                     setOnClickListener { keyHaptic("space"); acceptSuggestion(word) }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-                if (i < shown.lastIndex) {
+                if (i < shown.lastIndex || canPolish) {
                     strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
                         LinearLayout.LayoutParams(dp(1), dp(16)))
                 }
             }
+        }
+        // ✨ Polish the whole composed message (Pro + Gemini, 3+ words). Same sparkle as the IME.
+        if (canPolish) {
+            strip.addView(TextView(this).apply {
+                text = "✨"; gravity = Gravity.CENTER; textSize = 16f; includeFontPadding = false
+                background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
+                isClickable = true
+                setOnClickListener { keyHaptic("space"); polishLauncherField() }
+            }, LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
         }
         // Elegant slide-in when the strip goes from empty to showing content.
         if (wasEmpty) {
@@ -7830,6 +7851,70 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         ngramRepo.prefetchNextWords(word)
         suggestions = emptyList(); updateSuggestionBar()
         renderRibbon()
+    }
+
+    // ---- AI Polish + inline //commands on the launcher strip (parity with the IME) ----------------
+    // The message-composition surface; null when the current surface isn't a composer (search/app
+    // launch), so the sparkle never shows there.
+    private fun composerText(): String? =
+        if (openPane?.kind == PaneKind.CHAT) composeText else null
+
+    private fun launcherPolishAvailable(): Boolean {
+        val t = composerText() ?: return false
+        return ProManager.isUnlocked(this) && geminiConfigured() &&
+            t.trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
+    }
+
+    private fun geminiCreds(): Pair<String, String> {
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty()
+            .ifBlank { GEMINI_DEFAULT_MODEL }
+        return key to model
+    }
+
+    private fun applyPolishResult(result: String?, fallback: String) {
+        launcherPolishing = false
+        val out = (result ?: fallback)
+        if (out != composeText) {
+            composeText = out
+            updateAutoCapState(); updateKeyLabels()
+            openPane?.let { renderPaneContent(it) }
+        }
+        updateSuggestionBar(); renderRibbon()
+    }
+
+    // ✨ chip: rewrite the whole composed message into clean prose.
+    private fun polishLauncherField() {
+        if (launcherPolishing) return
+        val text = composerText() ?: return
+        if (text.trim().length < 3) return
+        val (key, model) = geminiCreds()
+        if (key.isBlank()) return
+        launcherPolishing = true
+        keyHaptic("enter")
+        updateSuggestionBar()
+        mediaUiScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { GeminiClient.fetchRewrite(key, model, text) } }.getOrNull()
+            applyPolishResult(result?.takeIf { it != text }, text)
+        }
+    }
+
+    // "<text> //formal" + space -> transform the composed message with that style. Returns true when
+    // it fired (caller should stop handling the space).
+    private fun maybeRunLauncherAiCommand(): Boolean {
+        if (launcherPolishing || openPane?.kind != PaneKind.CHAT) return false
+        if (!ProManager.isUnlocked(this) || !geminiConfigured()) return false
+        val (content, instruction) = AiStyleCommands.match(composeText) ?: return false
+        val (key, model) = geminiCreds()
+        if (key.isBlank()) return false
+        launcherPolishing = true
+        keyHaptic("enter")
+        suggestions = emptyList(); updateSuggestionBar()
+        mediaUiScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { GeminiClient.fetchTransform(key, model, content, instruction) } }.getOrNull()
+            applyPolishResult((result ?: content) + " ", content)
+        }
+        return true
     }
 
     private fun scheduleSpellCheck() {
@@ -9308,6 +9393,7 @@ Reply format: ["word1","word2","word3"]"""
             }
             "space" -> {
                 pendingAutocorrectUndo = null
+                if (maybeRunLauncherAiCommand()) return
                 val now = System.currentTimeMillis()
                 if (now - lastSpaceMs < 500 && composeText.isNotEmpty() && composeText.last() == ' ') {
                     composeText = composeText.dropLast(1) + ". "
