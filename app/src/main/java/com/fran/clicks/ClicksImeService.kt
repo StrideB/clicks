@@ -41,6 +41,8 @@ import android.graphics.drawable.StateListDrawable
 import com.fran.clicks.glide.KeyInfo
 import com.fran.clicks.glide.StatisticalGlideTypingClassifier
 import com.fran.clicks.keyboard.KeyPreviewManager
+import com.fran.clicks.keyboard.applyDoubleSpacePeriod
+import com.fran.clicks.keyboard.shouldAutoCapitalize
 import com.fran.clicks.keyboard.PredictionEngine
 import com.fran.clicks.keyboard.SpatialScorer
 import com.fran.clicks.db.NgramRepository
@@ -118,14 +120,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private var agenticHud: Hud? = null
 
     // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
-    private val keyUpSymbols = mapOf(
-        "q" to "1", "w" to "2", "e" to "3", "r" to "4", "t" to "5",
-        "y" to "6", "u" to "7", "i" to "8", "o" to "9", "p" to "0",
-        "a" to "@", "s" to "#", "d" to "$", "f" to "_", "g" to "&",
-        "h" to "-", "j" to "+", "k" to "(", "l" to ")",
-        "z" to "*", "x" to "\"", "c" to "'", "v" to ":", "b" to ";",
-        "n" to "!", "m" to "?"
-    )
+    private val keyUpSymbols get() = com.fran.clicks.keyboard.KeyboardSymbols.keyUp
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
@@ -222,9 +217,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 leftMargin = dp(4); rightMargin = dp(4)
             })
             val rows = if (symbolsMode) listOf(
-                "1234567890".map { it.toString() },
-                listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"),
-                listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"),
+                com.fran.clicks.keyboard.KeyboardSymbols.ROW_DIGITS,
+                com.fran.clicks.keyboard.KeyboardSymbols.ROW_SYMBOLS_1,
+                com.fran.clicks.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"),
                 listOf("abc", "clicks", "space", ".", "enter")
             ) else listOf(
                 "qwertyuiop".map { it.toString() },
@@ -440,15 +435,10 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
             "space" -> {
                 if (maybeRunAiCommand()) return
-                // Double-space → ". " (parity with the launcher keyboard).
+                // Double-space → ". " via the shared core.
                 val now = System.currentTimeMillis()
-                val before = input?.getTextBeforeCursor(1, 0)?.toString()
-                if (now - lastSpaceMs < 500L && before == " ") {
-                    input.deleteSurroundingText(1, 0)
-                    input.commitText(". ", 1)
-                    lastSpaceMs = 0L
-                    updateAutoCap()
-                    return
+                if (now - lastSpaceMs < 500L && applyDoubleSpacePeriod()) {
+                    lastSpaceMs = 0L; updateAutoCap(); return
                 }
                 lastSpaceMs = now
                 if (autocorrectEnabled()) autocorrect.correctBeforeCommit()
@@ -632,8 +622,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun updateAutoCap() {
         if (capsLock) return
-        val before = currentInputConnection?.getTextBeforeCursor(4, 0)?.toString().orEmpty().trimEnd()
-        val cap = before.isEmpty() || before.endsWith('.') || before.endsWith('!') || before.endsWith('?')
+        val cap = shouldAutoCapitalize()
         if (shifted != cap) { shifted = cap; refreshKeyboardChrome() }
     }
 

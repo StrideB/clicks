@@ -7763,9 +7763,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 })
             }
             if (symbolsOpen) {
-                addKeyRow(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
-                addKeyRow(listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"))
-                addKeyRow(listOf("*", "\"", "'", ":", ";", "!", "?", ",", "back"), dp(8))
+                addKeyRow(com.fran.clicks.keyboard.KeyboardSymbols.ROW_DIGITS)
+                addKeyRow(com.fran.clicks.keyboard.KeyboardSymbols.ROW_SYMBOLS_1)
+                addKeyRow(com.fran.clicks.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"), dp(8))
                 addKeyRow(listOf("abc", "clicks", "space", "period", "enter"), dp(15))
             } else if (numberPadOpen) {
                 addKeyRow(listOf("1", "2", "3"))
