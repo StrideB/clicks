@@ -7594,6 +7594,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 isDockedClicksKey -> { -> beginDockedKeyboardPopToWidget(this@apply) }
                 label == "enter" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
                 label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
+                label == "space" -> { -> haptic(this@apply); runLauncherAgenticCommand() }
                 isLetter -> { -> haptic(this@apply); handleLetterLongPress(label.lowercase(Locale.US)) }
                 else -> null
             }
@@ -7760,6 +7761,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private var suggestionStripView: LinearLayout? = null
     private var launcherPolishing = false
+    private var pendingLauncherCommand: AgenticRouter.Command? = null
 
     private fun showSuggestionStrip() = false
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
@@ -7799,6 +7801,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 text = "✨ Polishing…"; gravity = Gravity.CENTER; textSize = 14.5f
                 includeFontPadding = false; setTextColor(0xFFCBB4FF.toInt())
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            return
+        }
+        val pendingCmd = pendingLauncherCommand
+        if (pendingCmd != null) {
+            strip.removeAllViews()
+            strip.background = suggestionStripBackground(null, true)
+            strip.addView(TextView(this).apply {
+                text = pendingCmd.label
+                gravity = Gravity.CENTER_VERTICAL; textSize = 14.5f; includeFontPadding = false
+                setTextColor(activeNeuTokens.ink); maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(10), 0, dp(6), 0)
+                isClickable = true
+                setOnClickListener { keyHaptic("space"); applyLauncherCommand() }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            strip.addView(TextView(this).apply {
+                text = "APPLY"; gravity = Gravity.CENTER; textSize = 10.5f; letterSpacing = 0.12f
+                setTextColor(0xFFCBB4FF.toInt()); setPadding(dp(12), 0, dp(12), 0)
+                background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
+                isClickable = true
+                setOnClickListener { keyHaptic("space"); applyLauncherCommand() }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
             return
         }
         val shown = suggestions.take(3)
@@ -7962,6 +7986,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             applyPolishResult((result ?: content) + " ", content)
         }
         return true
+    }
+
+    // Agentic command bar: hold space in the type-first launcher to route the typed query to an
+    // action (music, maps, timer, location, web). Shows a preview chip; only runs on APPLY.
+    private fun launcherCommandText(): String =
+        if (openPane?.kind == PaneKind.CHAT) composeText else query
+
+    private fun runLauncherAgenticCommand() {
+        val cmd = AgenticRouter.classify(launcherCommandText())
+        if (cmd == null) {
+            android.widget.Toast.makeText(this, "Type a command \u2014 play, nearest, timer\u2026", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingLauncherCommand = cmd
+        updateSuggestionBar()
+    }
+
+    private fun applyLauncherCommand() {
+        val cmd = pendingLauncherCommand ?: return
+        pendingLauncherCommand = null
+        if (cmd.kind == AgenticRouter.Kind.SHARE_LOCATION) { insertLauncherLocation(); return }
+        val statusMsg = AgenticRouter.execute(this, cmd)
+        if (openPane?.kind == PaneKind.CHAT) composeText = "" else query = ""
+        suggestions = emptyList()
+        updateAutoCapState(); updateKeyLabels(); render()
+        if (statusMsg != null) android.widget.Toast.makeText(this, statusMsg, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun insertLauncherLocation() {
+        if (!AgenticLocation.hasPermission(this)) {
+            android.widget.Toast.makeText(this, "Enable location for Clicks", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        mediaUiScope.launch {
+            val text = withContext(Dispatchers.IO) { AgenticLocation.currentLocationText(this@MainActivity) } ?: return@launch
+            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
+            else query += text
+            updateKeyLabels(); render()
+        }
     }
 
     private fun scheduleSpellCheck() {
@@ -9188,6 +9251,7 @@ Reply format: ["word1","word2","word3"]"""
             if (label == "clicks" || label == "back") closeCategoryFolder()
             return
         }
+        pendingLauncherCommand = null
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) { handleChatKey(label, pane); return }
         if (pane?.kind == PaneKind.AI) { handleAiKey(label, pane); return }

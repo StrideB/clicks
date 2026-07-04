@@ -44,6 +44,8 @@ class ClicksImeService : InputMethodService() {
     private val keyPreview by lazy { KeyPreviewManager(this) }
     private var polishing = false
     private var agenticStatus: String? = null
+    private var pendingCommand: AgenticRouter.Command? = null
+    private var pendingCommandText: String = ""
     private var deckView: SwipeImeKeyboardLayout? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
@@ -240,7 +242,7 @@ class ClicksImeService : InputMethodService() {
                         val runnable = Runnable {
                             clicksLongPressFired = true
                             keyHaptic("enter")
-                            runAgenticLocation()
+                            runAgenticCommand()
                         }
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, (ViewConfiguration.getLongPressTimeout() * 1.25).toLong())
@@ -294,6 +296,7 @@ class ClicksImeService : InputMethodService() {
     }
 
     private fun handleKey(label: String) {
+        pendingCommand = null
         val input = currentInputConnection
         when (label) {
             "shift" -> {
@@ -651,6 +654,31 @@ class ClicksImeService : InputMethodService() {
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
             return
         }
+        val pending = pendingCommand
+        if (pending != null) {
+            strip.background = stripWellBackground()
+            strip.addView(TextView(this).apply {
+                text = pending.label
+                gravity = Gravity.CENTER_VERTICAL; textSize = 15f
+                setTextColor(0xFFE9EDF2.toInt())
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(6), 0, dp(6), 0)
+                isClickable = true
+                setOnClickListener { keyHaptic("enter"); applyPendingCommand() }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            strip.addView(TextView(this).apply {
+                text = "APPLY"
+                gravity = Gravity.CENTER; textSize = 11f; letterSpacing = 0.12f
+                setTextColor(0xFFCBB4FF.toInt())
+                setPadding(dp(12), 0, dp(10), 0)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0x338B5CF6); cornerRadius = dp(9).toFloat()
+                }
+                isClickable = true
+                setOnClickListener { keyHaptic("enter"); applyPendingCommand() }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+            return
+        }
         if (polishing) {
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
@@ -707,6 +735,33 @@ class ClicksImeService : InputMethodService() {
     // Agentic quick-action: long-press space to drop your current location into the field — no maps
     // app, no leaving the chat. Permission can't be requested from an IME, so if it's not already
     // granted (e.g. via Clicks weather) we point the user there instead.
+    // Hold space -> read the typed line, classify it, and show a preview chip the user taps to run
+    // (Acti-style: nothing launches without confirmation). Empty / unknown text falls through to a
+    // location share or a hint.
+    private fun runAgenticCommand() {
+        val raw = currentInputConnection?.getTextBeforeCursor(200, 0)?.toString() ?: ""
+        val cmd = AgenticRouter.classify(raw)
+        if (cmd == null) {
+            flashAgenticStatus("Type a command \u2014 play, nearest, timer\u2026", 2200)
+            return
+        }
+        pendingCommandText = raw
+        pendingCommand = cmd
+        updateStrip()
+    }
+
+    private fun applyPendingCommand() {
+        val cmd = pendingCommand ?: return
+        val raw = pendingCommandText
+        pendingCommand = null
+        // Clear the command text from the field — it was a command, not message content.
+        if (raw.isNotEmpty()) currentInputConnection?.deleteSurroundingText(raw.length, 0)
+        if (cmd.kind == AgenticRouter.Kind.SHARE_LOCATION) { runAgenticLocation(); return }
+        val statusMsg = AgenticRouter.execute(this, cmd)
+        onTextChanged()
+        flashAgenticStatus(statusMsg ?: "Couldn\u2019t run that", 1700)
+    }
+
     private fun runAgenticLocation() {
         if (!AgenticLocation.hasPermission(this)) {
             flashAgenticStatus("\uD83D\uDCCD Enable location in Clicks", 2600)
