@@ -52,10 +52,15 @@ class ClicksImeService : InputMethodService() {
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = linkedMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
-    private var predictionEngine = PredictionEngine(emptyMap())
+    private var predictionEngine = PredictionEngine(emptyMap())         // active pointer (primary or extended)
+    private var predictionEnginePrimary = PredictionEngine(emptyMap())  // primary language only
+    private var predictionEngineExtended = PredictionEngine(emptyMap()) // primary + secondary phone languages
+    private var hasLatentLanguages = false
+    private var latentLanguageActive = false
     private val spatialScorer = SpatialScorer()
     private val ngramRepo by lazy { NgramRepository(this) }
     private var suggestionStrip: LinearLayout? = null
+    private var agenticPanel: LinearLayout? = null
     private var suggestions: List<String> = emptyList()
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
@@ -145,6 +150,9 @@ class ClicksImeService : InputMethodService() {
             background = deckBackground()
             minimumHeight = imeKeyboardHeight()
             addView(buildSuggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+            addView(buildAgenticPanel(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                leftMargin = dp(4); rightMargin = dp(4); topMargin = dp(1); bottomMargin = dp(2)
+            })
             val rows = if (symbolsMode) listOf(
                 "1234567890".map { it.toString() },
                 listOf("@", "#", "$", "_", "&", "-", "+", "(", ")", "/"),
@@ -240,13 +248,16 @@ class ClicksImeService : InputMethodService() {
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
                     }
-                    if (label == "space") {
+                    if (label == "enter" || label == "space") {
+                        // Two hold triggers, one ramp. Go/enter runs the typed line as an agentic
+                        // command; space asks Gemini to keep writing. Taps are unaffected.
+                        val holdLabel = label
                         val total = (ViewConfiguration.getLongPressTimeout() * 1.25).toLong()
                         startAgenticHapticRamp(total)
                         val runnable = Runnable {
                             clicksLongPressFired = true
                             agenticConfirmHaptic()
-                            runAgenticCommand()
+                            if (holdLabel == "space") runGeminiCompose() else runAgenticCommand()
                         }
                         clicksLongPressRunnable = runnable
                         handler.postDelayed(runnable, total)
@@ -255,7 +266,7 @@ class ClicksImeService : InputMethodService() {
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if ((label == "clicks" || label == "space") &&
+                    if ((label == "clicks" || label == "enter" || label == "space") &&
                         (abs(event.rawX - downRawX) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop ||
                             abs(event.rawY - downRawY) > ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop)) {
                         cancelClicksLongPress()
@@ -435,11 +446,26 @@ class ClicksImeService : InputMethodService() {
 
     private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
         if (label.length != 1 || !label[0].isLetter() || keyBounds.isEmpty()) return label
+        if (!smartTouchEnabled()) return label
+        // Only let the language model reassign a tap that lands NEAR a key boundary. A confident
+        // center press is always taken at face value, so a clean tap never becomes a different
+        // letter — that "I hit the right key and got the wrong one" feeling was the model overriding
+        // good taps. recordTap only when smart touch is on, so the model can't drift while disabled.
         spatialScorer.recordTap(rawX, rawY)
+        val rect = keyBounds[label]
+        if (rect != null) {
+            val marginX = rect.width() * 0.24f
+            val marginY = rect.height() * 0.24f
+            val nearEdge = rawX < rect.left + marginX || rawX > rect.right - marginX ||
+                rawY < rect.top + marginY || rawY > rect.bottom - marginY
+            if (!nearEdge) return label
+        }
         val best = spatialScorer.bestKey(rawX, rawY, letterOnly = true) { predictionEngine.nextCharWeights(currentWord()) }
         return if (best != null && best.length == 1 && best[0].isLetter()) best
         else keyAtPoint(rawX, rawY, letterOnly = true) ?: label
     }
+
+    private fun smartTouchEnabled() = imePrefs().getBoolean(IME_SMART_TOUCH_PREF, true)
 
     private fun keyAtPoint(rawX: Float, rawY: Float, letterOnly: Boolean = false): String? {
         if (keyBounds.isEmpty()) captureKeyBounds()
@@ -461,14 +487,19 @@ class ClicksImeService : InputMethodService() {
     private fun ensureGlideClassifier() {
         if (glideClassifier != null) return
         Thread {
-            // Union dictionary across the system's enabled languages — corrects & predicts in all of
-            // them at once, no language switching (see DictionaryLoader).
-            val loaded = com.fran.clicks.keyboard.DictionaryLoader.load(this)
+            // Primary language is active by default; secondary phone languages load as a latent
+            // extended dictionary that only takes over once the user writes a couple of its words
+            // (see updateActiveLanguage). Glide can shape-match the full set so gestures work in any.
+            val adaptive = com.fran.clicks.keyboard.DictionaryLoader.loadAdaptive(this)
             val clf = StatisticalGlideTypingClassifier()
-            clf.setWordData(loaded.words, loaded.freqs)
+            clf.setWordData(adaptive.extendedWords, adaptive.extendedFreqs)
             handler.post {
                 glideClassifier = clf
-                predictionEngine = PredictionEngine(loaded.freqs)
+                predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                predictionEngineExtended = PredictionEngine(adaptive.extendedFreqs)
+                hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
+                latentLanguageActive = false
+                predictionEngine = predictionEnginePrimary
                 updateGlideLayout()
             }
         }.start()
@@ -509,10 +540,13 @@ class ClicksImeService : InputMethodService() {
     }
 
     private fun onTextChanged() {
+        // No immediate updateStrip: it would repaint the strip with stale suggestions (and pay a
+        // 1KB IPC read) on every keystroke, only to be repainted ~70ms later by scheduleSuggestions.
+        // One debounced repaint = half the per-key work and no flicker. Agentic state changes still
+        // call updateStrip directly, so previews/status stay instant.
         scheduleSuggestions()
         scheduleLiveCorrect()
         scheduleGemini()
-        updateStrip()
     }
 
     // Tier 2: blend Gemini's contextual next-word predictions into the strip (Pro + API key only).
@@ -585,6 +619,10 @@ class ClicksImeService : InputMethodService() {
         val ic = currentInputConnection ?: return false
         val word = currentWord()
         if (word.length < 2) return false
+        // Never "correct away" a word that's real in ANY of the user's languages — even while the
+        // primary language is active. This is what stops a genuine secondary-language word (e.g. the
+        // first "hola" before the language flips) from being mangled into a primary-language word.
+        if (predictionEngineExtended.isDictWord(word)) return false
         if (live && (word.length < 3 || predictionEngine.isPrefixOfDictWord(word))) return false
         val context = ngramRepo.cachedNextWords(previousWord())
         val top = predictionEngine.bestCorrection(word, context) ?: return false
@@ -598,7 +636,30 @@ class ClicksImeService : InputMethodService() {
         return true
     }
 
+    // Auto-language: start in the primary language and only switch a secondary phone language ON
+    // when the last few words are clearly written in it (>= 2 words valid in that language but not
+    // the primary). Reverts as soon as the user is back to all-primary words, so English is never
+    // "corrected" into a language the user isn't actually writing. 1 latent word holds the current
+    // state (hysteresis) so a lone shared/borrowed word doesn't flip the engine mid-sentence.
+    private fun updateActiveLanguage() {
+        if (!hasLatentLanguages) return
+        val before = currentInputConnection?.getTextBeforeCursor(96, 0)?.toString()?.lowercase().orEmpty()
+        val words = before.split(Regex("[^\\p{L}]+")).filter { it.length >= 2 }.takeLast(4)
+        if (words.isEmpty()) return
+        val latentHits = words.count { predictionEngineExtended.isDictWord(it) && !predictionEnginePrimary.isDictWord(it) }
+        val active = when {
+            latentHits >= 2 -> true
+            latentHits == 0 -> false
+            else -> latentLanguageActive
+        }
+        if (active != latentLanguageActive) {
+            latentLanguageActive = active
+            predictionEngine = if (active) predictionEngineExtended else predictionEnginePrimary
+        }
+    }
+
     private fun learnAndPredictAfterSpace() {
+        updateActiveLanguage()
         val tokens = wordsBeforeCursor()
         if (tokens.size >= 2) ngramRepo.recordWord(tokens[tokens.size - 1], tokens[tokens.size - 2])
         val last = tokens.lastOrNull().orEmpty()
@@ -640,15 +701,171 @@ class ClicksImeService : InputMethodService() {
         setColor(0x14FFFFFF); cornerRadius = dp(10).toFloat()
     }
 
+    // ── Agentic panel ──────────────────────────────────────────────────────────
+    // One elegant glass card for every agentic action. Idle -> GONE, so the resting keyboard is
+    // untouched; a pending command or working status elevates into the card and hides the plain
+    // suggestion strip. Each action gets its own accent spine (Clicks' colored-spine language).
+    // Command / Files / Email render here as they land; typing suggestions stay in the strip.
+
+    private fun buildAgenticPanel(): LinearLayout {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(dp(12), dp(8), dp(10), dp(8))
+        }
+        agenticPanel = panel
+        renderAgenticPanel()
+        return panel
+    }
+
+    // The panel follows the same light/dark signal as the keyboard deck, so on the default theme it
+    // tracks the system theme. HYPER3D_BLACK stays dark by design (matches deckBackground).
+    private fun agenticPanelLight(): Boolean =
+        selectedNeuTokens().mode == NeuMode.LIGHT && keyboardVisualTheme() != KEYBOARD_THEME_HYPER3D_BLACK
+
+    private fun agenticCardBackground(top: Int, bottom: Int, stroke: Int) = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom)
+    ).apply { cornerRadius = dp(16).toFloat(); setStroke(dp(1), stroke) }
+
+    private fun agenticCta(label: String, accent: Int, ink: Int, onClick: () -> Unit) = TextView(this).apply {
+        text = label; gravity = Gravity.CENTER; textSize = 12.5f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        setTextColor(ink)
+        setPadding(dp(15), dp(8), dp(15), dp(8))
+        maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+        background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(11).toFloat() }
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
+
+    private fun agenticDismiss(ink: Int) = TextView(this).apply {
+        text = "✕"; gravity = Gravity.CENTER; textSize = 13f
+        setTextColor(ink)
+        setPadding(dp(10), dp(8), dp(6), dp(8))
+        isClickable = true
+        setOnClickListener { keyHaptic("back"); dismissAgentic() }
+    }
+
+    private fun dismissAgentic() {
+        pendingCommand = null
+        pendingActions = emptyList()
+        agenticStatus = null
+        updateStrip()
+    }
+
+    // Honor the system "remove animations" accessibility setting.
+    private fun animationsEnabled(): Boolean = runCatching {
+        android.provider.Settings.Global.getFloat(
+            contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
+    }.getOrDefault(true)
+
+    private fun animateAgenticPanelIn(panel: View) {
+        if (!animationsEnabled()) { panel.alpha = 1f; panel.translationY = 0f; panel.scaleX = 1f; panel.scaleY = 1f; return }
+        panel.alpha = 0f
+        panel.translationY = dp(10).toFloat()
+        panel.scaleX = 0.98f; panel.scaleY = 0.98f
+        panel.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+            .setDuration(190L)
+            .setInterpolator(android.view.animation.OvershootInterpolator(1.5f))
+            .start()
+    }
+
+    // Render the active agentic state into the card, or hide it and restore the strip when idle.
+    private fun renderAgenticPanel() {
+        val panel = agenticPanel ?: return
+        panel.removeAllViews()
+
+        val light = agenticPanelLight()
+        val cardTop = if (light) 0xFFFFFFFF.toInt() else 0xFF20232A.toInt()
+        val cardBottom = if (light) 0xFFECEFF4.toInt() else 0xFF14161B.toInt()
+        val cardStroke = if (light) 0x14000000 else 0x1EFFFFFF
+        val tileBg = if (light) 0xFFF3F5F9.toInt() else 0xFF16181D.toInt()
+        val titleInk = if (light) 0xFF14161B.toInt() else 0xFFF5F2FF.toInt()
+        val kickerInk = if (light) 0xFF6B7280.toInt() else 0xFF767C89.toInt()
+        val ctaInk = if (light) 0xFFFFFFFF.toInt() else 0xFF0A0C0F.toInt()
+        val mint = if (light) 0xFF12A968.toInt() else 0xFF57E39A.toInt()
+        val violet = if (light) 0xFF6D5FD6.toInt() else 0xFF9B8CFF.toInt()
+
+        val status = agenticStatus
+        val pending = pendingCommand
+        val accent: Int; val glyph: String; val kicker: String; val title: String
+        when {
+            status != null -> { accent = violet; glyph = "✦"; kicker = "CLICKS"; title = status }
+            pending != null -> {
+                accent = mint
+                val parts = pending.label.split("  ", limit = 2)
+                glyph = if (parts.size == 2) parts[0].trim() else "▶"
+                kicker = "COMMAND"
+                title = if (parts.size == 2) parts[1].trim() else pending.label
+            }
+            else -> {
+                panel.visibility = View.GONE
+                panel.background = null
+                suggestionStrip?.visibility = View.VISIBLE
+                return
+            }
+        }
+
+        val wasHidden = panel.visibility != View.VISIBLE
+        panel.visibility = View.VISIBLE
+        panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
+        suggestionStrip?.visibility = View.GONE
+
+        panel.addView(View(this).apply {
+            background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(2).toFloat() }
+        }, LinearLayout.LayoutParams(dp(3), dp(30)).apply { marginEnd = dp(11) })
+
+        panel.addView(TextView(this).apply {
+            text = glyph; gravity = Gravity.CENTER; textSize = 15f
+            setTextColor(accent)
+            background = GradientDrawable().apply {
+                setColor(tileBg); cornerRadius = dp(10).toFloat()
+                setStroke(dp(1), (accent and 0x00FFFFFF) or 0x55000000)
+            }
+        }, LinearLayout.LayoutParams(dp(32), dp(32)))
+
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(TextView(this).apply {
+            text = kicker; textSize = 9f; letterSpacing = 0.16f
+            setTextColor(kickerInk)
+        })
+        col.addView(TextView(this).apply {
+            text = title; textSize = 14.5f
+            setTextColor(titleInk)
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        })
+        panel.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(11); marginEnd = dp(8)
+        })
+
+        // A pending command is confirm-before-run; a working status is in-flight (no controls).
+        if (pending != null && status == null) {
+            panel.addView(agenticCta("Run", accent, ctaInk) { keyHaptic("enter"); applyPendingCommand() },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            panel.addView(agenticDismiss(kickerInk),
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+        }
+
+        if (wasHidden) animateAgenticPanelIn(panel)
+    }
+
     private fun fieldTextForPolish(): String =
         currentInputConnection?.getTextBeforeCursor(1000, 0)?.toString().orEmpty()
 
+    // Runs on every strip repaint, so keep it cheap: a short read is enough to see ≥3 words. The
+    // full field is only read (fieldTextForPolish) when a polish actually fires.
     private fun polishAvailable(): Boolean =
         ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs()) &&
-            fieldTextForPolish().trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
+            (currentInputConnection?.getTextBeforeCursor(200, 0)?.toString().orEmpty())
+                .trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
 
     private fun updateStrip() {
         val strip = suggestionStrip ?: return
+        // Elevate command previews and working status into the elegant panel; it toggles the strip's
+        // visibility. The strip is still populated below as the fallback surface when the panel idles.
+        renderAgenticPanel()
         strip.removeAllViews()
         val status = agenticStatus
         if (status != null) {
@@ -756,12 +973,12 @@ class ClicksImeService : InputMethodService() {
         return true
     }
 
-    // Agentic quick-action: long-press space to drop your current location into the field — no maps
-    // app, no leaving the chat. Permission can't be requested from an IME, so if it's not already
-    // granted (e.g. via Clicks weather) we point the user there instead.
-    // Hold space -> read the typed line, classify it, and show a preview chip the user taps to run
+    // Agentic quick-action: hold the go/enter key to drop your current location into the field — no
+    // maps app, no leaving the chat. Permission can't be requested from an IME, so if it's not
+    // already granted (e.g. via Clicks weather) we point the user there instead.
+    // Hold go/enter -> read the typed line, classify it, and show a preview chip the user taps to run
     // (Acti-style: nothing launches without confirmation). Empty / unknown text falls through to a
-    // location share or a hint.
+    // location share or a hint. Tapping go/enter still sends/enters as normal.
     private fun runAgenticCommand() {
         val raw = currentInputConnection?.getTextBeforeCursor(200, 0)?.toString() ?: ""
         val cmd = AgenticRouter.classify(raw)
@@ -817,7 +1034,7 @@ class ClicksImeService : InputMethodService() {
     private val vibrator by lazy { getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator }
     private val agenticHapticRunnables = ArrayList<Runnable>()
 
-    // Escalating buzz while the space bar is held toward an agentic action, then a strong confirm.
+    // Escalating buzz while the go/enter key is held toward an agentic action, then a strong confirm.
     private fun startAgenticHapticRamp(total: Long) {
         stopAgenticHapticRamp()
         listOf(0.30 to 45, 0.55 to 105, 0.80 to 175).forEach { (frac, amp) ->
@@ -846,7 +1063,7 @@ class ClicksImeService : InputMethodService() {
         "pt" to "Portuguese", "it" to "Italian", "en" to "English"
     )
 
-    // Inline AI actions when you hold space over a real message: fix it, or translate it into your
+    // Inline AI actions when you hold go/enter over a real message: fix it, or translate it into your
     // other keyboard language — right where you type, no app switch (the "texting mom" case).
     private fun buildMessageActions(): List<Pair<String, String>> {
         val actions = ArrayList<Pair<String, String>>()
@@ -859,9 +1076,12 @@ class ClicksImeService : InputMethodService() {
         return actions
     }
     private fun translateTargetLanguage(): String? {
-        val enabled = com.fran.clicks.keyboard.DictionaryLoader.enabledLanguages(this)
-        val primary = enabled.firstOrNull() ?: return null
-        val other = enabled.firstOrNull { it != primary } ?: return null
+        // Consider in-app selection plus the phone's other bundled locales, so "translate to X" still
+        // offers a secondary language even though corrections default to the primary only.
+        val loader = com.fran.clicks.keyboard.DictionaryLoader
+        val langs = (loader.enabledLanguages(this) + loader.systemBundledLanguages(this)).distinct()
+        val primary = langs.firstOrNull() ?: return null
+        val other = langs.firstOrNull { it != primary } ?: return null
         return langNames[other]
     }
 
@@ -887,6 +1107,31 @@ class ClicksImeService : InputMethodService() {
                 }
                 onTextChanged()
                 updateStrip()
+            }
+        }.start()
+    }
+
+    // Hold the space bar for Gemini writing assist: continue / draft from what's already in the
+    // field and commit the result inline — the "help me write this" companion to go/enter's command
+    // trigger. No app switch, so you keep writing without chasing another tool.
+    private fun runGeminiCompose() {
+        if (!ProManager.isUnlocked(this)) { flashAgenticStatus("✨ Gemini writing is a Pro feature", 2200); return }
+        if (!GeminiClient.configured(imePrefs())) { flashAgenticStatus("Add a Gemini key in Clicks settings", 2400); return }
+        val context = currentInputConnection?.getTextBeforeCursor(600, 0)?.toString().orEmpty()
+        if (context.isBlank()) { flashAgenticStatus("Type a little, then hold space for Gemini", 2200); return }
+        agenticStatus = "✨ Writing…"
+        updateStrip()
+        val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
+        Thread {
+            val draft = GeminiClient.fetchCompose(key, model, context)
+            handler.post {
+                agenticStatus = null
+                if (!draft.isNullOrBlank()) {
+                    val sep = if (context.isNotEmpty() && !context.last().isWhitespace()) " " else ""
+                    currentInputConnection?.commitText(sep + draft, 1)
+                    onTextChanged()
+                    updateStrip()
+                } else flashAgenticStatus("✨ Nothing to add", 1600)
             }
         }.start()
     }

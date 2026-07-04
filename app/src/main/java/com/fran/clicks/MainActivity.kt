@@ -7597,9 +7597,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val longPressAction: (() -> Unit)? = when {
                 isWidgetDockKey -> { -> beginWidgetKeyboardDetach(this@apply) }
                 isDockedClicksKey -> { -> beginDockedKeyboardPopToWidget(this@apply) }
-                label == "enter" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
+                // Hold go/enter to run the typed line as an agentic command (the powerful trigger).
+                label == "enter" -> { -> haptic(this@apply); runLauncherAgenticCommand() }
                 label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
-                label == "space" -> { -> haptic(this@apply); runLauncherAgenticCommand() }
+                // Space keeps cursor-drag; a stationary hold now offers Gemini smart-compose instead.
+                label == "space" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
                 isLetter -> { -> haptic(this@apply); handleLetterLongPress(label.lowercase(Locale.US)) }
                 else -> null
             }
@@ -7993,8 +7995,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return true
     }
 
-    // Agentic command bar: hold space in the type-first launcher to route the typed query to an
-    // action (music, maps, timer, location, web). Shows a preview chip; only runs on APPLY.
+    // Agentic command bar: hold the go/enter key in the type-first launcher to route the typed query
+    // to an action (music, maps, timer, location, web). Shows a preview chip; only runs on APPLY.
     private fun launcherCommandText(): String =
         if (openPane?.kind == PaneKind.CHAT) composeText else query
 
@@ -8247,30 +8249,12 @@ Reply format: ["word1","word2","word3"]"""
         }
     }
 
+    // Delegates to the shared GeminiClient so launcher and IME smart-compose stay in parity.
     private fun fetchGeminiCompletion(context: String): String {
         val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
         if (key.isBlank()) return ""
         val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
-        val prompt = "Continue this text naturally in one short sentence, no quotes, no explanation:\n\"$context\""
-        val url = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/${java.net.URLEncoder.encode(model, "UTF-8")}:generateContent?key=${java.net.URLEncoder.encode(key, "UTF-8")}")
-        val body = org.json.JSONObject()
-            .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", org.json.JSONArray().put(org.json.JSONObject().put("text", prompt)))))
-            .put("generationConfig", org.json.JSONObject().put("temperature", 0.7).put("maxOutputTokens", 60))
-        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 8_000; readTimeout = 15_000
-            setRequestProperty("Content-Type", "application/json"); doOutput = true
-        }
-        try {
-            java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-            if (conn.responseCode !in 200..299) return ""
-            val raw = conn.inputStream.bufferedReader().use { it.readText() }
-            return org.json.JSONObject(raw)
-                .optJSONArray("candidates")?.optJSONObject(0)
-                ?.optJSONObject("content")?.optJSONArray("parts")
-                ?.optJSONObject(0)?.optString("text")?.trim() ?: ""
-        } finally {
-            conn.disconnect()
-        }
+        return GeminiClient.fetchCompose(key, model, context) ?: ""
     }
 
     // ── Shift ────────────────────────────────────────────────────────────────

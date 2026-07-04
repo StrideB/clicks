@@ -4,7 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 /**
- * One agentic skill: a named capability the space bar can invoke. New skills can be added over time
+ * One agentic skill: a named capability the go/enter key can invoke. New skills can be added over time
  * (built-in or user-created) without code changes — the router reads them from this table.
  *
  * [actionType] is one of AgenticRouter.ActionType: MUSIC / TIMER / LOCATION / WEB_SEARCH launch via

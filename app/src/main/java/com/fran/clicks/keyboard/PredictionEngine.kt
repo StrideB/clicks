@@ -27,6 +27,9 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
      * mid-typing a real word. Live (no-space) autocorrect uses this to only rewrite "dead-end"
      * strings that can't become a real word, so it never mangles a word in progress.
      */
+    /** True if [word] is exactly a word in this dictionary. Used for language detection. */
+    fun isDictWord(word: String): Boolean = wordFrequencies.containsKey(word.lowercase())
+
     fun isPrefixOfDictWord(prefix: String): Boolean {
         if (prefix.isEmpty()) return false
         val p = prefix.lowercase()
