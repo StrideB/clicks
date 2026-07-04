@@ -11,9 +11,11 @@ import android.os.Build
  * "change language" key. A word that's valid in any enabled language is therefore in the dictionary
  * and never gets autocorrected away; completions and glide candidates are drawn from all of them.
  *
- * Enabled languages are read from the system's configured locales (Settings → Languages),
- * intersected with the lists we ship. So it's zero-config: add Español in Android settings and
- * Spanish typing just works alongside English. Falls back to English when nothing else matches.
+ * Enabled languages come from the in-app language picker when set; otherwise Clicks uses just the
+ * phone's PRIMARY system language (intersected with the lists we ship). Multilingual typing is an
+ * explicit opt-in — the user picks the extra languages in Clicks settings — so a secondary phone
+ * locale never silently starts rewriting the primary language. Falls back to English when nothing
+ * matches.
  *
  * Per language, raw counts are normalized to [0,1] by that language's own most-frequent word before
  * merging, so no single language's larger counts drown out another's ranking. For words shared
@@ -57,13 +59,18 @@ object DictionaryLoader {
             .getString(LANGUAGES_PREF, null)
             ?.split(",")?.map { it.trim().lowercase() }?.filter { it in BUNDLED }
         if (!saved.isNullOrEmpty()) return saved
+        // Zero-config uses ONLY the primary system language, not every secondary locale. Pulling in
+        // every phone locale meant a user with, say, Spanish as a secondary language got their
+        // English silently "corrected" into Spanish they never asked Clicks for. Multilingual typing
+        // is still supported — it's just an explicit opt-in via the in-app language picker
+        // (LANGUAGES_PREF), which is handled above and overrides this.
         val out = LinkedHashSet<String>()
         val cfg = context.resources.configuration
         if (Build.VERSION.SDK_INT >= 24) {
             val locales = cfg.locales
             for (i in 0 until locales.size()) {
                 val lang = locales.get(i).language.lowercase()
-                if (lang in BUNDLED) out.add(lang)
+                if (lang in BUNDLED) { out.add(lang); break }   // primary bundled language only
             }
         } else {
             @Suppress("DEPRECATION")
