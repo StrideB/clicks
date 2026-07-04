@@ -46,6 +46,7 @@ class ClicksImeService : InputMethodService() {
     private var agenticStatus: String? = null
     private var pendingCommand: AgenticRouter.Command? = null
     private var pendingCommandText: String = ""
+    private var pendingActions: List<Pair<String, String>> = emptyList()
     private var deckView: SwipeImeKeyboardLayout? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
@@ -240,13 +241,15 @@ class ClicksImeService : InputMethodService() {
                         handler.postDelayed(runnable, ViewConfiguration.getLongPressTimeout().toLong())
                     }
                     if (label == "space") {
+                        val total = (ViewConfiguration.getLongPressTimeout() * 1.25).toLong()
+                        startAgenticHapticRamp(total)
                         val runnable = Runnable {
                             clicksLongPressFired = true
-                            keyHaptic("enter")
+                            agenticConfirmHaptic()
                             runAgenticCommand()
                         }
                         clicksLongPressRunnable = runnable
-                        handler.postDelayed(runnable, (ViewConfiguration.getLongPressTimeout() * 1.25).toLong())
+                        handler.postDelayed(runnable, total)
                     }
                     if (label == "back") startDeleteRepeat()
                     return true
@@ -293,11 +296,13 @@ class ClicksImeService : InputMethodService() {
         private fun cancelClicksLongPress() {
             clicksLongPressRunnable?.let { handler.removeCallbacks(it) }
             clicksLongPressRunnable = null
+            stopAgenticHapticRamp()
         }
     }
 
     private fun handleKey(label: String) {
         pendingCommand = null
+        pendingActions = emptyList()
         val input = currentInputConnection
         when (label) {
             "shift" -> {
@@ -689,6 +694,24 @@ class ClicksImeService : InputMethodService() {
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
             return
         }
+        if (pendingActions.isNotEmpty()) {
+            strip.background = stripWellBackground()
+            pendingActions.forEachIndexed { i, action ->
+                strip.addView(TextView(this).apply {
+                    text = action.first
+                    gravity = Gravity.CENTER; textSize = 14f
+                    setTextColor(0xFFE9EDF2.toInt())
+                    maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                    isClickable = true
+                    setOnClickListener { keyHaptic("enter"); runInlineTransform(action.second) }
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+                if (i < pendingActions.lastIndex) {
+                    strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
+                        LinearLayout.LayoutParams(dp(1), dp(18)))
+                }
+            }
+            return
+        }
         val shown = suggestions.take(3)
         val canPolish = polishAvailable()
         if (shown.isEmpty() && !canPolish) { strip.background = null; return }
@@ -748,6 +771,15 @@ class ClicksImeService : InputMethodService() {
             updateStrip()
             return
         }
+        // A real message (not a command): offer inline AI actions on it — fix, translate — right in
+        // the field, before trying to interpret it as a command.
+        if (raw.isNotBlank() && ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs()) &&
+            raw.trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3) {
+            pendingCommandText = raw
+            pendingActions = buildMessageActions()
+            updateStrip()
+            return
+        }
         // Free-form fallback: let Gemini pick a skill (Pro + configured). It only ranks among real
         // skills, so "I wanna hear jazz" routes to Play music without inventing an action.
         if (raw.isNotBlank() && ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs())) {
@@ -780,6 +812,83 @@ class ClicksImeService : InputMethodService() {
         val statusMsg = AgenticRouter.execute(this, cmd)
         onTextChanged()
         flashAgenticStatus(statusMsg ?: "Couldn\u2019t run that", 1700)
+    }
+
+    private val vibrator by lazy { getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator }
+    private val agenticHapticRunnables = ArrayList<Runnable>()
+
+    // Escalating buzz while the space bar is held toward an agentic action, then a strong confirm.
+    private fun startAgenticHapticRamp(total: Long) {
+        stopAgenticHapticRamp()
+        listOf(0.30 to 45, 0.55 to 105, 0.80 to 175).forEach { (frac, amp) ->
+            val r = Runnable { vibe(16, amp) }
+            agenticHapticRunnables.add(r)
+            handler.postDelayed(r, (total * frac).toLong())
+        }
+    }
+    private fun stopAgenticHapticRamp() {
+        agenticHapticRunnables.forEach { handler.removeCallbacks(it) }
+        agenticHapticRunnables.clear()
+    }
+    private fun agenticConfirmHaptic() = vibe(28, 255)
+    private fun vibe(ms: Long, amplitude: Int) {
+        if (!imePrefs().getBoolean(HAPTICS_PREF, true)) return
+        val v = vibrator ?: return
+        runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 26)
+                v.vibrate(android.os.VibrationEffect.createOneShot(ms, amplitude.coerceIn(1, 255)))
+            else @Suppress("DEPRECATION") v.vibrate(ms)
+        }
+    }
+
+    private val langNames = mapOf(
+        "es" to "Spanish", "fr" to "French", "de" to "German",
+        "pt" to "Portuguese", "it" to "Italian", "en" to "English"
+    )
+
+    // Inline AI actions when you hold space over a real message: fix it, or translate it into your
+    // other keyboard language — right where you type, no app switch (the "texting mom" case).
+    private fun buildMessageActions(): List<Pair<String, String>> {
+        val actions = ArrayList<Pair<String, String>>()
+        actions.add("✨ Polish" to
+            "Fix the spelling, grammar, capitalization and punctuation of this message. Keep the meaning and tone.")
+        translateTargetLanguage()?.let { lang ->
+            actions.add("🌐 → $lang" to
+                "Translate this message to $lang. Reply with only the translation, nothing else.")
+        }
+        return actions
+    }
+    private fun translateTargetLanguage(): String? {
+        val enabled = com.fran.clicks.keyboard.DictionaryLoader.enabledLanguages(this)
+        val primary = enabled.firstOrNull() ?: return null
+        val other = enabled.firstOrNull { it != primary } ?: return null
+        return langNames[other]
+    }
+
+    // Run a Gemini transform on the field text and replace it inline.
+    private fun runInlineTransform(instruction: String) {
+        pendingActions = emptyList()
+        val ic = currentInputConnection ?: return
+        val text = fieldTextForPolish()
+        if (text.trim().length < 2) return
+        if (!ProManager.isUnlocked(this) || !GeminiClient.configured(imePrefs())) return
+        val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
+        agenticStatus = "🤖 Working…"
+        updateStrip()
+        Thread {
+            val result = GeminiClient.fetchTransform(key, model, text, instruction)
+            handler.post {
+                agenticStatus = null
+                if (result != null && result != text) {
+                    ic.beginBatchEdit()
+                    ic.deleteSurroundingText(text.length, 0)
+                    ic.commitText(result, 1)
+                    ic.endBatchEdit()
+                }
+                onTextChanged()
+                updateStrip()
+            }
+        }.start()
     }
 
     private fun runAgenticLocation() {
