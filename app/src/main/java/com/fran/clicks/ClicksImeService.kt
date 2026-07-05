@@ -566,10 +566,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         if (!imePrefs().getBoolean(HAPTICS_PREF, true)) return
         // Tuned per-label composition primitives (parity with the launcher keyboard) instead of the
         // coarse system constants.
-        hapticEngine.tap(label)
+        haptics().tap(label)
     }
 
     private fun hapticsOn() = imePrefs().getBoolean(HAPTICS_PREF, true)
+
+    /** The keyboard's haptic engine with the user's keyboard-only intensity applied (0–100 → 0f–1f).
+     *  Read live so the Settings slider takes effect on the next keystroke without a restart. */
+    private fun haptics(): com.fran.clicks.keyboard.CustomHapticEngine {
+        hapticEngine.intensity = imePrefs().getInt(HAPTIC_LEVEL_PREF, 100).coerceIn(0, 100) / 100f
+        return hapticEngine
+    }
 
     private fun startDeleteRepeat() {
         stopDeleteRepeat(clearFired = true)
@@ -1522,9 +1529,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun vibe(ms: Long, amplitude: Int) {
         if (!imePrefs().getBoolean(HAPTICS_PREF, true)) return
         val v = vibrator ?: return
+        val level = imePrefs().getInt(HAPTIC_LEVEL_PREF, 100).coerceIn(0, 100) / 100f
+        val amp = (amplitude * level).toInt().coerceIn(1, 255)
         runCatching {
             if (android.os.Build.VERSION.SDK_INT >= 26)
-                v.vibrate(android.os.VibrationEffect.createOneShot(ms, amplitude.coerceIn(1, 255)))
+                v.vibrate(android.os.VibrationEffect.createOneShot(ms, amp))
             else @Suppress("DEPRECATION") v.vibrate(ms)
         }
     }
@@ -1863,7 +1872,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     val glideStart = maxOf(touchSlop * 2, dp(20))
                     if (!tracking && (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart)) {
                         tracking = true
-                        if (hapticsOn()) hapticEngine.glideStart()   // firm click on glide activation
+                        if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
                         android.util.Log.d("ClicksGlide", "glide start keyBounds=${keyBounds.size} clfReady=${glideClassifier != null}")
                         parent?.requestDisallowInterceptTouchEvent(true)
                         keyAtPoint(startRawX, startRawY, letterOnly = true)?.let { traced.add(it) }
@@ -1932,7 +1941,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     if (quickLeftDelete) {
                         keyHaptic("back"); deleteWord(); clf?.clear(); fadeGlideTrail(); return true
                     }
-                    if (clf != null && clf.hasEnoughPoints) {
+                    // Anti-ghost-swipe: a real glide crosses ≥2 distinct keys. A wiggle confined to one
+                    // key must never decode to a word — drop it rather than commit a phantom word.
+                    if (clf != null && clf.hasEnoughPoints && tracedKeys.size >= 2) {
                         val contextBoost = glideCore.contextBoost()
                         // Snapshot inputs for the optional neural decoder on the main thread (touch
                         // state is about to be cleared). Null when neural is off/not-ready.
@@ -1960,7 +1971,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                             runCatching { clf.clear() }
                             android.util.Log.d("ClicksGlide", "results=${results.size} top=${results.firstOrNull()} neural=${neural != null}")
                             if (results.isNotEmpty()) {
-                                if (hapticsOn()) hapticEngine.glideCommit()
+                                if (hapticsOn()) haptics().glideCommit()
                                 glideCore.commitWord(glideCore.rerank(results)); learnAndPredictAfterSpace()
                             } else if (tracedKeys.size >= 3) {
                                 keyHaptic("space"); handleSwipeFallback(tracedKeys)
@@ -2477,6 +2488,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private const val PREFS_NAME = "clicks"
         private const val TOUCH_MODEL_PREF = "touch_model_v1"
         private const val HAPTICS_PREF = "haptics"
+        const val HAPTIC_LEVEL_PREF = "haptic_level"   // 0–100, keyboard-only vibration intensity
         private const val THEME_MODE_PREF = "theme_mode"
         private const val THEME_MODE_DARK = "dark"
         private const val THEME_MODE_LIGHT = "light"

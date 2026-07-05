@@ -9145,6 +9145,11 @@ Reply format: ["word1","word2","word3"]"""
     inner class SwipeKeyboardLayout(context: Context) : LinearLayout(context) {
         private var startRawX = 0f
         private var startRawY = 0f
+        // Glide must clear this much travel before it steals the touch from a key tap. Matching the
+        // IME (touchSlop*2, min dp(20)) keeps a slightly-imperfect tap from becoming a ghost swipe.
+        private val glideStart = maxOf(
+            android.view.ViewConfiguration.get(context).scaledTouchSlop * 2, dp(20)
+        )
         private var tracking = false
         private val traced = mutableListOf<String>()
         private val trailLocal = mutableListOf<Pair<Float, Float>>()
@@ -9245,7 +9250,7 @@ Reply format: ["word1","word2","word3"]"""
                 MotionEvent.ACTION_MOVE -> {
                     if (trackpadActive) return true
                     if (!tracking) {
-                        if (abs(ev.rawX - startRawX) > dp(10) || abs(ev.rawY - startRawY) > dp(10)) {
+                        if (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
@@ -9338,7 +9343,9 @@ Reply format: ["word1","word2","word3"]"""
                     tracking = false; traced.clear()
                     glidePersisting = trailLocal.size > 1   // hold the trail through recognition
                     invalidate()
-                    if (clf != null && clf.hasEnoughPoints) {
+                    // Anti-ghost-swipe: a real glide crosses ≥2 distinct keys. A wiggle that stayed on
+                    // one key must never decode to a word — drop it silently rather than type garbage.
+                    if (clf != null && clf.hasEnoughPoints && t.size >= 2) {
                         val contextBoost = glideCore.contextBoost()
                         // Preferred: new encoder-decoder + beam-search engine (shared with the IME).
                         val neuralV2 = neuralGlideV2?.takeIf { it.enabled }
@@ -10012,7 +10019,7 @@ Reply format: ["word1","word2","word3"]"""
                     libraryRefreshDebounce?.let { handler.removeCallbacks(it) }; libraryRefreshDebounce = null
                     closeLibrary(); return
                 }
-                if (!libraryOpen) scheduleSpellCheck()
+                scheduleSpellCheck()   // keep the strip in sync on backspace, docked or widget
             }
             "space" -> {
                 autocorrectCore.clearPending()
@@ -10128,10 +10135,11 @@ Reply format: ["word1","word2","word3"]"""
                     showLibrary(animate = true)
                     syncNowPlayingCardVisibility()
                     refreshNowPlayingCard()
-                } else if (!libraryOpen) {
-                    scheduleSpellCheck()   // feed the suggestion strip (completions + app-color) in widget search
-                    scheduleGeminiSuggestions()
                 }
+                // Feed the suggestion strip on every keystroke — docked (library open) and widget
+                // search alike — so typed words get completions/corrections just like swipe does.
+                scheduleSpellCheck()
+                scheduleGeminiSuggestions()
             }
         }
         if (libraryOpen) scheduleLibraryRefresh()
