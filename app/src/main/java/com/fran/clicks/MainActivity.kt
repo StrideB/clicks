@@ -900,9 +900,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (current.lowercase(Locale.US) != lastSuggestWord.lowercase(Locale.US)) return@runOnUiThread
             val words = results?.firstOrNull()?.let { info ->
                 (0 until info.suggestionsCount).map { info.getSuggestionAt(it) }
-            } ?: emptyList()
-            suggestions = words.take(3)
-            updateSuggestionBar()
+            }?.filter { it.isNotBlank() } ?: emptyList()
+            // Merge, never overwrite: an empty spellchecker result (common for correctly-typed words)
+            // must NOT wipe the on-device suggestions that are already showing — that blanked the box.
+            if (words.isNotEmpty()) {
+                suggestions = (words + suggestions).distinct().take(3)
+                updateSuggestionBar()
+            }
         }
     }
 
