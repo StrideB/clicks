@@ -281,6 +281,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var suggestDebounce: Runnable? = null
     private var libraryRefreshDebounce: Runnable? = null
     private var libraryPopulateRunnable: Runnable? = null
+    // In-launcher Spotify music search: cached results for the current query so typing a song/artist
+    // in the main search surfaces playable tracks (tap to play, no need to open Spotify).
+    private var musicSearchDebounce: Runnable? = null
+    private var spotifyQuickQuery: String = ""
+    private var spotifyQuickResults: List<SearchResult> = emptyList()
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -4832,6 +4837,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.CALENDAR -> Neu.AMBER
         SearchKind.TRAVEL -> Neu.PURPLE
         SearchKind.AI -> Neu.PURPLE
+        SearchKind.MUSIC -> Neu.GREEN
     }
 
     private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
@@ -4842,6 +4848,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.AI -> "AI"
         SearchKind.APP -> "A"
         SearchKind.TRAVEL -> "✈"
+        SearchKind.MUSIC -> "♪"
     }
 
     private data class SearchCommandPreview(val title: String, val subtitle: String, val glyph: String)
@@ -10252,6 +10259,39 @@ Reply format: ["word1","word2","word3"]"""
         libraryRefreshDebounce = r
         // Instant refresh for ≤2 chars (first letters feel snappy), debounce longer queries
         handler.postDelayed(r, if (query.length <= 2) 0L else 120L)
+        scheduleMusicSearch()
+    }
+
+    /** Debounced in-launcher Spotify search. Populates [spotifyQuickResults] for the current query so
+     *  universalSearchResults() can surface playable tracks, then re-renders the library. */
+    private fun scheduleMusicSearch() {
+        musicSearchDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        if (q.length < 2 || !spotifyAuth.isConnected) {
+            if (spotifyQuickResults.isNotEmpty()) { spotifyQuickResults = emptyList(); spotifyQuickQuery = "" }
+            return
+        }
+        if (q == spotifyQuickQuery) return   // already have results for this query
+        val r = Runnable {
+            musicSearchDebounce = null
+            mediaUiScope.launch {
+                val tracks = withContext(Dispatchers.IO) { runCatching { spotifyApi.search(q, limit = 3) }.getOrDefault(emptyList()) }
+                if (query.trim() != q) return@launch   // query moved on
+                spotifyQuickQuery = q
+                spotifyQuickResults = tracks.map { track ->
+                    SearchResult(
+                        title = track.name,
+                        subtitle = "▶ ${track.artist}",
+                        accent = 0xFF1DB954.toInt(),   // Spotify green
+                        kind = SearchKind.MUSIC,
+                        target = null
+                    ) { mediaUiScope.launch { spotifyApi.playTrack(track.uri) }; Unit }
+                }
+                if (libraryOpen) refreshLibraryContent()
+            }
+        }
+        musicSearchDebounce = r
+        handler.postDelayed(r, 320L)
     }
 
     private fun handleChatKey(label: String, pane: PaneTarget) {
@@ -11963,6 +12003,9 @@ Reply format: ["word1","word2","word3"]"""
         librarySearchResults().take(6).forEach { app ->
             results.add(SearchResult(app.label, "Open app", app.brandColor, SearchKind.APP, app.toPaneTarget()))
         }
+        // Playable Spotify tracks for this query (fetched async in scheduleMusicSearch) — tap to play
+        // in place, no need to leave the homescreen.
+        if (spotifyQuickQuery == q) results.addAll(spotifyQuickResults)
         if (looksLikeTravelQuery(q)) {
             val boarding = q.lowercase(Locale.US).contains("boarding") || q.lowercase(Locale.US).contains("pass")
             results.add(0, SearchResult(
