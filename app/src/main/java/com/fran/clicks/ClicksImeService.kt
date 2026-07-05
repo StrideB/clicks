@@ -53,7 +53,8 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
 
-class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.KeyboardHost {
+class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.KeyboardHost,
+    android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener {
 
     // ── KeyboardHost (shared-core seam) — wraps the IME's existing InputConnection behavior ──
     override fun commitText(text: String) = commitValue(text)
@@ -114,7 +115,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             host = this,
             engine = { predictionEngine },
             contextNextWords = { ngramRepo.cachedNextWords(it) },
-            extendedEngine = { predictionEngineExtended }
+            extendedEngine = { predictionEngineExtended },
+            useFallback = true   // match the launcher: accept edit-distance-1 corrections, not only strict
         )
     }
     private val predictionCore by lazy {
@@ -123,6 +125,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private val glideCore by lazy { com.fran.clicks.keyboard.GlideCore(this, ngramRepo) }
     private var suggestionStrip: LinearLayout? = null
     private var agenticPanel: LinearLayout? = null
+    private var spellChecker: android.view.textservice.SpellCheckerSession? = null
+    private var lastSpellWord: String = ""
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
     private var inlineRow: LinearLayout? = null
     // Agentic emoji + smart symbols shown in the suggestion strip: (display, textToInsert, isEmoji).
@@ -153,10 +157,35 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     override fun onCreateInputView(): View {
         shifted = false
         ensureGlideClassifier()
+        initSpellChecker()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         AgenticRouter.ensureLoaded(this)
         return buildKeyboard().also { deckView = it }
     }
+
+    // System spellchecker — real correction candidates for hard misspellings (parity with launcher).
+    private fun initSpellChecker() {
+        if (spellChecker != null) return
+        runCatching {
+            val tsm = getSystemService(TEXT_SERVICES_MANAGER_SERVICE) as android.view.textservice.TextServicesManager
+            spellChecker = tsm.newSpellCheckerSession(null, null, this, true)
+        }
+    }
+
+    override fun onGetSuggestions(results: Array<out android.view.textservice.SuggestionsInfo>?) {
+        handler.post {
+            if (currentWord().lowercase(Locale.US) != lastSpellWord.lowercase(Locale.US)) return@post
+            val words = results?.firstOrNull()?.let { info ->
+                (0 until info.suggestionsCount).map { info.getSuggestionAt(it) }
+            }?.filter { it.isNotBlank() } ?: emptyList()
+            if (words.isNotEmpty()) {
+                suggestions = (suggestions + words).distinct().take(3)
+                updateStrip()
+            }
+        }
+    }
+
+    override fun onGetSentenceSuggestions(results: Array<out android.view.textservice.SentenceSuggestionsInfo>?) {}
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
@@ -215,6 +244,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         imePrefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
         glideScope.cancel()
         neuralGlide?.close()
+        runCatching { spellChecker?.close() }
         super.onDestroy()
     }
 
@@ -728,7 +758,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun scheduleSuggestions() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
         val r = Runnable {
-            computeSmartChips(currentWord())
+            val word = currentWord()
+            // Re-evaluate the active language every keystroke (not only on space) so mid-word
+            // suggestions/corrections use the right dictionary while typing a secondary language.
+            updateActiveLanguage()
+            computeSmartChips(word)
             val base = predictionCore.computeSuggestions()
             suggestions = if (base.isEmpty()) {
                 // IME extra: notification quick-replies when the field is empty.
@@ -738,6 +772,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
             } else base
             updateStrip()
+            // System spellchecker fills real corrections for hard misspellings the on-device engine
+            // can't reach (parity with the launcher). Merges in via onGetSuggestions.
+            if (word.length >= 2) {
+                lastSpellWord = word
+                runCatching { spellChecker?.getSuggestions(android.view.textservice.TextInfo(word), 5) }
+            }
         }
         suggestDebounce = r
         handler.postDelayed(r, 70L)
@@ -1292,7 +1332,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val shown = suggestions.take(3)
         val canPolish = polishAvailable()
         val chips = smartChips
-        if (shown.isEmpty() && !canPolish && chips.isEmpty()) { strip.background = null; return }
+        if (shown.isEmpty() && !canPolish && chips.isEmpty()) {
+            strip.background = null
+            // Don't leave the strip stuck hidden when idle: if no agentic panel/HUD/autofill is
+            // active, the strip must be visible (even if empty) so it reliably reappears when typing
+            // resumes — the "sometimes the suggestion box doesn't show" bug.
+            if (agenticHud == null && agenticStatus == null && pendingCommand == null &&
+                inlineScroll?.visibility != View.VISIBLE) {
+                suggestionStrip?.visibility = View.VISIBLE
+            }
+            return
+        }
         // The strip was being populated but stayed invisible whenever inline autofill (or the panel)
         // had hidden it. Once we have real word suggestions/chips to show, make the strip visible and
         // stand down the autofill row — typing a word takes priority.
