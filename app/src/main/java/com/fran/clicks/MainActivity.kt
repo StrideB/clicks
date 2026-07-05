@@ -184,6 +184,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val np = (pos + if (right) 1 else -1).coerceIn(0, cur.length)
         cursorPos = if (np == cur.length) null else np
     }
+
+    /** Step the launcher's in-field cursor and repaint the caret (two-finger trackpad panning). */
+    private fun moveLauncherCursor(right: Boolean) {
+        moveCursor(right)
+        renderRibbon()
+    }
     override fun editorPackage(): String? = null          // launcher edits its own field
     override fun isPasswordField(): Boolean = false
     override val hostHapticsEnabled: Boolean get() = hapticsEnabled
@@ -289,6 +295,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var suggestDebounce: Runnable? = null
     private var libraryRefreshDebounce: Runnable? = null
     private var libraryPopulateRunnable: Runnable? = null
+    // In-launcher Spotify music search: cached results for the current query so typing a song/artist
+    // in the main search surfaces playable tracks (tap to play, no need to open Spotify).
+    private var musicSearchDebounce: Runnable? = null
+    private var spotifyQuickQuery: String = ""
+    private var spotifyQuickResults: List<SearchResult> = emptyList()
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -948,9 +959,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (current.lowercase(Locale.US) != lastSuggestWord.lowercase(Locale.US)) return@runOnUiThread
             val words = results?.firstOrNull()?.let { info ->
                 (0 until info.suggestionsCount).map { info.getSuggestionAt(it) }
-            } ?: emptyList()
-            suggestions = words.take(3)
-            updateSuggestionBar()
+            }?.filter { it.isNotBlank() } ?: emptyList()
+            // Merge, never overwrite: an empty spellchecker result (common for correctly-typed words)
+            // must NOT wipe the on-device suggestions that are already showing — that blanked the box.
+            if (words.isNotEmpty()) {
+                suggestions = (words + suggestions).distinct().take(3)
+                updateSuggestionBar()
+            }
         }
     }
 
@@ -5135,6 +5150,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.CALENDAR -> Neu.AMBER
         SearchKind.TRAVEL -> Neu.PURPLE
         SearchKind.AI -> Neu.PURPLE
+        SearchKind.MUSIC -> Neu.GREEN
     }
 
     private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
@@ -5145,6 +5161,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.AI -> "AI"
         SearchKind.APP -> "A"
         SearchKind.TRAVEL -> "✈"
+        SearchKind.MUSIC -> "♪"
     }
 
     private data class SearchCommandPreview(val title: String, val subtitle: String, val glyph: String)
@@ -6102,8 +6119,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         val visibleMessages = messages.take(4)
         visibleMessages.forEach { message ->
-            hubView.addView(messageRow(message.color, message.sender, message.preview, message.toPaneTarget()))
+            hubView.addView(messageRow(message.color, message.sender, message.preview, message.toPaneTarget(), message))
         }
+    }
+
+    /** Dismiss a notification from the today hub: cancel it system-side and refresh the hub and the
+     *  homescreen today widget instantly. */
+    private fun dismissHubMessage(message: HubMessage) {
+        ClicksNotificationListener.dismiss(this, message.key)
+        messages = messages.filterNot { it.key == message.key }
+        renderHub()
+        refreshNowPlayingCard()
     }
 
     private fun refreshHubMessagesFromPrefs() {
@@ -6112,11 +6138,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshNowPlayingCard()
     }
 
-    private fun messageRow(color: Int, who: String, preview: String, target: PaneTarget?): View {
+    private fun messageRow(color: Int, who: String, preview: String, target: PaneTarget?, message: HubMessage? = null): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(8), 0, dp(8)); background = border(Line); isClickable = true
-            setOnClickListener { haptic(this); if (target == null) openNotificationAccessSettings() else openHere(target) }
+            setOnClickListener {
+                haptic(this)
+                when {
+                    target == null -> openNotificationAccessSettings()
+                    // Messages route through reply-or-open (Telegram/WhatsApp inline reply when docked).
+                    message != null && message.kind == HUB_KIND_MESSAGE -> openMessageReplyOrApp(message)
+                    else -> openHere(target)
+                }
+            }
             setOnLongClickListener { haptic(this); if (target == null) openNotificationAccessSettings() else showOpenMenu(this, target); true }
             addView(View(context).apply {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
@@ -6127,6 +6161,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.48f))
             addView(TextView(context).apply { text = "  $preview"; textSize = 11f; maxLines = 1; setTextColor(InkDim); includeFontPadding = false },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.52f))
+            // Dismiss (✕): clears the notification from the hub and the homescreen today widget.
+            if (message != null) {
+                addView(TextView(context).apply {
+                    text = "✕"; textSize = 13f; setTextColor(InkDim); gravity = Gravity.CENTER
+                    includeFontPadding = false; isClickable = true
+                    setOnClickListener { haptic(this); dismissHubMessage(message) }
+                }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginStart = dp(4) })
+            }
         }
     }
 
@@ -9482,6 +9524,11 @@ Reply format: ["word1","word2","word3"]"""
     inner class SwipeKeyboardLayout(context: Context) : LinearLayout(context) {
         private var startRawX = 0f
         private var startRawY = 0f
+        // Glide must clear this much travel before it steals the touch from a key tap. Matching the
+        // IME (touchSlop*2, min dp(20)) keeps a slightly-imperfect tap from becoming a ghost swipe.
+        private val glideStart = maxOf(
+            android.view.ViewConfiguration.get(context).scaledTouchSlop * 2, dp(20)
+        )
         private var tracking = false
         private val traced = mutableListOf<String>()
         private val trailLocal = mutableListOf<Pair<Float, Float>>()
@@ -9560,9 +9607,11 @@ Reply format: ["word1","word2","word3"]"""
                 clearGlideTouchState()
                 return false
             }
-            // Intercept as soon as a second finger lands so we can drive trackpad scrolling
-            if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && libraryOpen) {
+            // Intercept as soon as a second finger lands so we can drive the two-finger trackpad
+            // (horizontal = cursor pan in any mode, vertical = scroll library results).
+            if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && ev.pointerCount == 2) {
                 trackpadLastY = (ev.getY(0) + ev.getY(1)) / 2f
+                trackpadLastX = (ev.getX(0) + ev.getX(1)) / 2f
                 trackpadActive = true
                 tracking = false; traced.clear(); trailLocal.clear(); invalidate()
                 glideClassifier?.clear()
@@ -9582,9 +9631,7 @@ Reply format: ["word1","word2","word3"]"""
                 MotionEvent.ACTION_MOVE -> {
                     if (trackpadActive) return true
                     if (!tracking) {
-                        // Require clear intent before a glide steals the touch from a key, so a tap
-                        // with a little finger-drift types its letter instead of a phantom swipe.
-                        if (abs(ev.rawX - startRawX) > dp(16) || abs(ev.rawY - startRawY) > dp(16)) {
+                        if (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
@@ -9603,14 +9650,18 @@ Reply format: ["word1","word2","word3"]"""
         }
 
         private var trackpadLastY = 0f
+        private var trackpadLastX = 0f
         private var trackpadActive = false
+        private val cursorPanStep = dp(13).toFloat()
 
-        private fun trackpadScroll(ev: MotionEvent): Boolean {
-            if (!libraryOpen) return false
+        // Two-finger trackpad on the keyboard: horizontal drag steps the text cursor (any mode),
+        // vertical drag scrolls the library results when it's open.
+        private fun trackpad(ev: MotionEvent): Boolean {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_POINTER_DOWN -> {
                     if (ev.pointerCount == 2) {
                         trackpadLastY = (ev.getY(0) + ev.getY(1)) / 2f
+                        trackpadLastX = (ev.getX(0) + ev.getX(1)) / 2f
                         trackpadActive = true
                         tracking = false; traced.clear(); trailLocal.clear(); invalidate()
                         glideClassifier?.clear()
@@ -9618,10 +9669,20 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (!trackpadActive || ev.pointerCount < 2) return false
+                    val midX = (ev.getX(0) + ev.getX(1)) / 2f
                     val midY = (ev.getY(0) + ev.getY(1)) / 2f
-                    val dy = (trackpadLastY - midY) * 2.4f
+                    var dx = midX - trackpadLastX
+                    while (abs(dx) >= cursorPanStep) {
+                        val right = dx > 0
+                        moveLauncherCursor(right)
+                        trackpadLastX += if (right) cursorPanStep else -cursorPanStep
+                        dx = midX - trackpadLastX
+                    }
+                    if (libraryOpen) {
+                        val dy = (trackpadLastY - midY) * 2.4f
+                        (libraryContentArea?.getChildAt(0) as? ScrollView)?.scrollBy(0, dy.toInt())
+                    }
                     trackpadLastY = midY
-                    (libraryContentArea?.getChildAt(0) as? ScrollView)?.scrollBy(0, dy.toInt())
                 }
                 MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (trackpadActive) { trackpadActive = false; return true }
@@ -9636,7 +9697,7 @@ Reply format: ["word1","word2","word3"]"""
                 return handleWidgetKeyboardDetachedTouch(ev)
             }
             if (keyboardSettingsOpen) return false
-            if (trackpadScroll(ev)) return true
+            if (trackpad(ev)) return true
             if (!tracking) return false
             when (ev.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
@@ -9659,7 +9720,8 @@ Reply format: ["word1","word2","word3"]"""
                         (clf == null || !clf.hasEnoughPoints)) {
                         tracking = false; traced.clear(); trailLocal.clear(); glidePersisting = false; invalidate()
                         clf?.clear()
-                        keyHaptic("space"); handleKey(dnSym)
+                        if (hapticsEnabled) hapticEngine.symbolFlick()
+                        handleKey(dnSym)
                         return true
                     }
                     // Deliberate quick left-swipe = whole-word delete. A glide that spells a word has
@@ -9677,7 +9739,9 @@ Reply format: ["word1","word2","word3"]"""
                     tracking = false; traced.clear()
                     glidePersisting = trailLocal.size > 1   // hold the trail through recognition
                     invalidate()
-                    if (clf != null && clf.hasEnoughPoints) {
+                    // Anti-ghost-swipe: a real glide crosses ≥2 distinct keys. A wiggle that stayed on
+                    // one key must never decode to a word — drop it silently rather than type garbage.
+                    if (clf != null && clf.hasEnoughPoints && t.size >= 2) {
                         val contextBoost = glideCore.contextBoost()
                         // Snapshot inputs for the hybrid decoder (neural + statistical fusion, shared
                         // with the IME). Falls back to statistical-only when no neural model is present.
@@ -10351,7 +10415,7 @@ Reply format: ["word1","word2","word3"]"""
                     libraryRefreshDebounce?.let { handler.removeCallbacks(it) }; libraryRefreshDebounce = null
                     closeLibrary(); return
                 }
-                if (!libraryOpen) scheduleSpellCheck()
+                scheduleSpellCheck()   // keep the strip in sync on backspace, docked or widget
             }
             "space" -> {
                 autocorrectCore.clearPending()
@@ -10467,10 +10531,11 @@ Reply format: ["word1","word2","word3"]"""
                     showLibrary(animate = true)
                     syncNowPlayingCardVisibility()
                     refreshNowPlayingCard()
-                } else if (!libraryOpen) {
-                    scheduleSpellCheck()   // feed the suggestion strip (completions + app-color) in widget search
-                    scheduleGeminiSuggestions()
                 }
+                // Feed the suggestion strip on every keystroke — docked (library open) and widget
+                // search alike — so typed words get completions/corrections just like swipe does.
+                scheduleSpellCheck()
+                scheduleGeminiSuggestions()
             }
         }
         if (libraryOpen) scheduleLibraryRefresh()
@@ -10543,6 +10608,39 @@ Reply format: ["word1","word2","word3"]"""
         libraryRefreshDebounce = r
         // Instant refresh for ≤2 chars (first letters feel snappy), debounce longer queries
         handler.postDelayed(r, if (query.length <= 2) 0L else 120L)
+        scheduleMusicSearch()
+    }
+
+    /** Debounced in-launcher Spotify search. Populates [spotifyQuickResults] for the current query so
+     *  universalSearchResults() can surface playable tracks, then re-renders the library. */
+    private fun scheduleMusicSearch() {
+        musicSearchDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        if (q.length < 2 || !spotifyAuth.isConnected) {
+            if (spotifyQuickResults.isNotEmpty()) { spotifyQuickResults = emptyList(); spotifyQuickQuery = "" }
+            return
+        }
+        if (q == spotifyQuickQuery) return   // already have results for this query
+        val r = Runnable {
+            musicSearchDebounce = null
+            mediaUiScope.launch {
+                val tracks = withContext(Dispatchers.IO) { runCatching { spotifyApi.search(q, limit = 3) }.getOrDefault(emptyList()) }
+                if (query.trim() != q) return@launch   // query moved on
+                spotifyQuickQuery = q
+                spotifyQuickResults = tracks.map { track ->
+                    SearchResult(
+                        title = track.name,
+                        subtitle = "▶ ${track.artist}",
+                        accent = 0xFF1DB954.toInt(),   // Spotify green
+                        kind = SearchKind.MUSIC,
+                        target = null
+                    ) { mediaUiScope.launch { spotifyApi.playTrack(track.uri) }; Unit }
+                }
+                if (libraryOpen) refreshLibraryContent()
+            }
+        }
+        musicSearchDebounce = r
+        handler.postDelayed(r, 320L)
     }
 
     private fun handleChatKey(label: String, pane: PaneTarget) {
@@ -10652,6 +10750,7 @@ Reply format: ["word1","word2","word3"]"""
     // ── Pane / navigation ────────────────────────────────────────────────────
 
     private fun openHere(target: PaneTarget) {
+        if (!target.id.startsWith("reply:")) replyingToKey = null
         closeCategoryFolder()
         libraryOpen = false
         libraryView?.let { contentFrame.removeView(it) }
@@ -10808,6 +10907,7 @@ Reply format: ["word1","word2","word3"]"""
         val closingPane = openPane
         val restoreWidgetKeyboard = keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && closingPane?.usesMediaDock() == true
         openPane = null; composeText = ""; aiDraftText = ""; aiDraftActive = false
+        replyingToKey = null
         shiftState = ShiftState.OFF; suggestions = emptyList()
         if (closingPane?.kind == PaneKind.PHOTOS) zeissButtonView?.animateShutterOpen()
         if (closingPane?.kind == PaneKind.MUSIC) hideMusicProgressFromHintBar()
@@ -11727,6 +11827,12 @@ Reply format: ["word1","word2","word3"]"""
         chatLines(target).add(ChatLine(text, true))
         composeText = ""; shiftState = ShiftState.ONCE
         suggestions = emptyList(); updateSuggestionBar(); updateKeyLabels()
+        // In a notification reply pane, actually deliver the message via the app's RemoteInput.
+        val key = replyingToKey
+        if (key != null && target.id == "reply:$key") {
+            val sent = ClicksNotificationListener.sendReply(this, key, text)
+            if (!sent) Toast.makeText(this, "Couldn't send — tap to open ${target.name}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun bubble(line: ChatLine): View {
@@ -12257,12 +12363,20 @@ Reply format: ["word1","word2","word3"]"""
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         val results = mutableListOf<SearchResult>()
-        if (looksLikeAiQuestion(q)) {
-            results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
+        // Smart routing: auto-decide whether this reads as a web lookup or an AI question, put that
+        // first (the "best" tab), and offer the other mode right below so you can switch.
+        if (q.length >= 2) {
+            val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) }
+            val ai = SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) }
+            if (looksLikeWebSearch(q)) { results.add(web); results.add(ai.copy(title = "Ask Gemini instead")) }
+            else { results.add(ai); results.add(web.copy(title = "Search the web instead")) }
         }
         librarySearchResults().take(6).forEach { app ->
             results.add(SearchResult(app.label, "Open app", app.brandColor, SearchKind.APP, app.toPaneTarget()))
         }
+        // Playable Spotify tracks for this query (fetched async in scheduleMusicSearch) — tap to play
+        // in place, no need to leave the homescreen.
+        if (spotifyQuickQuery == q) results.addAll(spotifyQuickResults)
         if (looksLikeTravelQuery(q)) {
             val boarding = q.lowercase(Locale.US).contains("boarding") || q.lowercase(Locale.US).contains("pass")
             results.add(0, SearchResult(
@@ -12273,9 +12387,6 @@ Reply format: ["word1","word2","word3"]"""
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
-        if (!looksLikeAiQuestion(q) && q.length >= 4) {
-            results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
-        }
         return results.distinctBy { "${it.kind}:${it.title}:${it.subtitle}" }.take(14)
     }
 
@@ -12286,6 +12397,26 @@ Reply format: ["word1","word2","word3"]"""
             lower.startsWith("ai ") ||
             lower.startsWith("gemini ") ||
             listOf("what ", "why ", "how ", "when ", "where ", "who ", "summarize ", "explain ", "draft ").any { lower.startsWith(it) }
+    }
+
+    // Auto-route a query to web-search vs Gemini. Strong web signals (navigational/current/lookup)
+    // win even over a question phrasing; a compose/explain-style request or a plain question goes to
+    // Gemini; and short keyword-y queries (a name, place, product) default to the web.
+    private fun looksLikeWebSearch(text: String): Boolean {
+        val lower = text.lowercase(Locale.US).trim()
+        val webSignals = listOf(
+            ".com", ".org", ".net", "http", "www.", "near me", "open now", "hours", "directions",
+            "map", "menu", "reviews", "showtimes", "price", "cheapest", "buy ", "download", "login",
+            " vs ", "reddit", "youtube", "amazon", "wikipedia", "news", "score", "stock ", "weather ",
+            "how much", "who won", "release date"
+        ).any { lower.contains(it) }
+        if (webSignals) return true
+        // Compose/generation or a genuine question → Gemini.
+        val aiVerbs = listOf("write ", "draft ", "summarize", "explain", "translate", "help me", "give me", "rewrite")
+        if (aiVerbs.any { lower.startsWith(it) || lower.contains(" $it") }) return false
+        if (looksLikeAiQuestion(lower)) return false
+        // Not a question, no AI verb: a keyword lookup → web (a name, a place, a thing).
+        return true
     }
 
     private fun looksLikeTravelQuery(text: String): Boolean {
@@ -12917,6 +13048,38 @@ Reply format: ["word1","word2","word3"]"""
                     .getOrElse { "I couldn't reach Gemini: ${it.message ?: "network unavailable"}" }
             runOnUiThread {
                 aiAnswersById[target.id] = AiAnswerState(prompt, answer, false)
+                if (openPane?.id == target.id) renderPaneContent(target)
+            }
+        }
+    }
+
+    // Native Google results inside the launcher (Custom Search JSON API), rendered in the AI pane as
+    // a markdown answer — real result links, no Custom Tab, no leaving. Needs a key + engine id set
+    // in Settings; otherwise the pane explains how to connect.
+    private fun webSearch(rawQuery: String) {
+        val q = InAppGoogleSearchEngine.stripWebVerb(rawQuery).trim().ifBlank { return }
+        val target = aiTarget("web:$q")
+        aiDraftText = ""; aiDraftActive = false
+        val configured = GoogleSearchApi.isConfigured(prefs())
+        aiAnswersById[target.id] = AiAnswerState(
+            "🔍 $q",
+            if (configured) "Searching Google…"
+            else "Add a **Google Search API key** and **engine ID** in Clicks Settings to see results here.",
+            configured
+        )
+        openHere(target)
+        if (!configured) return
+        val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
+        val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
+        mediaUiScope.launch(Dispatchers.IO) {
+            val results = runCatching { GoogleSearchApi.search(q, key, cx) }.getOrDefault(emptyList())
+            val answer = if (results.isEmpty()) "No results for “$q”."
+            else results.joinToString("\n\n") { r ->
+                val snip = if (r.snippet.isNotBlank()) "\n${r.snippet}" else ""
+                "**${r.title}**\n${r.link}$snip"
+            }
+            runOnUiThread {
+                aiAnswersById[target.id] = AiAnswerState("🔍 $q", answer, false)
                 if (openPane?.id == target.id) renderPaneContent(target)
             }
         }
@@ -13564,11 +13727,49 @@ $emailText"""
     }
 
     private fun openRecentPerson(person: RecentPerson) {
+        // Docked with a captured reply action → reply inline on the homescreen (half-screen chat).
+        // Otherwise (widget mode, or no reply action) fall through to opening the conversation/app.
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && ClicksNotificationListener.canReply(person.key)) {
+            val message = messages.firstOrNull { it.key == person.key }
+                ?: messages.firstOrNull { it.sender == person.sender && it.packageName == person.packageName }
+            if (message != null) { openReplyPane(message); return }
+        }
         deliverNotificationIntent(
             key = person.key,
             fallback = { openRecentConversationFallback(person) },
             afterOpen = { clearHandledConversation(person) }
         )
+    }
+
+    // Message key we're currently replying to via notification RemoteInput (reply chat pane open).
+    private var replyingToKey: String? = null
+
+    /** Route a hub message tap: reply inline when docked and a reply action exists, else open the
+     *  conversation (widget mode gets the full app experience, per the docked/widget split). */
+    private fun openMessageReplyOrApp(message: HubMessage) {
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && ClicksNotificationListener.canReply(message.key)) {
+            openReplyPane(message); return
+        }
+        deliverNotificationIntent(
+            key = message.key,
+            fallback = { openHere(message.toPaneTarget()); true },
+            afterOpen = {}
+        )
+    }
+
+    /** Open a half-screen chat pane seeded with the incoming message; sending replies via RemoteInput. */
+    private fun openReplyPane(message: HubMessage) {
+        replyingToKey = message.key
+        val target = PaneTarget(
+            id = "reply:${message.key}",
+            name = message.sender.ifBlank { "Reply" },
+            accent = message.color,
+            kind = PaneKind.CHAT,
+            packageName = message.packageName,
+            deepLinkUri = null,
+            preview = message.preview
+        )
+        openHere(target)
     }
 
     private fun openRecentConversationFallback(person: RecentPerson): Boolean {

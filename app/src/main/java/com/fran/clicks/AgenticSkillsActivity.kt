@@ -78,6 +78,7 @@ class AgenticSkillsActivity : Activity() {
             ).apply { topMargin = dp(16) }
         }
         root.addView(list)
+        root.addView(buildReferenceSection())
         root.addView(addSkillCard())
 
         setContentView(ScrollView(this).apply {
@@ -103,14 +104,20 @@ class AgenticSkillsActivity : Activity() {
 
     private fun skillRow(s: SkillEntity): View {
         val example = s.triggers.split(",").firstOrNull()?.trim()?.removeSuffix("*")?.trim().orEmpty()
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        // Collapsible editor: change the words that trigger this skill (e.g. rename "share location"
+        // to "loc"). Works for built-in skills too — the seeder never overwrites an existing name.
+        val editor = triggerEditor(s)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
             background = Neu.drawable(t, dp(16).toFloat(), NeuLevel.RAISED_SM)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(10) }
+        }
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
 
             addView(TextView(context).apply {
                 text = s.emoji; textSize = 20f; gravity = Gravity.CENTER
@@ -128,10 +135,19 @@ class AgenticSkillsActivity : Activity() {
                 })
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
 
+            // Edit-triggers toggle (available for every skill).
+            addView(TextView(context).apply {
+                text = "✎"; textSize = 16f; setTextColor(accent)
+                setPadding(dp(10), dp(4), dp(10), dp(4)); isClickable = true
+                setOnClickListener {
+                    editor.visibility = if (editor.visibility == View.GONE) View.VISIBLE else View.GONE
+                }
+            })
+
             if (!s.builtin) {
                 addView(TextView(context).apply {
                     text = "✕"; textSize = 15f; setTextColor(t.inkDim)
-                    setPadding(dp(10), dp(4), dp(12), dp(4)); isClickable = true
+                    setPadding(dp(6), dp(4), dp(10), dp(4)); isClickable = true
                     setOnClickListener { deleteSkill(s) }
                 })
             }
@@ -144,7 +160,112 @@ class AgenticSkillsActivity : Activity() {
                     (accent and 0x00FFFFFF) or 0x66000000, (t.inkDim and 0x00FFFFFF) or 0x40000000))
                 setOnCheckedChangeListener { _, checked -> setEnabled(s, checked) }
             })
+        })
+        card.addView(editor)
+        return card
+    }
+
+    /** Hidden-by-default editor row: edit the comma-separated trigger words for [s] and save. */
+    private fun triggerEditor(s: SkillEntity): View {
+        val field = input("Trigger words, comma-separated").apply {
+            setText(s.triggers)
         }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) }
+            addView(text("The words you type to run this — a trailing space means \"prefix + argument\" " +
+                "(e.g. \"loc \"), \"* near me\" means suffix.", 11.5f, t.inkDim))
+            addView(field)
+            addView(TextView(context).apply {
+                text = "Save triggers"; gravity = Gravity.CENTER; textSize = 13.5f
+                setTextColor(0xFFF5F2FF.toInt())
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setPadding(0, dp(9), 0, dp(9)); isClickable = true
+                background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(11).toFloat() }
+                setOnClickListener { updateTriggers(s, field.text.toString()) }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(8) }
+            })
+        }
+    }
+
+    private fun updateTriggers(s: SkillEntity, raw: String) {
+        val clean = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.joinToString(",")
+        if (clean.isBlank()) {
+            Toast.makeText(this, "Add at least one trigger word", Toast.LENGTH_SHORT).show(); return
+        }
+        Thread {
+            runCatching { dao().update(s.copy(triggers = clean)) }
+            AgenticRouter.reload(this)
+            runOnUiThread { reloadList(); Toast.makeText(this, "Triggers updated", Toast.LENGTH_SHORT).show() }
+        }.start()
+    }
+
+    private data class RefRow(val emoji: String, val name: String, val trigger: String, val ok: Boolean, val need: String)
+
+    // A read-only catalog of the built-in typed-trigger skills, with a live "Ready / needs …" status
+    // so the whole catalog is discoverable instead of hidden behind keywords.
+    private fun buildReferenceSection(): View {
+        val p = getSharedPreferences("clicks", Context.MODE_PRIVATE)
+        fun has(pref: String) = !p.getString(pref, null).isNullOrBlank()
+        val gemini = has(GeminiClient.API_KEY_PREF)
+        val google = runCatching { GmailAuth(this).isConnected }.getOrDefault(false)
+        val refs = listOf(
+            RefRow("✨", "Humanize / tone", "<text> //human · //mid · //genz", gemini, "Add Gemini key"),
+            RefRow("↩", "Reply modes", "<text> //reply", gemini, "Add Gemini key"),
+            RefRow("😃", "Text → Emoji", "<text> //emoji", gemini, "Add Gemini key"),
+            RefRow("🧠", "Emotion Detection", "copy → mood", gemini, "Add Gemini key"),
+            RefRow("🌐", "Translation HUD", "copy → translate", gemini, "Add Gemini key"),
+            RefRow("𝕏", "Super X Reply", "copy → xreply snarky", gemini, "Add Gemini key"),
+            RefRow("📈", "Stock Sniffer", "\$AAPL", has(StockApi.KEY_PREF), "Add Finnhub key"),
+            RefRow("🏆", "World Cup Odds", "world cup", has(OddsApi.KEY_PREF), "Add odds key"),
+            RefRow("📹", "Google Meet", "meet", google, "Connect Google"),
+            RefRow("📄", "Notion Summon", "notion <keyword>", has(NotionApi.KEY_PREF), "Add Notion token")
+        )
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(24) }
+            addView(text("More skills", 17f, t.ink, bold = true))
+            addView(text("Built in — type the trigger, then hold go (or space for //commands).", 12.5f, t.inkDim).also {
+                (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(2); (it.layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(12)
+            })
+            for (r in refs) addView(referenceRow(r))
+        }
+    }
+
+    private fun referenceRow(r: RefRow): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = Neu.drawable(t, dp(16).toFloat(), NeuLevel.RAISED_SM)
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(10) }
+        addView(TextView(context).apply {
+            text = r.emoji; textSize = 20f; gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(dp(34), ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text(r.name, 15.5f, t.ink))
+            addView(text("type “${r.trigger}”", 12f, t.inkDim).also {
+                (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(1)
+            })
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
+        addView(TextView(context).apply {
+            text = if (r.ok) "Ready" else r.need
+            textSize = 11f
+            setTextColor(if (r.ok) 0xFF12A968.toInt() else 0xFFCF8A3A.toInt())
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(if (r.ok) 0x2212A968 else 0x22CF8A3A); cornerRadius = dp(9).toFloat()
+            }
+        })
     }
 
     private fun addSkillCard(): View {

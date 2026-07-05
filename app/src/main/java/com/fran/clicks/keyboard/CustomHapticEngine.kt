@@ -22,6 +22,16 @@ class CustomHapticEngine(context: Context) {
         context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
+    /**
+     * User-controlled intensity multiplier (0f–1f) applied to every haptic amplitude. The host sets
+     * this from its own settings so the keyboard's vibration strength is independent of the system
+     * default. 1f = full designed strength; lower = softer. Values are clamped when applied.
+     */
+    @Volatile var intensity: Float = 1.0f
+
+    private fun scaled(base: Float): Float = (base * intensity).coerceIn(0f, 1f)
+    private fun scaledAmp(base: Int): Int = (base * intensity).toInt().coerceIn(1, 255)
+
     // WPM tracking (sliding window of last 10 taps)
     private val tapTimes = LongArray(10)
     private var tapIdx = 0
@@ -43,7 +53,7 @@ class CustomHapticEngine(context: Context) {
 
     private fun amplitude(): Float {
         val w = wpm()
-        return if (w > 50f) 0.88f else 1.0f
+        return scaled(if (w > 50f) 0.88f else 1.0f)
     }
 
     /** Call on ACTION_DOWN for the given key label. */
@@ -76,11 +86,27 @@ class CustomHapticEngine(context: Context) {
             runCatching {
                 v.vibrate(
                     VibrationEffect.startComposition()
-                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.7f)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scaled(0.7f))
                         .compose()
                 )
-            }.onFailure { pulse(10L, 150) }
-        } else pulse(10L, 150)
+            }.onFailure { pulse(10L, scaledAmp(150)) }
+        } else pulse(10L, scaledAmp(150))
+    }
+
+    /** Firm detent when a down-swipe inserts a key's alternate symbol (Apple-style flick). Distinct
+     *  from a plain key tap so "sailing down to a symbol" is clearly felt. */
+    fun symbolFlick() {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                v.vibrate(
+                    VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scaled(0.85f))
+                        .compose()
+                )
+            }.onFailure { pulse(14L, scaledAmp(190)) }
+        } else pulse(14L, scaledAmp(190))
     }
 
     /** Light confirmation when a glided word is recognized and committed. */
@@ -91,11 +117,11 @@ class CustomHapticEngine(context: Context) {
             runCatching {
                 v.vibrate(
                     VibrationEffect.startComposition()
-                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.55f)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, scaled(0.55f))
                         .compose()
                 )
-            }.onFailure { pulse(6L, 110) }
-        } else pulse(6L, 110)
+            }.onFailure { pulse(6L, scaledAmp(110)) }
+        } else pulse(6L, scaledAmp(110))
     }
 
     /** Progressive hold feedback for the widget-mode DOCK key. */
@@ -112,12 +138,12 @@ class CustomHapticEngine(context: Context) {
             runCatching {
                 v.vibrate(
                     VibrationEffect.startComposition()
-                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, scale)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, scaled(scale))
                         .compose()
                 )
-            }.onFailure { pulse(7L + clamped * 3L, 80 + clamped * 40) }
+            }.onFailure { pulse(7L + clamped * 3L, scaledAmp(80 + clamped * 40)) }
         } else {
-            pulse(7L + clamped * 3L, 80 + clamped * 40)
+            pulse(7L + clamped * 3L, scaledAmp(80 + clamped * 40))
         }
     }
 
@@ -129,13 +155,13 @@ class CustomHapticEngine(context: Context) {
             runCatching {
                 v.vibrate(
                     VibrationEffect.startComposition()
-                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1.0f)
-                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.72f)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scaled(1.0f))
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, scaled(0.72f))
                         .compose()
                 )
-            }.onFailure { pulse(24L, 255) }
+            }.onFailure { pulse(24L, scaledAmp(255)) }
         } else {
-            pulse(24L, 255)
+            pulse(24L, scaledAmp(255))
         }
     }
 

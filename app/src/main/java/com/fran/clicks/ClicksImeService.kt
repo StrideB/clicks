@@ -53,7 +53,8 @@ import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.abs
 
-class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.KeyboardHost {
+class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.KeyboardHost,
+    android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener {
 
     // ── KeyboardHost (shared-core seam) — wraps the IME's existing InputConnection behavior ──
     override fun commitText(text: String) = commitValue(text)
@@ -118,7 +119,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             host = this,
             engine = { predictionEngine },
             contextNextWords = { ngramRepo.cachedNextWords(it) },
-            extendedEngine = { predictionEngineExtended }
+            extendedEngine = { predictionEngineExtended },
+            useFallback = true   // match the launcher: accept edit-distance-1 corrections, not only strict
         )
     }
     private val predictionCore by lazy {
@@ -127,6 +129,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private val glideCore by lazy { com.fran.clicks.keyboard.GlideCore(this, ngramRepo) }
     private var suggestionStrip: LinearLayout? = null
     private var agenticPanel: LinearLayout? = null
+    private var spellChecker: android.view.textservice.SpellCheckerSession? = null
+    private var lastSpellWord: String = ""
     private var inlineScroll: HorizontalScrollView? = null   // Gboard-style autofill chip row
     private var inlineRow: LinearLayout? = null
     // Agentic emoji + smart symbols shown in the suggestion strip: (display, textToInsert, isEmoji).
@@ -157,10 +161,35 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     override fun onCreateInputView(): View {
         shifted = false
         ensureGlideClassifier()
+        initSpellChecker()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         AgenticRouter.ensureLoaded(this)
         return buildKeyboard().also { deckView = it }
     }
+
+    // System spellchecker — real correction candidates for hard misspellings (parity with launcher).
+    private fun initSpellChecker() {
+        if (spellChecker != null) return
+        runCatching {
+            val tsm = getSystemService(TEXT_SERVICES_MANAGER_SERVICE) as android.view.textservice.TextServicesManager
+            spellChecker = tsm.newSpellCheckerSession(null, null, this, true)
+        }
+    }
+
+    override fun onGetSuggestions(results: Array<out android.view.textservice.SuggestionsInfo>?) {
+        handler.post {
+            if (currentWord().lowercase(Locale.US) != lastSpellWord.lowercase(Locale.US)) return@post
+            val words = results?.firstOrNull()?.let { info ->
+                (0 until info.suggestionsCount).map { info.getSuggestionAt(it) }
+            }?.filter { it.isNotBlank() } ?: emptyList()
+            if (words.isNotEmpty()) {
+                suggestions = (suggestions + words).distinct().take(3)
+                updateStrip()
+            }
+        }
+    }
+
+    override fun onGetSentenceSuggestions(results: Array<out android.view.textservice.SentenceSuggestionsInfo>?) {}
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
@@ -219,6 +248,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         imePrefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
         glideScope.cancel()
         neuralGlide?.close()
+        runCatching { spellChecker?.close() }
         super.onDestroy()
     }
 
@@ -546,10 +576,26 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         if (!imePrefs().getBoolean(HAPTICS_PREF, true)) return
         // Tuned per-label composition primitives (parity with the launcher keyboard) instead of the
         // coarse system constants.
-        hapticEngine.tap(label)
+        haptics().tap(label)
     }
 
     private fun hapticsOn() = imePrefs().getBoolean(HAPTICS_PREF, true)
+
+    /** Step the text cursor one character left/right. Used by two-finger trackpad panning; DPAD key
+     *  events respect each editor's own cursor bounds and selection semantics. */
+    private fun moveTextCursor(right: Boolean) {
+        sendDownUpKeyEvents(
+            if (right) android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+            else android.view.KeyEvent.KEYCODE_DPAD_LEFT
+        )
+    }
+
+    /** The keyboard's haptic engine with the user's keyboard-only intensity applied (0–100 → 0f–1f).
+     *  Read live so the Settings slider takes effect on the next keystroke without a restart. */
+    private fun haptics(): com.fran.clicks.keyboard.CustomHapticEngine {
+        hapticEngine.intensity = imePrefs().getInt(HAPTIC_LEVEL_PREF, 100).coerceIn(0, 100) / 100f
+        return hapticEngine
+    }
 
     private fun startDeleteRepeat() {
         stopDeleteRepeat(clearFired = true)
@@ -752,7 +798,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun scheduleSuggestions() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
         val r = Runnable {
-            computeSmartChips(currentWord())
+            val word = currentWord()
+            // Re-evaluate the active language every keystroke (not only on space) so mid-word
+            // suggestions/corrections use the right dictionary while typing a secondary language.
+            updateActiveLanguage()
+            computeSmartChips(word)
             val base = predictionCore.computeSuggestions()
             suggestions = if (base.isEmpty()) {
                 // IME extra: notification quick-replies when the field is empty.
@@ -762,6 +812,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
             } else base
             updateStrip()
+            // System spellchecker fills real corrections for hard misspellings the on-device engine
+            // can't reach (parity with the launcher). Merges in via onGetSuggestions.
+            if (word.length >= 2) {
+                lastSpellWord = word
+                runCatching { spellChecker?.getSuggestions(android.view.textservice.TextInfo(word), 5) }
+            }
         }
         suggestDebounce = r
         handler.postDelayed(r, 70L)
@@ -1331,7 +1387,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val shown = suggestions.take(3)
         val canPolish = polishAvailable()
         val chips = smartChips
-        if (shown.isEmpty() && !canPolish && chips.isEmpty()) { strip.background = null; return }
+        if (shown.isEmpty() && !canPolish && chips.isEmpty()) {
+            strip.background = null
+            // Don't leave the strip stuck hidden when idle: if no agentic panel/HUD/autofill is
+            // active, the strip must be visible (even if empty) so it reliably reappears when typing
+            // resumes — the "sometimes the suggestion box doesn't show" bug.
+            if (agenticHud == null && agenticStatus == null && pendingCommand == null &&
+                inlineScroll?.visibility != View.VISIBLE) {
+                suggestionStrip?.visibility = View.VISIBLE
+            }
+            return
+        }
         // The strip was being populated but stayed invisible whenever inline autofill (or the panel)
         // had hidden it. Once we have real word suggestions/chips to show, make the strip visible and
         // stand down the autofill row — typing a word takes priority.
@@ -1511,9 +1577,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun vibe(ms: Long, amplitude: Int) {
         if (!imePrefs().getBoolean(HAPTICS_PREF, true)) return
         val v = vibrator ?: return
+        val level = imePrefs().getInt(HAPTIC_LEVEL_PREF, 100).coerceIn(0, 100) / 100f
+        val amp = (amplitude * level).toInt().coerceIn(1, 255)
         runCatching {
             if (android.os.Build.VERSION.SDK_INT >= 26)
-                v.vibrate(android.os.VibrationEffect.createOneShot(ms, amplitude.coerceIn(1, 255)))
+                v.vibrate(android.os.VibrationEffect.createOneShot(ms, amp))
             else @Suppress("DEPRECATION") v.vibrate(ms)
         }
     }
@@ -1777,7 +1845,41 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private val touchSlop = ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop
         // A glide must clearly outrun a normal tap's finger-drift before it steals the touch from the
         // key, otherwise a tap with a little slide reads as a phantom swipe and eats the keystroke.
-        private val glideActivationSlop = maxOf(touchSlop * 1.9f, dp(16).toFloat())
+        private val glideActivationSlop = maxOf(touchSlop * 2f, dp(20).toFloat())
+        // Two-finger trackpad: drag with two fingers anywhere on the keyboard to step the text cursor.
+        private var cursorPanActive = false
+        private var cursorPanLastX = 0f
+        private val cursorPanStep = dp(13).toFloat()
+
+        private fun beginCursorPan(ev: MotionEvent) {
+            cursorPanActive = true
+            cursorPanLastX = (ev.getX(0) + ev.getX(1)) / 2f
+            clearGlideTouchState()
+            parent?.requestDisallowInterceptTouchEvent(true)
+        }
+
+        /** Feed two-finger horizontal drag into left/right cursor steps. Returns true while panning. */
+        private fun handleCursorPan(ev: MotionEvent): Boolean {
+            if (!cursorPanActive) return false
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    if (ev.pointerCount >= 2) {
+                        val midX = (ev.getX(0) + ev.getX(1)) / 2f
+                        var delta = midX - cursorPanLastX
+                        while (abs(delta) >= cursorPanStep) {
+                            val right = delta > 0
+                            moveTextCursor(right)
+                            cursorPanLastX += if (right) cursorPanStep else -cursorPanStep
+                            delta = midX - cursorPanLastX
+                        }
+                    }
+                }
+                MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    cursorPanActive = false
+                }
+            }
+            return true
+        }
 
         private fun fadeGlideTrail() {
             glideFadeRunnable?.let { handler.removeCallbacks(it) }
@@ -1841,6 +1943,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
         override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
             when (ev.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (ev.pointerCount == 2) { beginCursorPan(ev); return true }
+                }
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX
                     startRawY = ev.rawY
@@ -1860,7 +1965,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 MotionEvent.ACTION_MOVE -> {
                     if (!tracking && (abs(ev.rawX - startRawX) > glideActivationSlop || abs(ev.rawY - startRawY) > glideActivationSlop)) {
                         tracking = true
-                        if (hapticsOn()) hapticEngine.glideStart()   // firm click on glide activation
+                        if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
                         android.util.Log.d("ClicksGlide", "glide start keyBounds=${keyBounds.size} clfReady=${glideClassifier != null}")
                         parent?.requestDisallowInterceptTouchEvent(true)
                         keyAtPoint(startRawX, startRawY, letterOnly = true)?.let { traced.add(it) }
@@ -1880,6 +1985,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
 
         override fun onTouchEvent(ev: MotionEvent): Boolean {
+            // A second finger landing mid-touch switches to two-finger cursor panning.
+            if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && ev.pointerCount == 2 && !cursorPanActive) {
+                beginCursorPan(ev); return true
+            }
+            if (handleCursorPan(ev)) return true
             if (!tracking) return false
             when (ev.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
@@ -1909,7 +2019,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         trailTimes.clear()
                         glidePersisting = false
                         invalidate()
-                        keyHaptic("space")
+                        if (hapticsOn()) haptics().symbolFlick()
                         commitValue(flickSymbol)
                         onTextChanged()
                         return true
@@ -1929,7 +2039,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     if (quickLeftDelete) {
                         keyHaptic("back"); deleteWord(); clf?.clear(); fadeGlideTrail(); return true
                     }
-                    if (clf != null && clf.hasEnoughPoints) {
+                    // Anti-ghost-swipe: a real glide crosses ≥2 distinct keys. A wiggle confined to one
+                    // key must never decode to a word — drop it rather than commit a phantom word.
+                    if (clf != null && clf.hasEnoughPoints && tracedKeys.size >= 2) {
                         val contextBoost = glideCore.contextBoost()
                         // Snapshot inputs on the main thread (touch state is about to be cleared).
                         val hybrid = hybridDecoder
@@ -1962,7 +2074,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                             val results = languagePreferredOrder(res.words)
                             android.util.Log.d("ClicksGlide", "hybrid=${results.size} top=${results.firstOrNull()} src=${res.source} agreed=${res.agreed}")
                             if (results.isNotEmpty()) {
-                                if (hapticsOn()) hapticEngine.glideCommit()
+                                if (hapticsOn()) haptics().glideCommit()
                                 val top = glideCore.rerank(results)
                                 glideCore.commitWord(top); learnAndPredictAfterSpace()
                                 glideLearning.recordAcceptance(top, neuralPath, bounds, res.source, res.agreed)
@@ -2491,6 +2603,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private const val PREFS_NAME = "clicks"
         private const val TOUCH_MODEL_PREF = "touch_model_v1"
         private const val HAPTICS_PREF = "haptics"
+        const val HAPTIC_LEVEL_PREF = "haptic_level"   // 0–100, keyboard-only vibration intensity
         private const val THEME_MODE_PREF = "theme_mode"
         private const val THEME_MODE_DARK = "dark"
         private const val THEME_MODE_LIGHT = "light"
