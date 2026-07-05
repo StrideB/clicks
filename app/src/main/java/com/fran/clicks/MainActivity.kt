@@ -11907,6 +11907,9 @@ Reply format: ["word1","word2","word3"]"""
         if (looksLikeAiQuestion(q)) {
             results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
         }
+        if (q.length >= 2) {
+            results.add(SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) })
+        }
         librarySearchResults().take(6).forEach { app ->
             results.add(SearchResult(app.label, "Open app", app.brandColor, SearchKind.APP, app.toPaneTarget()))
         }
@@ -12564,6 +12567,38 @@ Reply format: ["word1","word2","word3"]"""
                     .getOrElse { "I couldn't reach Gemini: ${it.message ?: "network unavailable"}" }
             runOnUiThread {
                 aiAnswersById[target.id] = AiAnswerState(prompt, answer, false)
+                if (openPane?.id == target.id) renderPaneContent(target)
+            }
+        }
+    }
+
+    // Native Google results inside the launcher (Custom Search JSON API), rendered in the AI pane as
+    // a markdown answer — real result links, no Custom Tab, no leaving. Needs a key + engine id set
+    // in Settings; otherwise the pane explains how to connect.
+    private fun webSearch(rawQuery: String) {
+        val q = InAppGoogleSearchEngine.stripWebVerb(rawQuery).trim().ifBlank { return }
+        val target = aiTarget("web:$q")
+        aiDraftText = ""; aiDraftActive = false
+        val configured = GoogleSearchApi.isConfigured(prefs())
+        aiAnswersById[target.id] = AiAnswerState(
+            "🔍 $q",
+            if (configured) "Searching Google…"
+            else "Add a **Google Search API key** and **engine ID** in Clicks Settings to see results here.",
+            configured
+        )
+        openHere(target)
+        if (!configured) return
+        val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
+        val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
+        mediaUiScope.launch(Dispatchers.IO) {
+            val results = runCatching { GoogleSearchApi.search(q, key, cx) }.getOrDefault(emptyList())
+            val answer = if (results.isEmpty()) "No results for “$q”."
+            else results.joinToString("\n\n") { r ->
+                val snip = if (r.snippet.isNotBlank()) "\n${r.snippet}" else ""
+                "**${r.title}**\n${r.link}$snip"
+            }
+            runOnUiThread {
+                aiAnswersById[target.id] = AiAnswerState("🔍 $q", answer, false)
                 if (openPane?.id == target.id) renderPaneContent(target)
             }
         }
