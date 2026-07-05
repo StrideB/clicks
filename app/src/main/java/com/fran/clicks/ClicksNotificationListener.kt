@@ -3,6 +3,7 @@ package com.fran.clicks
 import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
@@ -29,6 +30,7 @@ class ClicksNotificationListener : NotificationListenerService() {
             notificationAvatars.clear()
         }
         notificationIntents.clear()
+        replyActions.clear()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -43,6 +45,7 @@ class ClicksNotificationListener : NotificationListenerService() {
         if (kind in DIRECT_OPEN_KINDS && sbn.notification.contentIntent == null) return
 
         sbn.notification.contentIntent?.let { notificationIntents[sbn.key] = it }
+        captureReplyAction(sbn)
         notificationAvatar(sbn.notification)?.let { newBitmap ->
             // Atomic size-check + FIFO evict + put: without the lock, two posts could each see
             // size < MAX, both put, and overflow the cap — or evict the same key twice.
@@ -71,8 +74,21 @@ class ClicksNotificationListener : NotificationListenerService() {
         prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
     }
 
+    // Find a direct-reply action (RemoteInput) on this notification and remember it, so the launcher
+    // can reply to a message (Telegram, WhatsApp, …) inline without opening the app.
+    private fun captureReplyAction(sbn: StatusBarNotification) {
+        val actions = sbn.notification.actions ?: return
+        for (action in actions) {
+            val intent = action.actionIntent ?: continue
+            val remoteInput = action.remoteInputs?.firstOrNull { it.allowFreeFormInput } ?: continue
+            replyActions[sbn.key] = ReplyAction(intent, remoteInput.resultKey, sbn.packageName)
+            return
+        }
+    }
+
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         notificationIntents.remove(sbn.key)
+        replyActions.remove(sbn.key)
         notificationAvatars.remove(sbn.key)?.let { runCatching { it.recycle() } }
         val next = JSONArray()
         readMessages()
@@ -198,10 +214,36 @@ class ClicksNotificationListener : NotificationListenerService() {
 
         /** Dismiss a hub notification: drop it from the hub prefs, forget its intent/avatar, and —
          *  if we're connected — cancel the underlying system notification so it doesn't come back. */
+        // A captured inline-reply action: the pending intent to fire plus the RemoteInput key the
+        // target app expects the reply text under.
+        data class ReplyAction(val intent: PendingIntent, val resultKey: String, val packageName: String)
+
+        val replyActions: MutableMap<String, ReplyAction> =
+            Collections.synchronizedMap(LinkedHashMap())
+
+        /** True when the notification for [key] carries a direct-reply action we can drive. */
+        fun canReply(key: String): Boolean = key.isNotBlank() && replyActions[key] != null
+
+        /** Send [text] as an inline reply to the notification for [key] via its RemoteInput. */
+        fun sendReply(context: Context, key: String, text: String): Boolean {
+            val action = replyActions[key] ?: return false
+            if (text.isBlank()) return false
+            return runCatching {
+                val fill = Intent()
+                val results = android.os.Bundle().apply { putCharSequence(action.resultKey, text) }
+                android.app.RemoteInput.addResultsToIntent(
+                    arrayOf(android.app.RemoteInput.Builder(action.resultKey).build()), fill, results
+                )
+                action.intent.send(context, 0, fill)
+                true
+            }.getOrDefault(false)
+        }
+
         fun dismiss(context: Context, key: String) {
             if (key.isBlank()) return
             runCatching { instance?.cancelNotification(key) }
             notificationIntents.remove(key)
+            replyActions.remove(key)
             notificationAvatars.remove(key)?.let { runCatching { it.recycle() } }
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val raw = prefs.getString(HUB_MESSAGES_PREF, "[]") ?: "[]"

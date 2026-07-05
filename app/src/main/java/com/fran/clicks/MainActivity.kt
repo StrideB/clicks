@@ -5829,7 +5829,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(8), 0, dp(8)); background = border(Line); isClickable = true
-            setOnClickListener { haptic(this); if (target == null) openNotificationAccessSettings() else openHere(target) }
+            setOnClickListener {
+                haptic(this)
+                when {
+                    target == null -> openNotificationAccessSettings()
+                    // Messages route through reply-or-open (Telegram/WhatsApp inline reply when docked).
+                    message != null && message.kind == HUB_KIND_MESSAGE -> openMessageReplyOrApp(message)
+                    else -> openHere(target)
+                }
+            }
             setOnLongClickListener { haptic(this); if (target == null) openNotificationAccessSettings() else showOpenMenu(this, target); true }
             addView(View(context).apply {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
@@ -10401,6 +10409,7 @@ Reply format: ["word1","word2","word3"]"""
     // ── Pane / navigation ────────────────────────────────────────────────────
 
     private fun openHere(target: PaneTarget) {
+        if (!target.id.startsWith("reply:")) replyingToKey = null
         closeCategoryFolder()
         libraryOpen = false
         libraryView?.let { contentFrame.removeView(it) }
@@ -10557,6 +10566,7 @@ Reply format: ["word1","word2","word3"]"""
         val closingPane = openPane
         val restoreWidgetKeyboard = keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && closingPane?.usesMediaDock() == true
         openPane = null; composeText = ""; aiDraftText = ""; aiDraftActive = false
+        replyingToKey = null
         shiftState = ShiftState.OFF; suggestions = emptyList()
         if (closingPane?.kind == PaneKind.PHOTOS) zeissButtonView?.animateShutterOpen()
         if (closingPane?.kind == PaneKind.MUSIC) hideMusicProgressFromHintBar()
@@ -11462,6 +11472,12 @@ Reply format: ["word1","word2","word3"]"""
         chatLines(target).add(ChatLine(text, true))
         composeText = ""; shiftState = ShiftState.ONCE
         suggestions = emptyList(); updateSuggestionBar(); updateKeyLabels()
+        // In a notification reply pane, actually deliver the message via the app's RemoteInput.
+        val key = replyingToKey
+        if (key != null && target.id == "reply:$key") {
+            val sent = ClicksNotificationListener.sendReply(this, key, text)
+            if (!sent) Toast.makeText(this, "Couldn't send — tap to open ${target.name}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun bubble(line: ChatLine): View {
@@ -13356,11 +13372,49 @@ $emailText"""
     }
 
     private fun openRecentPerson(person: RecentPerson) {
+        // Docked with a captured reply action → reply inline on the homescreen (half-screen chat).
+        // Otherwise (widget mode, or no reply action) fall through to opening the conversation/app.
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && ClicksNotificationListener.canReply(person.key)) {
+            val message = messages.firstOrNull { it.key == person.key }
+                ?: messages.firstOrNull { it.sender == person.sender && it.packageName == person.packageName }
+            if (message != null) { openReplyPane(message); return }
+        }
         deliverNotificationIntent(
             key = person.key,
             fallback = { openRecentConversationFallback(person) },
             afterOpen = { clearHandledConversation(person) }
         )
+    }
+
+    // Message key we're currently replying to via notification RemoteInput (reply chat pane open).
+    private var replyingToKey: String? = null
+
+    /** Route a hub message tap: reply inline when docked and a reply action exists, else open the
+     *  conversation (widget mode gets the full app experience, per the docked/widget split). */
+    private fun openMessageReplyOrApp(message: HubMessage) {
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && ClicksNotificationListener.canReply(message.key)) {
+            openReplyPane(message); return
+        }
+        deliverNotificationIntent(
+            key = message.key,
+            fallback = { openHere(message.toPaneTarget()); true },
+            afterOpen = {}
+        )
+    }
+
+    /** Open a half-screen chat pane seeded with the incoming message; sending replies via RemoteInput. */
+    private fun openReplyPane(message: HubMessage) {
+        replyingToKey = message.key
+        val target = PaneTarget(
+            id = "reply:${message.key}",
+            name = message.sender.ifBlank { "Reply" },
+            accent = message.color,
+            kind = PaneKind.CHAT,
+            packageName = message.packageName,
+            deepLinkUri = null,
+            preview = message.preview
+        )
+        openHere(target)
     }
 
     private fun openRecentConversationFallback(person: RecentPerson): Boolean {
