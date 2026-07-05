@@ -1806,7 +1806,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!tracking && (abs(ev.rawX - startRawX) > touchSlop || abs(ev.rawY - startRawY) > touchSlop)) {
+                    // Require a deliberate movement to start a glide, not just touch-slop. At slop
+                    // (~8dp) an ordinary tap with a little finger roll would start a phantom glide
+                    // (trail + haptic + sometimes a ghost word). A larger gate kills that "ghost
+                    // swipe" while still catching real glides and the vertical flick-for-symbol.
+                    val glideStart = maxOf(touchSlop * 2, dp(20))
+                    if (!tracking && (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart)) {
                         tracking = true
                         if (hapticsOn()) hapticEngine.glideStart()   // firm click on glide activation
                         android.util.Log.d("ClicksGlide", "glide start keyBounds=${keyBounds.size} clfReady=${glideClassifier != null}")
