@@ -15,11 +15,13 @@ import kotlin.math.abs
 
 class ClicksNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
+        instance = this
         activeNotifications.orEmpty().forEach { onNotificationPosted(it) }
     }
 
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
+        if (instance === this) instance = null
         // Iterating a synchronizedMap needs the lock held for the whole sweep, else a concurrent
         // post could mutate it mid-iteration and throw ConcurrentModificationException.
         synchronized(notificationAvatars) {
@@ -189,6 +191,28 @@ class ClicksNotificationListener : NotificationListenerService() {
             Collections.synchronizedMap(LinkedHashMap())
         val notificationAvatars: MutableMap<String, Bitmap> =
             Collections.synchronizedMap(LinkedHashMap())
+
+        // Live listener instance, set while connected, so the launcher can actually cancel a
+        // notification when the user dismisses it from the today hub (not just hide it locally).
+        @Volatile private var instance: ClicksNotificationListener? = null
+
+        /** Dismiss a hub notification: drop it from the hub prefs, forget its intent/avatar, and —
+         *  if we're connected — cancel the underlying system notification so it doesn't come back. */
+        fun dismiss(context: Context, key: String) {
+            if (key.isBlank()) return
+            runCatching { instance?.cancelNotification(key) }
+            notificationIntents.remove(key)
+            notificationAvatars.remove(key)?.let { runCatching { it.recycle() } }
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val raw = prefs.getString(HUB_MESSAGES_PREF, "[]") ?: "[]"
+            val array = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())
+            val next = JSONArray()
+            for (i in 0 until array.length()) {
+                val o = array.optJSONObject(i) ?: continue
+                if (o.optString("key") != key) next.put(o)
+            }
+            prefs.edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
+        }
 
         private val MESSAGE_PACKAGES = setOf(
             "com.google.android.apps.messaging",

@@ -5799,8 +5799,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         val visibleMessages = messages.take(4)
         visibleMessages.forEach { message ->
-            hubView.addView(messageRow(message.color, message.sender, message.preview, message.toPaneTarget()))
+            hubView.addView(messageRow(message.color, message.sender, message.preview, message.toPaneTarget(), message))
         }
+    }
+
+    /** Dismiss a notification from the today hub: cancel it system-side and refresh the hub and the
+     *  homescreen today widget instantly. */
+    private fun dismissHubMessage(message: HubMessage) {
+        ClicksNotificationListener.dismiss(this, message.key)
+        messages = messages.filterNot { it.key == message.key }
+        renderHub()
+        refreshNowPlayingCard()
     }
 
     private fun refreshHubMessagesFromPrefs() {
@@ -5809,7 +5818,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshNowPlayingCard()
     }
 
-    private fun messageRow(color: Int, who: String, preview: String, target: PaneTarget?): View {
+    private fun messageRow(color: Int, who: String, preview: String, target: PaneTarget?, message: HubMessage? = null): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             setPadding(0, dp(8), 0, dp(8)); background = border(Line); isClickable = true
@@ -5824,6 +5833,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.48f))
             addView(TextView(context).apply { text = "  $preview"; textSize = 11f; maxLines = 1; setTextColor(InkDim); includeFontPadding = false },
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.52f))
+            // Dismiss (✕): clears the notification from the hub and the homescreen today widget.
+            if (message != null) {
+                addView(TextView(context).apply {
+                    text = "✕"; textSize = 13f; setTextColor(InkDim); gravity = Gravity.CENTER
+                    includeFontPadding = false; isClickable = true
+                    setOnClickListener { haptic(this); dismissHubMessage(message) }
+                }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginStart = dp(4) })
+            }
         }
     }
 
