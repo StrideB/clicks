@@ -300,6 +300,9 @@ class ClicksNotificationListener : NotificationListenerService() {
         fun briefSnapshot(): List<NotificationRecord> =
             synchronized(briefRecords) { briefRecords.values.toList() }.asReversed()
 
+        fun briefRecord(key: String): NotificationRecord? =
+            synchronized(briefRecords) { briefRecords[key] }
+
         private val MESSAGE_PACKAGES = setOf(
             "com.google.android.apps.messaging",
             "com.whatsapp",

@@ -110,6 +110,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.fran.clicks.brief.Brief
 import com.fran.clicks.brief.BriefAction
+import com.fran.clicks.brief.BriefClassifier
 import com.fran.clicks.brief.BriefCollector
 import com.fran.clicks.brief.BriefGenerator
 import com.fran.clicks.brief.BriefItem
@@ -485,15 +486,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         briefRepository = BriefRepository(
             prefs = prefs(),
             collector = BriefCollector(
-                calendarProvider = { calendarEvents },
-                weatherProvider = { weatherBriefSummary() }
+                calendarProvider = { calendarEvents }
             ),
             generator = BriefGenerator(prefs()),
             scope = mediaUiScope
         )
         // Listener runs in-process; the callback can land on a binder thread, so hop to main where
         // refreshDebounced mutates its Job field.
-        ClicksNotificationListener.onBriefChanged = { runOnUiThread { briefRepository.refreshDebounced() } }
+        ClicksNotificationListener.onBriefChanged = {
+            runOnUiThread {
+                briefRepository.refreshDebounced()
+                // Informational notifications feed the widget stack — refresh it too.
+                if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+            }
+        }
         briefRepository.startPeriodic()
         briefRepository.refreshDebounced(300)
         spotifyAuth = SpotifyAuth(this)
@@ -1501,7 +1507,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
                     topMargin = dp(6)
-                    bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else 0
+                    // Small gap above the docked keyboard deck (its height now accounts for the
+                    // suggestion strip, so it no longer bleeds up — see activeRootDockHeight()).
+                    bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else dp(6)
                 })
             }
             if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && !widgetPaneUsesRootDock()) {
@@ -2485,6 +2493,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     haptic(this@setNowPlayingCardContent)
                     openContextItemApp(item)
                 },
+                alertItems = informationalAlerts(),
+                onAlertClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    openAlertItem(item)
+                },
+                onAlertLongClick = { item ->
+                    haptic(this@setNowPlayingCardContent)
+                    dismissAlertItem(item)
+                },
                 ambientLightColor = weatherAmbientLightColor(),
                 ambientLightStrength = weatherAmbientLightStrength()
             )
@@ -2507,9 +2524,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             )
         }
     }
-
-    private fun weatherBriefSummary(): String? =
-        prefs().getString(WEATHER_TEMP_PREF, null)?.trim()?.takeIf { it.isNotBlank() && it != "--" }
 
     private fun openToday() {
         if (todayOpen || libraryOpen || openPane != null || !::contentFrame.isInitialized) return
@@ -2587,6 +2601,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             ClicksNotificationListener.dismiss(item.signalRef)
         }
         briefRepository.removeItem(item.signalRef)
+    }
+
+    // Informational (non-actionable) notifications routed to the widget stack. Excludes anything the
+    // dedicated news/maps widgets already show, and anything the brief classifies as actionable.
+    private fun informationalAlerts(): List<ContextWidgetItem> {
+        val shownKeys = (contextItems(HUB_KIND_NEWS) + contextItems(HUB_KIND_MAPS)).map { it.key }.toSet()
+        return ClicksNotificationListener.briefSnapshot()
+            .filterNot { BriefClassifier.isActionable(it) }
+            .filterNot { it.key in shownKeys }
+            .take(6)
+            .map { r ->
+                ContextWidgetItem(
+                    key = r.key,
+                    title = r.appLabel,
+                    preview = r.title.ifBlank { r.text },
+                    packageName = r.packageName,
+                    color = Neu.PURPLE,
+                    avatar = r.avatar ?: appIconBitmap(r.packageName),
+                    lastUpdated = r.whenMs
+                )
+            }
+    }
+
+    private fun appIconBitmap(pkg: String): Bitmap? = runCatching {
+        val d = packageManager.getApplicationIcon(pkg)
+        val w = d.intrinsicWidth.coerceIn(1, 144)
+        val h = d.intrinsicHeight.coerceIn(1, 144)
+        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        d.setBounds(0, 0, w, h)
+        d.draw(c)
+        b
+    }.getOrNull()
+
+    private fun openAlertItem(item: ContextWidgetItem) {
+        val ci = ClicksNotificationListener.briefRecord(item.key)?.contentIntent
+        if (ci != null) {
+            val sent = runCatching { ci.send() }.isSuccess
+            if (sent) return
+        }
+        packageManager.getLaunchIntentForPackage(item.packageName)?.let { runCatching { startActivity(it) } }
+    }
+
+    private fun dismissAlertItem(item: ContextWidgetItem) {
+        ClicksNotificationListener.dismiss(item.key)
+        refreshNowPlayingCard()
     }
 
     private fun refreshNowPlayingCard() {
@@ -13919,7 +13979,13 @@ $emailText"""
     }
 
     private fun activeRootDockHeight(): Int {
-        return if (widgetPaneUsesRootDock()) widgetKeyboardHeight() else keyboardHeight()
+        if (widgetPaneUsesRootDock()) return widgetKeyboardHeight()
+        // keyboardHeight() budgets the typing well + key rows but NOT the Gboard-style suggestion
+        // strip mounted at the top of the deck (see keyboard()). Without adding it, the deck is
+        // ~30dp taller than this slot and bleeds upward over the favorites dock / typing strip.
+        val suggestion = if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen)
+            keyboardSuggestionStripHeight() + dp(2) else 0
+        return keyboardHeight() + suggestion
     }
 
     private fun widgetKeyboardHorizontalBleed(): Int = dp(10)

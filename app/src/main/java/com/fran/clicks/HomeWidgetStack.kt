@@ -162,6 +162,15 @@ private sealed interface WidgetItem {
         override val id = "calendar"
         override val accent = Amber
     }
+
+    // Informational notifications (non-actionable) routed here from the brief classifier.
+    data class Alerts(
+        override val lastUpdated: Long,
+        val items: List<ContextWidgetItem>
+    ) : WidgetItem {
+        override val id = "alerts"
+        override val accent = Purple
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -193,6 +202,9 @@ fun HomeWidgetStack(
     onNewsLongClick: (ContextWidgetItem) -> Unit,
     onMapsClick: (ContextWidgetItem) -> Unit,
     onMapsLongClick: (ContextWidgetItem) -> Unit,
+    alertItems: List<ContextWidgetItem> = emptyList(),
+    onAlertClick: (ContextWidgetItem) -> Unit = {},
+    onAlertLongClick: (ContextWidgetItem) -> Unit = {},
     ambientLightColor: Int = 0x00000000,
     ambientLightStrength: Float = 0f
 ) {
@@ -217,13 +229,12 @@ fun HomeWidgetStack(
             add(WidgetItem.Music(now, title, artist, sourceApp, Color(sourceColor), albumArt))
         }
         mapsItems.firstOrNull()?.let { add(WidgetItem.Maps(it.lastUpdated, it)) }
-        if (emailItems.isNotEmpty()) {
-            add(WidgetItem.Email(emailItems.maxOf { it.lastUpdated }, emailItems))
-        }
-        if (recentPeople.isNotEmpty()) {
-            add(WidgetItem.People(recentPeople.maxOf { it.lastUpdated }, recentPeople))
-        }
+        // Email & people are actionable comms — they now live in the Today brief, not the ambient
+        // widget stack. (emailItems / recentPeople params kept for API stability.)
         newsItems.firstOrNull()?.let { add(WidgetItem.News(it.lastUpdated, it)) }
+        if (alertItems.isNotEmpty()) {
+            add(WidgetItem.Alerts(alertItems.maxOf { it.lastUpdated }, alertItems))
+        }
         add(WidgetItem.Calendar(calendarEvents.maxOfOrNull { it.beginMs } ?: 0L, calendarEvents, hasCalendarPermission))
     }.sortedByDescending { it.lastUpdated }
     val pageCount = pages.size
@@ -291,6 +302,14 @@ fun HomeWidgetStack(
                         people = widgetPage.people,
                         onPersonClick = onRecentPersonClick,
                         onPersonLongClick = onRecentPersonLongClick
+                    )
+                }
+                is WidgetItem.Alerts -> {
+                    AlertsWidgetCard(
+                        tokens = tokens,
+                        items = widgetPage.items,
+                        onClick = onAlertClick,
+                        onLongClick = onAlertLongClick
                     )
                 }
             }
@@ -519,6 +538,98 @@ private fun EmailWidgetCard(
                         Spacer(Modifier.width(7.dp))
                         BasicText(
                             text = email.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = TextStyle(color = InkDim, fontSize = 10.4.sp, fontFamily = FontFamily.SansSerif)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AlertsWidgetCard(
+    tokens: NeuTokens,
+    items: List<ContextWidgetItem>,
+    onClick: (ContextWidgetItem) -> Unit,
+    onLongClick: (ContextWidgetItem) -> Unit
+) {
+    val primary = items.first()
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxSize()
+            .drawNewsSurface(tokens)
+            .combinedClickable(onClick = { onClick(primary) }, onLongClick = { onLongClick(primary) })
+            .padding(horizontal = 15.dp, vertical = 13.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                LabelText("NOTIFICATIONS", Purple)
+                Spacer(Modifier.height(3.dp))
+                BasicText(
+                    text = "Recent",
+                    maxLines = 1,
+                    style = TextStyle(color = InkDim, fontSize = 10.4.sp, fontFamily = FontFamily.SansSerif)
+                )
+            }
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(99.dp))
+                    .neu(tokens, 7.dp, NeuLevel.PRESSED_SM)
+                    .padding(horizontal = 9.dp, vertical = 4.dp)
+            ) {
+                BasicText(
+                    text = items.size.coerceAtMost(99).toString(),
+                    maxLines = 1,
+                    style = TextStyle(color = Purple, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .recessedTray(tokens, 18, deep = true)
+                .combinedClickable(onClick = { onClick(primary) }, onLongClick = { onLongClick(primary) })
+                .padding(horizontal = 11.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ContextIcon(tokens, primary, fallback = "•", size = 42)
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                BasicText(
+                    text = primary.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
+                )
+                Spacer(Modifier.height(5.dp))
+                BasicText(
+                    text = primary.preview,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(color = InkDim, fontSize = 11.2.sp, fontFamily = FontFamily.SansSerif)
+                )
+            }
+        }
+        if (items.size > 1) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                items.drop(1).take(2).forEach { alert ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(onClick = { onClick(alert) }, onLongClick = { onLongClick(alert) })
+                    ) {
+                        Box(Modifier.size(5.dp).clip(RoundedCornerShape(99.dp)).background(Purple.copy(alpha = 0.74f)))
+                        Spacer(Modifier.width(7.dp))
+                        BasicText(
+                            text = if (alert.preview.isBlank()) alert.title else "${alert.title} · ${alert.preview}",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = TextStyle(color = InkDim, fontSize = 10.4.sp, fontFamily = FontFamily.SansSerif)

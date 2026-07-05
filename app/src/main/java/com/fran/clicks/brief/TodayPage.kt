@@ -160,7 +160,7 @@ private fun TodayCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .neu(tokens, 22.dp, NeuLevel.RAISED)
+            .neu(tokens, 20.dp, NeuLevel.RAISED)
             .combinedClickable(
                 onClick = {
                     item.signal?.actions
@@ -171,38 +171,36 @@ private fun TodayCard(
                 },
                 onLongClick = { onDismiss(item) }
             )
-            .padding(horizontal = 16.dp, vertical = 15.dp)
+            .padding(horizontal = 14.dp, vertical = 11.dp)
     ) {
-        // Label
-        Text(
-            labelFor(item.category),
-            color = accent,
-            fontSize = 8.5.sp,
-            fontWeight = FontWeight.W700,
-            fontFamily = Mono,
-            letterSpacing = 1.5.sp
-        )
-        Spacer(Modifier.height(10.dp))
-
         Row(verticalAlignment = Alignment.CenterVertically) {
             ChipIcon(tokens, accent, glyphFor(item), appIcon)
-            Spacer(Modifier.width(13.dp))
+            Spacer(Modifier.width(11.dp))
             Column(Modifier.weight(1f)) {
+                Text(
+                    labelFor(item.category),
+                    color = accent,
+                    fontSize = 8.sp,
+                    fontWeight = FontWeight.W700,
+                    fontFamily = Mono,
+                    letterSpacing = 1.5.sp
+                )
+                Spacer(Modifier.height(3.dp))
                 Text(
                     item.title,
                     color = tokens.inkCompose,
-                    fontSize = 16.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.W600,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 if (item.subtitle.isNotBlank()) {
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(1.dp))
                     Text(
                         item.subtitle,
                         color = tokens.inkDimCompose,
                         fontSize = 11.sp,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
@@ -212,7 +210,7 @@ private fun TodayCard(
         val actions = item.signal?.actions.orEmpty()
         val current = replying
         if (current != null) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             ReplyGroove(
                 tokens = tokens,
                 accent = accent,
@@ -228,7 +226,7 @@ private fun TodayCard(
                 onCancel = { replying = null; replyText = "" }
             )
         } else if (actions.isNotEmpty()) {
-            Spacer(Modifier.height(13.dp))
+            Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 orderedActions(item, actions).take(3).forEach { action ->
                     val isPrimary = action.label.equals(item.primaryActionLabel, ignoreCase = true)
@@ -268,7 +266,7 @@ private fun ActionKey(
         modifier = modifier
             .neu(tokens, 10.dp, if (pressed) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
             .combinedClickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 15.dp, vertical = 7.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -286,8 +284,8 @@ private fun ActionKey(
 private fun ChipIcon(tokens: NeuTokens, accent: Color, glyph: String, appIcon: ImageBitmap?) {
     Box(
         modifier = Modifier
-            .size(46.dp)
-            .neu(tokens, 13.dp, NeuLevel.PRESSED_SM),
+            .size(40.dp)
+            .neu(tokens, 12.dp, NeuLevel.PRESSED_SM),
         contentAlignment = Alignment.Center
     ) {
         if (appIcon != null) {
@@ -297,14 +295,14 @@ private fun ChipIcon(tokens: NeuTokens, accent: Color, glyph: String, appIcon: I
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .size(32.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                    .size(28.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(9.dp))
             )
         } else {
             Box(
                 modifier = Modifier
-                    .size(30.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(9.dp))
+                    .size(26.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
                     .background(accent),
                 contentAlignment = Alignment.Center
             ) {
@@ -430,8 +428,8 @@ private fun EmptyState(tokens: NeuTokens) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(140.dp)
-            .neu(tokens, 22.dp, NeuLevel.PRESSED),
+            .height(92.dp)
+            .neu(tokens, 20.dp, NeuLevel.PRESSED),
         contentAlignment = Alignment.Center
     ) {
         Text("You’re all caught up.", color = tokens.inkDimCompose, fontSize = 14.sp, fontWeight = FontWeight.W500)

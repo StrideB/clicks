@@ -16,19 +16,21 @@ import com.fran.clicks.ClicksNotificationListener
  */
 class BriefCollector(
     private val calendarProvider: () -> List<CalendarEvent>,
-    private val weatherProvider: () -> String?,
     private val nowMs: () -> Long = { System.currentTimeMillis() }
 ) {
+    // Weather is intentionally NOT collected — the homescreen already shows it, so it would just be
+    // noise in Today. WeatherSignal remains in the model for potential future use.
     fun collect(): List<Signal> {
         val out = ArrayList<Signal>()
         out += notificationSignals()
         out += calendarSignals()
-        weatherSignal()?.let { out += it }
         return out
     }
 
     private fun notificationSignals(): List<NotificationSignal> =
-        ClicksNotificationListener.briefSnapshot().map { r ->
+        ClicksNotificationListener.briefSnapshot()
+            .filter { BriefClassifier.isActionable(it) } // Today = actionable only; the rest go to the widget stack.
+            .map { r ->
             val actions = ArrayList<BriefAction>(r.actions.size + 1)
             r.actions.forEach { a ->
                 actions += Fire(a.label, a.pendingIntent, a.remoteInput, a.extraInputs)
@@ -80,12 +82,6 @@ class BriefCollector(
                     actions = actions
                 )
             }
-    }
-
-    private fun weatherSignal(): WeatherSignal? {
-        val summary = weatherProvider()?.trim().orEmpty()
-        if (summary.isBlank()) return null
-        return WeatherSignal(id = "weather", timestamp = nowMs(), summary = summary)
     }
 
     private companion object {
