@@ -170,6 +170,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val np = (pos + if (right) 1 else -1).coerceIn(0, cur.length)
         cursorPos = if (np == cur.length) null else np
     }
+
+    /** Step the launcher's in-field cursor and repaint the caret (two-finger trackpad panning). */
+    private fun moveLauncherCursor(right: Boolean) {
+        moveCursor(right)
+        renderRibbon()
+    }
     override fun editorPackage(): String? = null          // launcher edits its own field
     override fun isPasswordField(): Boolean = false
     override val hostHapticsEnabled: Boolean get() = hapticsEnabled
@@ -9228,9 +9234,11 @@ Reply format: ["word1","word2","word3"]"""
                 clearGlideTouchState()
                 return false
             }
-            // Intercept as soon as a second finger lands so we can drive trackpad scrolling
-            if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && libraryOpen) {
+            // Intercept as soon as a second finger lands so we can drive the two-finger trackpad
+            // (horizontal = cursor pan in any mode, vertical = scroll library results).
+            if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && ev.pointerCount == 2) {
                 trackpadLastY = (ev.getY(0) + ev.getY(1)) / 2f
+                trackpadLastX = (ev.getX(0) + ev.getX(1)) / 2f
                 trackpadActive = true
                 tracking = false; traced.clear(); trailLocal.clear(); invalidate()
                 glideClassifier?.clear()
@@ -9269,14 +9277,18 @@ Reply format: ["word1","word2","word3"]"""
         }
 
         private var trackpadLastY = 0f
+        private var trackpadLastX = 0f
         private var trackpadActive = false
+        private val cursorPanStep = dp(13).toFloat()
 
-        private fun trackpadScroll(ev: MotionEvent): Boolean {
-            if (!libraryOpen) return false
+        // Two-finger trackpad on the keyboard: horizontal drag steps the text cursor (any mode),
+        // vertical drag scrolls the library results when it's open.
+        private fun trackpad(ev: MotionEvent): Boolean {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_POINTER_DOWN -> {
                     if (ev.pointerCount == 2) {
                         trackpadLastY = (ev.getY(0) + ev.getY(1)) / 2f
+                        trackpadLastX = (ev.getX(0) + ev.getX(1)) / 2f
                         trackpadActive = true
                         tracking = false; traced.clear(); trailLocal.clear(); invalidate()
                         glideClassifier?.clear()
@@ -9284,10 +9296,20 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (!trackpadActive || ev.pointerCount < 2) return false
+                    val midX = (ev.getX(0) + ev.getX(1)) / 2f
                     val midY = (ev.getY(0) + ev.getY(1)) / 2f
-                    val dy = (trackpadLastY - midY) * 2.4f
+                    var dx = midX - trackpadLastX
+                    while (abs(dx) >= cursorPanStep) {
+                        val right = dx > 0
+                        moveLauncherCursor(right)
+                        trackpadLastX += if (right) cursorPanStep else -cursorPanStep
+                        dx = midX - trackpadLastX
+                    }
+                    if (libraryOpen) {
+                        val dy = (trackpadLastY - midY) * 2.4f
+                        (libraryContentArea?.getChildAt(0) as? ScrollView)?.scrollBy(0, dy.toInt())
+                    }
                     trackpadLastY = midY
-                    (libraryContentArea?.getChildAt(0) as? ScrollView)?.scrollBy(0, dy.toInt())
                 }
                 MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (trackpadActive) { trackpadActive = false; return true }
@@ -9302,7 +9324,7 @@ Reply format: ["word1","word2","word3"]"""
                 return handleWidgetKeyboardDetachedTouch(ev)
             }
             if (keyboardSettingsOpen) return false
-            if (trackpadScroll(ev)) return true
+            if (trackpad(ev)) return true
             if (!tracking) return false
             when (ev.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
@@ -9325,7 +9347,8 @@ Reply format: ["word1","word2","word3"]"""
                         (clf == null || !clf.hasEnoughPoints)) {
                         tracking = false; traced.clear(); trailLocal.clear(); glidePersisting = false; invalidate()
                         clf?.clear()
-                        keyHaptic("space"); handleKey(dnSym)
+                        if (hapticsEnabled) hapticEngine.symbolFlick()
+                        handleKey(dnSym)
                         return true
                     }
                     // Deliberate quick left-swipe = whole-word delete. A glide that spells a word has

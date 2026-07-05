@@ -571,6 +571,15 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun hapticsOn() = imePrefs().getBoolean(HAPTICS_PREF, true)
 
+    /** Step the text cursor one character left/right. Used by two-finger trackpad panning; DPAD key
+     *  events respect each editor's own cursor bounds and selection semantics. */
+    private fun moveTextCursor(right: Boolean) {
+        sendDownUpKeyEvents(
+            if (right) android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+            else android.view.KeyEvent.KEYCODE_DPAD_LEFT
+        )
+    }
+
     /** The keyboard's haptic engine with the user's keyboard-only intensity applied (0–100 → 0f–1f).
      *  Read live so the Settings slider takes effect on the next keystroke without a restart. */
     private fun haptics(): com.fran.clicks.keyboard.CustomHapticEngine {
@@ -1785,6 +1794,40 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private var glidePersisting = false
         private var glideFadeRunnable: Runnable? = null
         private val touchSlop = ViewConfiguration.get(this@ClicksImeService).scaledTouchSlop
+        // Two-finger trackpad: drag with two fingers anywhere on the keyboard to step the text cursor.
+        private var cursorPanActive = false
+        private var cursorPanLastX = 0f
+        private val cursorPanStep = dp(13).toFloat()
+
+        private fun beginCursorPan(ev: MotionEvent) {
+            cursorPanActive = true
+            cursorPanLastX = (ev.getX(0) + ev.getX(1)) / 2f
+            clearGlideTouchState()
+            parent?.requestDisallowInterceptTouchEvent(true)
+        }
+
+        /** Feed two-finger horizontal drag into left/right cursor steps. Returns true while panning. */
+        private fun handleCursorPan(ev: MotionEvent): Boolean {
+            if (!cursorPanActive) return false
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    if (ev.pointerCount >= 2) {
+                        val midX = (ev.getX(0) + ev.getX(1)) / 2f
+                        var delta = midX - cursorPanLastX
+                        while (abs(delta) >= cursorPanStep) {
+                            val right = delta > 0
+                            moveTextCursor(right)
+                            cursorPanLastX += if (right) cursorPanStep else -cursorPanStep
+                            delta = midX - cursorPanLastX
+                        }
+                    }
+                }
+                MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    cursorPanActive = false
+                }
+            }
+            return true
+        }
 
         private fun fadeGlideTrail() {
             glideFadeRunnable?.let { handler.removeCallbacks(it) }
@@ -1848,6 +1891,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
         override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
             when (ev.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (ev.pointerCount == 2) { beginCursorPan(ev); return true }
+                }
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX
                     startRawY = ev.rawY
@@ -1892,6 +1938,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
 
         override fun onTouchEvent(ev: MotionEvent): Boolean {
+            // A second finger landing mid-touch switches to two-finger cursor panning.
+            if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && ev.pointerCount == 2 && !cursorPanActive) {
+                beginCursorPan(ev); return true
+            }
+            if (handleCursorPan(ev)) return true
             if (!tracking) return false
             when (ev.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
@@ -1921,7 +1972,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         trailTimes.clear()
                         glidePersisting = false
                         invalidate()
-                        keyHaptic("space")
+                        if (hapticsOn()) haptics().symbolFlick()
                         commitValue(flickSymbol)
                         onTextChanged()
                         return true

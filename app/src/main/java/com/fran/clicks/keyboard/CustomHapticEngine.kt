@@ -93,6 +93,22 @@ class CustomHapticEngine(context: Context) {
         } else pulse(10L, scaledAmp(150))
     }
 
+    /** Firm detent when a down-swipe inserts a key's alternate symbol (Apple-style flick). Distinct
+     *  from a plain key tap so "sailing down to a symbol" is clearly felt. */
+    fun symbolFlick() {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                v.vibrate(
+                    VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scaled(0.85f))
+                        .compose()
+                )
+            }.onFailure { pulse(14L, scaledAmp(190)) }
+        } else pulse(14L, scaledAmp(190))
+    }
+
     /** Light confirmation when a glided word is recognized and committed. */
     fun glideCommit() {
         val v = vibrator ?: return
