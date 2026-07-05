@@ -11904,11 +11904,13 @@ Reply format: ["word1","word2","word3"]"""
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         val results = mutableListOf<SearchResult>()
-        if (looksLikeAiQuestion(q)) {
-            results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
-        }
+        // Smart routing: auto-decide whether this reads as a web lookup or an AI question, put that
+        // first (the "best" tab), and offer the other mode right below so you can switch.
         if (q.length >= 2) {
-            results.add(SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) })
+            val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) }
+            val ai = SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) }
+            if (looksLikeWebSearch(q)) { results.add(web); results.add(ai.copy(title = "Ask Gemini instead")) }
+            else { results.add(ai); results.add(web.copy(title = "Search the web instead")) }
         }
         librarySearchResults().take(6).forEach { app ->
             results.add(SearchResult(app.label, "Open app", app.brandColor, SearchKind.APP, app.toPaneTarget()))
@@ -11923,9 +11925,6 @@ Reply format: ["word1","word2","word3"]"""
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
-        if (!looksLikeAiQuestion(q) && q.length >= 4) {
-            results.add(SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) })
-        }
         return results.distinctBy { "${it.kind}:${it.title}:${it.subtitle}" }.take(14)
     }
 
@@ -11936,6 +11935,26 @@ Reply format: ["word1","word2","word3"]"""
             lower.startsWith("ai ") ||
             lower.startsWith("gemini ") ||
             listOf("what ", "why ", "how ", "when ", "where ", "who ", "summarize ", "explain ", "draft ").any { lower.startsWith(it) }
+    }
+
+    // Auto-route a query to web-search vs Gemini. Strong web signals (navigational/current/lookup)
+    // win even over a question phrasing; a compose/explain-style request or a plain question goes to
+    // Gemini; and short keyword-y queries (a name, place, product) default to the web.
+    private fun looksLikeWebSearch(text: String): Boolean {
+        val lower = text.lowercase(Locale.US).trim()
+        val webSignals = listOf(
+            ".com", ".org", ".net", "http", "www.", "near me", "open now", "hours", "directions",
+            "map", "menu", "reviews", "showtimes", "price", "cheapest", "buy ", "download", "login",
+            " vs ", "reddit", "youtube", "amazon", "wikipedia", "news", "score", "stock ", "weather ",
+            "how much", "who won", "release date"
+        ).any { lower.contains(it) }
+        if (webSignals) return true
+        // Compose/generation or a genuine question → Gemini.
+        val aiVerbs = listOf("write ", "draft ", "summarize", "explain", "translate", "help me", "give me", "rewrite")
+        if (aiVerbs.any { lower.startsWith(it) || lower.contains(" $it") }) return false
+        if (looksLikeAiQuestion(lower)) return false
+        // Not a question, no AI verb: a keyword lookup → web (a name, a place, a thing).
+        return true
     }
 
     private fun looksLikeTravelQuery(text: String): Boolean {
