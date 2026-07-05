@@ -104,14 +104,20 @@ class AgenticSkillsActivity : Activity() {
 
     private fun skillRow(s: SkillEntity): View {
         val example = s.triggers.split(",").firstOrNull()?.trim()?.removeSuffix("*")?.trim().orEmpty()
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        // Collapsible editor: change the words that trigger this skill (e.g. rename "share location"
+        // to "loc"). Works for built-in skills too — the seeder never overwrites an existing name.
+        val editor = triggerEditor(s)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
             background = Neu.drawable(t, dp(16).toFloat(), NeuLevel.RAISED_SM)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp(10) }
+        }
+        card.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
 
             addView(TextView(context).apply {
                 text = s.emoji; textSize = 20f; gravity = Gravity.CENTER
@@ -129,10 +135,19 @@ class AgenticSkillsActivity : Activity() {
                 })
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(6) })
 
+            // Edit-triggers toggle (available for every skill).
+            addView(TextView(context).apply {
+                text = "✎"; textSize = 16f; setTextColor(accent)
+                setPadding(dp(10), dp(4), dp(10), dp(4)); isClickable = true
+                setOnClickListener {
+                    editor.visibility = if (editor.visibility == View.GONE) View.VISIBLE else View.GONE
+                }
+            })
+
             if (!s.builtin) {
                 addView(TextView(context).apply {
                     text = "✕"; textSize = 15f; setTextColor(t.inkDim)
-                    setPadding(dp(10), dp(4), dp(12), dp(4)); isClickable = true
+                    setPadding(dp(6), dp(4), dp(10), dp(4)); isClickable = true
                     setOnClickListener { deleteSkill(s) }
                 })
             }
@@ -145,7 +160,49 @@ class AgenticSkillsActivity : Activity() {
                     (accent and 0x00FFFFFF) or 0x66000000, (t.inkDim and 0x00FFFFFF) or 0x40000000))
                 setOnCheckedChangeListener { _, checked -> setEnabled(s, checked) }
             })
+        })
+        card.addView(editor)
+        return card
+    }
+
+    /** Hidden-by-default editor row: edit the comma-separated trigger words for [s] and save. */
+    private fun triggerEditor(s: SkillEntity): View {
+        val field = input("Trigger words, comma-separated").apply {
+            setText(s.triggers)
         }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(4) }
+            addView(text("The words you type to run this — a trailing space means \"prefix + argument\" " +
+                "(e.g. \"loc \"), \"* near me\" means suffix.", 11.5f, t.inkDim))
+            addView(field)
+            addView(TextView(context).apply {
+                text = "Save triggers"; gravity = Gravity.CENTER; textSize = 13.5f
+                setTextColor(0xFFF5F2FF.toInt())
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setPadding(0, dp(9), 0, dp(9)); isClickable = true
+                background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(11).toFloat() }
+                setOnClickListener { updateTriggers(s, field.text.toString()) }
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(8) }
+            })
+        }
+    }
+
+    private fun updateTriggers(s: SkillEntity, raw: String) {
+        val clean = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.joinToString(",")
+        if (clean.isBlank()) {
+            Toast.makeText(this, "Add at least one trigger word", Toast.LENGTH_SHORT).show(); return
+        }
+        Thread {
+            runCatching { dao().update(s.copy(triggers = clean)) }
+            AgenticRouter.reload(this)
+            runOnUiThread { reloadList(); Toast.makeText(this, "Triggers updated", Toast.LENGTH_SHORT).show() }
+        }.start()
     }
 
     private data class RefRow(val emoji: String, val name: String, val trigger: String, val ok: Boolean, val need: String)

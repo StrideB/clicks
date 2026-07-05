@@ -15,6 +15,7 @@ import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import com.fran.clicks.keyboard.DictionaryLoader
@@ -45,6 +46,7 @@ class ImeSettingsActivity : Activity() {
         private const val THEME_MODE_LIGHT = "light"
         private const val THEME_MODE_SYSTEM = "system"
         private const val HAPTICS_PREF = "haptics"
+        private const val HAPTIC_LEVEL_PREF = "haptic_level"   // 0–100, keyboard-only intensity
         private const val GEMINI_ENABLED_PREF = "gemini_enabled"
     }
 
@@ -90,6 +92,8 @@ class ImeSettingsActivity : Activity() {
             c.addView(divider())
             c.addView(toggleRow("Haptic feedback", "Vibrate on key press",
                 HAPTICS_PREF, true))
+            c.addView(sliderRow("Haptic strength", "Vibration intensity for the keyboard only",
+                HAPTIC_LEVEL_PREF, 100))
             c.addView(divider())
             c.addView(toggleRow("Smart touch", "Nudge near-edge taps to the likely key. Turn off for literal taps.",
                 IME_SMART_TOUCH_PREF, true))
@@ -237,6 +241,56 @@ class ImeSettingsActivity : Activity() {
                 trackTintList = ColorStateList(states, intArrayOf(
                     (accent and 0x00FFFFFF) or 0x66000000, (t.inkDim and 0x00FFFFFF) or 0x40000000))
                 setOnCheckedChangeListener { _, checked -> prefs().edit().putBoolean(pref, checked).apply() }
+            })
+        }
+    }
+
+    /** A labelled 0–100 percentage slider that writes to an Int pref and buzzes a live preview. */
+    private fun sliderRow(title: String, sub: String, pref: String, default: Int): View {
+        val valueLabel = text("", 13f, accent)
+        val start = prefs().getInt(pref, default).coerceIn(0, 100)
+        valueLabel.text = "$start%"
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(text(title, 15.5f, t.ink))
+                    addView(text(sub, 12.5f, t.inkDim).apply {
+                        (layoutParams as LinearLayout.LayoutParams).topMargin = dp(1)
+                    })
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(valueLabel)
+            })
+            addView(SeekBar(context).apply {
+                max = 100
+                progress = start
+                progressTintList = ColorStateList.valueOf(accent)
+                thumbTintList = ColorStateList.valueOf(accent)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                        valueLabel.text = "$value%"
+                        if (fromUser) prefs().edit().putInt(pref, value).apply()
+                    }
+                    override fun onStartTrackingTouch(sb: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(sb: SeekBar?) {
+                        // Fire a preview buzz at the chosen strength so the user feels the level.
+                        if (prefs().getBoolean(HAPTICS_PREF, true)) {
+                            (getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator)?.let { v ->
+                                val amp = ((progress / 100f) * 200).toInt().coerceIn(1, 255)
+                                runCatching {
+                                    v.vibrate(android.os.VibrationEffect.createOneShot(18L, amp))
+                                }
+                            }
+                        }
+                    }
+                })
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(2) }
             })
         }
     }
