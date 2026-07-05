@@ -150,6 +150,10 @@ class ImeSettingsActivity : Activity() {
             c.addView(inputRow("Odds API key — World Cup Odds", OddsApi.KEY_PREF, "the-odds-api.com (free)", secret = true))
             c.addView(divider())
             c.addView(inputRow("Notion token — Notion Summon", NotionApi.KEY_PREF, "notion.so/my-integrations", secret = true))
+            c.addView(divider())
+            c.addView(inputRow("Google Search API key", GoogleSearchApi.KEY_PREF, "Custom Search JSON API (free 100/day)", secret = true))
+            c.addView(divider())
+            c.addView(inputRow("Google Search engine ID (cx)", GoogleSearchApi.CX_PREF, "programmablesearchengine.google.com", secret = false))
             c.addView(text("Google Meet uses your Google connection — connect Google in the Clicks app, then type “meet” and hold go.", 12f, t.inkDim).apply {
                 (layoutParams as LinearLayout.LayoutParams).topMargin = dp(10)
             })
