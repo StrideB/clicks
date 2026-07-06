@@ -1,0 +1,13 @@
+{
+  "name": "clicks-gemini-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cloudflare Worker proxying Gemini for the Clicks app so users never handle API keys.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}

@@ -17,10 +17,21 @@ object GeminiClient {
     const val MODEL_PREF = "gemini_model"
     const val DEFAULT_MODEL = "gemini-2.5-flash"
 
+    /**
+     * Account mode: when set, every call routes through the Clicks AI proxy using the signed-in
+     * user's Google ID token instead of a device-local API key. Set once at app/IME startup from
+     * [GeminiProxy.binding]; null = fall back to the pasted-key path. Process-global so the launcher
+     * and IME share it.
+     */
+    @Volatile
+    var proxy: Proxy? = null
+
+    class Proxy(val url: String, val idTokenProvider: () -> String?)
+
     fun apiKey(prefs: SharedPreferences): String = prefs.getString(API_KEY_PREF, null)?.trim().orEmpty()
     fun model(prefs: SharedPreferences): String =
         prefs.getString(MODEL_PREF, DEFAULT_MODEL)?.trim().orEmpty().ifBlank { DEFAULT_MODEL }
-    fun configured(prefs: SharedPreferences): Boolean = apiKey(prefs).isNotBlank()
+    fun configured(prefs: SharedPreferences): Boolean = proxy != null || apiKey(prefs).isNotBlank()
 
     /** Up to 3 next-word predictions for [context]. Empty on any failure. Blocking. */
     fun fetchSuggestions(apiKey: String, model: String, context: String): List<String> {
@@ -83,6 +94,11 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
 
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
     private fun call(apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double): String? {
+        // Account mode: route through the proxy with the user's Google ID token — no key on device.
+        proxy?.let { p ->
+            val token = p.idTokenProvider() ?: return null
+            return callProxy(p.url, token, model, prompt, maxTokens, temperature)
+        }
         if (apiKey.isBlank()) return null
         val url = URL(
             "https://generativelanguage.googleapis.com/v1beta/models/" +
@@ -103,6 +119,33 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
                 .optJSONArray("candidates")?.optJSONObject(0)
                 ?.optJSONObject("content")?.optJSONArray("parts")
                 ?.optJSONObject(0)?.optString("text")?.trim()
+        } catch (_: Exception) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** Account-mode request → the Clicks AI proxy (Cloudflare Worker), authenticated with the user's
+     *  Google ID token. The proxy holds the real Gemini key. Returns the reply text or null. Blocking. */
+    private fun callProxy(
+        proxyUrl: String, idToken: String, model: String, prompt: String, maxTokens: Int, temperature: Double
+    ): String? {
+        val endpoint = proxyUrl.trimEnd('/') + "/v1/generate"
+        val body = JSONObject()
+            .put("model", model).put("prompt", prompt)
+            .put("maxTokens", maxTokens).put("temperature", temperature)
+        val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"; connectTimeout = 6_000; readTimeout = 20_000
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Authorization", "Bearer $idToken")
+            doOutput = true
+        }
+        return try {
+            OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+            if (conn.responseCode !in 200..299) return null
+            val raw = conn.inputStream.bufferedReader().use { it.readText() }
+            JSONObject(raw).optString("text").trim().ifBlank { null }
         } catch (_: Exception) {
             null
         } finally {

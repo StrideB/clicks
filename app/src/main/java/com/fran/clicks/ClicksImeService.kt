@@ -159,6 +159,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     override fun onCreateInputView(): View {
         shifted = false
+        // Account mode: route AI through the proxy with the signed-in user's Google ID token.
+        GeminiClient.proxy = GeminiProxy.binding(this)
         ensureGlideClassifier()
         initSpellChecker()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")

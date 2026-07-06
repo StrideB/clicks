@@ -328,6 +328,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     lateinit var spotifyApi: SpotifyWebApi
     lateinit var gmailAuth: GmailAuth
     lateinit var gmailApi: GmailApi
+    private val accountAuth by lazy { AccountAuth(this) }
     lateinit var travelRepo: TravelRepository
     private var spotifyCachedRecent = listOf<SpotifyTrack>()
     private var spotifyCachedRecentArts = listOf<android.graphics.Bitmap?>()
@@ -477,6 +478,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spotifyApi = SpotifyWebApi(spotifyAuth)
         gmailAuth = GmailAuth(this)
         gmailApi = GmailApi(gmailAuth)
+        // Account mode: route AI through the proxy with the user's Google ID token (no device key).
+        GeminiClient.proxy = GeminiProxy.binding(this)
         travelRepo = TravelRepository(gmailApi)
         if (spotifyAuth.isConnected) preloadSpotifyLibrary()
         initSpellChecker()
@@ -551,6 +554,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 } else {
                     Toast.makeText(this@MainActivity, "Spotify connection failed. Try again.", Toast.LENGTH_SHORT).show()
                 }
+            }
+        } else if (accountAuth.isCallback(uri)) {
+            // Checked before Gmail: both share the reversed scheme, distinguished by redirect path.
+            mediaUiScope.launch {
+                val ok = withContext(Dispatchers.IO) { accountAuth.handleCallback(uri) }
+                if (ok) {
+                    prefs().edit().putBoolean(GeminiProxy.ACCOUNT_MODE_PREF, true).apply()
+                    GeminiClient.proxy = GeminiProxy.binding(this@MainActivity)
+                }
+                Toast.makeText(
+                    this@MainActivity,
+                    if (ok) "Signed in — AI is ready" else "Sign-in failed. Try again.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(clicksSettingsTarget())
             }
         } else if (gmailAuth.isCallback(uri)) {
             mediaUiScope.launch {
@@ -12946,8 +12964,9 @@ $emailText"""
     }
 
     private fun geminiConfigured(): Boolean {
+        // Enabled when AI is on AND we can reach Gemini — either account mode (proxy) or a local key.
         return prefs().getBoolean(GEMINI_ENABLED_PREF, false) &&
-            !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank()
+            (GeminiClient.proxy != null || !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank())
     }
 
     private fun startSafeIntent(intent: Intent, failureMessage: String) {
