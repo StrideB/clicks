@@ -9374,23 +9374,26 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 val clf = StatisticalGlideTypingClassifier()
                 clf.setWordData(loaded.words, freqs)
-                // Optional neural decoder — no-op (isReady=false) unless a trained model ships in assets.
+                // Make glide available immediately with the statistical classifier; the heavy neural
+                // ONNX load must not block it (that stalls glide for seconds on a real device).
+                launch(Dispatchers.Main) {
+                    glideClassifier = clf
+                    wordlistFrequencies = freqs
+                    predictionEngine = PredictionEngine(freqs)
+                    updateGlideLayout()
+                }
+                // Legacy encoder-only decoder (kept for A/B) + the new encoder-decoder engine load
+                // off the critical path and join the hybrid when ready.
                 val neural = com.fran.clicks.keyboard.NeuralSwipeEngine(this@MainActivity).also { it.tryLoad() }
-                // New encoder-decoder engine (shared with the IME). Shares the same dictionary; load()
-                // stays not-ready until model assets exist, so this changes nothing on its own.
                 val neuralV2 = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this@MainActivity).apply {
                     setDictionary(loaded.words, freqs)
                     load()
                 }
                 android.util.Log.d("NeuralSwipe", "Widget neural engine ready=${neuralV2.isReady} personal=${personal.size}")
                 launch(Dispatchers.Main) {
-                    glideClassifier = clf
                     neuralSwipe = neural.takeIf { it.isReady }
                     neuralGlideV2 = neuralV2
                     hybridDecoderV2 = com.fran.clicks.keyboard.neural.HybridGlideDecoder(neuralV2)
-                    wordlistFrequencies = freqs
-                    predictionEngine = PredictionEngine(freqs)
-                    updateGlideLayout()
                 }
             }
         }

@@ -714,17 +714,13 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             val extFreqs = mergePersonalFreqs(adaptive.extendedFreqs, personal)
             val clf = StatisticalGlideTypingClassifier()
             clf.setWordData(adaptive.extendedWords, extFreqs)
-            // Neural decoder shares the same dictionary; load() is a no-op (stays not-ready) until a
-            // model is placed in assets, so this never changes behavior on its own.
-            val neural = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this).apply {
-                setDictionary(adaptive.extendedWords, extFreqs)
-                load()
-            }
-            android.util.Log.d("NeuralSwipe", "IME neural engine ready=${neural.isReady} personal=${personal.size}")
+            // Make glide typing available IMMEDIATELY with the fast statistical classifier. The neural
+            // model's ONNX session creation is heavy (seconds on a real device), so loading it here
+            // would block glide from working until it finished — that's a regression. Post the
+            // classifier first, then load the model separately; the hybrid falls back to statistical
+            // until neural is ready.
             handler.post {
                 glideClassifier = clf
-                neuralGlide = neural
-                hybridDecoder = com.fran.clicks.keyboard.neural.HybridGlideDecoder(neural)
                 glideFreqs = extFreqs
                 predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
                 predictionEngineExtended = PredictionEngine(extFreqs)
@@ -733,6 +729,16 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 predictionEngine = predictionEnginePrimary
                 android.util.Log.d("ClicksGlide", "classifier loaded words=${adaptive.extendedWords.size}")
                 updateGlideLayout()
+            }
+            // Load the neural model off the critical path; it joins the hybrid when ready.
+            val neural = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this).apply {
+                setDictionary(adaptive.extendedWords, extFreqs)
+                load()
+            }
+            android.util.Log.d("NeuralSwipe", "IME neural engine ready=${neural.isReady} personal=${personal.size}")
+            handler.post {
+                neuralGlide = neural
+                hybridDecoder = com.fran.clicks.keyboard.neural.HybridGlideDecoder(neural)
             }
         }.start()
     }
