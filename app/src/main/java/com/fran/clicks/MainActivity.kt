@@ -69,6 +69,8 @@ import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.Scroller
@@ -586,6 +588,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val ok = spotifyAuth.handleCallback(uri)
                 if (ok) {
                     prefs().edit().putString(SPOTIFY_INTEGRATION_PREF, INTEGRATION_API).apply()
+                    // Connect happened mid-session — populate the library now, otherwise it stays
+                    // empty until the next cold start and the music screen shows "reconnect".
+                    preloadSpotifyLibrary()
                     renderPaneContent(clicksSettingsTarget())
                     Toast.makeText(this@MainActivity, "Spotify connected!", Toast.LENGTH_SHORT).show()
                 } else {
@@ -643,6 +648,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
         if (now - lastContactsLoadMs > 30_000) { preloadContactsCache(); lastContactsLoadMs = now }
         if (::briefRepository.isInitialized) briefRepository.refreshDebounced(200)
+        // Self-heal an empty Spotify library (e.g. connected in a previous session but never loaded).
+        if (::spotifyAuth.isInitialized && spotifyAuth.isConnected &&
+            spotifyCachedPlaylists.isEmpty() && spotifyCachedLikedSongs.isEmpty() && spotifyCachedRecent.isEmpty()) {
+            preloadSpotifyLibrary()
+        }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
         if (::ribbonView.isInitialized) {
             updateClock()
@@ -1047,6 +1057,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyViews.clear()
         keyBounds.clear()
         applyTheme()
+        syncSystemBars()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(activeNeuTokens.base)
@@ -9956,7 +9967,10 @@ Reply format: ["word1","word2","word3"]"""
         // momentum immediately and fire the end-of-scroll signal now instead
         // of letting the glide decay against the edge.
         fun cancelFling() {
-            if (!flinging) return
+            val wasFlinging = flinging
+            ringVelocity = 0.0
+            ringAccum = 0.0
+            if (!wasFlinging) return
             stopFling()
             onScrollEnd?.invoke()
         }
@@ -10767,6 +10781,7 @@ Reply format: ["word1","word2","word3"]"""
             return
         }
         showPane(target, animate = true); renderRibbon(); refreshKeyboardDock()
+        syncSystemBars()
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
     }
@@ -10912,6 +10927,7 @@ Reply format: ["word1","word2","word3"]"""
         if (closingPane?.kind == PaneKind.PHOTOS) zeissButtonView?.animateShutterOpen()
         if (closingPane?.kind == PaneKind.MUSIC) hideMusicProgressFromHintBar()
         updateKeyLabels(); updateSuggestionBar(); renderRibbon(); refreshKeyboardDock(); syncNowPlayingCardVisibility(); refreshNowPlayingCard()
+        syncSystemBars()
         if (restoreWidgetKeyboard) {
             render()
             return
@@ -15756,7 +15772,42 @@ $emailText"""
         val next = selectedNeuTokens()
         val changed = activeNeuTokens.mode != next.mode || activeNeuTokens.base != next.base
         activeNeuTokens = next
+        syncSystemBars()
         return changed
+    }
+
+    private fun syncSystemBars() {
+        if (isFinishing) return
+        val mediaDock = openPane?.usesMediaDock() == true
+        val darkBars = mediaDock || activeNeuTokens.mode == NeuMode.DARK
+        window.navigationBarColor = if (darkBars) Color.BLACK else activeNeuTokens.base
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+
+        val lightStatus = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock
+        val lightNav = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock
+        var flags = window.decorView.systemUiVisibility
+        flags = if (lightStatus) flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            else flags and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        flags = if (lightNav) flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            else flags and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+        window.decorView.systemUiVisibility = flags
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.let { controller ->
+                val appearance = (if (lightStatus) WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS else 0) or
+                    (if (lightNav) WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS else 0)
+                controller.setSystemBarsAppearance(
+                    appearance,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                        WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                )
+                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (mediaDock) controller.hide(WindowInsets.Type.navigationBars())
+                else controller.show(WindowInsets.Type.navigationBars())
+            }
+        }
     }
 
     private fun updateLauncherTheme(animated: Boolean, forceRender: Boolean = false) {
