@@ -145,6 +145,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
     private val keyUpSymbols get() = com.fran.clicks.keyboard.KeyboardSymbols.keyUp
     private var suggestions: List<String> = emptyList()
+    // True right after a glide commits a word, while the strip shows the swipe's other decodings as
+    // tap-to-correct alternatives. Any physical key press clears it (back to normal typing/next-word).
+    private var glideJustCommitted = false
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
     private var geminiDebounce: Runnable? = null
@@ -160,6 +163,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     override fun onCreateInputView(): View {
         shifted = false
+        // Account mode: route AI through the proxy with the signed-in user's Google ID token.
+        GeminiClient.proxy = GeminiProxy.binding(this)
         ensureGlideClassifier()
         initSpellChecker()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
@@ -487,6 +492,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun handleKey(label: String) {
         pendingCommand = null
         pendingActions = emptyList()
+        glideJustCommitted = false   // leaving the post-swipe "tap an alternative" window
         val input = currentInputConnection
         when (label) {
             "shift" -> {
@@ -510,7 +516,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 }
                 onTextChanged()
             }
-            "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
+            "enter" -> {
+                // Proofread mode: fix clearly-misspelled words before the message is sent.
+                if (proofreadEnabled()) proofreadBeforeCursor()
+                keyEvent(KeyEvent.KEYCODE_ENTER)
+            }
             "space" -> {
                 if (maybeRunAiCommand()) return
                 // Double-space → ". " via the shared core.
@@ -519,7 +529,13 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     lastSpaceMs = 0L; updateAutoCap(); return
                 }
                 lastSpaceMs = now
-                if (autocorrectEnabled()) autocorrect.correctBeforeCommit()
+                if (proofreadEnabled()) {
+                    // Never auto-change the word mid-sentence; just learn it (so your slang/abbrev
+                    // stops being flagged) and let it stand. Fixing happens only on send.
+                    userDict.noteTyped(currentWord())
+                } else if (autocorrectEnabled()) {
+                    autocorrect.correctBeforeCommit()
+                }
                 commitValue(" ")
                 learnAndPredictAfterSpace()
                 updateAutoCap()
@@ -899,6 +915,29 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun autocorrectEnabled() = imePrefs().getBoolean(IME_AUTOCORRECT_PREF, true)
 
+    // Proofread mode (opt-in): don't auto-change words as you type — instead learn your words and fix
+    // clearly-misspelled ones only when you send. Off by default, so normal typing is untouched.
+    private fun proofreadEnabled() = imePrefs().getBoolean(IME_PROOFREAD_PREF, false)
+    private val userDict by lazy { com.fran.clicks.keyboard.UserDictionary(imePrefs()) }
+
+    /** Fix clearly-misspelled words in the text before the cursor (used on send in proofread mode).
+     *  Leaves dictionary words, your own words, and anything without a confident correction alone. */
+    private fun proofreadBeforeCursor() {
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(1000, 0)?.toString() ?: return
+        if (before.isBlank()) return
+        val fixed = com.fran.clicks.keyboard.Proofreader.fix(
+            before,
+            isKnownWord = { predictionEngine.isDictWord(it) || userDict.contains(it) },
+            correct = { predictionEngine.bestCorrection(it) }
+        )
+        if (fixed == before) return
+        ic.beginBatchEdit()
+        ic.deleteSurroundingText(before.length, 0)
+        ic.commitText(fixed, 1)
+        ic.endBatchEdit()
+    }
+
     private fun scheduleLiveCorrect() {
         // Disabled: rewriting a word mid-typing (before space) fights the user and re-triggers when
         // they go back to retype. Correct only on space/punctuation (undoable via backspace) and show
@@ -945,19 +984,36 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         else primary + words.filterNot { predictionEnginePrimary.isDictWord(it) }
     }
 
-    private fun learnAndPredictAfterSpace() {
+    /** Learn the just-committed word against its predecessor (n-gram) and warm next-word predictions,
+     *  WITHOUT touching the suggestion strip — so a glide can learn while still showing alternatives. */
+    private fun recordCommittedWordContext() {
         updateActiveLanguage()
         val tokens = wordsBeforeCursor()
         if (tokens.size >= 2) ngramRepo.recordWord(tokens[tokens.size - 1], tokens[tokens.size - 2])
         val last = tokens.lastOrNull().orEmpty()
         if (last.isNotEmpty()) ngramRepo.prefetchNextWords(last)
+    }
+
+    private fun learnAndPredictAfterSpace() {
+        recordCommittedWordContext()
+        val last = wordsBeforeCursor().lastOrNull().orEmpty()
         suggestions = if (last.isNotEmpty()) ngramRepo.cachedNextWords(last).take(3) else emptyList()
+        glideJustCommitted = false   // these are next-word predictions: tapping one appends
         updateStrip()
     }
 
     private fun acceptSuggestion(word: String) {
         if (currentInputConnection == null) return
-        predictionCore.replaceCurrentWord(word)
+        val before = predictionCore.currentWord()
+        when {
+            // Mid-word: the strip shows completions/corrections of the partial word → replace it.
+            before.isNotEmpty() -> predictionCore.replaceCurrentWord(word)
+            // Just swiped: the strip shows alternate decodings → replace the committed word so a
+            // mis-decode is fixed in place instead of the alternative being appended after it.
+            glideJustCommitted -> { predictionCore.replaceCommittedWord(word); recordCommittedWordContext(); updateStrip(); return }
+            // Otherwise these are next-word predictions → append.
+            else -> currentInputConnection?.commitText("$word ", 1)
+        }
         learnAndPredictAfterSpace()
     }
 
@@ -1800,9 +1856,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }.start()
     }
 
+    // A glide that the decoder couldn't turn into a word must NOT dump the raw traced letters into the
+    // text (that's the "swipe gives a bunch of letters, not the word" bug). Drop it instead — a lost
+    // gesture is far better than garbage. This only happens when the classifier isn't ready yet or the
+    // shape genuinely matched nothing; both are rare once the dictionary has loaded.
     private fun handleSwipeFallback(keys: List<String>) {
-        val rawWord = keys.joinToString("")
-        currentInputConnection?.commitText(rawWord, 1)
+        // intentionally a no-op — never commit the raw key trace
     }
 
     private fun deleteWord() {
@@ -2120,10 +2179,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) haptics().glideCommit()
                                 val top = glideCore.rerank(results)
-                                glideCore.commitWord(top); learnAndPredictAfterSpace()
+                                glideCore.commitWord(top)
+                                recordCommittedWordContext()
+                                // Online-learning: record the accepted glide for personal frequency + corpus.
                                 glideLearning.recordAcceptance(top, neuralPath, bounds, res.source, res.agreed)
-                            } else if (tracedKeys.size >= 3) {
-                                keyHaptic("space"); handleSwipeFallback(tracedKeys)
+                                // Show the swipe's other decodings as tap-to-correct alternatives
+                                // (parity with the launcher): a mis-decode is one tap from fixed.
+                                suggestions = (listOf(top) + results.filter { it != top }).distinct().take(3)
+                                glideJustCommitted = true
+                                updateStrip()
+                            } else {
+                                handleSwipeFallback(tracedKeys)   // no-op: never dump raw letters
                             }
                             fadeGlideTrail()
                         }

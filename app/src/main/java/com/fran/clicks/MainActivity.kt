@@ -281,6 +281,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastSpaceMs = 0L
     private var lastShiftTapMs = 0L
     private var suggestions: List<String> = emptyList()
+    // True right after a glide commits a word, while the strip shows the swipe's other decodings as
+    // tap-to-correct alternatives. Any physical key press clears it (see handleKey).
+    private var glideJustCommitted = false
     private val deleteRepeatHandler = Handler(Looper.getMainLooper())
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteRepeatActive = false
@@ -350,6 +353,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     lateinit var spotifyApi: SpotifyWebApi
     lateinit var gmailAuth: GmailAuth
     lateinit var gmailApi: GmailApi
+    private val accountAuth by lazy { AccountAuth(this) }
     lateinit var travelRepo: TravelRepository
     private var spotifyCachedRecent = listOf<SpotifyTrack>()
     private var spotifyCachedRecentArts = listOf<android.graphics.Bitmap?>()
@@ -519,6 +523,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spotifyApi = SpotifyWebApi(spotifyAuth)
         gmailAuth = GmailAuth(this)
         gmailApi = GmailApi(gmailAuth)
+        // Account mode: route AI through the proxy with the user's Google ID token (no device key).
+        GeminiClient.proxy = GeminiProxy.binding(this)
         travelRepo = TravelRepository(gmailApi)
         if (spotifyAuth.isConnected) preloadSpotifyLibrary()
         initSpellChecker()
@@ -596,6 +602,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 } else {
                     Toast.makeText(this@MainActivity, "Spotify connection failed. Try again.", Toast.LENGTH_SHORT).show()
                 }
+            }
+        } else if (accountAuth.isCallback(uri)) {
+            // Checked before Gmail: both share the reversed scheme, distinguished by redirect path.
+            mediaUiScope.launch {
+                val ok = withContext(Dispatchers.IO) { accountAuth.handleCallback(uri) }
+                if (ok) {
+                    prefs().edit().putBoolean(GeminiProxy.ACCOUNT_MODE_PREF, true).apply()
+                    GeminiClient.proxy = GeminiProxy.binding(this@MainActivity)
+                }
+                Toast.makeText(
+                    this@MainActivity,
+                    if (ok) "Signed in — AI is ready" else "Sign-in failed. Try again.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(clicksSettingsTarget())
             }
         } else if (gmailAuth.isCallback(uri)) {
             mediaUiScope.launch {
@@ -8937,7 +8958,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun acceptSuggestion(word: String) {
         val pane = openPane
-        predictionCore.replaceCurrentWord(word)   // shared word-replace via the host
+        when {
+            // Mid-word: strip shows completions/corrections of the partial word → replace it.
+            predictionCore.currentWord().isNotEmpty() -> predictionCore.replaceCurrentWord(word)
+            // Just swiped: strip shows alternate decodings → replace the committed word in place.
+            glideJustCommitted -> predictionCore.replaceCommittedWord(word)
+            // Otherwise these are next-word predictions → append.
+            else -> predictionCore.replaceCurrentWord(word)   // no partial + not a glide: safe append
+        }
         if (pane?.kind == PaneKind.CHAT) {
             updateAutoCapState(); updateKeyLabels()
             renderPaneContent(pane)
@@ -9494,23 +9522,15 @@ Reply format: ["word1","word2","word3"]"""
         if (toks.size >= 2) ngramRepo.recordWord(toks.last(), toks[toks.size - 2])
         ngramRepo.prefetchNextWords(topWord)
         suggestions = (listOf(topWord) + results.filter { it != topWord }).distinct().take(3)
+        glideJustCommitted = true   // strip now shows tap-to-correct alternatives
         updateSuggestionBar()
         renderRibbon()
     }
 
+    // A glide the decoder couldn't turn into a word must NOT dump the raw traced letters into the
+    // field (the "swipe gives a bunch of letters" bug). Drop it — a lost gesture beats garbage.
     private fun handleSwipeFallback(keys: List<String>) {
-        haptic(contentFrame)
-        val rawWord = keys.joinToString("")
-        val pane = openPane
-        if (pane?.kind == PaneKind.CHAT) {
-            composeText += rawWord
-            scheduleSpellCheck()
-            renderPaneContent(pane)
-        } else {
-            query += rawWord
-            scheduleSpellCheck()
-        }
-        renderRibbon()
+        // intentionally a no-op — never commit the raw key trace
     }
 
     private fun glideTrailColors(): IntArray {
@@ -10412,6 +10432,7 @@ Reply format: ["word1","word2","word3"]"""
         }
         pendingLauncherCommand = null
         pendingLauncherActions = emptyList()
+        glideJustCommitted = false   // leaving the post-swipe "tap an alternative" window
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) { handleChatKey(label, pane); return }
         if (pane?.kind == PaneKind.AI) { handleAiKey(label, pane); return }
@@ -13317,8 +13338,9 @@ $emailText"""
     }
 
     private fun geminiConfigured(): Boolean {
+        // Enabled when AI is on AND we can reach Gemini — either account mode (proxy) or a local key.
         return prefs().getBoolean(GEMINI_ENABLED_PREF, false) &&
-            !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank()
+            (GeminiClient.proxy != null || !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank())
     }
 
     private fun startSafeIntent(intent: Intent, failureMessage: String) {

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
@@ -25,6 +26,10 @@ const val IME_AUTOCORRECT_PREF = "autocorrect_enabled"
 
 /** Smart touch: let the model reassign near-boundary taps. Off = taps are always taken literally. */
 const val IME_SMART_TOUCH_PREF = "smart_touch_enabled"
+
+/** Proofread mode (opt-in): never auto-change words while typing; fix misspellings only on send, and
+ *  learn the user's own words so slang/abbreviations are protected. Default off. */
+const val IME_PROOFREAD_PREF = "proofread_mode"
 
 /**
  * The IME's own settings screen — launched from Android's system keyboard settings (wired via
@@ -97,6 +102,10 @@ class ImeSettingsActivity : Activity() {
             c.addView(divider())
             c.addView(toggleRow("Smart touch", "Nudge near-edge taps to the likely key. Turn off for literal taps.",
                 IME_SMART_TOUCH_PREF, true))
+            c.addView(divider())
+            c.addView(toggleRow("Proofread mode (beta)",
+                "Don't change words as you type. Learn your slang, and fix only clear misspellings when you send.",
+                IME_PROOFREAD_PREF, false))
         }
 
         // Languages
@@ -114,8 +123,18 @@ class ImeSettingsActivity : Activity() {
             c.addView(toggleRow("AI suggestions & Polish", "Gemini-powered predictions and rewrite",
                 GEMINI_ENABLED_PREF, false))
             c.addView(divider())
+            // Account mode: sign in with Google and AI just works — no API key to create or paste.
+            c.addView(accountRow())
+            c.addView(text(
+                "Recommended — no API key needed. AI runs through the Clicks service on your account.",
+                12f, t.inkDim).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(4) })
+            c.addView(divider())
+            c.addView(text("Advanced — bring your own key instead", 11.5f, t.inkFaint).apply {
+                (layoutParams as LinearLayout.LayoutParams).topMargin = dp(6)
+            })
             c.addView(inputRow("Gemini API key", GeminiClient.API_KEY_PREF, "Paste your API key", secret = true))
             c.addView(inputRow("Model", GeminiClient.MODEL_PREF, GeminiClient.DEFAULT_MODEL, secret = false))
+            c.addView(inputRow("AI proxy URL", GeminiProxy.URL_PREF, "https://…workers.dev", secret = false))
             val pro = ProManager.isUnlocked(this)
             c.addView(text(
                 if (pro) "Pro unlocked — ✨ Polish and //commands are available."
@@ -291,6 +310,45 @@ class ImeSettingsActivity : Activity() {
                 layoutParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
                 ).apply { topMargin = dp(2) }
+            })
+        }
+    }
+
+    /** Google sign-in row: connect an account (AI with no key) or show/sign out the current one. */
+    private fun accountRow(): View {
+        val auth = AccountAuth(this)
+        val signedIn = auth.isSignedIn
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(8), 0, dp(8))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(text(if (signedIn) "Signed in with Google" else "Sign in with Google", 15.5f, t.ink))
+                addView(text(
+                    if (signedIn) (auth.email ?: "Account connected") else "AI with no API key to create or paste",
+                    12.5f, t.inkDim
+                ).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(1) })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(context).apply {
+                text = if (signedIn) "Sign out" else "Sign in"
+                textSize = 12.5f; gravity = Gravity.CENTER
+                setTextColor(if (signedIn) t.inkDim else 0xFFF5F2FF.toInt())
+                setPadding(dp(16), dp(9), dp(16), dp(9))
+                background = GradientDrawable().apply {
+                    setColor(if (signedIn) 0x22000000 else accent); cornerRadius = dp(11).toFloat()
+                }
+                isClickable = true
+                setOnClickListener {
+                    if (signedIn) {
+                        auth.signOut()
+                        prefs().edit().putBoolean(GeminiProxy.ACCOUNT_MODE_PREF, false).apply()
+                        GeminiClient.proxy = null
+                        recreate()
+                    } else {
+                        auth.startSignIn(this@ImeSettingsActivity)
+                    }
+                }
             })
         }
     }

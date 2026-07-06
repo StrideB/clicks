@@ -1,0 +1,17 @@
+# Cloudflare Worker config for the Clicks AI proxy.
+# Deploy with:  npx wrangler deploy   (see README.md for the full one-time setup)
+
+name = "clicks-gemini"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Per-user daily quota counters live in this KV namespace. Create it once with:
+#   npx wrangler kv namespace create QUOTA
+# then paste the returned id below.
+[[kv_namespaces]]
+binding = "QUOTA"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Secrets are NOT stored here — set them with wrangler so they never touch the repo:
+#   npx wrangler secret put GEMINI_API_KEY     # your Gemini key from aistudio.google.com
+#   npx wrangler secret put GOOGLE_CLIENT_ID    # the OAuth client ID the app signs in with
