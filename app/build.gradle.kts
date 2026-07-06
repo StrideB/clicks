@@ -17,6 +17,19 @@ android {
         versionName = "0.1.0"
     }
 
+    // Shared debug signing: a committed keystore so every build (any machine / any session) signs
+    // identically. Without this, each machine's own ~/.android/debug.keystore produces a different
+    // signature, so reinstalling a build from another session was rejected as a signature mismatch
+    // and required a data-wiping uninstall. Standard debug credentials — safe to commit.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("clicks-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
