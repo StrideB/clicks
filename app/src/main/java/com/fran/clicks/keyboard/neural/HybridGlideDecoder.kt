@@ -42,11 +42,17 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
     // ── Tunables ──
     /** RRF damping; larger = flatter weighting across ranks. */
     var rrfK: Double = 60.0
-    /** Base fusion weight of each engine's votes. */
-    var neuralWeight: Double = 1.0
+    // The statistical shape decoder is geometric and reliable (it handles double-letter loops via an
+    // explicit loop gesture, and every candidate is a real dictionary word). The neural model is
+    // trained on synthetic data and still has a real gap on real-finger swipes — it's WRONG most
+    // often exactly on the hard cases (double letters like "google"/"allow"). So the statistical
+    // decoder LEADS and neural only assists; it must not be able to override a confident geometric
+    // match. Retrain the model on real captured swipes (the learning loop) to raise neuralWeight.
+    var neuralWeight: Double = 0.55
     var statisticalWeight: Double = 1.0
-    /** Multiplier applied to the neural votes when its #1 is confidently ahead of its #2. */
-    var confidentNeuralBoost: Double = 1.8
+    /** Multiplier on neural votes when its #1 is clearly ahead of its #2. 1.0 = never override
+     *  statistical (a confident-but-wrong neural pick was breaking double-letter words). */
+    var confidentNeuralBoost: Double = 1.0
     /** Min gap between neural #1 and #2 scores to count as "confident". */
     var confidenceMargin: Float = 1.2f
     /** Run statistical first and prime the neural beam with it (L2). Off = fully parallel (L1 only). */
