@@ -503,7 +503,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 }
                 onTextChanged()
             }
-            "enter" -> keyEvent(KeyEvent.KEYCODE_ENTER)
+            "enter" -> {
+                // Proofread mode: fix clearly-misspelled words before the message is sent.
+                if (proofreadEnabled()) proofreadBeforeCursor()
+                keyEvent(KeyEvent.KEYCODE_ENTER)
+            }
             "space" -> {
                 if (maybeRunAiCommand()) return
                 // Double-space → ". " via the shared core.
@@ -512,7 +516,13 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     lastSpaceMs = 0L; updateAutoCap(); return
                 }
                 lastSpaceMs = now
-                if (autocorrectEnabled()) autocorrect.correctBeforeCommit()
+                if (proofreadEnabled()) {
+                    // Never auto-change the word mid-sentence; just learn it (so your slang/abbrev
+                    // stops being flagged) and let it stand. Fixing happens only on send.
+                    userDict.noteTyped(currentWord())
+                } else if (autocorrectEnabled()) {
+                    autocorrect.correctBeforeCommit()
+                }
                 commitValue(" ")
                 learnAndPredictAfterSpace()
                 updateAutoCap()
@@ -834,6 +844,29 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     }
 
     private fun autocorrectEnabled() = imePrefs().getBoolean(IME_AUTOCORRECT_PREF, true)
+
+    // Proofread mode (opt-in): don't auto-change words as you type — instead learn your words and fix
+    // clearly-misspelled ones only when you send. Off by default, so normal typing is untouched.
+    private fun proofreadEnabled() = imePrefs().getBoolean(IME_PROOFREAD_PREF, false)
+    private val userDict by lazy { com.fran.clicks.keyboard.UserDictionary(imePrefs()) }
+
+    /** Fix clearly-misspelled words in the text before the cursor (used on send in proofread mode).
+     *  Leaves dictionary words, your own words, and anything without a confident correction alone. */
+    private fun proofreadBeforeCursor() {
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(1000, 0)?.toString() ?: return
+        if (before.isBlank()) return
+        val fixed = com.fran.clicks.keyboard.Proofreader.fix(
+            before,
+            isKnownWord = { predictionEngine.isDictWord(it) || userDict.contains(it) },
+            correct = { predictionEngine.bestCorrection(it) }
+        )
+        if (fixed == before) return
+        ic.beginBatchEdit()
+        ic.deleteSurroundingText(before.length, 0)
+        ic.commitText(fixed, 1)
+        ic.endBatchEdit()
+    }
 
     private fun scheduleLiveCorrect() {
         // Disabled: rewriting a word mid-typing (before space) fights the user and re-triggers when
