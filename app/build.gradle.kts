@@ -63,4 +63,7 @@ dependencies {
     implementation("androidx.dynamicanimation:dynamicanimation-ktx:1.0.0-alpha03")
     implementation("com.android.billingclient:billing-ktx:7.1.1")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
+    // Unit tests for the shared keyboard core (pure-JVM logic: word placement, prediction/autocorrect).
+    testImplementation("junit:junit:4.13.2")
 }
