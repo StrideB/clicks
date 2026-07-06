@@ -194,6 +194,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         currentEditorPackage = info?.packageName?.toString() ?: currentEditorPackage
+        ensureGlideClassifier()   // retry if a previous load failed (onCreateInputView runs only once)
         if (isLauncherEditorActive()) {
             hideImeSurface()
             return
@@ -701,47 +702,84 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         return out
     }
 
+    @Volatile private var glideLoading = false
     private fun ensureGlideClassifier() {
-        if (glideClassifier != null) return
+        if (glideClassifier != null || glideLoading) return
+        glideLoading = true
         Thread {
-            // Primary language is active by default; secondary phone languages load as a latent
-            // extended dictionary that only takes over once the user writes a couple of its words
-            // (see updateActiveLanguage). Glide can shape-match the full set so gestures work in any.
-            val adaptive = com.fran.clicks.keyboard.DictionaryLoader.loadAdaptive(this)
-            // Online-learning loop: fold accepted-glide personal frequencies into the dictionary so
-            // both decoders rank the words you actually swipe higher (Level 3).
-            val personal = glideLearning.personalFrequencyBoost()
-            val extFreqs = mergePersonalFreqs(adaptive.extendedFreqs, personal)
-            val clf = StatisticalGlideTypingClassifier()
-            clf.setWordData(adaptive.extendedWords, extFreqs)
-            // Make glide typing available IMMEDIATELY with the fast statistical classifier. The neural
-            // model's ONNX session creation is heavy (seconds on a real device), so loading it here
-            // would block glide from working until it finished — that's a regression. Post the
-            // classifier first, then load the model separately; the hybrid falls back to statistical
-            // until neural is ready.
-            handler.post {
-                glideClassifier = clf
-                glideFreqs = extFreqs
-                predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
-                predictionEngineExtended = PredictionEngine(extFreqs)
-                hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
-                latentLanguageActive = false
-                predictionEngine = predictionEnginePrimary
-                android.util.Log.d("ClicksGlide", "classifier loaded words=${adaptive.extendedWords.size}")
-                updateGlideLayout()
+            // STEP 1 — get the statistical classifier live with the fewest possible dependencies.
+            // Everything that could fail (personal-freq merge, neural ONNX load) is deferred to steps
+            // 2/3 so a failure there can never leave glide typing dead (the bug that made swipes emit
+            // raw key-path gibberish). Falls back to the plain union dictionary if the adaptive load
+            // throws for any reason.
+            var baseFreqs: Map<String, Float> = emptyMap()
+            var glideWords: List<String> = emptyList()
+            try {
+                val (words, freqs, primaryFreqs, extendedFreqs, latent) = loadGlideDictionary()
+                baseFreqs = freqs
+                glideWords = words
+                val clf = StatisticalGlideTypingClassifier()
+                clf.setWordData(words, freqs)
+                handler.post {
+                    glideClassifier = clf
+                    glideFreqs = freqs
+                    predictionEnginePrimary = PredictionEngine(primaryFreqs)
+                    predictionEngineExtended = PredictionEngine(extendedFreqs)
+                    hasLatentLanguages = latent
+                    latentLanguageActive = false
+                    predictionEngine = predictionEnginePrimary
+                    android.util.Log.d("ClicksGlide", "classifier loaded words=${words.size}")
+                    updateGlideLayout()
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("ClicksGlide", "classifier load FAILED", t)
+                glideLoading = false
+                return@Thread   // let a later onStartInputView retry
             }
-            // Load the neural model off the critical path; it joins the hybrid when ready.
-            val neural = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this).apply {
-                setDictionary(adaptive.extendedWords, extFreqs)
-                load()
-            }
-            android.util.Log.d("NeuralSwipe", "IME neural engine ready=${neural.isReady} personal=${personal.size}")
-            handler.post {
-                neuralGlide = neural
-                hybridDecoder = com.fran.clicks.keyboard.neural.HybridGlideDecoder(neural)
-            }
+
+            // STEP 2 — fold in personal glide frequencies (best-effort; never blocks glide).
+            runCatching {
+                val personal = glideLearning.personalFrequencyBoost()
+                if (personal.isNotEmpty()) {
+                    val merged = mergePersonalFreqs(baseFreqs, personal)
+                    glideClassifier?.setWordData(glideWords, merged)
+                    handler.post { glideFreqs = merged }
+                }
+            }.onFailure { android.util.Log.w("ClicksGlide", "personal freq merge skipped: ${it.message}") }
+
+            // STEP 3 — load the neural model (heavy); it joins the hybrid when ready (best-effort).
+            runCatching {
+                val neural = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this).apply {
+                    setDictionary(glideWords, glideFreqs)
+                    load()
+                }
+                android.util.Log.d("NeuralSwipe", "IME neural engine ready=${neural.isReady}")
+                handler.post {
+                    neuralGlide = neural
+                    hybridDecoder = com.fran.clicks.keyboard.neural.HybridGlideDecoder(neural)
+                }
+            }.onFailure { android.util.Log.w("NeuralSwipe", "neural load skipped: ${it.message}") }
+
+            glideLoading = false
         }.start()
     }
+
+    /** (glideWords, glideFreqs, primaryFreqs, extendedFreqs, hasLatent). Uses the adaptive loader,
+     *  falling back to the plain union dictionary if it throws — the IME must always get a dictionary. */
+    private fun loadGlideDictionary(): Quintuple {
+        return try {
+            val a = com.fran.clicks.keyboard.DictionaryLoader.loadAdaptive(this)
+            Quintuple(a.extendedWords, a.extendedFreqs, a.primaryFreqs, a.extendedFreqs, a.latentLangs.isNotEmpty())
+        } catch (t: Throwable) {
+            android.util.Log.w("ClicksGlide", "loadAdaptive failed, using union dict: ${t.message}")
+            val l = com.fran.clicks.keyboard.DictionaryLoader.load(this)
+            Quintuple(l.words, l.freqs, l.freqs, l.freqs, false)
+        }
+    }
+    private data class Quintuple(
+        val extendedWords: List<String>, val extendedFreqs: Map<String, Float>,
+        val primaryFreqs: Map<String, Float>, val extFreqs: Map<String, Float>, val latent: Boolean
+    )
 
     // Glide word placement/rerank/context now live in the shared GlideCore.
 
