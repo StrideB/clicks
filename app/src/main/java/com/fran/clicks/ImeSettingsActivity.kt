@@ -26,6 +26,10 @@ const val IME_AUTOCORRECT_PREF = "autocorrect_enabled"
 /** Smart touch: let the model reassign near-boundary taps. Off = taps are always taken literally. */
 const val IME_SMART_TOUCH_PREF = "smart_touch_enabled"
 
+/** Proofread mode (opt-in): never auto-change words while typing; fix misspellings only on send, and
+ *  learn the user's own words so slang/abbreviations are protected. Default off. */
+const val IME_PROOFREAD_PREF = "proofread_mode"
+
 /**
  * The IME's own settings screen — launched from Android's system keyboard settings (wired via
  * android:settingsActivity in clicks_input_method.xml). Built programmatically in the Neu design
@@ -97,6 +101,10 @@ class ImeSettingsActivity : Activity() {
             c.addView(divider())
             c.addView(toggleRow("Smart touch", "Nudge near-edge taps to the likely key. Turn off for literal taps.",
                 IME_SMART_TOUCH_PREF, true))
+            c.addView(divider())
+            c.addView(toggleRow("Proofread mode (beta)",
+                "Don't change words as you type. Learn your slang, and fix only clear misspellings when you send.",
+                IME_PROOFREAD_PREF, false))
         }
 
         // Languages

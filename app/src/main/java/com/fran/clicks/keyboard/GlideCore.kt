@@ -42,11 +42,6 @@ class GlideCore(
         return if (best != null && ctx.contains(best.lowercase(Locale.US))) best else results.first()
     }
 
-    /** Place a glided word: append after a completed word, or replace the in-progress partial word.
-     *  Deleting the trailing letters before the cursor handles both cases uniformly. */
-    fun commitWord(word: String) {
-        val curLen = host.textBeforeCursor(64).takeLastWhile { it.isLetter() }.length
-        if (curLen > 0) host.deleteBeforeCursor(curLen)
-        host.commitText("$word ")
-    }
+    /** Place a glided word: append after a completed word, or replace the in-progress partial word. */
+    fun commitWord(word: String) = WordEditing.commitGlideWord(host, word)
 }

@@ -16,7 +16,7 @@ class PredictionCore(
     private val engine: () -> PredictionEngine,
     private val ngram: NgramRepository
 ) {
-    fun currentWord(): String = host.textBeforeCursor(48).takeLastWhile { it.isLetter() }
+    fun currentWord(): String = WordEditing.currentWord(host)
 
     fun previousWord(): String {
         val before = host.textBeforeCursor(96)
@@ -43,9 +43,12 @@ class PredictionCore(
     }
 
     /** Replace the in-progress word with [word] + a trailing space (the host learns afterwards). */
-    fun replaceCurrentWord(word: String) {
-        val cur = currentWord()
-        if (cur.isNotEmpty()) host.deleteBeforeCursor(cur.length)
-        host.commitText("$word ")
-    }
+    fun replaceCurrentWord(word: String) = WordEditing.replaceCurrentWord(host, word)
+
+    /**
+     * Replace the *just-committed* word — a word followed by a single trailing space, as left by a
+     * glide or autocorrect — with [word]. This is what makes "tap an alternative right after a swipe"
+     * replace the swiped word instead of appending to it.
+     */
+    fun replaceCommittedWord(word: String) = WordEditing.replaceCommittedWord(host, word)
 }
