@@ -48,4 +48,19 @@ class PredictionCore(
         if (cur.isNotEmpty()) host.deleteBeforeCursor(cur.length)
         host.commitText("$word ")
     }
+
+    /**
+     * Replace the *just-committed* word — a word followed by a single trailing space, as left by a
+     * glide or autocorrect — with [word]. This is what makes "tap an alternative right after a swipe"
+     * replace the swiped word instead of appending to it. Falls back to [replaceCurrentWord] when the
+     * cursor isn't sitting just after a "word " (e.g. mid-typing), so one method handles both cases.
+     */
+    fun replaceCommittedWord(word: String) {
+        val before = host.textBeforeCursor(64)
+        if (before.isEmpty() || before.last() != ' ') { replaceCurrentWord(word); return }
+        val committed = before.dropLast(1).takeLastWhile { it.isLetter() || it == '\'' }
+        if (committed.isEmpty()) { host.commitText("$word "); return }
+        host.deleteBeforeCursor(committed.length + 1)   // the word plus its trailing space
+        host.commitText("$word ")
+    }
 }

@@ -141,6 +141,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
     private val keyUpSymbols get() = com.fran.clicks.keyboard.KeyboardSymbols.keyUp
     private var suggestions: List<String> = emptyList()
+    // True right after a glide commits a word, while the strip shows the swipe's other decodings as
+    // tap-to-correct alternatives. Any physical key press clears it (back to normal typing/next-word).
+    private var glideJustCommitted = false
     private var suggestDebounce: Runnable? = null
     private var liveCorrectDebounce: Runnable? = null
     private var geminiDebounce: Runnable? = null
@@ -476,6 +479,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun handleKey(label: String) {
         pendingCommand = null
         pendingActions = emptyList()
+        glideJustCommitted = false   // leaving the post-swipe "tap an alternative" window
         val input = currentInputConnection
         when (label) {
             "shift" -> {
@@ -862,19 +866,36 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
     }
 
-    private fun learnAndPredictAfterSpace() {
+    /** Learn the just-committed word against its predecessor (n-gram) and warm next-word predictions,
+     *  WITHOUT touching the suggestion strip — so a glide can learn while still showing alternatives. */
+    private fun recordCommittedWordContext() {
         updateActiveLanguage()
         val tokens = wordsBeforeCursor()
         if (tokens.size >= 2) ngramRepo.recordWord(tokens[tokens.size - 1], tokens[tokens.size - 2])
         val last = tokens.lastOrNull().orEmpty()
         if (last.isNotEmpty()) ngramRepo.prefetchNextWords(last)
+    }
+
+    private fun learnAndPredictAfterSpace() {
+        recordCommittedWordContext()
+        val last = wordsBeforeCursor().lastOrNull().orEmpty()
         suggestions = if (last.isNotEmpty()) ngramRepo.cachedNextWords(last).take(3) else emptyList()
+        glideJustCommitted = false   // these are next-word predictions: tapping one appends
         updateStrip()
     }
 
     private fun acceptSuggestion(word: String) {
         if (currentInputConnection == null) return
-        predictionCore.replaceCurrentWord(word)
+        val before = predictionCore.currentWord()
+        when {
+            // Mid-word: the strip shows completions/corrections of the partial word → replace it.
+            before.isNotEmpty() -> predictionCore.replaceCurrentWord(word)
+            // Just swiped: the strip shows alternate decodings → replace the committed word so a
+            // mis-decode is fixed in place instead of the alternative being appended after it.
+            glideJustCommitted -> { predictionCore.replaceCommittedWord(word); recordCommittedWordContext(); updateStrip(); return }
+            // Otherwise these are next-word predictions → append.
+            else -> currentInputConnection?.commitText("$word ", 1)
+        }
         learnAndPredictAfterSpace()
     }
 
@@ -1717,9 +1738,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }.start()
     }
 
+    // A glide that the decoder couldn't turn into a word must NOT dump the raw traced letters into the
+    // text (that's the "swipe gives a bunch of letters, not the word" bug). Drop it instead — a lost
+    // gesture is far better than garbage. This only happens when the classifier isn't ready yet or the
+    // shape genuinely matched nothing; both are rare once the dictionary has loaded.
     private fun handleSwipeFallback(keys: List<String>) {
-        val rawWord = keys.joinToString("")
-        currentInputConnection?.commitText(rawWord, 1)
+        // intentionally a no-op — never commit the raw key trace
     }
 
     private fun deleteWord() {
@@ -2023,9 +2047,16 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                             android.util.Log.d("ClicksGlide", "results=${results.size} top=${results.firstOrNull()} neural=${neural != null}")
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) haptics().glideCommit()
-                                glideCore.commitWord(glideCore.rerank(results)); learnAndPredictAfterSpace()
-                            } else if (tracedKeys.size >= 3) {
-                                keyHaptic("space"); handleSwipeFallback(tracedKeys)
+                                val top = glideCore.rerank(results)
+                                glideCore.commitWord(top)
+                                recordCommittedWordContext()
+                                // Show the swipe's other decodings as tap-to-correct alternatives
+                                // (parity with the launcher): a mis-decode is one tap from fixed.
+                                suggestions = (listOf(top) + results.filter { it != top }).distinct().take(3)
+                                glideJustCommitted = true
+                                updateStrip()
+                            } else {
+                                handleSwipeFallback(tracedKeys)   // no-op: never dump raw letters
                             }
                             fadeGlideTrail()
                         }
