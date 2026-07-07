@@ -22,9 +22,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export PYTORCH_ENABLE_MPS_FALLBACK=1   # let the few ops MPS lacks fall back to CPU instead of erroring
 
+# Defaults are a strong run; override any of these for a bigger "max accuracy" pass, e.g.:
+#   STEPS=200000 LIMIT=1000000 DMODEL=256 LAYERS=6 NHEAD=8 FF=512 ./train_overnight.sh
 STEPS="${STEPS:-80000}"
-LIMIT="${LIMIT:-500000}"     # real swipes loaded (RAM/VRAM bound; raise if you can)
+LIMIT="${LIMIT:-500000}"     # real swipes loaded (RAM/VRAM bound; raise toward the full ~1M if you can)
 BATCH="${BATCH:-256}"
+DMODEL="${DMODEL:-192}"
+LAYERS="${LAYERS:-4}"
+NHEAD="${NHEAD:-6}"
+FF="${FF:-384}"
 OUT="model_candidate"
 
 # 1. Get the real data (once).
@@ -39,7 +45,7 @@ mkdir -p "$OUT"
 python export_seq2seq.py \
   --wordlist ../../app/src/main/assets/dict/en_wordlist.txt \
   --futo futo_data/train.jsonl --futo-limit "$LIMIT" \
-  --steps "$STEPS" --batch "$BATCH" --d-model 192 --nhead 6 --layers 4 --ff 384 \
+  --steps "$STEPS" --batch "$BATCH" --d-model "$DMODEL" --nhead "$NHEAD" --layers "$LAYERS" --ff "$FF" \
   --out "$OUT"
 
 # 3. Prove it beats what's shipped (held-out real swipes) BEFORE you ship it.
