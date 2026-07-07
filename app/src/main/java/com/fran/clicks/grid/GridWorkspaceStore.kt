@@ -18,11 +18,13 @@ import org.json.JSONObject
 const val GRID_COLS = 4
 const val GRID_ROWS = 6
 
-enum class GridItemType { APP, FOLDER, WIDGET }
+enum class GridItemType { APP, FOLDER, WIDGET, STACK }
 
 /**
  * One placed object. Apps carry a package/class; folders carry a name + a list of app children
- * (folders never nest); widgets carry an AppWidgetHost widget id and a cell span.
+ * (folders never nest); widgets carry an AppWidgetHost widget id and a cell span; stacks carry
+ * a list of WIDGET children sharing the stack's footprint (Pixel-style widget stack) plus the
+ * index of the currently shown one.
  */
 data class GridItem(
     val id: String,
@@ -35,9 +37,10 @@ data class GridItem(
     val packageName: String? = null,
     val className: String? = null,
     val label: String? = null,
-    // FOLDER
+    // FOLDER / STACK
     val folderName: String? = null,
     val children: List<GridItem> = emptyList(),
+    val activeChild: Int = 0,
     // WIDGET
     val widgetId: Int = -1,
 ) {
@@ -55,6 +58,7 @@ data class GridItem(
         if (children.isNotEmpty()) {
             put("children", JSONArray().apply { children.forEach { put(it.toJson()) } })
         }
+        if (activeChild > 0) put("activeChild", activeChild)
         if (widgetId >= 0) put("widgetId", widgetId)
     }
 
@@ -76,6 +80,7 @@ data class GridItem(
                 label = o.optString("label").ifEmpty { null },
                 folderName = o.optString("folderName").ifEmpty { null },
                 children = kids,
+                activeChild = o.optInt("activeChild", 0),
                 widgetId = o.optInt("widgetId", -1),
             )
         }
@@ -107,6 +112,13 @@ fun cellsOverlap(
     x1: Int, y1: Int, w1: Int, h1: Int,
     x2: Int, y2: Int, w2: Int, h2: Int,
 ): Boolean = x1 < x2 + w2 && x2 < x1 + w1 && y1 < y2 + h2 && y2 < y1 + h1
+
+/** Every AppWidgetHost id carried by this item (itself or stacked children). */
+fun widgetIdsOf(item: GridItem): List<Int> = when (item.type) {
+    GridItemType.WIDGET -> if (item.widgetId >= 0) listOf(item.widgetId) else emptyList()
+    GridItemType.STACK -> item.children.flatMap { widgetIdsOf(it) }
+    else -> emptyList()
+}
 
 /** First free top-left cell for a [spanX] x [spanY] item, or null if the grid is full. */
 fun firstFreeCell(items: List<GridItem>, spanX: Int, spanY: Int): Pair<Int, Int>? {

@@ -1462,6 +1462,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun glassEffectsEnabled(): Boolean =
         prefs().getBoolean(GLASS_EFFECTS_PREF, true)
 
+    private fun gridWorkspaceLabEnabled(): Boolean =
+        prefs().getBoolean(GRID_WORKSPACE_LAB_PREF, false)
+
+    private fun gridHomeAliasComponent() =
+        ComponentName(this, "com.fran.clicks.grid.GridHomeAlias")
+
+    private fun gridHomeAliasEnabled(): Boolean =
+        packageManager.getComponentEnabledSetting(gridHomeAliasComponent()) ==
+            android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+
+    private fun setGridHomeAliasEnabled(enabled: Boolean) {
+        packageManager.setComponentEnabledSetting(
+            gridHomeAliasComponent(),
+            if (enabled) android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+            else android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            android.content.pm.PackageManager.DONT_KILL_APP,
+        )
+    }
+
     private fun appLibraryDefaultHome(): Boolean =
         prefs().getBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, false)
 
@@ -11339,6 +11358,28 @@ Reply format: ["word1","word2","word3"]"""
             render()
             openHere(clicksSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("GRID WORKSPACE LAB", gridWorkspaceLabEnabled()) {
+            val next = !gridWorkspaceLabEnabled()
+            prefs().edit().putBoolean(GRID_WORKSPACE_LAB_PREF, next).apply()
+            haptic(this)
+            renderPaneContent(clicksSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        if (gridWorkspaceLabEnabled()) {
+            parent.addView(settingAction("OPEN GRID WORKSPACE →") {
+                haptic(this)
+                startActivity(Intent(this@MainActivity, com.fran.clicks.grid.GridWorkspaceActivity::class.java))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+            parent.addView(settingToggle("GRID AS HOMESCREEN", gridHomeAliasEnabled()) {
+                val next = !gridHomeAliasEnabled()
+                setGridHomeAliasEnabled(next)
+                haptic(this)
+                if (next) {
+                    Toast.makeText(this@MainActivity, "Pick \"Clicks Grid\" as your home app", Toast.LENGTH_LONG).show()
+                    runCatching { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }
+                }
+                renderPaneContent(clicksSettingsTarget())
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        }
         parent.addView(settingToggle("LOCKSCREEN WALLPAPER HOME", useLockscreenWallpaperOnHome()) {
             val next = !useLockscreenWallpaperOnHome()
             prefs().edit().putBoolean(HOME_LOCK_WALLPAPER_PREF, next).apply()
@@ -12441,6 +12482,7 @@ Reply format: ["word1","word2","word3"]"""
             .putString(APP_USAGE_PREF, counts.toString())
             .putString(APP_LAST_LAUNCH_PREF, launches.toString())
             .apply()
+        MostUsedAppsWidget.refreshAll(this)
         if (!libraryGridMode) {
             libraryViewDirty = true
             libraryContentReady = false
@@ -17002,6 +17044,7 @@ $emailText"""
         private const val GLASS_EFFECTS_PREF = "glass_effects"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
         private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
+        private const val GRID_WORKSPACE_LAB_PREF = "grid_workspace_lab"
         private const val DOCK_APP_LIMIT = 5
         private const val OFTEN_USED_LIMIT = 8
         private const val APP_USAGE_PREF = "app_usage_counts"

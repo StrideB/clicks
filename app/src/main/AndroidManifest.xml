@@ -61,6 +61,42 @@
             android:theme="@style/AppTheme" />
 
         <activity
+            android:name=".grid.GridWorkspaceActivity"
+            android:exported="false"
+            android:label="Grid Workspace"
+            android:launchMode="singleTask"
+            android:theme="@style/GridHomeTheme"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden|uiMode" />
+
+        <!-- Optional HOME entry for the grid workspace. Disabled by default; the settings
+             toggle flips it on via PackageManager so the user can pick it as default home. -->
+        <activity-alias
+            android:name=".grid.GridHomeAlias"
+            android:targetActivity=".grid.GridWorkspaceActivity"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_launcher"
+            android:label="Clicks Grid">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
+
+        <receiver
+            android:name=".MostUsedAppsWidget"
+            android:exported="true"
+            android:label="Clicks · Most Used">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_most_used_info" />
+        </receiver>
+
+        <activity
             android:name=".AttachPickerActivity"
             android:exported="false"
             android:excludeFromRecents="true"
