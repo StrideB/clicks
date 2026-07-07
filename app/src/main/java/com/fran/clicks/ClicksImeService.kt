@@ -106,6 +106,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private val glideScope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate
     )
+    // On-device Gemini Nano proofreading (ML Kit GenAI). nanoSupported gates the UI to devices that
+    // actually have AICore; pendingProofread holds a correction awaiting the user's tap-to-apply.
+    private val nanoProofread by lazy { com.fran.clicks.keyboard.NanoProofreadEngine(this) }
+    @Volatile private var nanoSupported = false
+    private var pendingProofread: String? = null
     private var predictionEngine = PredictionEngine(emptyMap())         // active pointer (primary or extended)
     private var predictionEnginePrimary = PredictionEngine(emptyMap())  // primary language only
     private var predictionEngineExtended = PredictionEngine(emptyMap()) // primary + secondary phone languages
@@ -166,6 +171,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         // Account mode: route AI through the proxy with the signed-in user's Google ID token.
         GeminiClient.proxy = GeminiProxy.binding(this)
         ensureGlideClassifier()
+        checkNanoProofreadSupport()
         initSpellChecker()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         AgenticRouter.ensureLoaded(this)
@@ -254,6 +260,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         imePrefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
         glideScope.cancel()
         neuralGlide?.close()
+        nanoProofread.close()
         runCatching { spellChecker?.close() }
         super.onDestroy()
     }
@@ -938,6 +945,46 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         ic.endBatchEdit()
     }
 
+    // ── On-device Gemini Nano proofreading (real grammar/spelling, shown as a tap-to-apply preview) ──
+    private fun checkNanoProofreadSupport() {
+        glideScope.launch { runCatching { nanoSupported = nanoProofread.isSupported() } }
+    }
+
+    /** Proofread the whole line before the cursor with Gemini Nano; surface the fix as a preview. */
+    private fun runNanoProofread() {
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(1000, 0)?.toString().orEmpty()
+        if (before.trim().length < 4) { flashStatus("Type a sentence to proofread"); return }
+        pendingProofread = null
+        agenticStatus = "Proofreading…"; updateStrip()
+        glideScope.launch {
+            when (val res = nanoProofread.proofread(before)) {
+                is com.fran.clicks.keyboard.NanoProofreadEngine.Result.Corrected -> {
+                    pendingProofread = res.text; agenticStatus = null; updateStrip()
+                }
+                com.fran.clicks.keyboard.NanoProofreadEngine.Result.Unchanged -> flashStatus("Looks good ✓")
+                com.fran.clicks.keyboard.NanoProofreadEngine.Result.Downloading -> flashStatus("Preparing proofreader…", 2500)
+                com.fran.clicks.keyboard.NanoProofreadEngine.Result.Unsupported -> { nanoSupported = false; agenticStatus = null; proofreadBeforeCursor(); updateStrip() }
+                com.fran.clicks.keyboard.NanoProofreadEngine.Result.Error -> { agenticStatus = null; updateStrip() }
+            }
+        }
+    }
+
+    /** Replace the line before the cursor with the accepted Nano correction. */
+    private fun applyProofread() {
+        val corrected = pendingProofread ?: return
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(1000, 0)?.toString().orEmpty()
+        keyHaptic("enter")
+        ic.beginBatchEdit(); ic.deleteSurroundingText(before.length, 0); ic.commitText(corrected, 1); ic.endBatchEdit()
+        pendingProofread = null; agenticStatus = null; onTextChanged()
+    }
+
+    private fun flashStatus(msg: String, delay: Long = 1200) {
+        agenticStatus = msg; updateStrip()
+        handler.postDelayed({ if (agenticStatus == msg && pendingProofread == null) { agenticStatus = null; updateStrip() } }, delay)
+    }
+
     private fun scheduleLiveCorrect() {
         // Disabled: rewriting a word mid-typing (before space) fights the user and re-triggers when
         // they go back to retype. Correct only on space/punctuation (undoable via backspace) and show
@@ -1457,6 +1504,35 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
             return
         }
+        val proof = pendingProofread
+        if (proof != null) {
+            strip.background = stripWellBackground()
+            strip.addView(TextView(this).apply {
+                text = proof
+                gravity = Gravity.CENTER_VERTICAL; textSize = 15f
+                setTextColor(0xFFE9EDF2.toInt())
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(8), 0, dp(6), 0)
+                isClickable = true
+                setOnClickListener { applyProofread() }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            strip.addView(TextView(this).apply {
+                text = "✕"; gravity = Gravity.CENTER; textSize = 15f
+                setTextColor(0xFF8B95A5.toInt()); setPadding(dp(10), 0, dp(6), 0)
+                isClickable = true
+                setOnClickListener { keyHaptic("back"); pendingProofread = null; updateStrip() }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            strip.addView(TextView(this).apply {
+                text = "FIX"; gravity = Gravity.CENTER; textSize = 11f; letterSpacing = 0.12f
+                setTextColor(0xFF33E1C4.toInt()); setPadding(dp(12), 0, dp(10), 0)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(0x3333E1C4); cornerRadius = dp(9).toFloat()
+                }
+                isClickable = true
+                setOnClickListener { applyProofread() }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+            return
+        }
         if (polishing) {
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
@@ -1487,7 +1563,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val shown = suggestions.take(3)
         val canPolish = polishAvailable()
         val chips = smartChips
-        if (shown.isEmpty() && !canPolish && chips.isEmpty()) {
+        // Offer on-device Nano proofreading once there's a sentence to check (Nano-capable devices only).
+        val showFix = nanoSupported && run {
+            val b = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString().orEmpty()
+            b.trim().length >= 6 && b.contains(' ')
+        }
+        if (shown.isEmpty() && !canPolish && chips.isEmpty() && !showFix) {
             strip.background = null
             // Don't leave the strip stuck hidden when idle: if no agentic panel/HUD/autofill is
             // active, the strip must be visible (even if empty) so it reliably reappears when typing
@@ -1504,6 +1585,18 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         suggestionStrip?.visibility = View.VISIBLE
         inlineScroll?.visibility = View.GONE
         strip.background = stripWellBackground()
+        if (showFix) {
+            strip.addView(TextView(this).apply {
+                text = "⌁ Fix"; gravity = Gravity.CENTER; textSize = 14f
+                setTextColor(0xFF33E1C4.toInt()); setPadding(dp(12), 0, dp(12), 0)
+                isClickable = true
+                setOnClickListener { keyHaptic("space"); runNanoProofread() }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            if (shown.isNotEmpty() || chips.isNotEmpty() || canPolish) {
+                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
+                    LinearLayout.LayoutParams(dp(1), dp(18)))
+            }
+        }
         shown.forEachIndexed { i, w ->
             strip.addView(TextView(this).apply {
                 text = w

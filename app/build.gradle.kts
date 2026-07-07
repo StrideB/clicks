@@ -76,6 +76,10 @@ dependencies {
     implementation("androidx.dynamicanimation:dynamicanimation-ktx:1.0.0-alpha03")
     implementation("com.android.billingclient:billing-ktx:7.1.1")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    // On-device Gemini Nano (AICore) proofreading via ML Kit GenAI — free, offline, no model to train.
+    // No-op on devices without AICore (the engine checks feature status and hides the UI).
+    implementation("com.google.mlkit:genai-proofreading:1.0.0-beta1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.8.1")
 
     // Unit tests for the shared keyboard core (pure-JVM logic: word placement, prediction/autocorrect).
     testImplementation("junit:junit:4.13.2")
