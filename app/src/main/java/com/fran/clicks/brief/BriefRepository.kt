@@ -51,7 +51,10 @@ class BriefRepository(
 
     suspend fun refreshNow() {
         val now = System.currentTimeMillis()
-        val signals = withContext(Dispatchers.Default) { collector.collect() }
+        val signals = withContext(Dispatchers.Default) {
+            val dismissed = dismissedKeys()
+            collector.collect().filterNot { dismissalKey(it) in dismissed }
+        }
         if (signals.isEmpty()) {
             val empty = Brief(emptyList(), now, Brief.Source.EMPTY)
             _brief.value = empty
@@ -85,6 +88,16 @@ class BriefRepository(
         refreshDebounced(RECONCILE_MS)
     }
 
+    /**
+     * User explicitly handled or dismissed this card. Hide this exact notification content even if
+     * Android keeps the notification alive. If the notification updates with new text, its content
+     * hash changes and it can surface again.
+     */
+    fun dismissItem(item: BriefItem) {
+        item.signal?.let { persistDismissal(it) }
+        removeItem(item.signalRef)
+    }
+
     fun startPeriodic() {
         if (periodicJob?.isActive == true) return
         periodicJob = scope.launch {
@@ -113,6 +126,7 @@ class BriefRepository(
                     .put("subtitle", item.subtitle)
                     .put("category", item.category.name)
                     .put("label", item.primaryActionLabel)
+                    .put("hash", item.signal?.let { contentHash(it) }.orEmpty())
             )
         }
         prefs.edit()
@@ -144,8 +158,35 @@ class BriefRepository(
 
     private companion object {
         const val CACHE_PREF = "brief_cache"
+        const val DISMISSED_PREF = "brief_dismissed_content"
         const val DEBOUNCE_MS = 900L
         const val RECONCILE_MS = 400L
         const val PERIODIC_MS = 45 * 60_000L
+        const val MAX_DISMISSED = 120
+    }
+
+    private fun persistDismissal(signal: Signal) {
+        val key = dismissalKey(signal)
+        if (key.isBlank()) return
+        val next = dismissedKeys().toMutableSet()
+        next += key
+        // Keep the set bounded; notifications are live and short-lived, so old hashes are disposable.
+        val bounded = next.toList().takeLast(MAX_DISMISSED).toSet()
+        prefs.edit().putStringSet(DISMISSED_PREF, bounded).apply()
+    }
+
+    private fun dismissedKeys(): Set<String> =
+        prefs.getStringSet(DISMISSED_PREF, emptySet()).orEmpty()
+
+    private fun dismissalKey(signal: Signal): String {
+        val hash = contentHash(signal)
+        return if (hash.isBlank()) "" else "${signal.id}:$hash"
+    }
+
+    private fun contentHash(signal: Signal): String = when (signal) {
+        is NotificationSignal -> signal.contentHash
+        is CalendarSignal -> "${signal.title}|${signal.beginMillis}|${signal.location}".hashCode().toString(16)
+        is WeatherSignal -> signal.summary.hashCode().toString(16)
+        is MediaSignal -> "${signal.title}|${signal.artist}".hashCode().toString(16)
     }
 }

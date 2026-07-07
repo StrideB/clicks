@@ -2591,7 +2591,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 onOpen = {
                     haptic(this@setTodayAlertContent)
                     openToday()
-                }
+                },
+                onDismiss = { item -> dismissBriefItem(item) }
             )
         }
     }
@@ -2647,7 +2648,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             Toast.makeText(this, "Sent", Toast.LENGTH_SHORT).show()
         }
         // Firing resolves the card; clear it (the notification itself usually cancels too).
-        briefRepository.removeItem(item.signalRef)
+        briefRepository.dismissItem(item)
         // Opening/launching leaves the launcher — don't leave Today sitting underneath on return.
         if (!isReply) closeToday()
     }
@@ -2672,7 +2673,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (item.signal is NotificationSignal) {
             ClicksNotificationListener.dismiss(item.signalRef)
         }
-        briefRepository.removeItem(item.signalRef)
+        briefRepository.dismissItem(item)
     }
 
     // Informational (non-actionable) notifications routed to the widget stack. Excludes anything the

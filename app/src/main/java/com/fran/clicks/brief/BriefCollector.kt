@@ -23,34 +23,37 @@ class BriefCollector(
     fun collect(): List<Signal> {
         val out = ArrayList<Signal>()
         out += notificationSignals()
-        out += calendarSignals()
+        // Calendar already has a dedicated homescreen surface. Today is intentionally not another
+        // calendar/notification list; it only turns live notifications into actionable notes.
         return out
     }
 
     private fun notificationSignals(): List<NotificationSignal> =
         ClicksNotificationListener.briefSnapshot()
-            .filter { BriefClassifier.isActionable(it) } // Today = actionable only; the rest go to the widget stack.
-            .map { r ->
-            val actions = ArrayList<BriefAction>(r.actions.size + 1)
-            r.actions.forEach { a ->
+            .mapNotNull { r -> BriefClassifier.classify(r).takeIf { it.kind == BriefClassifier.Kind.ACTION }?.let { r to it } }
+            .map { (record, triage) ->
+            val actions = ArrayList<BriefAction>(record.actions.size + 1)
+            record.actions.forEach { a ->
                 actions += Fire(a.label, a.pendingIntent, a.remoteInput, a.extraInputs)
             }
             // Surface the contentIntent as "Open" unless an inline action already opens it.
-            if (r.contentIntent != null && r.actions.none { it.label.equals("Open", ignoreCase = true) }) {
-                actions += Fire("Open", r.contentIntent)
+            if (record.contentIntent != null && record.actions.none { it.label.equals("Open", ignoreCase = true) }) {
+                actions += Fire("Open", record.contentIntent)
             }
             NotificationSignal(
-                id = r.key,
-                timestamp = r.whenMs,
-                packageName = r.packageName,
-                appLabel = r.appLabel,
-                title = r.title,
-                text = r.text,
-                category = r.category,
-                personName = r.personName,
-                contentIntent = r.contentIntent,
+                id = record.key,
+                timestamp = record.whenMs,
+                packageName = record.packageName,
+                appLabel = record.appLabel,
+                title = record.title,
+                text = record.text,
+                contentHash = record.contentHash,
+                taskDraft = triage.task,
+                category = record.category,
+                personName = record.personName,
+                contentIntent = record.contentIntent,
                 actions = actions,
-                avatar = r.avatar
+                avatar = record.avatar
             )
         }
 

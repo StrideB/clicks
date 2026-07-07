@@ -152,6 +152,7 @@ class ClicksNotificationListener : NotificationListenerService() {
             appLabel = packageManagerLabel(sbn.packageName),
             title = title,
             text = text,
+            contentHash = notificationContentHash(sbn.packageName, title, text, actions),
             category = briefCategory(sbn),
             personName = title.takeIf { it.isNotBlank() },
             whenMs = sbn.postTime,
@@ -178,6 +179,16 @@ class ClicksNotificationListener : NotificationListenerService() {
             category == Notification.CATEGORY_MESSAGE || sbn.packageName in MESSAGE_PACKAGES -> "message"
             else -> "other"
         }
+    }
+
+    private fun notificationContentHash(packageName: String, title: String, text: String, actions: List<RawAction>): String {
+        val payload = buildString {
+            append(packageName.trim().lowercase()).append('\n')
+            append(title.trim()).append('\n')
+            append(text.trim()).append('\n')
+            actions.map { it.label.trim().lowercase() }.sorted().forEach { append(it).append('|') }
+        }
+        return payload.hashCode().toString(16)
     }
 
     private fun StatusBarNotification.isHubCandidate(): Boolean {

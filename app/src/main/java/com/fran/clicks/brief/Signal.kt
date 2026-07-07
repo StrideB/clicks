@@ -30,6 +30,8 @@ data class NotificationSignal(
     val appLabel: String,
     val title: String,
     val text: String,
+    val contentHash: String,
+    val taskDraft: String?,
     val category: String,             // normalized: message | email | call | other
     val personName: String?,
     /** The notification's contentIntent, surfaced as the "Open" action. */
@@ -141,6 +143,7 @@ data class NotificationRecord(
     val appLabel: String,
     val title: String,
     val text: String,
+    val contentHash: String,
     val category: String,             // message | email | call | other
     val personName: String?,
     val whenMs: Long,

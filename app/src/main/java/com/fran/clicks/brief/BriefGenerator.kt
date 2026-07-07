@@ -50,13 +50,14 @@ class BriefGenerator(private val prefs: SharedPreferences) {
             temperature = 0.2
         ) ?: return emptyList()
 
-        val obj = JSONObject(extractJsonObject(raw))
-        val items = obj.optJSONArray("items") ?: return emptyList()
+        val items = parseItems(raw)
         val out = ArrayList<BriefItem>(items.length())
         for (i in 0 until items.length()) {
             val it = items.optJSONObject(i) ?: continue
             val ref = it.optString("signalRef").trim()
             val signal = byId[ref] ?: continue                 // reject invented refs
+            val klass = it.optString("class", "action").trim().lowercase()
+            if (klass != "action") continue
             val title = it.optString("title").trim().take(60).ifBlank { defaultTitle(signal) }
             val subtitle = it.optString("subtitle").trim().ifBlank { defaultSubtitle(signal) }
             val category = BriefCategory.from(it.optString("category")).takeIf { c -> c != BriefCategory.OTHER }
@@ -83,6 +84,8 @@ class BriefGenerator(private val prefs: SharedPreferences) {
                 .put("from", signal.personName ?: signal.title)
                 .put("title", signal.title)
                 .put("text", signal.text.take(220))
+                .put("taskDraft", signal.taskDraft.orEmpty())
+                .put("contentHash", signal.contentHash)
             is CalendarSignal -> o
                 .put("title", signal.title)
                 .put("when", signal.timeLabel)
@@ -95,7 +98,7 @@ class BriefGenerator(private val prefs: SharedPreferences) {
 
     // -------------------------------------------------------------------------------- Rule-based
 
-    /** Deterministic ranking: event proximity > missed calls > unread messages > email > weather. */
+    /** Deterministic ranking: newest actionable notifications first, using local triage phrasing. */
     private fun ruleRank(signals: List<Signal>, now: Long): List<BriefItem> {
         return signals.sortedWith(compareBy({ priority(it, now) }, { proximityKey(it, now) }))
             .take(MAX_ITEMS)
@@ -140,14 +143,32 @@ class BriefGenerator(private val prefs: SharedPreferences) {
     }
 
     private fun defaultTitle(s: Signal): String = when (s) {
-        is NotificationSignal -> (s.personName ?: s.title).ifBlank { s.appLabel }.take(60)
+        is NotificationSignal -> (s.taskDraft ?: BriefClassifier.classify(
+            NotificationRecord(
+                key = s.id,
+                packageName = s.packageName,
+                appLabel = s.appLabel,
+                title = s.title,
+                text = s.text,
+                contentHash = s.contentHash,
+                category = s.category,
+                personName = s.personName,
+                whenMs = s.timestamp,
+                contentIntent = s.contentIntent,
+                actions = emptyList(),
+                avatar = s.avatar
+            )
+        ).task ?: (s.personName ?: s.title).ifBlank { s.appLabel }).take(60)
         is CalendarSignal -> s.title.ifBlank { "Upcoming event" }.take(60)
         is WeatherSignal -> s.summary.take(60)
         is MediaSignal -> s.title.take(60)
     }
 
     private fun defaultSubtitle(s: Signal): String = when (s) {
-        is NotificationSignal -> s.text.ifBlank { s.appLabel }
+        is NotificationSignal -> listOfNotNull((s.personName ?: s.title).takeIf { it.isNotBlank() }, s.appLabel)
+            .distinct()
+            .joinToString(" · ")
+            .ifBlank { s.text.ifBlank { s.appLabel } }
         is CalendarSignal -> listOfNotNull(s.timeLabel.ifBlank { null }, s.location).joinToString(" · ")
         is WeatherSignal -> "Now"
         is MediaSignal -> s.artist
@@ -169,34 +190,49 @@ class BriefGenerator(private val prefs: SharedPreferences) {
         return if (start in 0 until end) text.substring(start, end + 1) else "{}"
     }
 
+    private fun extractJsonArray(text: String): String {
+        val start = text.indexOf('[')
+        val end = text.lastIndexOf(']')
+        return if (start in 0 until end) text.substring(start, end + 1) else "[]"
+    }
+
+    private fun parseItems(text: String): JSONArray {
+        val trimmed = text.trim()
+        if (trimmed.startsWith("[")) return JSONArray(extractJsonArray(trimmed))
+        return runCatching {
+            JSONObject(extractJsonObject(trimmed)).optJSONArray("items") ?: JSONArray()
+        }.getOrElse {
+            JSONArray(extractJsonArray(trimmed))
+        }
+    }
+
     private companion object {
         const val MAX_ITEMS = 5
         val REPLYISH = listOf("reply", "answer", "call back", "respond", "message")
 
         const val SYSTEM_INSTRUCTION =
-            "You write a personal daily brief from SIGNALS collected from the user's phone. Each signal " +
-            "has an \"id\", an \"actions\" array of \"label\"s, and content fields (from, title, text, when...). " +
-            "Rank up to 5 by what matters RIGHT NOW (event proximity, a real person messaging, a " +
-            "question awaiting an answer, unread, time of day — current time provided).\n" +
+            "You triage phone notifications for a launcher's Today brief. Today is NOT a second " +
+            "notification drawer. For each signal, decide if it needs the user to DO something.\n" +
+            "Classify exactly one: action = user must reply, decide, pay, attend, review, or respond; " +
+            "fyi = worth knowing but no action; ignore = noise, promos, app nags, typing indicators.\n" +
+            "Return only ACTION items, ranked up to 5 by what matters RIGHT NOW. Each signal has an " +
+            "\"id\", \"actions\" labels, content fields, and often a local \"taskDraft\".\n" +
             "\n" +
-            "WRITE THE TITLE AS THE ACTUAL POINT, not a restatement of the app. READ the text and " +
-            "summarize what it says or what the user should do about it — include concrete specifics " +
-            "(names, times, questions, amounts) drawn ONLY from the signal. Never pad with generic filler " +
-            "like 'Check', 'Watch', 'View', 'Open', 'Tap to', 'Latest from'. If the content is genuinely " +
-            "thin, write the single most useful concrete line and stop.\n" +
+            "For action items, write title as a verb-first imperative task, <= 10 words. Concrete. " +
+            "Name the person/subject if present. Do NOT invent senders, amounts, dates, links, " +
+            "relationships, or details not present. If text is ambiguous or truncated, classify fyi and omit.\n" +
             "\n" +
             "Examples (style, do not copy literally):\n" +
-            "- msg from Sam 'hey dinner tomorrow at 8?' -> title: \"Sam asks: dinner tomorrow at 8?\", subtitle: \"Reply to confirm\"\n" +
-            "- slack/email from Mara 'regarding the Q1 email, revise it and let me know' -> title: \"Review Q1 email from Mara\", subtitle: \"Reply when revised\"\n" +
-            "- email 'Your order has shipped, arrives Fri' -> title: \"Order ships, arrives Friday\", subtitle from sender.\n" +
-            "- youtube 'TechSpurt posted: Pixel 9 review' -> title: \"TechSpurt: Pixel 9 review is up\" (NOT 'Watch TechSpurt's latest video').\n" +
-            "- missed call from Mom -> title: \"Missed call from Mom\", primaryActionLabel a real label like 'Call back' if present.\n" +
+            "- Sarah: 'Can you send the Q3 deck before 2pm?' -> \"Send Q3 deck to Sarah before 2pm\"\n" +
+            "- Sam: 'dinner tonight at 9?' -> \"Reply to Sam about dinner at 9\"\n" +
+            "- Slack #eng: '@you PagerDuty alert: API latency high' -> \"Investigate API latency alert\"\n" +
+            "- Medium Daily: '5 stories for you today' -> fyi, omit.\n" +
             "\n" +
-            "The subtitle is one short supporting line (the reply hint, the sender, the time). Choose the " +
+            "The subtitle is one short supporting line (sender/app, or reply hint). Choose the " +
             "single best action and return its label in \"primaryActionLabel\" — it MUST be exactly one of " +
-            "that signal's action labels. NEVER invent an action, name, number, or fact not present in the " +
-            "signal. Title <= 60 chars. Output STRICT JSON only, no prose, no code fence: " +
-            "{\"items\":[{\"signalRef\",\"title\",\"subtitle\",\"category\":\"message|email|call|calendar|weather\"," +
-            "\"primaryActionLabel\"}]}. Empty input -> {\"items\":[]}."
+            "that signal's action labels. Prefer Reply/Respond for questions, then Open. Output STRICT JSON " +
+            "only, no prose, no code fence: {\"items\":[{\"signalRef\":\"...\",\"class\":\"action\"," +
+            "\"title\":\"...\",\"subtitle\":\"...\",\"category\":\"message|email|call|calendar|weather\"," +
+            "\"primaryActionLabel\":\"...\"}]}. Empty/no actions -> {\"items\":[]}."
     }
 }

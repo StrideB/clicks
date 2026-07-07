@@ -321,6 +321,8 @@ private fun TimelineCard(
                     )
                 }
             }
+            Spacer(Modifier.width(8.dp))
+            DismissPill(tokens) { onDismiss(item) }
         }
 
         if (replying != null) {
@@ -579,6 +581,7 @@ fun TodayAlert(
     tokens: NeuTokens,
     brief: Brief,
     onOpen: () -> Unit,
+    onDismiss: (BriefItem) -> Unit,
 ) {
     val top = brief.items.firstOrNull { it.category != BriefCategory.WEATHER } ?: return
     val accent = accentFor(top.category)
@@ -621,6 +624,21 @@ fun TodayAlert(
             Spacer(Modifier.width(10.dp))
             CountBadge(tokens, "+${count - 1}")
         }
+        Spacer(Modifier.width(8.dp))
+        DismissPill(tokens) { onDismiss(top) }
+    }
+}
+
+@Composable
+private fun DismissPill(tokens: NeuTokens, onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .neu(tokens, 14.dp, NeuLevel.PRESSED_SM)
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("×", color = tokens.inkDimCompose, fontSize = 15.sp, fontWeight = FontWeight.W700)
     }
 }
 
