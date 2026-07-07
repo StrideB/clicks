@@ -1,0 +1,224 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Clicks · Swipe Collector</title></head><body style="margin:0">
+<style>
+  :root{
+    --ground:#0b0f14; --surface:#141b24; --key:#1e2833; --key-hi:#2a3a49;
+    --ink:#e8eef4; --muted:#7d8b9c; --line:#26313d;
+    --signal:#33e1c4; --saved:#7ee787; --warn:#f0b354;
+  }
+  *{box-sizing:border-box}
+  .app{
+    position:fixed; inset:0; display:flex; flex-direction:column;
+    background:var(--ground); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+    overflow:hidden;
+  }
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+
+  header{padding:14px 18px 10px; display:flex; align-items:baseline; justify-content:space-between; gap:12px}
+  .eyebrow{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted)}
+  .count{font-size:13px; color:var(--muted)}
+  .count b{color:var(--saved); font-size:15px}
+
+  .stage{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:8px 18px; min-height:0}
+  .prompt-label{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); margin-bottom:10px}
+  .word{font-size:clamp(38px,12vw,72px); font-weight:650; letter-spacing:-.01em; line-height:1; text-wrap:balance; text-align:center}
+  .word .dbl{color:var(--signal)}   /* highlight the doubled letters — the hard part */
+  .hint{margin-top:16px; font-size:13px; color:var(--muted); text-align:center; max-width:34ch; text-wrap:balance}
+  .flash{margin-top:14px; height:18px; font-size:13px; font-weight:600; color:var(--saved); opacity:0; transition:opacity .2s}
+  .flash.show{opacity:1}
+  .flash.warn{color:var(--warn)}
+
+  .kbwrap{position:relative; padding:10px 8px calc(10px + env(safe-area-inset-bottom,0)); background:var(--surface); border-top:1px solid var(--line)}
+  .kb{display:flex; flex-direction:column; gap:7px; touch-action:none}
+  .row{display:flex; gap:6px; justify-content:center}
+  .row.r2{padding:0 5%}
+  .row.r3{padding:0 2%}
+  .key{
+    flex:1 1 0; min-width:0; height:clamp(42px,7.2vh,58px);
+    display:flex; align-items:center; justify-content:center;
+    background:var(--key); color:var(--ink); border-radius:9px;
+    font-size:18px; font-weight:550; border:1px solid #0006;
+    box-shadow:0 1px 0 #0007, inset 0 1px 0 #ffffff0d;
+  }
+  .key.lit{background:var(--key-hi); color:var(--signal)}
+  canvas.trace{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
+
+  footer{display:flex; gap:8px; padding:10px 12px calc(12px + env(safe-area-inset-bottom,0)); background:var(--surface); border-top:1px solid var(--line)}
+  button{
+    flex:1; padding:12px 8px; border-radius:10px; border:1px solid var(--line);
+    background:#1b232d; color:var(--ink); font-size:14px; font-weight:600; font-family:inherit;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  button:active{transform:translateY(1px)}
+  button.primary{background:var(--signal); color:#04201b; border-color:transparent}
+  button:disabled{opacity:.4}
+  button:focus-visible{outline:2px solid var(--signal); outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="app">
+  <header>
+    <div>
+      <div class="eyebrow">Clicks · swipe capture</div>
+      <div class="count">session <b id="n">0</b> · stored <span id="tot" class="mono">0</span></div>
+    </div>
+    <div class="count mono" id="goal">goal 100</div>
+  </header>
+
+  <div class="stage">
+    <div class="prompt-label">swipe this word</div>
+    <div class="word" id="word">hello</div>
+    <div class="hint" id="hint">Trace the letters in one continuous glide, then lift. Teal letters are doubles — loop or pause on them like you naturally would.</div>
+    <div class="flash" id="flash"></div>
+  </div>
+
+  <div class="kbwrap">
+    <div class="kb" id="kb">
+      <div class="row r1"></div>
+      <div class="row r2"></div>
+      <div class="row r3"></div>
+    </div>
+    <canvas class="trace" id="trace"></canvas>
+  </div>
+
+  <footer>
+    <button id="skip">Skip word</button>
+    <button id="undo">Undo last</button>
+    <button id="dl" class="primary">Download data</button>
+    <button id="clear">Clear</button>
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var ROWS = ["qwertyuiop","asdfghjkl","zxcvbnm"];
+  // Prioritize the hard cases the model is weak on: doubles first, then common words.
+  var DOUBLES = ["hello","google","allow","letter","coffee","little","really","different","better",
+    "still","will","tell","week","need","keep","feel","been","good","book","look","too","see",
+    "off","add","all","happy","sorry","dinner","address","message","success","between","meeting"];
+  var COMMON = ["the","and","you","that","this","have","with","from","they","what","about","which",
+    "when","your","said","there","would","their","people","because","think","where","being","every",
+    "should","around","world","water","house","night","under","great","tomorrow","today","thanks"];
+  var WORDS = DOUBLES.concat(COMMON);
+
+  var kb = document.getElementById("kb");
+  var rows = kb.querySelectorAll(".row");
+  var keyEls = {};
+  ROWS.forEach(function(chars, r){
+    for(var i=0;i<chars.length;i++){
+      var k=document.createElement("div"); k.className="key"; k.textContent=chars[i];
+      k.dataset.k=chars[i]; rows[r].appendChild(k); keyEls[chars[i]]=k;
+    }
+  });
+
+  var canvas=document.getElementById("trace"), ctx=canvas.getContext("2d");
+  function sizeCanvas(){
+    var r=kb.parentElement.getBoundingClientRect(), dpr=window.devicePixelRatio||1;
+    canvas.width=r.width*dpr; canvas.height=r.height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener("resize", sizeCanvas); setTimeout(sizeCanvas,0);
+
+  var STORE="clicks_swipe_samples";
+  function load(){ try{return JSON.parse(localStorage.getItem(STORE))||[]}catch(e){return[]} }
+  function save(a){ try{localStorage.setItem(STORE, JSON.stringify(a))}catch(e){} }
+  var samples=load(), session=0;
+  var wordEl=document.getElementById("word"), flashEl=document.getElementById("flash");
+  document.getElementById("goal").textContent="goal "+WORDS.length;
+
+  function setWord(w){
+    wordEl.innerHTML="";
+    for(var i=0;i<w.length;i++){
+      var span=document.createElement("span"); span.textContent=w[i];
+      if(i>0 && w[i]===w[i-1]){ span.className="dbl"; wordEl.children[i-1].className="dbl"; }
+      wordEl.appendChild(span);
+    }
+    wordEl.dataset.w=w;
+  }
+  var order=[], oi=0;
+  function reshuffle(){ order=WORDS.slice(); for(var i=order.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1)); var t=order[i];order[i]=order[j];order[j]=t;} oi=0; }
+  reshuffle();
+  function nextWord(){ if(oi>=order.length) reshuffle(); setWord(order[oi++]); }
+  setWord(WORDS[0]);
+
+  function refresh(){ document.getElementById("n").textContent=session; document.getElementById("tot").textContent=samples.length; }
+  refresh();
+
+  function flash(msg,warn){ flashEl.textContent=msg; flashEl.className="flash show"+(warn?" warn":""); clearTimeout(flash._t); flash._t=setTimeout(function(){flashEl.className="flash";},900); }
+
+  // ── capture ──
+  var tracking=false, pts=[], startT=0, rect=null;
+  function litClear(){ for(var k in keyEls) keyEls[k].classList.remove("lit"); }
+  function keyAt(nx,ny){
+    var el=document.elementFromPoint(nx*rect.width+rect.left, ny*rect.height+rect.top);
+    return el && el.dataset ? el.dataset.k : null;
+  }
+  function down(e){
+    var p=point(e); if(!p) return;
+    tracking=true; pts=[]; startT=performance.now(); litClear();
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    add(p); e.preventDefault();
+  }
+  function move(e){ if(!tracking) return; var p=point(e); if(p){ add(p); draw(); } e.preventDefault(); }
+  function up(e){ if(!tracking) return; tracking=false; commit(); e.preventDefault(); }
+  function point(e){
+    var t=(e.touches&&e.touches[0])||(e.changedTouches&&e.changedTouches[0])||e;
+    rect=kb.getBoundingClientRect();
+    var nx=(t.clientX-rect.left)/rect.width, ny=(t.clientY-rect.top)/rect.height;
+    if(nx<-.05||nx>1.05||ny<-.05||ny>1.05) return null;
+    return {x:Math.min(1,Math.max(0,nx)), y:Math.min(1,Math.max(0,ny))};
+  }
+  function add(p){
+    pts.push({t:Math.round(performance.now()-startT), x:+p.x.toFixed(4), y:+p.y.toFixed(4)});
+    var k=keyAt(p.x,p.y); if(k){ if(keyEls[k]) keyEls[k].classList.add("lit"); }
+  }
+  function draw(){
+    var off=kb.parentElement.getBoundingClientRect(), kr=kb.getBoundingClientRect();
+    var ox=kr.left-off.left, oy=kr.top-off.top;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.lineJoin=ctx.lineCap="round"; ctx.strokeStyle="#33e1c4"; ctx.shadowColor="#33e1c4"; ctx.shadowBlur=8;
+    ctx.lineWidth=4; ctx.beginPath();
+    for(var i=0;i<pts.length;i++){ var x=ox+pts[i].x*kr.width, y=oy+pts[i].y*kr.height; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    ctx.stroke(); ctx.shadowBlur=0;
+  }
+  function commit(){
+    litClear();
+    var fade=function(){ ctx.clearRect(0,0,canvas.width,canvas.height); };
+    var w=wordEl.dataset.w;
+    // basic validity: enough points and it actually moved
+    var moved=0; for(var i=1;i<pts.length;i++){var dx=pts[i].x-pts[i-1].x,dy=pts[i].y-pts[i-1].y; moved+=Math.hypot(dx,dy);}
+    if(pts.length<Math.max(6,w.length*2) || moved<0.15){ flash("too short — swipe the whole word", true); setTimeout(fade,300); return; }
+    samples.push({
+      word:w, canvas_width:+rect.width.toFixed(1), canvas_height:+rect.height.toFixed(1),
+      orientation: window.innerWidth>window.innerHeight?"landscape-primary":"portrait-primary",
+      data:pts, potentially_invalid_sentence:false, source:"clicks-collector"
+    });
+    save(samples); session++; refresh(); flash("saved ✓ ("+w+")");
+    setTimeout(fade,180); nextWord();
+  }
+
+  kb.addEventListener("touchstart",down,{passive:false});
+  kb.addEventListener("touchmove",move,{passive:false});
+  kb.addEventListener("touchend",up,{passive:false});
+  kb.addEventListener("mousedown",down); window.addEventListener("mousemove",move); window.addEventListener("mouseup",up);
+
+  // ── controls ──
+  document.getElementById("skip").onclick=function(){ flash("skipped"); nextWord(); };
+  document.getElementById("undo").onclick=function(){ if(samples.length){ var s=samples.pop(); save(samples); if(session>0)session--; refresh(); flash("removed "+s.word,true);} };
+  document.getElementById("clear").onclick=function(){ if(confirm("Delete all "+samples.length+" stored swipes on this device?")){ samples=[]; save(samples); session=0; refresh(); flash("cleared",true);} };
+  document.getElementById("dl").onclick=function(){
+    if(!samples.length){ flash("nothing to download yet",true); return; }
+    var jsonl=samples.map(function(s){return JSON.stringify(s);}).join("\n")+"\n";
+    var blob=new Blob([jsonl],{type:"application/x-ndjson"});
+    var a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download="clicks_swipes_"+samples.length+".jsonl"; a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+    flash("downloaded "+samples.length+" swipes");
+  };
+})();
+</script>
+</body></html>

@@ -6,3 +6,4 @@ local.properties
 *.iml
 .idea/
 .DS_Store
+tools/neural_swipe/futo_data/

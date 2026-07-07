@@ -147,6 +147,21 @@ def load_parquet_rows(data_dir, split="train"):
     return rows
 
 
+def load_jsonl_rows(*paths):
+    """Load rows from JSONL files (e.g. exported by the Clicks swipe collector web app). Same schema
+    as FUTO — so your own captured swipes train through the identical path. Mix with FUTO rows freely."""
+    import json
+    rows = []
+    for p in paths:
+        for fp in (glob.glob(p) if any(c in p for c in "*?[") else [p]):
+            with open(fp, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        rows.append(json.loads(line))
+    return rows
+
+
 def download(configs=("swipe-1", "swipe-2", "swipe-3", "swipe-4", "swipe-5"), out="futo_data"):
     """Download the FUTO parquet files locally via huggingface_hub (one-time)."""
     from huggingface_hub import snapshot_download
