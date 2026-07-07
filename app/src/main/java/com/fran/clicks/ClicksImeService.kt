@@ -1262,6 +1262,10 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun agenticPanelLight(): Boolean =
         selectedNeuTokens().mode == NeuMode.LIGHT && keyboardVisualTheme() != KEYBOARD_THEME_HYPER3D_BLACK
 
+    /** Suggestion-strip text color that actually reads on the current theme. The strip text was
+     *  hardcoded near-white, which vanished on the light "brushed" theme — this makes it dark there. */
+    private fun stripInk(): Int = if (agenticPanelLight()) 0xFF14161B.toInt() else 0xFFE9EDF2.toInt()
+
     private fun agenticCardBackground(top: Int, bottom: Int, stroke: Int) = GradientDrawable(
         GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom)
     ).apply { cornerRadius = dp(16).toFloat(); setStroke(dp(1), stroke) }
@@ -1315,116 +1319,6 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val clip = cm.primaryClip ?: return ""
         if (clip.itemCount == 0) return ""
         return clip.getItemAt(0).coerceToText(this)?.toString()?.trim().orEmpty()
-    }
-
-    private fun aiReady(): Boolean {
-        if (!ProManager.isUnlocked(this)) { flashAgenticStatus("✨ This is a Pro feature", 2000); return false }
-        if (!GeminiClient.configured(imePrefs())) { flashAgenticStatus("Add a Gemini key in Clicks settings", 2400); return false }
-        return true
-    }
-
-    // Run a Gemini instruction on the clipboard text and show the result in the HUD.
-    private fun runClipboardSkill(need: String, status: String, kicker: String, instruction: String, insertable: Boolean) {
-        val text = clipboardText()
-        if (text.isBlank()) { flashAgenticStatus(need, 2600); return }
-        if (!aiReady()) return
-        agenticStatus = status
-        updateStrip()
-        val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
-        Thread {
-            val out = GeminiClient.fetchTransform(key, model, text, instruction)
-            handler.post {
-                agenticStatus = null
-                if (!out.isNullOrBlank()) { agenticHud = Hud(kicker, out, if (insertable) out else null); updateStrip() }
-                else flashAgenticStatus("Couldn’t do that — try again", 1800)
-            }
-        }.start()
-    }
-
-    private fun runEmotionDetection() = runClipboardSkill(
-        "Copy a message first, then hold go", "🧠 Reading the mood…", "EMOTION",
-        "Analyze the mood behind this message, then suggest how to respond. Reply in exactly two short " +
-            "lines: 'Mood: <one line>' and 'Reply: <one line>'. Be concise.", insertable = false)
-
-    private fun runTranslateHud() = runClipboardSkill(
-        "Copy text to translate, then hold go", "🌐 Translating…", "TRANSLATION",
-        "Translate this into natural, everyday English. Reply with ONLY the translation.", insertable = true)
-
-    private fun runSuperXReply(tone: String) {
-        val t = tone.ifBlank { "supportive" }
-        runClipboardSkill(
-            "Copy the post text first, then hold go", "𝕏 Drafting reply…", "X REPLY · $t",
-            "Write a short, context-aware reply to this social post in a $t tone. One or two sentences, " +
-                "no hashtags unless natural. Reply with ONLY the reply text.", insertable = true)
-    }
-
-    // ── API skills (Phase 3) — need a free key pasted in settings ─────────────────
-    private fun runStockSniffer(ticker: String) {
-        val key = imePrefs().getString(StockApi.KEY_PREF, null)?.trim().orEmpty()
-        if (key.isBlank()) { flashAgenticStatus("Add a Finnhub key in Clicks settings", 2600); return }
-        val sym = ticker.ifBlank { clipboardText() }.trim()
-        if (sym.isBlank()) { flashAgenticStatus("Type or copy a ticker first", 2400); return }
-        agenticStatus = "📈 Checking $sym…"
-        updateStrip()
-        Thread {
-            val out = StockApi.lookup(sym, key)
-            handler.post {
-                agenticStatus = null
-                if (out != null) { agenticHud = Hud("STOCK", out, out); updateStrip() }
-                else flashAgenticStatus("Couldn’t find “$sym”", 2000)
-            }
-        }.start()
-    }
-
-    private fun runWorldCupOdds() {
-        val key = imePrefs().getString(OddsApi.KEY_PREF, null)?.trim().orEmpty()
-        if (key.isBlank()) { flashAgenticStatus("Add an odds API key in Clicks settings", 2600); return }
-        agenticStatus = "🏆 Getting odds…"
-        updateStrip()
-        Thread {
-            val out = OddsApi.worldCup(key)
-            handler.post {
-                agenticStatus = null
-                if (out != null) { agenticHud = Hud("WORLD CUP", out, null); updateStrip() }
-                else flashAgenticStatus("Couldn’t get odds", 2000)
-            }
-        }.start()
-    }
-
-    // ── OAuth skills (Phase 4) ────────────────────────────────────────────────────
-    private fun runMeet() {
-        if (!GmailAuth(this).isConnected) { flashAgenticStatus("Connect Google in the Clicks app first", 2800); return }
-        agenticStatus = "📹 Creating Meet link…"
-        updateStrip()
-        Thread {
-            val link = MeetApi.createMeeting(this)
-            handler.post {
-                agenticStatus = null
-                if (link != null) {
-                    currentInputConnection?.commitText(link, 1); onTextChanged(); updateStrip()
-                } else flashAgenticStatus("Couldn’t create a Meet link — reconnect Google (Calendar)", 2800)
-            }
-        }.start()
-    }
-
-    private fun runNotion(query: String) {
-        val token = imePrefs().getString(NotionApi.KEY_PREF, null)?.trim().orEmpty()
-        if (token.isBlank()) { flashAgenticStatus("Add a Notion token in Clicks settings", 2800); return }
-        val q = query.ifBlank { clipboardText() }.trim()
-        if (q.isBlank()) { flashAgenticStatus("Type what to find, e.g. “notion roadmap”", 2600); return }
-        agenticStatus = "🔎 Finding in Notion…"
-        updateStrip()
-        Thread {
-            val found = NotionApi.summon(q, token)
-            handler.post {
-                agenticStatus = null
-                if (found != null) {
-                    val (title, url) = found
-                    val body = if (title.isNotBlank()) "$title\n$url" else url
-                    agenticHud = Hud("NOTION", body, url); updateStrip()
-                } else flashAgenticStatus("No Notion page for “$q”", 2200)
-            }
-        }.start()
     }
 
     // Honor the system "remove animations" accessibility setting.
@@ -1625,7 +1519,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             strip.addView(TextView(this).apply {
                 text = pending.label
                 gravity = Gravity.CENTER_VERTICAL; textSize = 15f
-                setTextColor(0xFFE9EDF2.toInt())
+                setTextColor(stripInk())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 setPadding(dp(6), 0, dp(6), 0)
                 isClickable = true
@@ -1650,7 +1544,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             strip.addView(TextView(this).apply {
                 text = proof
                 gravity = Gravity.CENTER_VERTICAL; textSize = 15f
-                setTextColor(0xFFE9EDF2.toInt())
+                setTextColor(stripInk())
                 maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 setPadding(dp(8), 0, dp(6), 0)
                 isClickable = true
@@ -1688,7 +1582,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 strip.addView(TextView(this).apply {
                     text = action.first
                     gravity = Gravity.CENTER; textSize = 14f
-                    setTextColor(0xFFE9EDF2.toInt())
+                    setTextColor(stripInk())
                     maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                     isClickable = true
                     setOnClickListener { keyHaptic("enter"); runInlineTransform(action.second) }
@@ -1742,7 +1636,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 text = w
                 gravity = Gravity.CENTER
                 textSize = 15f
-                setTextColor(0xFFE9EDF2.toInt())
+                setTextColor(stripInk())
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 isClickable = true
@@ -1758,7 +1652,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 text = display
                 gravity = Gravity.CENTER
                 textSize = if (emoji) 18f else 16f
-                setTextColor(0xFFE9EDF2.toInt())
+                setTextColor(stripInk())
                 maxLines = 1
                 setPadding(dp(8), 0, dp(8), 0)
                 isClickable = true
@@ -1793,6 +1687,29 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         return true
     }
 
+    // How the shared AgenticEngine renders into the IME: paint the panel/strip and commit via the
+    // InputConnection. The launcher provides its own AgenticHost — same engine, different surface.
+    private val agenticHost = object : AgenticHost {
+        override val hostContext: Context get() = this@ClicksImeService
+        override fun prefs() = imePrefs()
+        override fun clipboardText() = this@ClicksImeService.clipboardText()
+        override fun isPro() = ProManager.isUnlocked(this@ClicksImeService)
+        override fun isGoogleConnected() = GmailAuth(this@ClicksImeService).isConnected
+        override fun post(action: () -> Unit) { handler.post(action) }
+        override fun clearField(consumed: String) {
+            if (consumed.isNotEmpty()) currentInputConnection?.deleteSurroundingText(consumed.length, 0)
+            onTextChanged()
+        }
+        override fun showStatus(msg: String) { agenticStatus = msg; updateStrip() }
+        override fun flashStatus(msg: String, ms: Long) { flashAgenticStatus(msg, ms) }
+        override fun showResult(result: AgenticResult) {
+            agenticHud = Hud(result.kicker, result.body, result.insert, result.followUps.map { HudAction(it.label, it.run) })
+            updateStrip()
+        }
+        override fun insertText(text: String) { currentInputConnection?.commitText(text, 1); onTextChanged(); updateStrip() }
+        override fun runAttach() { showAttachPicker() }
+    }
+
     // Agentic quick-action: hold the go/enter key to drop your current location into the field — no
     // maps app, no leaving the chat. Permission can't be requested from an IME, so if it's not
     // already granted (e.g. via Clicks weather) we point the user there instead.
@@ -1801,42 +1718,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     // location share or a hint. Tapping go/enter still sends/enters as normal.
     private fun runAgenticCommand() {
         val raw = currentInputConnection?.getTextBeforeCursor(200, 0)?.toString() ?: ""
-        // Clipboard skills (Phase 2): a bare trigger word operates on the COPIED text, not the field.
-        val t = raw.trim().lowercase()
-        val clipSkill: String? = when {
-            t == "mood" || t == "emotion" || t == "vibe" || t == "vibe check" || t == "read mood" -> "mood"
-            t == "translate" || t == "translate this" || t == "translate clipboard" || t == "tl" -> "translate"
-            t == "xreply" || t.startsWith("xreply ") || t.startsWith("x reply") || t.startsWith("reply x") -> "xreply"
-            t.startsWith("stock ") || t.startsWith("ticker ") ||
-                (t.startsWith("$") && t.length in 2..6 && t.drop(1).all { it.isLetterOrDigit() }) -> "stock"
-            t == "worldcup" || t == "world cup" || t == "wc" || t == "wc odds" || t == "world cup odds" || t == "odds" -> "odds"
-            t == "meet" || t == "google meet" || t == "new meet" || t == "gmeet" -> "meet"
-            t.startsWith("notion ") || t == "notion" -> "notion"
-            t == "attach" || t == "file" || t == "files" || t == "photo" || t == "photos" ||
-                t == "attach file" || t == "attach photo" || t == "add file" || t == "send file" -> "attach"
-            else -> null
-        }
-        if (clipSkill != null) {
-            if (raw.isNotEmpty()) currentInputConnection?.deleteSurroundingText(raw.length, 0)
-            onTextChanged()
-            when (clipSkill) {
-                "mood" -> runEmotionDetection()
-                "translate" -> runTranslateHud()
-                "xreply" -> runSuperXReply(t.removePrefix("xreply").removePrefix("x reply").removePrefix("reply x").trim())
-                "stock" -> runStockSniffer(
-                    when {
-                        t.startsWith("stock ") -> t.removePrefix("stock ")
-                        t.startsWith("ticker ") -> t.removePrefix("ticker ")
-                        else -> t.removePrefix("$")
-                    }.trim()
-                )
-                "odds" -> runWorldCupOdds()
-                "meet" -> runMeet()
-                "notion" -> runNotion(t.removePrefix("notion").trim())
-                "attach" -> showAttachPicker()
-            }
-            return
-        }
+        // Clipboard skills: a bare trigger word (mood, stock, notion…) runs a shared skill on the COPIED
+        // text, not the field. Handled by the shared AgenticEngine so the launcher keyboard behaves identically.
+        if (AgenticEngine.tryClipSkill(agenticHost, raw)) return
         // Empty field: don't guess — show discoverable starter chips (Share location + top skills).
         // Tapping one either runs it (location) or seeds its trigger so you just finish typing.
         if (raw.isBlank()) {
@@ -2103,7 +1987,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         // Clear the command text from the field — it was a command, not message content.
         if (raw.isNotEmpty()) currentInputConnection?.deleteSurroundingText(raw.length, 0)
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); runAgenticLocation(); return }
-        if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); runAgenticWeather(cmd.arg); return }
+        if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); AgenticEngine.runWeather(agenticHost, cmd.arg); return }
         if (cmd.insertText != null) {
             currentInputConnection?.commitText(cmd.insertText, 1)
             onTextChanged()
@@ -2241,39 +2125,6 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 }
             }
         }.start()
-    }
-
-    private fun runAgenticWeather(query: String) {
-        agenticStatus = "⛅ Checking weather…"
-        updateStrip()
-        Thread {
-            val text = WeatherApi.lookup(query)
-            handler.post {
-                agenticStatus = null
-                if (text != null) {
-                    // Result-loop: show it with Insert + a follow-up to the full forecast, rather than
-                    // silently dropping it in. The user chooses what to do with the answer.
-                    agenticHud = Hud(
-                        kicker = "WEATHER", body = text, insert = text,
-                        actions = listOf(HudAction("Full forecast") {
-                            agenticHud = null; updateStrip()
-                            openWeatherSearch(query.ifBlank { text })
-                        })
-                    )
-                    updateStrip()
-                } else {
-                    flashAgenticStatus("⛅ Couldn’t get weather for “$query”", 2200)
-                }
-            }
-        }.start()
-    }
-
-    // Open a full forecast in the browser for the go-button weather follow-up.
-    private fun openWeatherSearch(query: String) {
-        val url = "https://www.google.com/search?q=" + Uri.encode("weather $query")
-        runCatching {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        }
     }
 
     private fun flashAgenticStatus(message: String, ms: Long) {
