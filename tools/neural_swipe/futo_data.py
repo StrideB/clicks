@@ -130,20 +130,16 @@ def iter_futo_batch(rows, rng, batch, calibrate=True, affine=None):
 
 # ─────────────────────────── parquet loading (real training) ───────────────────────────
 
-def load_parquet_rows(data_dir, split="train"):
-    """Load FUTO rows from downloaded parquet files. Returns a list of dict rows."""
-    import pyarrow.parquet as pq
-    files = sorted(glob.glob(os.path.join(data_dir, "**", f"*{split}*.parquet"), recursive=True)) \
-        or sorted(glob.glob(os.path.join(data_dir, "**", "*.parquet"), recursive=True))
+def load_futo_rows(path_or_dir):
+    """Load FUTO rows. FUTO ships as JSONL (train.jsonl + swipe-2..5/*.jsonl). Accepts a single file,
+    a glob, or the downloaded directory (loads every *.jsonl under it). Skips flagged-invalid rows."""
+    if os.path.isdir(path_or_dir):
+        files = sorted(glob.glob(os.path.join(path_or_dir, "**", "*.jsonl"), recursive=True))
+    else:
+        files = glob.glob(path_or_dir) if any(c in path_or_dir for c in "*?[") else [path_or_dir]
     if not files:
-        raise FileNotFoundError(f"no parquet files under {data_dir} (run --download first)")
-    rows = []
-    for fp in files:
-        tbl = pq.read_table(fp, columns=["word", "data", "canvas_width", "canvas_height",
-                                         "potentially_invalid_sentence"])
-        for rec in tbl.to_pylist():
-            if not rec.get("potentially_invalid_sentence"):
-                rows.append(rec)
+        raise FileNotFoundError(f"no .jsonl under {path_or_dir} (run: python futo_data.py --download)")
+    rows = [r for r in load_jsonl_rows(*files) if not r.get("potentially_invalid_sentence")]
     return rows
 
 
@@ -162,12 +158,12 @@ def load_jsonl_rows(*paths):
     return rows
 
 
-def download(configs=("swipe-1", "swipe-2", "swipe-3", "swipe-4", "swipe-5"), out="futo_data"):
-    """Download the FUTO parquet files locally via huggingface_hub (one-time)."""
+def download(out="futo_data"):
+    """Download the FUTO JSONL swipe files locally via huggingface_hub (one-time, MIT-licensed)."""
     from huggingface_hub import snapshot_download
     path = snapshot_download(repo_id="futo-org/swipe.futo.org", repo_type="dataset",
-                             local_dir=out, allow_patterns=["*.parquet", "*/*.parquet"])
-    print(f"downloaded to {path}")
+                             local_dir=out, allow_patterns=["*.jsonl", "*/*.jsonl"])
+    print(f"downloaded FUTO JSONL to {path}")
     return path
 
 

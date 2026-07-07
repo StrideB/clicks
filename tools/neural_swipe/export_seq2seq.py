@@ -324,7 +324,7 @@ def main():
     futo_rows, futo_affine = None, None
     if args.futo:
         import futo_data
-        futo_rows = futo_data.load_parquet_rows(args.futo, split="train")
+        futo_rows = futo_data.load_futo_rows(args.futo)
         futo_affine = futo_data.calibrate_affine(futo_rows)
         print(f"FUTO: {len(futo_rows)} real swipes; {futo_affine}")
     print(f"loaded {len(words)} words; device={device}; data={'FUTO-real' if args.futo else 'synthetic'}")
