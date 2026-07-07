@@ -8,14 +8,15 @@ import android.widget.TextView
 import kotlin.math.min
 
 /**
- * Drop-in TextView replacement for letter keys that draws a prediction word
- * in small green text near the top of the key — BlackBerry inline style.
+ * Drop-in TextView replacement for letter keys. Draws the letter label and the small swipe-down
+ * symbol hint. (The old BlackBerry-style per-key word prediction was removed — the suggestion strip
+ * is now the single source of word suggestions.)
  * All existing setText / setTextColor / setOnClickListener calls work unchanged.
  */
 class DynamicFlickKeyView(context: Context) : TextView(context) {
 
-    var upWordHint: String? = null
-        private set
+    // Always null now — BlackBerry per-key prediction removed. Kept so existing callers still compile.
+    val upWordHint: String? = null
 
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFF4ADE80.toInt()
@@ -69,9 +70,8 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         invalidate()
     }
 
-    fun updatePrediction(word: String?) {
-        if (upWordHint != word) { upWordHint = word; invalidate() }
-    }
+    /** No-op: BlackBerry-style per-key word prediction was removed (suggestion strip only). */
+    fun updatePrediction(word: String?) { }
 
     private var keyW = 0
     private var keyH = 0
@@ -135,15 +135,5 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
                 hintPaint.isFakeBoldText = true
             }
         }
-        val hint = upWordHint ?: return
-        if (keyW == 0) return
-        // Scale text down if the word is wider than the key (minus 4px margins each side)
-        val maxWidth = (keyW - faceInsetX * 2f - 8f).coerceAtLeast(8f)
-        val measured = hintPaint.measureText(hint)
-        val savedSize = hintPaint.textSize
-        if (measured > maxWidth) hintPaint.textSize = savedSize * (maxWidth / measured)
-        val y = faceInsetY + hintPaint.textSize + 2f
-        canvas.drawText(hint, keyW / 2f, y, hintPaint)
-        hintPaint.textSize = savedSize
     }
 }

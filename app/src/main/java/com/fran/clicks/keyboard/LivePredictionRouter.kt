@@ -40,33 +40,8 @@ class LivePredictionRouter(
         compositionFlow.tryEmit(currentWord)
     }
 
-    fun start() {
-        scope.launch {
-            compositionFlow
-                .debounce(25)
-                .distinctUntilChanged()
-                .mapLatest { word ->
-                    if (word.isEmpty()) return@mapLatest emptyList<Pair<String, String>>()
-                    withContext(Dispatchers.Default) {
-                        val used = mutableSetOf<String>()
-                        buildList {
-                            for (suggestion in getSuggestions(word)) {
-                                if (suggestion.length <= word.length) continue
-                                val nextKey = suggestion[word.length].lowercaseChar().toString()
-                                if (nextKey in used || nextKey !in LETTER_KEYS) continue
-                                used.add(nextKey)
-                                add(nextKey to suggestion)
-                            }
-                        }
-                    }
-                }
-                .flowOn(Dispatchers.Default)
-                .collect { assignments ->
-                    // Clear all existing hints on Main thread
-                    LETTER_KEYS.forEach { c -> getKeyView(c.toString())?.updatePrediction(null) }
-                    // Apply new assignments
-                    for ((key, word) in assignments) getKeyView(key)?.updatePrediction(word)
-                }
-        }
-    }
+    // Removed: BlackBerry-style per-key word prediction (showing words ON the keys). It duplicated the
+    // suggestion strip and was confusing, so the router no longer runs. Left inert so callers compile;
+    // onTextChanged is a harmless no-op. Delete this class + its wiring when convenient.
+    fun start() { /* no-op — feature removed */ }
 }
