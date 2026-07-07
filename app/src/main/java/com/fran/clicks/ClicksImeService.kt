@@ -1931,6 +1931,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         if (text.trim().length < 3) return
         val key = GeminiClient.apiKey(imePrefs())
         val model = GeminiClient.model(imePrefs())
+        // Honest guard: the account-mode proxy makes Polish LOOK configured even with no key and no
+        // sign-in. Without real auth, say so (and how to fix it) instead of a dead "Polishing…".
+        if (key.isBlank() && GeminiClient.proxy?.idTokenProvider?.invoke() == null) {
+            flashStatus("Add your Gemini key: tap ⚙ (the clicks key) → API key", 2800)
+            return
+        }
         polishing = true
         keyHaptic("enter")
         updateStrip()
