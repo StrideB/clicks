@@ -121,6 +121,7 @@ import com.fran.clicks.brief.Fire
 import com.fran.clicks.brief.Launch
 import com.fran.clicks.brief.NotificationSignal
 import com.fran.clicks.brief.TodayAlert
+import com.fran.clicks.brief.TodayKeyboardMode
 import com.fran.clicks.brief.TodayPage
 import androidx.compose.ui.platform.ComposeView
 import org.json.JSONArray
@@ -1578,10 +1579,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             homeWallpaperLayer()?.let {
                 addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
-            weatherAmbientView = WeatherAmbientView(context).apply {
-                setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = animatedWeatherEnabled())
-            }
-            addView(weatherAmbientView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            weatherAmbientView = null
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -2553,9 +2551,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 onAlertLongClick = { item ->
                     haptic(this@setNowPlayingCardContent)
                     dismissAlertItem(item)
-                },
-                ambientLightColor = weatherAmbientLightColor(),
-                ambientLightStrength = weatherAmbientLightStrength()
+                }
             )
         }
     }
@@ -2590,6 +2586,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     tokens = activeNeuTokens,
                     brief = brief,
                     hasListenerPermission = isNotificationAccessEnabled(),
+                    keyboardMode = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) TodayKeyboardMode.WIDGET else TodayKeyboardMode.DOCKED,
                     onAction = { item, action, reply -> fireBriefAction(item, action, reply) },
                     onDismiss = { item -> dismissBriefItem(item) },
                     onGrantPermission = { openNotificationAccessSettings() }
@@ -4582,14 +4579,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             (cached is LibraryDrawerView) == glass
         ) {
             libraryContentArea = cached.findViewWithTag("library_content") as? FrameLayout
-            (cached as? LibraryDrawerView)?.setAmbient(weatherAmbientLightColor(), if (animatedWeatherEnabled()) 0.74f else 0.46f, activeNeuTokens.mode)
+            (cached as? LibraryDrawerView)?.setAmbient(activeNeuTokens.baseHi, 0f, activeNeuTokens.mode)
             if (!glass) cached.setBackgroundColor(activeNeuTokens.base)
             return cached
         }
         val shell = if (glass) LibraryDrawerView(this) else FrameLayout(this).apply { setBackgroundColor(activeNeuTokens.base) }
         return shell.apply {
             setPadding(dp(14), dp(14), dp(14), dp(10))
-            (this as? LibraryDrawerView)?.setAmbient(weatherAmbientLightColor(), if (animatedWeatherEnabled()) 0.74f else 0.46f, activeNeuTokens.mode)
+            (this as? LibraryDrawerView)?.setAmbient(activeNeuTokens.baseHi, 0f, activeNeuTokens.mode)
             val contentArea = FrameLayout(context).apply { tag = "library_content" }
             libraryContentArea = contentArea
             showLibraryLoading(contentArea)

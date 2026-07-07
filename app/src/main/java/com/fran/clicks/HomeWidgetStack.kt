@@ -24,9 +24,7 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -56,8 +54,6 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private var WidgetNeuTokens = Neu.Dark
-private var WidgetAmbientLight = Color.Transparent
-private var WidgetAmbientStrength = 0f
 private val Ink: Color get() = WidgetNeuTokens.inkCompose
 private val InkDim: Color get() = WidgetNeuTokens.inkDimCompose
 private val InkFaint: Color get() = WidgetNeuTokens.inkFaintCompose
@@ -205,23 +201,9 @@ fun HomeWidgetStack(
     alertItems: List<ContextWidgetItem> = emptyList(),
     onAlertClick: (ContextWidgetItem) -> Unit = {},
     onAlertLongClick: (ContextWidgetItem) -> Unit = {},
-    ambientLightColor: Int = 0x00000000,
-    ambientLightStrength: Float = 0f
 ) {
     if (!visible) return
     WidgetNeuTokens = tokens
-    val reflectedLight by animateColorAsState(
-        targetValue = Color(ambientLightColor),
-        animationSpec = tween(durationMillis = 950),
-        label = "widgetAmbientLight"
-    )
-    val reflectedStrength by animateFloatAsState(
-        targetValue = ambientLightStrength.coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 950),
-        label = "widgetAmbientStrength"
-    )
-    WidgetAmbientLight = reflectedLight
-    WidgetAmbientStrength = reflectedStrength
 
     val now = System.currentTimeMillis()
     val pages = buildList {
@@ -1112,7 +1094,6 @@ private fun Modifier.raisedGlassSurface(tokens: NeuTokens, radiusDp: Int): Modif
     this
         .neu(tokens, radiusDp.dp, NeuLevel.RAISED)
         .widgetRaisedEdges(tokens, radiusDp)
-        .widgetAmbientReflection(tokens, radiusDp)
 
 private fun Modifier.recessedTray(tokens: NeuTokens, radiusDp: Int, deep: Boolean = false): Modifier =
     this
@@ -1120,41 +1101,6 @@ private fun Modifier.recessedTray(tokens: NeuTokens, radiusDp: Int, deep: Boolea
         .widgetInsetEdges(tokens, radiusDp, deep)
 
 private fun Modifier.domedSurface(tokens: NeuTokens, radiusDp: Int): Modifier = this.neu(tokens, radiusDp.dp, NeuLevel.RAISED_SM)
-
-private fun Modifier.widgetAmbientReflection(tokens: NeuTokens, radiusDp: Int): Modifier = this.drawWithContent {
-    drawContent()
-    if (WidgetAmbientStrength <= 0f) return@drawWithContent
-    val radius = radiusDp.dp.toPx()
-    val dark = tokens.mode == NeuMode.DARK
-    val glowAlpha = WidgetAmbientStrength * if (dark) 0.18f else 0.13f
-    val edgeAlpha = WidgetAmbientStrength * if (dark) 0.34f else 0.22f
-    val source = Offset(size.width * 0.82f, size.height * 0.02f)
-    drawRoundRect(
-        brush = Brush.radialGradient(
-            colors = listOf(
-                WidgetAmbientLight.copy(alpha = glowAlpha),
-                WidgetAmbientLight.copy(alpha = glowAlpha * 0.34f),
-                WidgetAmbientLight.copy(alpha = 0f)
-            ),
-            center = source,
-            radius = size.maxDimension * 0.78f
-        ),
-        cornerRadius = CornerRadius(radius, radius)
-    )
-    val hairline = 1.dp.toPx()
-    drawLine(
-        color = WidgetAmbientLight.copy(alpha = edgeAlpha),
-        start = Offset(size.width * 0.52f, hairline * 1.35f),
-        end = Offset(size.width - radius * 0.62f, hairline * 1.35f),
-        strokeWidth = hairline
-    )
-    drawLine(
-        color = WidgetAmbientLight.copy(alpha = edgeAlpha * 0.58f),
-        start = Offset(size.width - hairline * 1.4f, radius * 0.62f),
-        end = Offset(size.width - hairline * 1.4f, size.height * 0.72f),
-        strokeWidth = hairline
-    )
-}
 
 private fun Modifier.widgetRaisedEdges(tokens: NeuTokens, radiusDp: Int): Modifier = this.drawWithContent {
     drawContent()

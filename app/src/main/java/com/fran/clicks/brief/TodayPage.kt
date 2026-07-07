@@ -1,13 +1,14 @@
 package com.fran.clicks.brief
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
+import android.graphics.Canvas as AndroidCanvas
 import android.graphics.drawable.BitmapDrawable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -18,8 +19,11 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,7 +31,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
@@ -55,12 +62,18 @@ import com.fran.clicks.NeuLevel
 import com.fran.clicks.NeuMode
 import com.fran.clicks.NeuTokens
 import com.fran.clicks.neu
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-// -------------------------------------------------------------------------------------------------
-// Semantic accent per category. Color lives ONLY in the mono label + chip glyph + primary-action
-// text, per the neumorphic spec. Everything else is one base color + the four shadow presets.
-// -------------------------------------------------------------------------------------------------
+enum class TodayKeyboardMode {
+    DOCKED,
+    WIDGET
+}
 
+private val Mono = FontFamily.Monospace
+
+// Semantic accent per category. Color lives only in labels, nodes, chips and primary action text.
 private fun accentFor(category: BriefCategory): Color = Color(
     when (category) {
         BriefCategory.MESSAGE -> Neu.TEAL
@@ -79,41 +92,76 @@ private fun labelFor(category: BriefCategory): String = when (category) {
     BriefCategory.CALL -> "CALL"
     BriefCategory.CALENDAR -> "CALENDAR"
     BriefCategory.WEATHER -> "WEATHER"
-    BriefCategory.MUSIC -> "NOW PLAYING"
+    BriefCategory.MUSIC -> "MUSIC"
     BriefCategory.OTHER -> "ALERT"
 }
 
 private fun glyphFor(item: BriefItem): String {
-    if (item.category == BriefCategory.WEATHER) return "°"
     if (item.category == BriefCategory.MUSIC) return "♪"
     if (item.category == BriefCategory.CALENDAR) return "◆"
     val c = item.title.trim().firstOrNull { it.isLetterOrDigit() }
     return (c?.uppercaseChar() ?: '•').toString()
 }
 
-private val Mono = FontFamily.Monospace
-
-// -------------------------------------------------------------------------------------------------
-// Full Today page (the "page to the left" of home).
-// -------------------------------------------------------------------------------------------------
-
 @Composable
 fun TodayPage(
     tokens: NeuTokens,
     brief: Brief,
     hasListenerPermission: Boolean,
+    keyboardMode: TodayKeyboardMode = TodayKeyboardMode.DOCKED,
     onAction: (BriefItem, BriefAction, String?) -> Unit,
     onDismiss: (BriefItem) -> Unit,
     onGrantPermission: () -> Unit,
 ) {
+    val timelineItems = remember(brief.items) {
+        brief.items
+            .filterNot { it.category == BriefCategory.WEATHER }
+            .take(6)
+    }
+    val bottomPadding = if (keyboardMode == TodayKeyboardMode.WIDGET) 92.dp else 18.dp
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(tokens.baseCompose)
             .padding(horizontal = 14.dp)
     ) {
-        Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 8.dp)) {
+        Spacer(Modifier.height(12.dp))
+        TodayHeader(tokens, timelineItems.size)
+
+        when {
+            !hasListenerPermission -> GrantState(tokens, onGrantPermission)
+            timelineItems.isEmpty() -> EmptyState(tokens)
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(top = 8.dp, bottom = bottomPadding),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                itemsIndexed(timelineItems, key = { _, item -> item.signalRef }) { index, item ->
+                    TimelineRow(
+                        tokens = tokens,
+                        item = item,
+                        index = index,
+                        first = index == 0,
+                        last = index == timelineItems.lastIndex,
+                        onAction = onAction,
+                        onDismiss = onDismiss
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TodayHeader(tokens: NeuTokens, count: Int) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 4.dp, top = 4.dp, bottom = 8.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
             Text(
                 "TODAY",
                 color = tokens.inkCompose,
@@ -122,56 +170,124 @@ fun TodayPage(
                 fontFamily = Mono,
                 letterSpacing = 3.sp
             )
-            Spacer(Modifier.width(8.dp))
-            if (brief.items.isNotEmpty()) {
-                CountBadge(tokens, brief.items.size.toString())
-            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "LIVE TIMELINE",
+                color = tokens.inkFaintCompose,
+                fontSize = 8.sp,
+                fontWeight = FontWeight.W700,
+                fontFamily = Mono,
+                letterSpacing = 1.6.sp
+            )
         }
+        if (count > 0) CountBadge(tokens, count.toString())
+    }
+}
 
-        when {
-            !hasListenerPermission -> GrantState(tokens, onGrantPermission)
-            brief.items.isEmpty() -> EmptyState(tokens)
-            else -> LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(9.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(brief.items, key = { it.signalRef }) { item ->
-                    TodayCard(tokens, item, onAction, onDismiss)
-                }
-                item { Spacer(Modifier.height(12.dp)) }
-            }
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TimelineRow(
+    tokens: NeuTokens,
+    item: BriefItem,
+    index: Int,
+    first: Boolean,
+    last: Boolean,
+    onAction: (BriefItem, BriefAction, String?) -> Unit,
+    onDismiss: (BriefItem) -> Unit,
+) {
+    val accent = accentFor(item.category)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.Top
+    ) {
+        TimeGutter(tokens, item, index)
+        Rail(tokens, accent, first, last)
+        TimelineCard(tokens, item, accent, onAction, onDismiss)
+    }
+}
+
+@Composable
+private fun TimeGutter(tokens: NeuTokens, item: BriefItem, index: Int) {
+    Box(
+        modifier = Modifier
+            .width(46.dp)
+            .fillMaxHeight(),
+        contentAlignment = Alignment.TopEnd
+    ) {
+        Text(
+            timelineTimeLabel(item, index),
+            color = if (index == 0) Color(Neu.GREEN) else tokens.inkFaintCompose,
+            fontSize = 8.sp,
+            fontFamily = Mono,
+            fontWeight = FontWeight.W700,
+            letterSpacing = 0.8.sp,
+            modifier = Modifier.padding(top = 19.dp, end = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun Rail(tokens: NeuTokens, accent: Color, first: Boolean, last: Boolean) {
+    Box(
+        modifier = Modifier
+            .width(22.dp)
+            .fillMaxHeight(),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val x = size.width / 2f
+            val top = if (first) 26.dp.toPx() else 0f
+            val bottom = if (last) 26.dp.toPx() else size.height
+            drawLine(
+                color = tokens.inkFaintCompose.copy(alpha = if (tokens.mode == NeuMode.DARK) 0.34f else 0.45f),
+                start = Offset(x, top),
+                end = Offset(x, bottom),
+                strokeWidth = 1.35.dp.toPx()
+            )
+        }
+        Box(
+            modifier = Modifier
+                .padding(top = 18.dp)
+                .size(16.dp)
+                .neu(tokens, 8.dp, NeuLevel.RAISED_SM),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(accent)
+            )
         }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TodayCard(
+private fun TimelineCard(
     tokens: NeuTokens,
     item: BriefItem,
+    accent: Color,
     onAction: (BriefItem, BriefAction, String?) -> Unit,
     onDismiss: (BriefItem) -> Unit,
 ) {
-    val accent = accentFor(item.category)
-    val appIcon = rememberAppIcon(item)
+    var expanded by remember(item.signalRef) { mutableStateOf(false) }
     var replying by remember(item.signalRef) { mutableStateOf<Fire?>(null) }
     var replyText by remember(item.signalRef) { mutableStateOf("") }
+    val appIcon = rememberAppIcon(item)
+    val actions = orderedActions(item, item.signal?.actions.orEmpty()).take(3)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .neu(tokens, 20.dp, NeuLevel.RAISED)
+            .neu(tokens, 22.dp, NeuLevel.RAISED_SM)
             .combinedClickable(
-                onClick = {
-                    item.signal?.actions
-                        ?.firstOrNull { it.label.equals(item.primaryActionLabel, ignoreCase = true) }
-                        ?.let { a ->
-                            if (a is Fire && a.isReply) replying = a else onAction(item, a, null)
-                        }
-                },
+                onClick = { expanded = !expanded },
                 onLongClick = { onDismiss(item) }
             )
-            .padding(horizontal = 14.dp, vertical = 11.dp)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             ChipIcon(tokens, accent, glyphFor(item), appIcon)
@@ -183,19 +299,19 @@ private fun TodayCard(
                     fontSize = 8.sp,
                     fontWeight = FontWeight.W700,
                     fontFamily = Mono,
-                    letterSpacing = 1.5.sp
+                    letterSpacing = 1.4.sp
                 )
-                Spacer(Modifier.height(3.dp))
+                Spacer(Modifier.height(4.dp))
                 Text(
                     item.title,
                     color = tokens.inkCompose,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.W600,
-                    maxLines = 1,
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.W700,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 if (item.subtitle.isNotBlank()) {
-                    Spacer(Modifier.height(1.dp))
+                    Spacer(Modifier.height(3.dp))
                     Text(
                         item.subtitle,
                         color = tokens.inkDimCompose,
@@ -207,9 +323,7 @@ private fun TodayCard(
             }
         }
 
-        val actions = item.signal?.actions.orEmpty()
-        val current = replying
-        if (current != null) {
+        if (replying != null) {
             Spacer(Modifier.height(10.dp))
             ReplyGroove(
                 tokens = tokens,
@@ -217,18 +331,19 @@ private fun TodayCard(
                 value = replyText,
                 onValueChange = { replyText = it },
                 onSend = {
+                    val action = replying ?: return@ReplyGroove
                     if (replyText.isNotBlank()) {
-                        onAction(item, current, replyText)
+                        onAction(item, action, replyText)
                         replyText = ""
                         replying = null
                     }
                 },
                 onCancel = { replying = null; replyText = "" }
             )
-        } else if (actions.isNotEmpty()) {
+        } else if (expanded && actions.isNotEmpty()) {
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                orderedActions(item, actions).take(3).forEach { action ->
+                actions.forEach { action ->
                     val isPrimary = action.label.equals(item.primaryActionLabel, ignoreCase = true)
                     ActionKey(
                         tokens = tokens,
@@ -245,7 +360,6 @@ private fun TodayCard(
     }
 }
 
-// Primary action first, then the rest in their existing order.
 private fun orderedActions(item: BriefItem, actions: List<BriefAction>): List<BriefAction> {
     val primary = actions.firstOrNull { it.label.equals(item.primaryActionLabel, ignoreCase = true) }
     return if (primary == null) actions else listOf(primary) + actions.filter { it !== primary }
@@ -266,7 +380,7 @@ private fun ActionKey(
         modifier = modifier
             .neu(tokens, 10.dp, if (pressed) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
             .combinedClickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 15.dp, vertical = 7.dp),
+            .padding(horizontal = 15.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -289,20 +403,19 @@ private fun ChipIcon(tokens: NeuTokens, accent: Color, glyph: String, appIcon: I
         contentAlignment = Alignment.Center
     ) {
         if (appIcon != null) {
-            // Real launcher icon of the source app, tucked into the carved well.
             Image(
                 bitmap = appIcon,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .size(28.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(9.dp))
+                    .clip(RoundedCornerShape(9.dp))
             )
         } else {
             Box(
                 modifier = Modifier
                     .size(26.dp)
-                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .background(accent),
                 contentAlignment = Alignment.Center
             ) {
@@ -317,7 +430,6 @@ private fun ChipIcon(tokens: NeuTokens, accent: Color, glyph: String, appIcon: I
     }
 }
 
-/** Launcher icon of the source app for a notification signal, cached per package. */
 @Composable
 private fun rememberAppIcon(item: BriefItem): ImageBitmap? {
     val pkg = (item.signal as? NotificationSignal)?.packageName ?: return null
@@ -331,7 +443,7 @@ private fun rememberAppIcon(item: BriefItem): ImageBitmap? {
                 val w = d.intrinsicWidth.coerceIn(1, 192)
                 val h = d.intrinsicHeight.coerceIn(1, 192)
                 val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                val c = Canvas(bmp)
+                val c = AndroidCanvas(bmp)
                 d.setBounds(0, 0, w, h)
                 d.draw(c)
                 bmp.asImageBitmap()
@@ -362,7 +474,7 @@ private fun ReplyGroove(
                 Spacer(Modifier.width(6.dp))
                 Box(Modifier.weight(1f)) {
                     if (value.isEmpty()) {
-                        Text("Type a reply…", color = tokens.inkDimCompose, fontSize = 13.sp, maxLines = 1)
+                        Text("Type a reply...", color = tokens.inkDimCompose, fontSize = 13.sp, maxLines = 1)
                     }
                     BasicTextField(
                         value = value,
@@ -377,7 +489,7 @@ private fun ReplyGroove(
         Spacer(Modifier.width(8.dp))
         ActionKeyStatic(tokens, "Send", accent, onSend)
         Spacer(Modifier.width(6.dp))
-        ActionKeyStatic(tokens, "✕", tokens.inkDimCompose, onCancel)
+        ActionKeyStatic(tokens, "x", tokens.inkDimCompose, onCancel)
     }
 }
 
@@ -428,11 +540,11 @@ private fun EmptyState(tokens: NeuTokens) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(92.dp)
-            .neu(tokens, 20.dp, NeuLevel.PRESSED),
+            .height(96.dp)
+            .neu(tokens, 22.dp, NeuLevel.PRESSED),
         contentAlignment = Alignment.Center
     ) {
-        Text("You’re all caught up.", color = tokens.inkDimCompose, fontSize = 14.sp, fontWeight = FontWeight.W500)
+        Text("You're all caught up.", color = tokens.inkDimCompose, fontSize = 14.sp, fontWeight = FontWeight.W500)
     }
 }
 
@@ -453,7 +565,7 @@ private fun GrantState(tokens: NeuTokens, onGrant: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Today needs notification access to collect and act on your messages, calls and email — right here.",
+            "Today needs notification access to collect and act on messages, calls and email.",
             color = tokens.inkDimCompose,
             fontSize = 12.sp
         )
@@ -462,17 +574,13 @@ private fun GrantState(tokens: NeuTokens, onGrant: () -> Unit) {
     }
 }
 
-// -------------------------------------------------------------------------------------------------
-// Compact teaser shown in the space below the widget stack. Taps through to the full page.
-// -------------------------------------------------------------------------------------------------
-
 @Composable
 fun TodayAlert(
     tokens: NeuTokens,
     brief: Brief,
     onOpen: () -> Unit,
 ) {
-    val top = brief.items.firstOrNull() ?: return
+    val top = brief.items.firstOrNull { it.category != BriefCategory.WEATHER } ?: return
     val accent = accentFor(top.category)
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -485,7 +593,7 @@ fun TodayAlert(
         Box(
             modifier = Modifier
                 .size(8.dp)
-                .clip(androidx.compose.foundation.shape.CircleShape)
+                .clip(CircleShape)
                 .background(accent)
         )
         Spacer(Modifier.width(10.dp))
@@ -508,9 +616,18 @@ fun TodayAlert(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        if (brief.items.size > 1) {
+        val count = brief.items.count { it.category != BriefCategory.WEATHER }
+        if (count > 1) {
             Spacer(Modifier.width(10.dp))
-            CountBadge(tokens, "+${brief.items.size - 1}")
+            CountBadge(tokens, "+${count - 1}")
         }
     }
+}
+
+private fun timelineTimeLabel(item: BriefItem, index: Int): String {
+    if (index == 0) return "NOW"
+    val timestamp = item.signal?.timestamp ?: return "LATER"
+    return runCatching {
+        SimpleDateFormat("h:mm", Locale.getDefault()).format(Date(timestamp)).uppercase(Locale.getDefault())
+    }.getOrDefault("LATER")
 }

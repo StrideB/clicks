@@ -187,6 +187,7 @@ class BriefGenerator(private val prefs: SharedPreferences) {
             "\n" +
             "Examples (style, do not copy literally):\n" +
             "- msg from Sam 'hey dinner tomorrow at 8?' -> title: \"Sam asks: dinner tomorrow at 8?\", subtitle: \"Reply to confirm\"\n" +
+            "- slack/email from Mara 'regarding the Q1 email, revise it and let me know' -> title: \"Review Q1 email from Mara\", subtitle: \"Reply when revised\"\n" +
             "- email 'Your order has shipped, arrives Fri' -> title: \"Order ships, arrives Friday\", subtitle from sender.\n" +
             "- youtube 'TechSpurt posted: Pixel 9 review' -> title: \"TechSpurt: Pixel 9 review is up\" (NOT 'Watch TechSpurt's latest video').\n" +
             "- missed call from Mom -> title: \"Missed call from Mom\", primaryActionLabel a real label like 'Call back' if present.\n" +
