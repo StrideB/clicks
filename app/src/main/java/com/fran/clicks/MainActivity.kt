@@ -1703,7 +1703,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             KEYBOARD_THEME_GOKEYS,
             KEYBOARD_THEME_HYPER3D,
             KEYBOARD_THEME_HYPER3D_BLACK,
-            KEYBOARD_THEME_HYPER3D_LIGHT
+            KEYBOARD_THEME_HYPER3D_LIGHT,
+            KEYBOARD_THEME_BRUSHED,
+            KEYBOARD_THEME_SEEME
         )
 
     private fun widgetThemeName(theme: String): String = when (theme) {
@@ -1713,6 +1715,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         KEYBOARD_THEME_HYPER3D -> "HYPER3D"
         KEYBOARD_THEME_HYPER3D_BLACK -> "HYPER BLACK"
         KEYBOARD_THEME_HYPER3D_LIGHT -> "HYPER LIGHT"
+        KEYBOARD_THEME_BRUSHED -> "BRUSHED"
+        KEYBOARD_THEME_SEEME -> "SEEME"
         else -> "DEFAULT"
     }
 
@@ -8273,7 +8277,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         "GOKEYS" to KEYBOARD_THEME_GOKEYS,
                         "HYPER" to KEYBOARD_THEME_HYPER3D,
                         "BLACK" to KEYBOARD_THEME_HYPER3D_BLACK,
-                        "LIGHT" to KEYBOARD_THEME_HYPER3D_LIGHT
+                        "LIGHT" to KEYBOARD_THEME_HYPER3D_LIGHT,
+                        "BRUSHED" to KEYBOARD_THEME_BRUSHED,
+                        "SEEME" to KEYBOARD_THEME_SEEME
                     ).forEach { (label, value) ->
                         addView(TextView(context).apply {
                             text = label
@@ -8568,29 +8574,76 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val isLetter = label.length == 1 && label[0].isLetter()
         val isWidgetDockKey = label == "clicks" && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET
         val isDockedClicksKey = label == "clicks" && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
-        return (if (isWidgetDockKey) DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else TextView(this)).apply {
-            text = keyLabel(label)
+        val useBrushedOpticalKey = keyboardTheme == KEYBOARD_THEME_BRUSHED && !isLetter && label != "clicks" && label != "space"
+        return (if (isWidgetDockKey) DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else if (useBrushedOpticalKey) com.fran.clicks.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
+            text = if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "clicks") "" else keyLabel(label)
+            if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "clicks") {
+                contentDescription = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) "Docked, tap to undock" else "Undocked, tap to dock"
+            }
             gravity = Gravity.CENTER
             textSize = keyTextSize(label)
-            typeface = Typeface.create("sans-serif", if (label == "shift" || label == "enter") Typeface.BOLD else Typeface.NORMAL)
+            typeface = if (keyboardTheme == KEYBOARD_THEME_SEEME || keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+                Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
+            } else {
+                Typeface.create("sans-serif", if (label == "shift" || label == "enter") Typeface.BOLD else Typeface.NORMAL)
+            }
             includeFontPadding = false
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
-            setPadding(0, 0, 0, 0)
+            setPadding(0, 0, 0, if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+                dp(
+                    when (label) {
+                        "enter" -> 0
+                        "shift", "back", "space", "period" -> 0
+                        "123", "abc" -> 0
+                        else -> 0
+                    }
+                )
+            } else 0)
+            if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+                when (this) {
+                    is com.fran.clicks.keyboard.OpticalKeyTextView -> opticalTextOffsetY = dp(
+                        when (label) {
+                            "enter" -> -2
+                            "shift" -> -12
+                            "back" -> -16
+                            "123", "abc", "period" -> -5
+                            else -> 0
+                        }
+                    ).toFloat().also {
+                        opticalTextOffsetX = if (label == "back") -dp(4).toFloat() else 0f
+                    }
+                    is SpaceKeyView -> brushedTextOffsetY = -dp(16).toFloat()
+                }
+            }
             setTextColor(keyTextColor(label))
             val vInset = keyVerticalInset()
             val hInset = keyHorizontalInset()
             // Show the swipe-down symbol at the bottom of letter keys.
             if (isLetter && this is DynamicFlickKeyView) {
-                val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
                 setKeyFaceInsets(hInset, vInset)
-                setSymbolHint(sym, (keyTextColor(label) and 0x00FFFFFF) or (0x66 shl 24))
-                setDrawnPrimaryLabel(
-                    keyLabel(label),
-                    keyTextColor(label),
-                    keyTextSize(label) * resources.displayMetrics.scaledDensity,
-                    typeface
-                )
+                if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+                    setLabelPlacement(
+                        labelBias = 0.28f,
+                        symbolBias = 0.04f,
+                        labelMaxScale = 0.52f,
+                        symbolScale = 0.16f,
+                        extraBottomInsetPx = 0,
+                        engravedSymbols = true
+                    )
+                }
+                val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
+                setSymbolHint(sym, (keyTextColor(label) and 0x00FFFFFF) or (0xD8 shl 24))
+                if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+                    setDrawnPrimaryLabel(label.lowercase(Locale.US), keyTextColor(label), keyTextSize(label) * resources.displayMetrics.scaledDensity, typeface)
+                } else {
+                    setDrawnPrimaryLabel(
+                        keyLabel(label),
+                        keyTextColor(label),
+                        keyTextSize(label) * resources.displayMetrics.scaledDensity,
+                        typeface
+                    )
+                }
             }
             isClickable = true
             val needsInset = label != "enter" && label != "123"
@@ -8645,12 +8698,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         spaceCursorLastX = event.rawX; spaceCursorMoved = false
                         v.background = pressedBg()
                         KeyPhysicsRegistry.activeSprings[v]?.cancel()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT && keyboardTiltLighting) {
-                            v.translationY = dp(2).toFloat()
-                            v.rotationX = if (label == "space") -1.5f else -3.5f
-                            v.scaleX = 0.985f
-                            v.scaleY = 0.985f
-                        }
+                        v.animate().translationY(dp(4).toFloat()).setDuration(35L).start()
                         keyHaptic(label)
                         keyPreviewManager.show(v, label)
                         if (longPressAction != null) {
@@ -8690,9 +8738,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     MotionEvent.ACTION_UP -> {
                         v.background = idleBg()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT && keyboardTiltLighting) v.animateSpringReturn(dp(2).toFloat())
-                        if (keyboardTiltLighting) v.animate().rotationX(0f).scaleX(1f).scaleY(1f).setDuration(150L).start()
-                        if (!keyboardTiltLighting) { v.translationY = 0f; v.rotationX = 0f; v.scaleX = 1f; v.scaleY = 1f }
+                        seemeReleaseHaptic(v)
+                        v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
                         cancelLongPress()
                         if (longPressFired) { longPressFired = false; return@setOnTouchListener true }
                         if (label == "back") {
@@ -8718,9 +8765,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     MotionEvent.ACTION_CANCEL -> {
                         v.background = idleBg()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
-                        if (keyboardTheme != KEYBOARD_THEME_DEFAULT && keyboardTiltLighting) v.animateSpringReturn(dp(2).toFloat())
-                        if (keyboardTiltLighting) v.animate().rotationX(0f).scaleX(1f).scaleY(1f).setDuration(150L).start()
-                        if (!keyboardTiltLighting) { v.translationY = 0f; v.rotationX = 0f; v.scaleX = 1f; v.scaleY = 1f }
+                        v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
                         if (label == "back") stopDeleteRepeat(clearFired = true)
                         spaceCursorMoved = false
                         cancelLongPress(); longPressFired = false
@@ -9351,6 +9396,19 @@ Reply format: ["word1","word2","word3"]"""
             val shown = if (upper) c.uppercaseChar().toString() else c.lowercaseChar().toString()
             val key = keyViews[label]
             if (key is DynamicFlickKeyView) {
+                if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+                    key.setLabelPlacement(
+                        labelBias = 0.28f,
+                        symbolBias = 0.04f,
+                        labelMaxScale = 0.52f,
+                        symbolScale = 0.16f,
+                        extraBottomInsetPx = 0,
+                        engravedSymbols = true
+                    )
+                    val brushedShown = if (shiftState == ShiftState.LOCK) label.uppercase(Locale.US) else label.lowercase(Locale.US)
+                    key.setDrawnPrimaryLabel(brushedShown, keyTextColor(label), keyTextSize(label) * resources.displayMetrics.scaledDensity, key.typeface)
+                    return@forEach
+                }
                 key.setDrawnPrimaryLabel(
                     shown,
                     keyTextColor(label),
@@ -9364,8 +9422,25 @@ Reply format: ["word1","word2","word3"]"""
         keyViews["shift"]?.setTextColor(when (shiftState) {
             ShiftState.OFF -> 0xFF7D8078.toInt()
             ShiftState.ONCE -> Ink
-            ShiftState.LOCK -> Accent
+            ShiftState.LOCK -> if (keyboardTheme == KEYBOARD_THEME_BRUSHED) 0xFFFFFFFF.toInt() else Accent
         })
+        keyViews["shift"]?.let { shiftKey ->
+            shiftKey.text = when (shiftState) {
+                ShiftState.LOCK -> "⇪"
+                ShiftState.ONCE -> "⇧"
+                ShiftState.OFF -> "↑"
+            }
+            if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+                val inset = keyVerticalInset()
+                shiftKey.background = android.graphics.drawable.InsetDrawable(
+                    keyIdleBackground("shift"),
+                    keyHorizontalInset(),
+                    inset,
+                    keyHorizontalInset(),
+                    inset
+                )
+            }
+        }
     }
 
     private fun updateAutoCapState() {
@@ -9560,6 +9635,8 @@ Reply format: ["word1","word2","word3"]"""
             KEYBOARD_THEME_HYPER3D -> 0xFF7EA2FF.toInt()
             KEYBOARD_THEME_HYPER3D_BLACK -> 0xFFFF6B6B.toInt()
             KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF4E6FE7.toInt()
+            KEYBOARD_THEME_BRUSHED -> if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFF9FA7B2.toInt() else 0xFFC9CED6.toInt()
+            KEYBOARD_THEME_SEEME -> 0xFFD71921.toInt()
             else -> goKeyColor
         }
         val tail = when (keyboardTheme) {
@@ -15330,6 +15407,12 @@ $emailText"""
     }
 
     private inner class SpaceKeyView(context: Context) : TextView(context) {
+        var brushedTextOffsetY = 0f
+            set(value) {
+                field = value
+                invalidate()
+            }
+
         private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             strokeCap = Paint.Cap.ROUND
         }
@@ -15344,7 +15427,7 @@ $emailText"""
 
         override fun onDraw(canvas: Canvas) {
             canvas.save()
-            canvas.translate(0f, -dp(5).toFloat())
+            canvas.translate(0f, if (keyboardTheme == KEYBOARD_THEME_BRUSHED) brushedTextOffsetY else -dp(5).toFloat())
             super.onDraw(canvas)
             canvas.restore()
             val centerX = width / 2f
@@ -15374,6 +15457,8 @@ $emailText"""
     }
 
     private fun keyboardDeckBackground(): Drawable {
+        if (keyboardTheme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
+        if (keyboardTheme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.RAISED)
         val light = keyboardLightMode()
         val colors = if (light) {
@@ -15415,9 +15500,16 @@ $emailText"""
     }
 
     private fun keyIdleBackground(label: String): Drawable {
+        if (keyboardTheme == KEYBOARD_THEME_SEEME) {
+            return SeemeDrawables.key(label, pressed = false, density = resources.displayMetrics.density, goColor = goKeyColor)
+        }
+        if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+            val visualLabel = if (label == "shift" && shiftState == ShiftState.LOCK) "shift_lock" else label
+            return BrushedDrawables.key(visualLabel, pressed = false, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED, goColor = goKeyColor)
+        }
+        if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false)
         hyper3dKeyDrawable(label)?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = false)
-        if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false)
         if (label == "123") return themed123KeyBackground(pressed = false)
         return when (keyboardTheme) {
             KEYBOARD_THEME_CLICKS -> physicalKeyBackground(pressed = false, premium = false, fn = isFnKey(label))
@@ -15427,9 +15519,16 @@ $emailText"""
     }
 
     private fun keyPressedBackground(label: String): Drawable {
+        if (keyboardTheme == KEYBOARD_THEME_SEEME) {
+            return SeemeDrawables.key(label, pressed = true, density = resources.displayMetrics.density, goColor = brighten(goKeyColor))
+        }
+        if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+            val visualLabel = if (label == "shift" && shiftState == ShiftState.LOCK) "shift_lock" else label
+            return BrushedDrawables.key(visualLabel, pressed = true, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED, goColor = brighten(goKeyColor))
+        }
+        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true)
         hyper3dKeyDrawable(label)?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = true)
-        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true)
         if (label == "123") return themed123KeyBackground(pressed = true)
         return when (keyboardTheme) {
             KEYBOARD_THEME_CLICKS -> physicalKeyBackground(pressed = true, premium = false, fn = isFnKey(label))
@@ -15652,8 +15751,6 @@ $emailText"""
     }
 
     private fun themedGoKeyBackground(fillColor: Int, pressed: Boolean): Drawable {
-        hyper3dKeyDrawable("enter")?.let { return it }
-        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(activeNeuTokens, dp(99).toFloat(), if (pressed) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
         val skirt = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(0xFF050609.toInt())
@@ -15681,6 +15778,8 @@ $emailText"""
             KEYBOARD_THEME_HYPER3D -> 0xFF6C89D8.toInt()
             KEYBOARD_THEME_HYPER3D_BLACK -> 0xFF2C3038.toInt()
             KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFFE7EAF0.toInt()
+            KEYBOARD_THEME_BRUSHED -> if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFD2D6DB.toInt() else 0xFF4A4E55.toInt()
+            KEYBOARD_THEME_SEEME -> 0xFFD71921.toInt()
             else -> Accent
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(accent), accent)).apply {
@@ -15703,7 +15802,7 @@ $emailText"""
     }
 
     private fun keyVerticalInset(): Int {
-        if (keyboardTheme == KEYBOARD_THEME_CLICKS || keyboardTheme == KEYBOARD_THEME_GOKEYS || isHyper3dTheme()) return dp(10 + keyboardSize * 5 / 100)
+        if (keyboardTheme == KEYBOARD_THEME_CLICKS || keyboardTheme == KEYBOARD_THEME_GOKEYS || keyboardTheme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme()) return dp(10 + keyboardSize * 5 / 100)
         return dp(7 + keyboardSize * 4 / 100)
     }
 
@@ -15743,12 +15842,37 @@ $emailText"""
 
     private fun keyTextSize(label: String): Float {
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
+        if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+            val brushedBase = when (label) {
+                "shift", "period" -> 22f
+                "back" -> 19f
+                "space" -> 18f
+                "123", "abc", "enter" -> 15.5f
+                "clicks" -> 13.5f
+                else -> 19f
+            }
+            val brushedGrowth = when (label) {
+                "123", "abc", "enter", "clicks" -> 1.5f
+                "space" -> 2f
+                else -> 2.5f
+            }
+            return brushedBase + (keyboardSize * brushedGrowth / 100f)
+        }
         val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "clicks", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
         val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "clicks", "enter", "back", "period", "abc" -> 1.5f; else -> 2.5f }
         return base + (keyboardSize * growth / 100f)
     }
 
-    private fun keyTextColor(label: String) = if (isHyper3dTheme()) {
+    private fun keyTextColor(label: String) = if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+        BrushedDrawables.ink(label, selectedNeuTokens().mode == NeuMode.DARK)
+    } else if (keyboardTheme == KEYBOARD_THEME_SEEME) {
+        when (label) {
+            "enter" -> 0xFFFFFFFF.toInt()
+            "clicks" -> 0xFFFF5A60.toInt()
+            "123", "back", "shift", "period", "abc" -> 0xFF8A8A8A.toInt()
+            else -> 0xFFF2F2F2.toInt()
+        }
+    } else if (isHyper3dTheme()) {
         val visualTheme = hyper3dVisualTheme()
         when {
             visualTheme == KEYBOARD_THEME_HYPER3D_LIGHT && label == "enter" -> 0xFF104026.toInt()
@@ -15958,6 +16082,15 @@ $emailText"""
     private fun keyHaptic(label: String) {
         if (!hapticsEnabled) return
         hapticEngine.tap(label)
+    }
+
+    private fun seemeReleaseHaptic(view: View) {
+        if (!hapticsEnabled) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            view.performHapticFeedback(HapticFeedbackConstants.SEGMENT_TICK)
+        } else {
+            view.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
+        }
     }
 
     private fun brighten(color: Int) = Color.rgb(
@@ -16845,6 +16978,8 @@ $emailText"""
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
         private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
+        private const val KEYBOARD_THEME_BRUSHED = "brushed"
+        private const val KEYBOARD_THEME_SEEME = "seeme"
         private const val KEYBOARD_SWAP_ANIMATION_PREF = "keyboard_swap_animation"
         private const val KEYBOARD_SWAP_ANIMATION_DEFAULT = "default"
         private const val KEYBOARD_SWAP_ANIMATION_POPOUT = "pop_out"

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.AlarmClock
+import android.provider.CalendarContract
 import android.provider.MediaStore
 import com.fran.clicks.db.SkillDatabase
 import com.fran.clicks.db.SkillEntity
@@ -24,7 +25,7 @@ import com.fran.clicks.db.SkillEntity
  */
 object AgenticRouter {
 
-    enum class ActionType { MUSIC, MAPS, NAV, TIMER, WEB_SEARCH, LOCATION, URI, EMAIL, WEATHER }
+    enum class ActionType { MUSIC, MAPS, NAV, TIMER, WEB_SEARCH, LOCATION, URI, EMAIL, WEATHER, ALARM, CALENDAR, CALL }
 
     data class Command(
         val skillId: Long,
@@ -93,6 +94,20 @@ object AgenticRouter {
     /** Names of enabled skills, for the Gemini fallback prompt. */
     fun catalogNames(): List<String> = skills.map { it.name }
 
+    /** A tappable go-button starter: a labelled skill and the text to seed the field with. */
+    data class Starter(val label: String, val insert: String)
+
+    /**
+     * Starters to show when the held go button has nothing to run yet — discoverability without a
+     * manual. Tapping one seeds the field with the skill's trigger (e.g. "play ") so the user just
+     * finishes typing. Drawn from the top of the enabled catalog (sort order = most useful first).
+     */
+    fun starters(limit: Int = 4): List<Starter> = skills.take(limit).map { s ->
+        val prefix = s.triggers.firstOrNull { it.endsWith(" ") }
+            ?: s.triggers.firstOrNull()?.let { "$it " } ?: ""
+        Starter("${s.emoji} ${s.name}", prefix)
+    }
+
     /** Build a command from a Gemini-chosen skill name + extracted argument. */
     fun commandForSkill(name: String, arg: String): Command? {
         val s = skills.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) } ?: return null
@@ -144,6 +159,9 @@ object AgenticRouter {
             "TIMER" -> timerIntent(arg)
             "EMAIL" -> emailIntent(arg)
             "WEB_SEARCH" -> webIntent(arg)
+            "ALARM" -> alarmIntent(arg)
+            "CALENDAR" -> calendarIntent(arg)
+            "CALL" -> callIntent(arg)
             else -> uriIntent(s.uriTemplate, arg)        // URI, MAPS, NAV all use a template
         }
         return Command(s.id, label, arg, intent, false)
@@ -182,6 +200,46 @@ object AgenticRouter {
         }
     }
 
+    // "7", "7:30", "6am", "6:30 pm", "wake me at 7" → the clock app's set-alarm screen, prefilled.
+    // Falls back to the deep-link (no time) so the user just sets it, rather than failing outright.
+    private fun alarmIntent(spec: String): Intent {
+        val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(AlarmClock.EXTRA_SKIP_UI, false)
+        }
+        parseTime(spec)?.let { (h, m) ->
+            intent.putExtra(AlarmClock.EXTRA_HOUR, h)
+            intent.putExtra(AlarmClock.EXTRA_MINUTES, m)
+        }
+        return intent
+    }
+
+    // Open the calendar's new-event composer with the title prefilled. No calendar permission needed —
+    // the user reviews and saves in their own calendar app.
+    private fun calendarIntent(title: String) = Intent(Intent.ACTION_INSERT).apply {
+        data = CalendarContract.Events.CONTENT_URI
+        putExtra(CalendarContract.Events.TITLE, title.trim())
+    }
+
+    // Dial a number (ACTION_DIAL prefills the dialer, no CALL_PHONE permission). Digits only.
+    private fun callIntent(spec: String): Intent {
+        val number = spec.filter { it.isDigit() || it == '+' || it == '#' || it == '*' }
+        return Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(number)}"))
+    }
+
+    /** Parse a clock time like "7", "7:30", "6am", "6:30 pm" into 24-hour (hour, minute). */
+    private fun parseTime(spec: String): Pair<Int, Int>? {
+        val m = Regex("(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?", RegexOption.IGNORE_CASE).find(spec) ?: return null
+        var hour = m.groupValues[1].toIntOrNull() ?: return null
+        val minute = m.groupValues[2].toIntOrNull() ?: 0
+        val mer = m.groupValues[3].lowercase()
+        when (mer) {
+            "pm" -> if (hour < 12) hour += 12
+            "am" -> if (hour == 12) hour = 0
+        }
+        if (hour !in 0..23 || minute !in 0..59) return null
+        return hour to minute
+    }
+
     // --- seed catalog -----------------------------------------------------------------------------
 
     private val BUILTINS = listOf(
@@ -212,6 +270,14 @@ object AgenticRouter {
         SkillEntity(name = "Send email", emoji = "✉️", actionType = "EMAIL",
             triggers = "email ,send email,compose email,mail ", labelTemplate = "✉️  Email {q}", builtin = true, sortOrder = 9),
         SkillEntity(name = "Weather", emoji = "⛅", actionType = "WEATHER",
-            triggers = "weather ,forecast ,weather in ,weather for ", labelTemplate = "⛅  Weather {q}", builtin = true, sortOrder = 10)
+            triggers = "weather ,forecast ,weather in ,weather for ", labelTemplate = "⛅  Weather {q}", builtin = true, sortOrder = 10),
+        SkillEntity(name = "Set alarm", emoji = "⏰", actionType = "ALARM",
+            triggers = "alarm ,set alarm ,set an alarm ,wake me at ,wake me up at ,alarm at ",
+            labelTemplate = "⏰  Alarm {q}", builtin = true, sortOrder = 11),
+        SkillEntity(name = "Add event", emoji = "📅", actionType = "CALENDAR",
+            triggers = "add event ,new event ,calendar ,schedule ,remind me to ,event ",
+            labelTemplate = "📅  Add “{q}”", builtin = true, sortOrder = 12),
+        SkillEntity(name = "Call", emoji = "📞", actionType = "CALL",
+            triggers = "call ,dial ,phone ", labelTemplate = "📞  Call {q}", builtin = true, sortOrder = 13)
     )
 }

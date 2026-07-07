@@ -3,6 +3,7 @@ package com.fran.clicks
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -14,6 +15,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
 import android.inputmethodservice.InputMethodService
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -91,6 +93,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private var pendingCommandText: String = ""
     private var pendingActions: List<Pair<String, String>> = emptyList()
     private var deckView: SwipeImeKeyboardLayout? = null
+    // FrameLayout wrapping the deck so the attach picker can float over the whole keyboard.
+    private var imeRoot: android.widget.FrameLayout? = null
+    private var attachOverlay: View? = null
+    // A file picked via the system picker, staged and waiting to commit once the field regains focus
+    // (the target editor loses focus while the picker activity is up, so we can't commit mid-pick).
+    private var pendingAttachment: Triple<java.io.File, String, String>? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = linkedMapOf<String, Rect>()
@@ -149,8 +157,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     // A HUD result shown in the agentic panel (translation / mood read / drafted reply). [insert] is
     // non-null when the result can be dropped into the field with an Insert button.
-    private data class Hud(val kicker: String, val body: String, val insert: String?)
+    // A result surfaced in the agentic panel: a title/body, an optional Insert (drop [insert] into the
+    // field), and optional follow-up chips that turn a one-shot answer into a next step ("Full forecast",
+    // "Copy"…). This is the result-loop: the go button answers, then offers where to go from there.
+    private data class HudAction(val label: String, val run: () -> Unit)
+    private data class Hud(
+        val kicker: String, val body: String, val insert: String?,
+        val actions: List<HudAction> = emptyList()
+    )
     private var agenticHud: Hud? = null
+    // Discoverability: starter chips shown when the go button is held over an empty field.
+    private var agenticStarters: List<HudAction> = emptyList()
 
     // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
     private val keyUpSymbols get() = com.fran.clicks.keyboard.KeyboardSymbols.keyUp
@@ -180,7 +197,19 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         initSpellChecker()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         AgenticRouter.ensureLoaded(this)
-        return buildKeyboard().also { deckView = it }
+        return buildInputView()
+    }
+
+    // Wrap the keyboard deck in a FrameLayout root so a picker can overlay it. [deckView] still points
+    // at the deck itself, so all existing keyboard logic is unchanged.
+    private fun buildInputView(): View {
+        attachOverlay = null
+        val deck = buildKeyboard().also { deckView = it }
+        return android.widget.FrameLayout(this).apply {
+            addView(deck, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT))
+        }.also { imeRoot = it }
     }
 
     // System spellchecker — real correction candidates for hard misspellings (parity with launcher).
@@ -219,7 +248,16 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         updateInputViewShown()
         clearInlineSuggestions()
         agenticHud = null
+        agenticStarters = emptyList()
         scheduleSuggestions()
+        // A file picked via the system picker while we were unfocused — commit it now (IC is fresh).
+        if (pendingAttachment != null) handler.postDelayed({ commitPendingAttachment() }, 150)
+    }
+
+    override fun onFinishInputView(finishingInput: Boolean) {
+        super.onFinishInputView(finishingInput)
+        // Don't let the attach sheet linger across fields or when the keyboard hides.
+        hideAttachPicker()
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
@@ -267,6 +305,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         neuralGlide?.close()
         nanoProofread.close()
         runCatching { spellChecker?.close() }
+        runCatching { thumbExecutor.shutdownNow() }
+        AttachBridge.pending = null
         super.onDestroy()
     }
 
@@ -310,7 +350,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun rebuildDeck() {
         lastBuiltTheme = keyboardTheme()
-        setInputView(buildKeyboard().also { deckView = it })
+        hideAttachPicker()
+        setInputView(buildInputView())
     }
 
     // On focus, rebuild the whole deck (fresh cached backgrounds) only if the theme changed;
@@ -350,24 +391,58 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun keyView(label: String): TextView {
         val isLetter = label.length == 1 && label[0].isLetter() && !symbolsMode
-        return (if (isLetter) com.fran.clicks.keyboard.DynamicFlickKeyView(this) else TextView(this)).apply {
+        val useBrushedOpticalKey = keyboardTheme() == KEYBOARD_THEME_BRUSHED && !isLetter && label != "clicks"
+        return (if (isLetter) com.fran.clicks.keyboard.DynamicFlickKeyView(this) else if (useBrushedOpticalKey) com.fran.clicks.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
             tag = label
-            text = if (isLetter) visualLabel(label) else keyDisplayText(label)
+            text = if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "clicks") "" else if (isLetter) visualLabel(label) else keyDisplayText(label)
+            if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "clicks") {
+                contentDescription = "Undocked, tap to dock"
+            }
             gravity = Gravity.CENTER
             includeFontPadding = false
+            setPadding(0, 0, 0, 0)
+            if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && this is com.fran.clicks.keyboard.OpticalKeyTextView) {
+                opticalTextOffsetY = dp(
+                    when (label) {
+                        "enter" -> -2
+                        "shift" -> -12
+                        "back", "space" -> -16
+                        "123", "abc", "." -> -5
+                        else -> 0
+                    }
+                ).toFloat()
+                opticalTextOffsetX = if (label == "back") -dp(4).toFloat() else 0f
+            }
             textSize = keyTextSize(label)
-            typeface = if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            typeface = if (keyboardTheme() == KEYBOARD_THEME_SEEME || keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+                Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
+            } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
             if (isLetter && this is com.fran.clicks.keyboard.DynamicFlickKeyView) {
                 setKeyFaceInsets(dp(1), keyVerticalInset())
+                if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+                    setLabelPlacement(
+                        labelBias = 0.28f,
+                        symbolBias = 0.04f,
+                        labelMaxScale = 0.52f,
+                        symbolScale = 0.16f,
+                        extraBottomInsetPx = 0,
+                        engravedSymbols = true
+                    )
+                }
                 val sym = com.fran.clicks.keyboard.KeyboardSymbols.keyUp[label.lowercase(Locale.US)]
                 setSymbolHint(sym, symbolHintColor())
-                setDrawnPrimaryLabel(
-                    visualLabel(label),
-                    textColor(label),
-                    keyTextSize(label) * resources.displayMetrics.scaledDensity,
-                    typeface
-                )
+                if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+                    val brushedLabel = if (capsLock) label.uppercase(Locale.US) else label.lowercase(Locale.US)
+                    setDrawnPrimaryLabel(brushedLabel, textColor(label), keyTextSize(label) * resources.displayMetrics.scaledDensity, typeface)
+                } else {
+                    setDrawnPrimaryLabel(
+                        visualLabel(label),
+                        textColor(label),
+                        keyTextSize(label) * resources.displayMetrics.scaledDensity,
+                        typeface
+                    )
+                }
             }
             background = visualKeyBackground(label, pressed = false)
             isClickable = true
@@ -400,7 +475,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     v.background = pressedBg
                     keyHaptic(label)
                     keyPreview.show(v, label)
-                    v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(45L).start()
+                    v.animate().translationY(dp(4).toFloat()).scaleX(1f).scaleY(1f).setDuration(35L).start()
                     if (label == "clicks") {
                         val runnable = Runnable {
                             clicksLongPressFired = true
@@ -462,8 +537,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 MotionEvent.ACTION_UP -> {
                     v.background = idleBg
                     keyPreview.dismiss()
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(150L)
-                        .setInterpolator(android.view.animation.OvershootInterpolator(2.4f)).start()
+                    seemeReleaseHaptic(v)
+                    v.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
                     cancelClicksLongPress()
                     if (clicksLongPressFired) {
                         clicksLongPressFired = false
@@ -484,7 +559,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 MotionEvent.ACTION_CANCEL -> {
                     v.background = idleBg
                     keyPreview.dismiss()
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(120L).start()
+                    v.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
                     cancelClicksLongPress()
                     clicksLongPressFired = false
                     if (label == "back") stopDeleteRepeat(clearFired = true)
@@ -516,7 +591,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     else -> shifted = true
                 }
                 lastShiftTapMs = now
-                refreshKeyboardChrome()
+                refreshKeyboardChrome(rebuildBackgrounds = keyboardTheme() == KEYBOARD_THEME_BRUSHED)
             }
             "back" -> {
                 // Undo autocorrect via the shared core (restore original + remember rejection).
@@ -836,6 +911,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     }
 
     private fun onTextChanged() {
+        // Typing resumes → the go-button starter hints are stale; drop them.
+        agenticStarters = emptyList()
         // No immediate updateStrip: it would repaint the strip with stale suggestions (and pay a
         // 1KB IPC read) on every keystroke, only to be repainted ~70ms later by scheduleSuggestions.
         // One debounced repaint = half the per-key work and no flicker. Agentic state changes still
@@ -1200,6 +1277,21 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         setOnClickListener { onClick() }
     }
 
+    // A follow-up chip: outlined (not filled) so it reads as a secondary next-step next to the Insert CTA.
+    private fun agenticFollowUp(label: String, accent: Int, fill: Int, onClick: () -> Unit) = TextView(this).apply {
+        text = label; gravity = Gravity.CENTER; textSize = 12.5f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        setTextColor(accent)
+        setPadding(dp(13), dp(8), dp(13), dp(8))
+        maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+        background = GradientDrawable().apply {
+            setColor(fill); cornerRadius = dp(11).toFloat()
+            setStroke(dp(1), (accent and 0x00FFFFFF) or 0x66000000)
+        }
+        isClickable = true
+        setOnClickListener { onClick() }
+    }
+
     private fun agenticDismiss(ink: Int) = TextView(this).apply {
         text = "✕"; gravity = Gravity.CENTER; textSize = 13f
         setTextColor(ink)
@@ -1213,6 +1305,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         pendingActions = emptyList()
         agenticStatus = null
         agenticHud = null
+        agenticStarters = emptyList()
         updateStrip()
     }
 
@@ -1392,10 +1485,45 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     currentInputConnection?.commitText(insert, 1); onTextChanged(); updateStrip()
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             }
+            // Follow-up chips: outlined mint pills that take the result somewhere next.
+            hud.actions.take(2).forEach { action ->
+                panel.addView(agenticFollowUp(action.label, mint, tileBg) {
+                    keyHaptic("enter"); action.run()
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+            }
             panel.addView(TextView(this).apply {
                 text = "✕"; gravity = Gravity.CENTER; textSize = 13f; setTextColor(kickerInk)
                 setPadding(dp(10), dp(8), dp(6), dp(8)); isClickable = true
                 setOnClickListener { keyHaptic("back"); agenticHud = null; updateStrip() }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+            if (wasHidden) animateAgenticPanelIn(panel)
+            return
+        }
+
+        val starters = agenticStarters
+        if (starters.isNotEmpty()) {
+            val wasHidden = panel.visibility != View.VISIBLE
+            panel.visibility = View.VISIBLE
+            panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
+            suggestionStrip?.visibility = View.GONE
+            panel.addView(TextView(this).apply {
+                text = "TRY"; gravity = Gravity.CENTER; textSize = 9f; letterSpacing = 0.16f
+                setTextColor(kickerInk); setPadding(dp(2), 0, dp(8), 0)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            starters.forEach { starter ->
+                row.addView(agenticFollowUp(starter.label, violet, tileBg) {
+                    keyHaptic("enter"); agenticStarters = emptyList(); starter.run()
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
+            }
+            panel.addView(android.widget.HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+                addView(row)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            panel.addView(TextView(this).apply {
+                text = "✕"; gravity = Gravity.CENTER; textSize = 13f; setTextColor(kickerInk)
+                setPadding(dp(10), dp(8), dp(6), dp(8)); isClickable = true
+                setOnClickListener { keyHaptic("back"); agenticStarters = emptyList(); updateStrip() }
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
             if (wasHidden) animateAgenticPanelIn(panel)
             return
@@ -1684,6 +1812,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             t == "worldcup" || t == "world cup" || t == "wc" || t == "wc odds" || t == "world cup odds" || t == "odds" -> "odds"
             t == "meet" || t == "google meet" || t == "new meet" || t == "gmeet" -> "meet"
             t.startsWith("notion ") || t == "notion" -> "notion"
+            t == "attach" || t == "file" || t == "files" || t == "photo" || t == "photos" ||
+                t == "attach file" || t == "attach photo" || t == "add file" || t == "send file" -> "attach"
             else -> null
         }
         if (clipSkill != null) {
@@ -1703,8 +1833,15 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 "odds" -> runWorldCupOdds()
                 "meet" -> runMeet()
                 "notion" -> runNotion(t.removePrefix("notion").trim())
+                "attach" -> showAttachPicker()
             }
             return
+        }
+        // Empty field: don't guess — show discoverable starter chips (Share location + top skills).
+        // Tapping one either runs it (location) or seeds its trigger so you just finish typing.
+        if (raw.isBlank()) {
+            val starters = buildStarters()
+            if (starters.isNotEmpty()) { agenticStarters = starters; updateStrip(); return }
         }
         val cmd = AgenticRouter.classify(raw)
         if (cmd != null) {
@@ -1742,6 +1879,221 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             return
         }
         flashAgenticStatus("Type a command \u2014 play, nearest, timer\u2026", 2200)
+    }
+
+    // Starter chips for the held-go-over-empty-field case: Share location runs on tap; the rest seed
+    // their trigger into the field so the user just finishes the thought.
+    private fun buildStarters(): List<HudAction> {
+        val chips = ArrayList<HudAction>()
+        if (canAttachHere()) chips.add(HudAction("\ud83d\udcce Attach") { showAttachPicker() })
+        chips.add(HudAction("\ud83d\udccd Share location") { runAgenticLocation() })
+        AgenticRouter.starters(4).forEach { s ->
+            if (s.insert.isBlank()) return@forEach
+            chips.add(HudAction(s.label) {
+                currentInputConnection?.commitText(s.insert, 1); onTextChanged(); updateStrip()
+            })
+        }
+        return chips
+    }
+
+    // --- attach picker ---------------------------------------------------------------------------
+    // A Neu-styled sheet that floats OVER the keyboard: pick a recent photo and it drops straight into
+    // the chat/email draft via commitContent — no app switch. The action only fires when the field
+    // actually accepts inline content (checked before we open).
+
+    private fun canAttachHere(): Boolean = AttachContent.editorAcceptsContent(currentInputEditorInfo)
+
+    fun showAttachPicker() {
+        val root = imeRoot ?: return
+        if (!canAttachHere()) { flashAgenticStatus("📎 This field can’t take attachments", 2200); return }
+        if (attachOverlay != null) { hideAttachPicker(); return }
+        keyHaptic("enter")
+        // Build the shell immediately (with a loading line) so it feels instant; fill the grid off-thread.
+        val overlay = buildAttachOverlay(emptyList(), loading = true)
+        attachOverlay = overlay
+        root.addView(overlay, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+        animateAttachIn(overlay)
+        Thread {
+            val items = AttachContent.recentImages(this, 30)
+            handler.post {
+                if (attachOverlay !== overlay) return@post  // dismissed while loading
+                val fresh = buildAttachOverlay(items, loading = false)
+                root.removeView(overlay)
+                root.addView(fresh, android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+                attachOverlay = fresh
+            }
+        }.start()
+    }
+
+    fun hideAttachPicker() {
+        val overlay = attachOverlay ?: return
+        attachOverlay = null
+        (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+    }
+
+    private fun animateAttachIn(v: View) {
+        if (!animationsEnabled()) return
+        v.alpha = 0f; v.translationY = dp(24).toFloat()
+        v.animate().alpha(1f).translationY(0f).setDuration(180L)
+            .setInterpolator(android.view.animation.DecelerateInterpolator()).start()
+    }
+
+    private fun buildAttachOverlay(items: List<AttachContent.MediaItem>, loading: Boolean): View {
+        val tokens = selectedNeuTokens()
+        val light = tokens.mode == NeuMode.LIGHT
+        val ink = tokens.ink; val inkDim = tokens.inkDim
+        val cardStroke = if (light) 0x14000000 else 0x22FFFFFF
+
+        val sheet = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Neu.drawable(tokens, dp(18).toFloat(), NeuLevel.RAISED)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            isClickable = true  // swallow taps so they don't fall through to keys behind
+        }
+
+        // Header: title · Files… · close
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "📎  Attach"; textSize = 15f; setTextColor(ink)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(TextView(this).apply {
+            text = "Files…"; textSize = 12.5f; setTextColor(Neu.BLUE)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = GradientDrawable().apply {
+                setColor(if (light) 0xFFE9EFF7.toInt() else 0xFF12212F.toInt()); cornerRadius = dp(11).toFloat()
+                setStroke(dp(1), (Neu.BLUE and 0x00FFFFFF) or 0x55000000)
+            }
+            isClickable = true
+            setOnClickListener { keyHaptic("enter"); openSystemFilePicker() }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(8) })
+        header.addView(TextView(this).apply {
+            text = "✕"; textSize = 15f; setTextColor(inkDim); gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(6), dp(8)); isClickable = true
+            setOnClickListener { keyHaptic("back"); hideAttachPicker() }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
+        sheet.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        val bodyHeight = (imeKeyboardHeight() - dp(78)).coerceAtLeast(dp(120))
+        val bodyParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, bodyHeight).apply { topMargin = dp(10) }
+
+        when {
+            loading -> sheet.addView(TextView(this).apply {
+                text = "Loading photos…"; textSize = 13.5f; setTextColor(inkDim); gravity = Gravity.CENTER
+            }, bodyParams)
+            items.isEmpty() -> {
+                // No media visible — either permission not granted, or genuinely empty.
+                val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+                col.addView(TextView(this).apply {
+                    text = "No photos available"; textSize = 14f; setTextColor(ink); gravity = Gravity.CENTER
+                })
+                col.addView(TextView(this).apply {
+                    text = "Grant photo access in the Clicks app, or use Files…"
+                    textSize = 12f; setTextColor(inkDim); gravity = Gravity.CENTER
+                    setPadding(dp(24), dp(6), dp(24), 0)
+                })
+                sheet.addView(col, bodyParams)
+            }
+            else -> {
+                val cols = 4
+                val tile = ((resources.displayMetrics.widthPixels - dp(28) - dp(6) * (cols - 1)) / cols).coerceAtLeast(dp(56))
+                val grid = android.widget.GridLayout(this).apply { columnCount = cols; rowCount = (items.size + cols - 1) / cols }
+                items.forEachIndexed { i, item ->
+                    val cell = android.widget.ImageView(this).apply {
+                        scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                        background = GradientDrawable().apply {
+                            setColor(if (light) 0xFFDDE1E8.toInt() else 0xFF10131A.toInt()); cornerRadius = dp(10).toFloat()
+                            setStroke(dp(1), cardStroke)
+                        }
+                        clipToOutline = true
+                        outlineProvider = object : android.view.ViewOutlineProvider() {
+                            override fun getOutline(view: View, o: android.graphics.Outline) { o.setRoundRect(0, 0, view.width, view.height, dp(10).toFloat()) }
+                        }
+                        isClickable = true
+                        setOnClickListener { attachMediaItem(item) }
+                    }
+                    loadThumbnailInto(cell, item, tile)
+                    val lp = android.widget.GridLayout.LayoutParams().apply {
+                        width = tile; height = tile
+                        setMargins(0, 0, if ((i % cols) == cols - 1) 0 else dp(6), dp(6))
+                    }
+                    grid.addView(cell, lp)
+                }
+                sheet.addView(android.widget.ScrollView(this).apply {
+                    isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+                    addView(grid)
+                }, bodyParams)
+            }
+        }
+        return sheet
+    }
+
+    // Load a MediaStore thumbnail off the main thread and set it once, guarding against recycled cells.
+    // A small bounded pool keeps us from spawning a thread per tile when the grid fills.
+    private val thumbExecutor by lazy { java.util.concurrent.Executors.newFixedThreadPool(3) }
+    private fun loadThumbnailInto(view: android.widget.ImageView, item: AttachContent.MediaItem, sizePx: Int) {
+        view.tag = item.uri
+        thumbExecutor.execute {
+            val bmp = runCatching {
+                contentResolver.loadThumbnail(item.uri, android.util.Size(sizePx, sizePx), null)
+            }.getOrNull()
+            if (bmp != null) handler.post { if (view.tag == item.uri) view.setImageBitmap(bmp) }
+        }
+    }
+
+    private fun attachMediaItem(item: AttachContent.MediaItem) {
+        if (!AttachContent.accepts(currentInputEditorInfo, item.mime)) {
+            flashAgenticStatus("📎 This field won’t accept ${item.mime}", 2400); return
+        }
+        keyHaptic("enter")
+        val ic = currentInputConnection; val info = currentInputEditorInfo
+        agenticConfirmHaptic()
+        Thread {
+            val ok = AttachContent.commit(this, ic, info, item.uri, item.mime, item.displayName)
+            handler.post {
+                hideAttachPicker()
+                if (!ok) flashAgenticStatus("📎 Couldn’t attach that here", 2200)
+                else onTextChanged()
+            }
+        }.start()
+    }
+
+    // Arbitrary files live outside MediaStore, so this is the one unavoidable trip out: a tiny bridge
+    // activity runs the system document picker and hands the result back (see AttachPickerActivity).
+    private fun openSystemFilePicker() {
+        hideAttachPicker()
+        val mimes = AttachContent.acceptedMimeTypes(currentInputEditorInfo)
+        // Register the return path before launching: the picker stages the file and calls back. We stash
+        // it and commit once the field is focused again (see onStartInputView) — committing while the
+        // picker activity still holds focus would silently drop it.
+        AttachBridge.pending = { file, mime, name ->
+            handler.post { pendingAttachment = Triple(file, mime, name); commitPendingAttachment() }
+        }
+        runCatching {
+            startActivity(Intent(this, AttachPickerActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                putExtra(AttachPickerActivity.EXTRA_MIME_TYPES, if (mimes.isEmpty()) arrayOf("*/*") else mimes)
+            })
+        }.onFailure { AttachBridge.pending = null; flashAgenticStatus("Couldn’t open files", 2000) }
+    }
+
+    // Commit a file picked via the system picker, once we have a live input connection. Called on the
+    // bridge callback and again from onStartInputView (whichever wins the race to a focused field).
+    private fun commitPendingAttachment() {
+        val (file, mime, name) = pendingAttachment ?: return
+        val ic = currentInputConnection ?: return   // no field yet — retry on next onStartInputView
+        val info = currentInputEditorInfo
+        pendingAttachment = null
+        if (!AttachContent.accepts(info, mime)) { flashAgenticStatus("📎 This field won’t accept $mime", 2600); return }
+        Thread {
+            val ok = AttachContent.commitFile(this, ic, info, file, mime, name)
+            handler.post { if (ok) onTextChanged() else flashAgenticStatus("📎 Couldn’t attach that here", 2200) }
+        }.start()
     }
 
     private fun applyPendingCommand() {
@@ -1899,14 +2251,29 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             handler.post {
                 agenticStatus = null
                 if (text != null) {
-                    currentInputConnection?.commitText(text, 1)
-                    onTextChanged()
+                    // Result-loop: show it with Insert + a follow-up to the full forecast, rather than
+                    // silently dropping it in. The user chooses what to do with the answer.
+                    agenticHud = Hud(
+                        kicker = "WEATHER", body = text, insert = text,
+                        actions = listOf(HudAction("Full forecast") {
+                            agenticHud = null; updateStrip()
+                            openWeatherSearch(query.ifBlank { text })
+                        })
+                    )
                     updateStrip()
                 } else {
                     flashAgenticStatus("⛅ Couldn’t get weather for “$query”", 2200)
                 }
             }
         }.start()
+    }
+
+    // Open a full forecast in the browser for the go-button weather follow-up.
+    private fun openWeatherSearch(query: String) {
+        val url = "https://www.google.com/search?q=" + Uri.encode("weather $query")
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
     }
 
     private fun flashAgenticStatus(message: String, ms: Long) {
@@ -2000,6 +2367,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             KEYBOARD_THEME_HYPER3D -> 0xFF7EA2FF.toInt()
             KEYBOARD_THEME_HYPER3D_BLACK -> 0xFFFF6B6B.toInt()
             KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF4E6FE7.toInt()
+            KEYBOARD_THEME_BRUSHED -> if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFF9FA7B2.toInt() else 0xFFC9CED6.toInt()
             else -> goKeyColor()
         }
         val tail = when (theme) {
@@ -2025,13 +2393,28 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     val raw = key.tag as? String ?: continue
                     key.setTextColor(textColor(raw))
                     if (key is com.fran.clicks.keyboard.DynamicFlickKeyView && raw.length == 1 && raw[0].isLetter() && !symbolsMode) {
+                        if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+                            key.setLabelPlacement(
+                                labelBias = 0.28f,
+                                symbolBias = 0.04f,
+                                labelMaxScale = 0.52f,
+                                symbolScale = 0.16f,
+                                extraBottomInsetPx = 0,
+                                engravedSymbols = true
+                            )
+                        }
                         key.setSymbolHint(com.fran.clicks.keyboard.KeyboardSymbols.keyUp[raw.lowercase(Locale.US)], symbolHintColor())
-                        key.setDrawnPrimaryLabel(
-                            visualLabel(raw),
-                            textColor(raw),
-                            keyTextSize(raw) * resources.displayMetrics.scaledDensity,
-                            key.typeface
-                        )
+                        if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+                            val brushedLabel = if (capsLock) raw.uppercase(Locale.US) else raw.lowercase(Locale.US)
+                            key.setDrawnPrimaryLabel(brushedLabel, textColor(raw), keyTextSize(raw) * resources.displayMetrics.scaledDensity, key.typeface)
+                        } else {
+                            key.setDrawnPrimaryLabel(
+                                visualLabel(raw),
+                                textColor(raw),
+                                keyTextSize(raw) * resources.displayMetrics.scaledDensity,
+                                key.typeface
+                            )
+                        }
                     } else {
                         key.text = keyDisplayText(raw)
                     }
@@ -2371,6 +2754,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 else -> 0xFFEEF1F7.toInt()
             }
         }
+        if (theme == KEYBOARD_THEME_SEEME) {
+            return when (label) {
+                "enter" -> 0xFFFFFFFF.toInt()
+                "clicks" -> 0xFFFF5A60.toInt()
+                "123", "back", "shift", "." -> 0xFF8A8A8A.toInt()
+                else -> 0xFFF2F2F2.toInt()
+            }
+        }
+        if (theme == KEYBOARD_THEME_BRUSHED) {
+            return BrushedDrawables.ink(label, selectedNeuTokens().mode == NeuMode.DARK)
+        }
         if (theme == KEYBOARD_THEME_GOKEYS) {
             return if (keyboardLightMode(theme)) {
                 when (label) {
@@ -2434,7 +2828,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun keyVerticalInset(): Int {
         val size = KeyboardSettings.keyboardSize(this)
         val theme = keyboardVisualTheme()
-        if (theme == KEYBOARD_THEME_CLICKS || theme == KEYBOARD_THEME_GOKEYS || isHyper3dTheme(theme)) {
+        if (theme == KEYBOARD_THEME_CLICKS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             return dp(10 + size * 5 / 100)
         }
         return dp(7 + size * 4 / 100)
@@ -2447,6 +2841,22 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun keyTextSize(label: String): Float {
         val size = KeyboardSettings.keyboardSize(this)
+        if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+            val brushedBase = when (label) {
+                "shift", "." -> 22f
+                "back" -> 19f
+                "space" -> 18f
+                "123", "abc", "enter" -> 15.5f
+                "clicks" -> 13.5f
+                else -> 19f
+            }
+            val brushedGrowth = when (label) {
+                "123", "abc", "enter", "clicks" -> 1.5f
+                "space" -> 2f
+                else -> 2.5f
+            }
+            return brushedBase + (size * brushedGrowth / 100f)
+        }
         val base = when (label) {
             "shift" -> 24f
             "space" -> 18f
@@ -2478,9 +2888,16 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun keyIdleBackground(label: String): Drawable {
         val theme = keyboardVisualTheme()
+        if (theme == KEYBOARD_THEME_SEEME) {
+            return SeemeDrawables.key(label, pressed = false, density = resources.displayMetrics.density, goColor = goKeyColor())
+        }
+        if (theme == KEYBOARD_THEME_BRUSHED) {
+            val visualLabel = if (label == "shift" && capsLock) "shift_lock" else label
+            return BrushedDrawables.key(visualLabel, pressed = false, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = false, goColor = goKeyColor())
+        }
+        if (label == "enter") return themedGoKeyBackground(goKeyColor(), pressed = false, theme = theme)
         hyper3dKeyDrawable(label, theme)?.let { return it }
         if (theme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = false)
-        if (label == "enter") return themedGoKeyBackground(goKeyColor(), pressed = false, theme = theme)
         if (label == "123") return themed123KeyBackground(pressed = false, theme = theme)
         return when (theme) {
             KEYBOARD_THEME_CLICKS -> physicalKeyBackground(pressed = false, premium = false, fn = isFnKey(label), theme = theme)
@@ -2491,9 +2908,16 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun keyPressedBackground(label: String): Drawable {
         val theme = keyboardVisualTheme()
+        if (theme == KEYBOARD_THEME_SEEME) {
+            return SeemeDrawables.key(label, pressed = true, density = resources.displayMetrics.density, goColor = brighten(goKeyColor()))
+        }
+        if (theme == KEYBOARD_THEME_BRUSHED) {
+            val visualLabel = if (label == "shift" && capsLock) "shift_lock" else label
+            return BrushedDrawables.key(visualLabel, pressed = true, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = false, goColor = brighten(goKeyColor()))
+        }
+        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor()), pressed = true, theme = theme)
         hyper3dKeyDrawable(label, theme)?.let { return it }
         if (theme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = true)
-        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor()), pressed = true, theme = theme)
         if (label == "123") return themed123KeyBackground(pressed = true, theme = theme)
         return when (theme) {
             KEYBOARD_THEME_CLICKS -> physicalKeyBackground(pressed = true, premium = false, fn = isFnKey(label), theme = theme)
@@ -2504,6 +2928,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun deckBackground(): Drawable {
         val theme = keyboardVisualTheme()
+        if (theme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
+        if (theme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(16).toFloat(), NeuLevel.RAISED)
         val light = keyboardLightMode(theme)
         val colors = if (light) {
@@ -2584,6 +3010,15 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun goKeyColor(): Int {
         return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(GO_KEY_COLOR_PREF, 0xFFFF5A3C.toInt())
+    }
+
+    private fun seemeReleaseHaptic(view: View) {
+        if (!hapticsOn()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            view.performHapticFeedback(HapticFeedbackConstants.SEGMENT_TICK)
+        } else {
+            view.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
+        }
     }
 
     private fun hyper3dKeyDrawable(label: String, keyboardTheme: String): Drawable? {
@@ -2767,7 +3202,6 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     }
 
     private fun themedGoKeyBackground(fillColor: Int, pressed: Boolean, theme: String): Drawable {
-        if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(99).toFloat(), if (pressed) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
         val skirt = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(0xFF050609.toInt())
@@ -2843,6 +3277,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
         private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
+        private const val KEYBOARD_THEME_BRUSHED = "brushed"
+        private const val KEYBOARD_THEME_SEEME = "seeme"
         private const val GO_KEY_COLOR_PREF = "go_key_color"
     }
 }

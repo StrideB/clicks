@@ -13,10 +13,14 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
 import android.graphics.drawable.LayerDrawable
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
@@ -136,19 +140,78 @@ class DockedKeyboardService : Service() {
     }
 
     private fun keyView(label: String): TextView {
-        return TextView(this).apply {
+        val useBrushedOpticalKey = keyboardTheme() == KEYBOARD_THEME_BRUSHED && label != "clicks"
+        return (if (useBrushedOpticalKey) com.fran.clicks.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
             tag = label
-            text = visualLabel(label)
+            text = if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "clicks") "" else visualLabel(label)
+            if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "clicks") {
+                contentDescription = "Docked, tap to undock"
+            }
             gravity = Gravity.CENTER
             includeFontPadding = false
+            setPadding(0, 0, 0, 0)
+            if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && this is com.fran.clicks.keyboard.OpticalKeyTextView) {
+                opticalTextOffsetY = dp(
+                    when (label) {
+                        "enter" -> -2
+                        "shift" -> -12
+                        "back", "space" -> -16
+                        "123", "abc", "." -> -5
+                        else -> 0
+                    }
+                ).toFloat()
+                opticalTextOffsetX = if (label == "back") -dp(4).toFloat() else 0f
+            }
             textSize = keyTextSize(label)
-            typeface = if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            typeface = if (keyboardTheme() == KEYBOARD_THEME_SEEME || keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+                Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
+            } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
             background = keyBackground(label)
             isClickable = true
-            setOnClickListener {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                handleKey(label)
+            run {
+                val handler = Handler(Looper.getMainLooper())
+                var longPressFired = false
+                var longPressRunnable: Runnable? = null
+                setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            longPressFired = false
+                            v.isPressed = true
+                            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            v.animate().translationY(dp(4).toFloat()).setDuration(35L).start()
+                            if (label == "clicks") {
+                                val runnable = Runnable {
+                                    longPressFired = true
+                                    v.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                    openLauncherKeyboardAction(ClicksKeyboardActions.SWITCH_TO_WIDGET_MODE)
+                                }
+                                longPressRunnable = runnable
+                                handler.postDelayed(runnable, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                            }
+                            true
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            v.isPressed = false
+                            longPressRunnable?.let { handler.removeCallbacks(it) }
+                            longPressRunnable = null
+                            seemeReleaseHaptic(v)
+                            v.animate().translationY(0f).setDuration(35L).start()
+                            if (!longPressFired) handleKey(label)
+                            longPressFired = false
+                            true
+                        }
+                        MotionEvent.ACTION_CANCEL -> {
+                            v.isPressed = false
+                            longPressRunnable?.let { handler.removeCallbacks(it) }
+                            longPressRunnable = null
+                            longPressFired = false
+                            v.animate().translationY(0f).setDuration(35L).start()
+                            true
+                        }
+                        else -> true
+                    }
+                }
             }
             if (label == "clicks") {
                 setOnLongClickListener {
@@ -237,9 +300,22 @@ class DockedKeyboardService : Service() {
     }
 
     private fun keyFaceBackground(label: String, pressed: Boolean): Drawable {
+        if (keyboardTheme() == KEYBOARD_THEME_SEEME) {
+            return SeemeDrawables.key(label, pressed = pressed, density = resources.displayMetrics.density, goColor = if (pressed) brighten(goKeyColor()) else goKeyColor())
+        }
+        if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+            return BrushedDrawables.key(
+                label,
+                pressed = pressed,
+                dark = selectedNeuTokens().mode == NeuMode.DARK,
+                density = resources.displayMetrics.density,
+                docked = true,
+                goColor = if (pressed) brighten(goKeyColor()) else goKeyColor()
+            )
+        }
+        if (label == "enter") return themedGoKeyBackground(if (pressed) brighten(goKeyColor()) else goKeyColor(), pressed)
         hyper3dKeyDrawable(label)?.let { return it }
         if (keyboardTheme() == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed)
-        if (label == "enter") return themedGoKeyBackground(if (pressed) brighten(goKeyColor()) else goKeyColor(), pressed)
         if (label == "123") return themed123KeyBackground(pressed)
         return when (keyboardTheme()) {
             KEYBOARD_THEME_CLICKS -> physicalKeyBackground(pressed = pressed, premium = false, fn = isFnKey(label))
@@ -250,6 +326,8 @@ class DockedKeyboardService : Service() {
 
     private fun deckBackground(): Drawable {
         val theme = keyboardVisualTheme()
+        if (theme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
+        if (theme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(16).toFloat(), NeuLevel.RAISED)
         val light = keyboardLightMode(theme)
         val colors = if (light) {
@@ -295,7 +373,7 @@ class DockedKeyboardService : Service() {
     private fun keyVerticalInset(): Int {
         val size = KeyboardSettings.keyboardSize(this)
         val theme = keyboardVisualTheme()
-        return if (theme == KEYBOARD_THEME_CLICKS || theme == KEYBOARD_THEME_GOKEYS || isHyper3dTheme(theme)) {
+        return if (theme == KEYBOARD_THEME_CLICKS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             dp(10 + size * 5 / 100)
         } else {
             dp(7 + size * 4 / 100)
@@ -307,6 +385,22 @@ class DockedKeyboardService : Service() {
 
     private fun keyTextSize(label: String): Float {
         val size = KeyboardSettings.keyboardSize(this)
+        if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+            val brushedBase = when (label) {
+                "shift", "." -> 22f
+                "back" -> 19f
+                "space" -> 18f
+                "123", "abc", "enter" -> 15.5f
+                "clicks" -> 13.5f
+                else -> 20f
+            }
+            val brushedGrowth = when (label) {
+                "123", "abc", "enter", "clicks" -> 1.5f
+                "space" -> 2f
+                else -> 2.5f
+            }
+            return brushedBase + (size * brushedGrowth / 100f)
+        }
         val base = when (label) {
             "shift" -> 24f
             "space" -> 18f
@@ -338,6 +432,17 @@ class DockedKeyboardService : Service() {
                 visualTheme == KEYBOARD_THEME_HYPER3D && isFnKey(label) -> 0xFF9AA2B1.toInt()
                 else -> 0xFFEEF1F7.toInt()
             }
+        }
+        if (theme == KEYBOARD_THEME_SEEME) {
+            return when (label) {
+                "enter" -> 0xFFFFFFFF.toInt()
+                "clicks" -> 0xFFFF5A60.toInt()
+                "123", "back", "shift", "." -> 0xFF8A8A8A.toInt()
+                else -> 0xFFF2F2F2.toInt()
+            }
+        }
+        if (theme == KEYBOARD_THEME_BRUSHED) {
+            return BrushedDrawables.ink(label, selectedNeuTokens().mode == NeuMode.DARK)
         }
         if (theme == KEYBOARD_THEME_GOKEYS) {
             return if (keyboardLightMode(theme)) {
@@ -373,8 +478,6 @@ class DockedKeyboardService : Service() {
     }
 
     private fun themedGoKeyBackground(fillColor: Int, pressed: Boolean): Drawable {
-        hyper3dKeyDrawable("enter")?.let { return it }
-        if (keyboardTheme() == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(99).toFloat(), if (pressed) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
         val skirt = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(0xFF050609.toInt())
@@ -623,6 +726,14 @@ class DockedKeyboardService : Service() {
 
     private fun keyboardVisualTheme(): String = keyboardTheme()
 
+    private fun seemeReleaseHaptic(view: View) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            view.performHapticFeedback(HapticFeedbackConstants.SEGMENT_TICK)
+        } else {
+            view.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
+        }
+    }
+
     private fun themeMode(): String {
         return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
@@ -669,6 +780,8 @@ class DockedKeyboardService : Service() {
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
         private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
+        private const val KEYBOARD_THEME_BRUSHED = "brushed"
+        private const val KEYBOARD_THEME_SEEME = "seeme"
         private const val THEME_MODE_PREF = "theme_mode"
         private const val THEME_MODE_DARK = "dark"
         private const val THEME_MODE_LIGHT = "light"

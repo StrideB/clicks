@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.widget.TextView
+import kotlin.math.min
 
 /**
  * Drop-in TextView replacement for letter keys that draws a prediction word
@@ -29,6 +30,12 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
     private var primaryColor: Int = currentTextColor
     private var primaryTextSizePx: Float = 0f
     private var primaryTypeface: Typeface? = null
+    private var labelVerticalBias = 0.52f
+    private var symbolVerticalBias = 0.24f
+    private var primaryMaxFaceScale = 0.62f
+    private var symbolFaceScale = 0.16f
+    private var extraBottomFaceInset = 0f
+    private var engraveSymbolHint = false
 
     fun setSymbolHint(sym: String?, color: Int) {
         if (symbolHint != sym || symbolPaint.color != color) {
@@ -42,6 +49,23 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         primaryTextSizePx = textSizePx
         primaryTypeface = typeface
         text = if (label == null) text else ""
+        invalidate()
+    }
+
+    fun setLabelPlacement(
+        labelBias: Float,
+        symbolBias: Float = 0.24f,
+        labelMaxScale: Float = 0.62f,
+        symbolScale: Float = 0.16f,
+        extraBottomInsetPx: Int = 0,
+        engravedSymbols: Boolean = false
+    ) {
+        labelVerticalBias = labelBias.coerceIn(0.28f, 0.62f)
+        symbolVerticalBias = symbolBias.coerceIn(0.04f, 0.36f)
+        primaryMaxFaceScale = labelMaxScale.coerceIn(0.36f, 0.68f)
+        symbolFaceScale = symbolScale.coerceIn(0.08f, 0.22f)
+        extraBottomFaceInset = extraBottomInsetPx.toFloat().coerceAtLeast(0f)
+        engraveSymbolHint = engravedSymbols
         invalidate()
     }
 
@@ -70,14 +94,28 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
     override fun onDraw(canvas: Canvas) {
         if (primaryLabel == null) super.onDraw(canvas)
         val faceTop = faceInsetY
-        val faceBottom = keyH - faceInsetY
-        val faceHeight = (faceBottom - faceTop).coerceAtLeast(keyH * 0.58f)
+        val faceBottom = keyH - faceInsetY - extraBottomFaceInset
+        val faceHeight = (faceBottom - faceTop).coerceAtLeast(1f)
         // Swipe-down symbol at the bottom edge.
         symbolHint?.let { s ->
             if (keyH > 0) {
-                symbolPaint.textSize = faceHeight * 0.135f
-                symbolPaint.alpha = 130
-                canvas.drawText(s, keyW / 2f, faceTop + faceHeight * 0.25f, symbolPaint)
+                symbolPaint.textSize = faceHeight * symbolFaceScale
+                symbolPaint.alpha = 230
+                val symbolMetrics = symbolPaint.fontMetrics
+                val symbolCenterY = faceTop + faceHeight * symbolVerticalBias
+                val symbolBaseline = symbolCenterY - (symbolMetrics.ascent + symbolMetrics.descent) / 2f
+                if (engraveSymbolHint) {
+                    val originalColor = symbolPaint.color
+                    symbolPaint.color = 0x99000000.toInt()
+                    symbolPaint.alpha = 150
+                    canvas.drawText(s, keyW / 2f, symbolBaseline + 1.4f, symbolPaint)
+                    symbolPaint.color = 0x66FFFFFF
+                    symbolPaint.alpha = 80
+                    canvas.drawText(s, keyW / 2f, symbolBaseline - 0.8f, symbolPaint)
+                    symbolPaint.color = originalColor
+                    symbolPaint.alpha = 215
+                }
+                canvas.drawText(s, keyW / 2f, symbolBaseline, symbolPaint)
                 symbolPaint.alpha = 255
             }
         }
@@ -86,9 +124,10 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
                 hintPaint.color = primaryColor
                 hintPaint.typeface = primaryTypeface
                 hintPaint.isFakeBoldText = false
-                hintPaint.textSize = primaryTextSizePx.takeIf { it > 0f } ?: faceHeight * 0.44f
+                val requestedSize = primaryTextSizePx.takeIf { it > 0f } ?: faceHeight * 0.48f
+                hintPaint.textSize = min(requestedSize, faceHeight * primaryMaxFaceScale)
                 val metrics = hintPaint.fontMetrics
-                val centerY = faceTop + faceHeight * 0.54f
+                val centerY = faceTop + faceHeight * labelVerticalBias
                 val baseline = centerY - (metrics.ascent + metrics.descent) / 2f
                 canvas.drawText(label, keyW / 2f, baseline, hintPaint)
                 hintPaint.typeface = null
