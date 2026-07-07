@@ -391,6 +391,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
     private lateinit var predictionEngine: PredictionEngine
+    // Parity with the IME: primary-language engine + latent flags drive languagePreferredOrder so a
+    // swipe on the launcher keyboard also prefers the language you're writing (no English->Spanish).
+    private var predictionEnginePrimary: PredictionEngine = PredictionEngine(emptyMap())
+    private var hasLatentLanguages = false
+    private var latentLanguageActive = false
     private lateinit var ngramRepo: NgramRepository
     private lateinit var flickDetector: FlickDetector
     private lateinit var predictionOverlay: PredictionOverlayManager
@@ -9392,29 +9397,33 @@ Reply format: ["word1","word2","word3"]"""
     private fun loadGlideWords() {
         mediaUiScope.launch(Dispatchers.IO) {
             runCatching {
-                // Union dictionary across the system's enabled languages — multi-language typing with
-                // no language switching (see DictionaryLoader).
-                val loaded = com.fran.clicks.keyboard.DictionaryLoader.load(this@MainActivity)
+                // Adaptive dictionary (parity with the IME): primary language active by default, with
+                // the phone's secondary bundled languages as a latent extended set — so multi-language
+                // typing works but a secondary language never silently rewrites the primary one.
+                val adaptive = com.fran.clicks.keyboard.DictionaryLoader.loadAdaptive(this@MainActivity)
                 // Fold accepted-glide personal frequencies in so both decoders learn what you swipe (L3).
                 val personal = glideLearning.personalFrequencyBoost()
-                val freqs = if (personal.isEmpty()) loaded.freqs else HashMap<String, Float>(loaded.freqs).apply {
+                val freqs = if (personal.isEmpty()) adaptive.extendedFreqs else HashMap<String, Float>(adaptive.extendedFreqs).apply {
                     for ((w, b) in personal) put(w, minOf(1f, (this[w] ?: 0f) + b))
                 }
                 val clf = StatisticalGlideTypingClassifier()
-                clf.setWordData(loaded.words, freqs)
+                clf.setWordData(adaptive.extendedWords, freqs)
                 // Make glide available immediately with the statistical classifier; the heavy neural
                 // ONNX load must not block it (that stalls glide for seconds on a real device).
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
                     wordlistFrequencies = freqs
                     predictionEngine = PredictionEngine(freqs)
+                    predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                    hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
+                    latentLanguageActive = false
                     updateGlideLayout()
                 }
                 // Legacy encoder-only decoder (kept for A/B) + the new encoder-decoder engine load
                 // off the critical path and join the hybrid when ready.
                 val neural = com.fran.clicks.keyboard.NeuralSwipeEngine(this@MainActivity).also { it.tryLoad() }
                 val neuralV2 = com.fran.clicks.keyboard.neural.NeuralGlideEngine(this@MainActivity).apply {
-                    setDictionary(loaded.words, freqs)
+                    setDictionary(adaptive.extendedWords, freqs)
                     load()
                 }
                 android.util.Log.d("NeuralSwipe", "Widget neural engine ready=${neuralV2.isReady} personal=${personal.size}")
@@ -9510,7 +9519,17 @@ Reply format: ["word1","word2","word3"]"""
             KeyInfo(label[0], rect.exactCenterX(), rect.exactCenterY(), rect.width().toFloat(), rect.height().toFloat())
         }
 
-    private fun handleGlideResult(results: List<String>) {
+    /** Parity with the IME: prefer active-language words so a swipe doesn't resolve to a
+     *  similarly-shaped secondary-language word (e.g. English -> Spanish). See ClicksImeService. */
+    private fun languagePreferredOrder(words: List<String>): List<String> {
+        if (words.size < 2 || latentLanguageActive || !hasLatentLanguages) return words
+        val primary = words.filter { predictionEnginePrimary.isDictWord(it) }
+        return if (primary.isEmpty() || primary.size == words.size) words
+        else primary + words.filterNot { predictionEnginePrimary.isDictWord(it) }
+    }
+
+    private fun handleGlideResult(rawResults: List<String>) {
+        val results = languagePreferredOrder(rawResults)
         if (hapticsEnabled) hapticEngine.glideCommit() else haptic(contentFrame)
         val pane = openPane
         val topWord = glideCore.rerank(results)         // shared context rerank
