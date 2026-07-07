@@ -42,17 +42,15 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
     // ── Tunables ──
     /** RRF damping; larger = flatter weighting across ranks. */
     var rrfK: Double = 60.0
-    // The statistical shape decoder is geometric and reliable (it handles double-letter loops via an
-    // explicit loop gesture, and every candidate is a real dictionary word). The neural model is
-    // trained on synthetic data and still has a real gap on real-finger swipes — it's WRONG most
-    // often exactly on the hard cases (double letters like "google"/"allow"). So the statistical
-    // decoder LEADS and neural only assists; it must not be able to override a confident geometric
-    // match. Retrain the model on real captured swipes (the learning loop) to raise neuralWeight.
-    var neuralWeight: Double = 0.55
+    // The neural decoder is now trained on the REAL FUTO swipe corpus and hits ~86% top-1 on held-out
+    // real swipes (vs ~38% for the old synthetic model), so it LEADS the fusion — including on the
+    // hard cases (double letters), which the real training data covers. The statistical shape decoder
+    // stays a strong equal-ish partner via RRF, so a neural miss is still caught by geometry.
+    var neuralWeight: Double = 1.2
     var statisticalWeight: Double = 1.0
-    /** Multiplier on neural votes when its #1 is clearly ahead of its #2. 1.0 = never override
-     *  statistical (a confident-but-wrong neural pick was breaking double-letter words). */
-    var confidentNeuralBoost: Double = 1.0
+    /** Multiplier on neural votes when its #1 is clearly ahead of its #2 — trustworthy now that the
+     *  model is real-data-trained. */
+    var confidentNeuralBoost: Double = 1.4
     /** Min gap between neural #1 and #2 scores to count as "confident". */
     var confidenceMargin: Float = 1.2f
     /** Run statistical first and prime the neural beam with it (L2). Off = fully parallel (L1 only). */
