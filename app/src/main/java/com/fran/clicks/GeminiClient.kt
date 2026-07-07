@@ -103,9 +103,11 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
     private fun call(apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double): String? {
         // Account mode: route through the proxy with the user's Google ID token — no key on device.
+        // But only when it can actually authenticate; if there's no signed-in token, fall through to
+        // the user's own API key below (otherwise a set-but-not-signed-in device silently fails).
         proxy?.let { p ->
-            val token = p.idTokenProvider() ?: return null
-            return callProxy(p.url, token, model, prompt, maxTokens, temperature)
+            val token = p.idTokenProvider()
+            if (token != null) return callProxy(p.url, token, model, prompt, maxTokens, temperature)
         }
         if (apiKey.isBlank()) return null
         val url = URL(

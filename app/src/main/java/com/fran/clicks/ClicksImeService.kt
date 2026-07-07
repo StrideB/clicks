@@ -1938,13 +1938,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             val result = GeminiClient.fetchRewrite(key, model, text)
             handler.post {
                 polishing = false
-                if (result != null && result != text) {
-                    ic.beginBatchEdit()
-                    ic.deleteSurroundingText(text.length, 0)
-                    ic.commitText(result, 1)
-                    ic.endBatchEdit()
+                when {
+                    result != null && result != text -> {
+                        ic.beginBatchEdit()
+                        ic.deleteSurroundingText(text.length, 0)
+                        ic.commitText(result, 1)
+                        ic.endBatchEdit()
+                        onTextChanged()
+                    }
+                    result == text -> { flashStatus("Looks good ✓"); onTextChanged() }
+                    else -> { flashStatus("Couldn't reach the AI — check your key/connection", 2200); onTextChanged() }
                 }
-                onTextChanged()
             }
         }.start()
     }
