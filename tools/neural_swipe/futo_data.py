@@ -130,16 +130,29 @@ def iter_futo_batch(rows, rng, batch, calibrate=True, affine=None):
 
 # ─────────────────────────── parquet loading (real training) ───────────────────────────
 
-def load_futo_rows(path_or_dir):
+def load_futo_rows(path_or_dir, limit=None):
     """Load FUTO rows. FUTO ships as JSONL (train.jsonl + swipe-2..5/*.jsonl). Accepts a single file,
-    a glob, or the downloaded directory (loads every *.jsonl under it). Skips flagged-invalid rows."""
+    a glob, or the downloaded directory (loads every *.jsonl under it). Skips flagged-invalid rows.
+    [limit] caps how many valid rows are loaded — the full train.jsonl is ~5 GB, so cap it on CPU."""
+    import json
     if os.path.isdir(path_or_dir):
         files = sorted(glob.glob(os.path.join(path_or_dir, "**", "*.jsonl"), recursive=True))
     else:
         files = glob.glob(path_or_dir) if any(c in path_or_dir for c in "*?[") else [path_or_dir]
     if not files:
         raise FileNotFoundError(f"no .jsonl under {path_or_dir} (run: python futo_data.py --download)")
-    rows = [r for r in load_jsonl_rows(*files) if not r.get("potentially_invalid_sentence")]
+    rows = []
+    for fp in files:
+        with open(fp, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                r = json.loads(line)
+                if not r.get("potentially_invalid_sentence"):
+                    rows.append(r)
+                    if limit and len(rows) >= limit:
+                        return rows
     return rows
 
 

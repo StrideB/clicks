@@ -111,6 +111,11 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private val nanoProofread by lazy { com.fran.clicks.keyboard.NanoProofreadEngine(this) }
     @Volatile private var nanoSupported = false
     private var pendingProofread: String? = null
+    // Last committed glide (path + bounds + word), kept so that if you correct it we can re-label the
+    // swipe with the RIGHT word — the highest-signal training data (see GlideLearningStore.recordCorrection).
+    private var lastGlidePath: List<TimedPoint> = emptyList()
+    private var lastGlideBounds: FloatArray? = null
+    private var lastGlideWord: String = ""
     private var predictionEngine = PredictionEngine(emptyMap())         // active pointer (primary or extended)
     private var predictionEnginePrimary = PredictionEngine(emptyMap())  // primary language only
     private var predictionEngineExtended = PredictionEngine(emptyMap()) // primary + secondary phone languages
@@ -1056,8 +1061,15 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             // Mid-word: the strip shows completions/corrections of the partial word → replace it.
             before.isNotEmpty() -> predictionCore.replaceCurrentWord(word)
             // Just swiped: the strip shows alternate decodings → replace the committed word so a
-            // mis-decode is fixed in place instead of the alternative being appended after it.
-            glideJustCommitted -> { predictionCore.replaceCommittedWord(word); recordCommittedWordContext(); updateStrip(); return }
+            // mis-decode is fixed in place instead of the alternative being appended after it. This is
+            // a correction: re-label that swipe with the RIGHT word for the next retrain.
+            glideJustCommitted -> {
+                if (lastGlidePath.size > 1) {
+                    glideLearning.recordCorrection(word, lastGlidePath, lastGlideBounds, lastGlideWord)
+                    lastGlidePath = emptyList()
+                }
+                predictionCore.replaceCommittedWord(word); recordCommittedWordContext(); updateStrip(); return
+            }
             // Otherwise these are next-word predictions → append.
             else -> currentInputConnection?.commitText("$word ", 1)
         }
@@ -2286,6 +2298,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                                 recordCommittedWordContext()
                                 // Online-learning: record the accepted glide for personal frequency + corpus.
                                 glideLearning.recordAcceptance(top, neuralPath, bounds, res.source, res.agreed)
+                                // Remember it so a follow-up correction can re-label the swipe.
+                                lastGlidePath = neuralPath; lastGlideBounds = bounds; lastGlideWord = top
                                 // Show the swipe's other decodings as tap-to-correct alternatives
                                 // (parity with the launcher): a mis-decode is one tap from fixed.
                                 suggestions = (listOf(top) + results.filter { it != top }).distinct().take(3)

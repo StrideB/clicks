@@ -46,6 +46,20 @@ class GlideLearningStore(context: Context) {
             .onFailure { Log.w(TAG, "corpus append failed: ${it.message}") }
     }
 
+    /**
+     * The highest-signal training example: the user corrected a mis-decoded swipe, so [path] should
+     * have produced [word] (not [was]). Recorded with corrected=true so training can weight these
+     * heavily — this is how the model stops making YOUR specific mistakes after the next retrain.
+     */
+    fun recordCorrection(word: String, path: List<TimedPoint>, bounds: FloatArray?, was: String) {
+        val w = word.lowercase()
+        if (w.isEmpty() || !w.all { it in 'a'..'z' } || w == was.lowercase()) return
+        bumpFrequency(w)   // boost the RIGHT word
+        if (bounds == null || bounds[2] <= 0f || bounds[3] <= 0f || path.size < 2) return
+        runCatching { appendSample(w, path, bounds, GlideSource.NEURAL, agreed = false, corrected = true, was = was.lowercase()) }
+            .onFailure { Log.w(TAG, "corpus correction append failed: ${it.message}") }
+    }
+
     private fun bumpFrequency(word: String) {
         val raw = prefs.getString(KEY_COUNTS, null)
         val counts = if (raw != null) JSONObject(raw) else JSONObject()
@@ -76,7 +90,9 @@ class GlideLearningStore(context: Context) {
         path: List<TimedPoint>,
         bounds: FloatArray,
         source: GlideSource,
-        agreed: Boolean
+        agreed: Boolean,
+        corrected: Boolean = false,
+        was: String? = null
     ) {
         rotateIfLarge()
         val pts = JSONArray()
@@ -90,7 +106,9 @@ class GlideLearningStore(context: Context) {
             .put("w", word)
             .put("src", source.name)
             .put("agreed", agreed)
+            .put("corrected", corrected)
             .put("pts", pts)
+        if (was != null) obj.put("was", was)
         corpusFile.appendText(obj.toString() + "\n")
     }
 
