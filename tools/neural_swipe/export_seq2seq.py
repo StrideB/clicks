@@ -311,6 +311,8 @@ def main():
     ap.add_argument("--max-word-len", type=int, default=MAX_DECODE_LEN - 2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--opset", type=int, default=17)
+    ap.add_argument("--futo", metavar="DIR", default=None,
+                    help="train on REAL FUTO swipes (downloaded parquet dir) instead of synthetic")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -318,7 +320,14 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     words = load_words(args.wordlist, args.vocab_size)
-    print(f"loaded {len(words)} words; device={device}")
+    # Real-data path: load the FUTO corpus + calibrate the coordinate transform once (see futo_data.py).
+    futo_rows, futo_affine = None, None
+    if args.futo:
+        import futo_data
+        futo_rows = futo_data.load_parquet_rows(args.futo, split="train")
+        futo_affine = futo_data.calibrate_affine(futo_rows)
+        print(f"FUTO: {len(futo_rows)} real swipes; {futo_affine}")
+    print(f"loaded {len(words)} words; device={device}; data={'FUTO-real' if args.futo else 'synthetic'}")
 
     encoder = SwipeEncoder(args.d_model, args.nhead, args.layers, args.ff).to(device)
     decoder = SwipeDecoder(args.d_model, args.nhead, args.layers, args.ff).to(device)
@@ -327,7 +336,11 @@ def main():
 
     encoder.train(); decoder.train()
     for step in range(1, args.steps + 1):
-        feats, masks, tgt = iter_batch(words, rng, args.batch, args.max_word_len)
+        if futo_rows is not None:
+            import futo_data
+            feats, masks, tgt = futo_data.iter_futo_batch(futo_rows, rng, args.batch, affine=futo_affine)
+        else:
+            feats, masks, tgt = iter_batch(words, rng, args.batch, args.max_word_len)
         feats, masks, tgt = feats.to(device), masks.to(device), tgt.to(device)
         memory = encoder(feats, masks)
         logits = decoder(memory, masks, tgt[:, :-1])            # teacher forcing

@@ -53,10 +53,30 @@ character at a time, decoded on-device with a **dictionary-constrained beam sear
 richer contract than Track B's single-shot word classifier. Both engines coexist; the device prefers
 this one when its model files are present and the `kbd_neural_glide` preference is on (default on).
 
-## What to obtain / produce
-There is **no drop-in, verified permissively-licensed pre-trained model** to point you at (the
-CleverKeys reference implementation is GPL-3.0 and its weights' license is unclear — do not vendor
-it). So produce your own from the MIT-licensed lexicon/corpus:
+## Best path: train on the FUTO real-swipe corpus (MIT) — `futo_data.py`
+There is **no drop-in permissively-licensed pre-trained English model** (FUTO's own model is under a
+proprietary "FUTO Model Weights License"; CleverKeys is GPL-3.0). BUT there IS a perfect permissive
+**dataset**: [`futo-org/swipe.futo.org`](https://huggingface.co/datasets/futo-org/swipe.futo.org) —
+**~1M REAL human swipes, MIT-licensed, English/QWERTY**. Training our existing architecture on real
+swipes (instead of synthetic) is what closes the real-finger gap (double letters, sloppy gestures)
+and lets the neural decoder actually *lead* the hybrid rather than just assist.
+
+`futo_data.py` maps FUTO's `{t, x, y}` traces into the exact same features `export_seq2seq.py`
+trains on (it calibrates the canvas→key-box transform automatically). One-command switch:
+
+```bash
+pip install torch numpy onnx pyarrow huggingface_hub
+python futo_data.py --download                       # fetch the MIT parquet files (once)
+python export_seq2seq.py \
+  --wordlist ../../app/src/main/assets/dict/en_wordlist.txt \
+  --futo futo_data --steps 20000 --batch 128 --d-model 128 --layers 3 \
+  --out ../../app/src/main/assets                    # trains on REAL swipes, exports the same ONNX
+```
+Then raise `HybridGlideDecoder.neuralWeight` so the (now real-trained) neural decoder leads.
+Verify the loader without any download: `python futo_data.py --selftest`.
+
+## Alternative: synthetic data (no dataset needed)
+Or produce a model from the MIT-licensed lexicon alone (weaker on real swipes, but zero-dependency):
 
 ```bash
 pip install torch numpy onnx
