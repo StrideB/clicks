@@ -311,20 +311,25 @@ def main():
     ap.add_argument("--max-word-len", type=int, default=MAX_DECODE_LEN - 2)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--opset", type=int, default=17)
-    ap.add_argument("--futo", metavar="DIR", default=None,
-                    help="train on REAL FUTO swipes (downloaded parquet dir) instead of synthetic")
+    ap.add_argument("--futo", metavar="PATH", default=None,
+                    help="train on REAL FUTO swipes (jsonl file/dir) instead of synthetic")
+    ap.add_argument("--futo-limit", type=int, default=None, help="cap FUTO rows loaded (CPU memory)")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Use a GPU when there is one: NVIDIA CUDA, else Apple-Silicon MPS (set PYTORCH_ENABLE_MPS_FALLBACK=1
+    # so the few ops MPS lacks fall back to CPU instead of erroring), else CPU.
+    device = ("cuda" if torch.cuda.is_available()
+              else "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()
+              else "cpu")
 
     words = load_words(args.wordlist, args.vocab_size)
     # Real-data path: load the FUTO corpus + calibrate the coordinate transform once (see futo_data.py).
     futo_rows, futo_affine = None, None
     if args.futo:
         import futo_data
-        futo_rows = futo_data.load_futo_rows(args.futo)
+        futo_rows = futo_data.load_futo_rows(args.futo, limit=args.futo_limit)
         futo_affine = futo_data.calibrate_affine(futo_rows)
         print(f"FUTO: {len(futo_rows)} real swipes; {futo_affine}")
     print(f"loaded {len(words)} words; device={device}; data={'FUTO-real' if args.futo else 'synthetic'}")
