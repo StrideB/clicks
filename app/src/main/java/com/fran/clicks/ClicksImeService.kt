@@ -2183,7 +2183,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                         onTextChanged()
                     }
                     result == text -> { flashStatus("Looks good ✓"); onTextChanged() }
-                    else -> { flashStatus("Couldn't reach the AI — check your key/connection", 2200); onTextChanged() }
+                    else -> { flashStatus(GeminiClient.lastErrorMessage ?: "Couldn't reach the AI — check your key/connection", 2600); onTextChanged() }
                 }
             }
         }.start()

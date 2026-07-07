@@ -13,9 +13,15 @@ import java.net.URLEncoder
  * stay in parity. Network calls are blocking — call off the main thread.
  */
 object GeminiClient {
+    private const val TAG = "GeminiClient"
+    /** User-facing reason the last call failed (rate limit, bad key, no connection), or null on success. */
+    @Volatile var lastErrorMessage: String? = null
     const val API_KEY_PREF = "gemini_api_key"
     const val MODEL_PREF = "gemini_model"
-    const val DEFAULT_MODEL = "gemini-2.5-flash"
+    // gemini-flash-latest has its own free-tier quota bucket (per-model limits), so it keeps working
+    // when a specific pinned model's daily free quota is exhausted. For a shipped product, enable
+    // billing on the key (or use account-mode) — the free tier is too small for real usage.
+    const val DEFAULT_MODEL = "gemini-flash-latest"
 
     /**
      * Account mode: when set, every call routes through the Clicks AI proxy using the signed-in
@@ -102,14 +108,19 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
 
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
     private fun call(apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double): String? {
-        // Account mode: route through the proxy with the user's Google ID token — no key on device.
-        // But only when it can actually authenticate; if there's no signed-in token, fall through to
-        // the user's own API key below (otherwise a set-but-not-signed-in device silently fails).
-        proxy?.let { p ->
-            val token = p.idTokenProvider()
-            if (token != null) return callProxy(p.url, token, model, prompt, maxTokens, temperature)
+        // Prefer the user's own API key when they've set one. The account-mode proxy is only the
+        // fallback (no key on device) — trying it first let a stale/empty proxy binding hijack a
+        // perfectly good key and fail silently.
+        if (apiKey.isBlank()) {
+            val p = proxy
+            when {
+                p == null -> android.util.Log.w(TAG, "AI: no API key set and no account-mode proxy")
+                p.idTokenProvider() == null -> android.util.Log.w(TAG, "AI: not signed in (account mode) and no API key")
+                p.url.isBlank() -> android.util.Log.w(TAG, "AI: account-mode proxy URL not configured")
+                else -> return callProxy(p.url, p.idTokenProvider()!!, model, prompt, maxTokens, temperature)
+            }
+            return null
         }
-        if (apiKey.isBlank()) return null
         val url = URL(
             "https://generativelanguage.googleapis.com/v1beta/models/" +
                 "${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(apiKey, "UTF-8")}"
@@ -123,13 +134,27 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
         }
         return try {
             OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-            if (conn.responseCode !in 200..299) return null
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val err = runCatching { conn.errorStream?.bufferedReader()?.use { it.readText() } }.getOrNull()
+                android.util.Log.w(TAG, "AI: Gemini HTTP $code — ${err?.take(240)}")
+                lastErrorMessage = when (code) {
+                    429 -> "Gemini free-tier limit hit — wait a moment, or enable billing on your key."
+                    400, 403 -> "Gemini rejected your key — check it's valid & has access."
+                    in 500..599 -> "Gemini is having issues — try again shortly."
+                    else -> "Gemini error $code."
+                }
+                return null
+            }
+            lastErrorMessage = null
             val raw = conn.inputStream.bufferedReader().use { it.readText() }
             JSONObject(raw)
                 .optJSONArray("candidates")?.optJSONObject(0)
                 ?.optJSONObject("content")?.optJSONArray("parts")
                 ?.optJSONObject(0)?.optString("text")?.trim()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "AI: Gemini call failed — ${e.javaClass.simpleName}: ${e.message}")
+            lastErrorMessage = "No connection to the AI — check your internet."
             null
         } finally {
             conn.disconnect()
