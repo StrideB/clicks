@@ -5062,6 +5062,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(12), 0, dp(10))
+            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
+                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.18f
+                    setPadding(dp(2), 0, 0, dp(8))
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
+                items.chunked(2).forEach { rowItems ->
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        rowItems.forEachIndexed { columnIndex, result ->
+                            addView(searchResultBentoCard(result, false, columnIndex), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                                if (columnIndex > 0) marginStart = dp(10)
+                            })
+                        }
+                        repeat(2 - rowItems.size) {
+                            addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
+                        }
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(120)).apply {
+                        bottomMargin = dp(10)
+                    })
+                }
+            }
             command?.let {
                 addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
                     bottomMargin = dp(10)
@@ -5100,6 +5122,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, if (widgetMode) dp(10) else dp(12), 0, if (widgetMode) dp(18) else dp(10))
+            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
+                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.18f
+                    setPadding(dp(2), 0, 0, dp(8))
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
+                items.forEachIndexed { index, result ->
+                    addView(searchResultRow(result, false, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
+                        bottomMargin = dp(8)
+                    })
+                }
+            }
             addView(mono(if (widgetMode) "UNIVERSAL SEARCH" else "RESULTS", 8.5f, activeNeuTokens.inkFaint).apply {
                 letterSpacing = 0.18f
                 setPadding(dp(2), 0, 0, dp(8))
@@ -12908,16 +12941,60 @@ Reply format: ["word1","word2","word3"]"""
     private fun librarySearchResults(): List<AppEntry> {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
-        return apps
-            .filter { it.label.contains(q, ignoreCase = true) }
-            .sortedWith { left, right ->
-                val leftStarts = left.label.startsWith(q, ignoreCase = true)
-                val rightStarts = right.label.startsWith(q, ignoreCase = true)
-                when {
-                    leftStarts != rightStarts -> if (leftStarts) -1 else 1
-                    else -> collator.compare(left.label, right.label)
+        val matches = apps.filter { it.label.contains(q, ignoreCase = true) }
+        // Blend: literal prefix matches always outrank substring matches (typing intent wins),
+        // then the active Space's prediction score orders each tier, alphabetical as tie-break.
+        val predictScore: Map<String, Float> = predictContext?.let { snap ->
+            runCatching {
+                Predictor.scores(this, matches.map { it.packageName }, snap).toMap()
+            }.getOrNull()
+        } ?: emptyMap()
+        return matches.sortedWith { left, right ->
+            val leftStarts = left.label.startsWith(q, ignoreCase = true)
+            val rightStarts = right.label.startsWith(q, ignoreCase = true)
+            when {
+                leftStarts != rightStarts -> if (leftStarts) -1 else 1
+                else -> {
+                    val scoreCompare = (predictScore[right.packageName] ?: 0f)
+                        .compareTo(predictScore[left.packageName] ?: 0f)
+                    if (scoreCompare != 0) scoreCompare else collator.compare(left.label, right.label)
                 }
             }
+        }
+    }
+
+    /**
+     * The contextual suggestion row for search: only when the active Space was detected
+     * from a strong signal (place / driving / bluetooth / headphones, or a manual lock)
+     * AND that Space has actually learned launches. Weak or unlearned context -> null,
+     * normal ranking untouched.
+     */
+    private fun contextSuggestionResults(exclude: Set<String>): Pair<String, List<SearchResult>>? {
+        val snap = predictContext ?: return null
+        val det = SpaceManager.detect(this, snap)
+        if (!det.strong && !det.locked) return null
+        val installed = apps.associateBy { it.packageName }
+        val learned = runCatching {
+            Predictor.spaceTopLearned(this, det.space.id, 6, installed.keys)
+        }.getOrDefault(emptyList())
+            .filter { it !in exclude && it != packageName }
+            .take(3)
+        if (learned.isEmpty()) return null
+        val label = when {
+            snap.driving -> "Because you're driving"
+            det.space.id == "fitness" -> "Because you're at the gym"
+            det.space.id == "travel" -> "Because you're at the airport"
+            det.space.id == "work" -> "Because you're at work"
+            det.space.id == "home" -> "Because you're home"
+            det.space.id == "commute" -> "For your commute"
+            det.space.id == "night" -> "For tonight"
+            else -> "In ${det.space.name}"
+        }
+        return label to learned.mapNotNull { pkg ->
+            installed[pkg]?.let {
+                SearchResult(it.label, det.space.name, it.brandColor, SearchKind.APP, it.toPaneTarget())
+            }
+        }
     }
 
     private fun universalSearchResults(): List<SearchResult> {

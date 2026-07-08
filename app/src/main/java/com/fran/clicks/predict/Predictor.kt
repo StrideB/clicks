@@ -166,6 +166,23 @@ object Predictor {
         logTransition(context, snapshot, pkg, source, wasPredicted)
     }
 
+    /**
+     * Apps genuinely *learned* for a Space — read straight from its frequency table, never
+     * from the global/seeded prior. Empty until the space has real signal, which is exactly
+     * the "strong context" gate the search suggestion row needs (learned, not hard-coded).
+     */
+    fun spaceTopLearned(context: Context, spaceId: String, n: Int, candidates: Collection<String>? = null): List<String> {
+        ensureLoaded(context)
+        synchronized(lock) {
+            val table = freqSpace[spaceId] ?: return emptyList()
+            if (table.values.sum() < 5f) return emptyList()
+            return table.entries.asSequence()
+                .filter { candidates == null || it.key in candidates }
+                .sortedByDescending { it.value }
+                .take(n).map { it.key }.toList()
+        }
+    }
+
     /** Forget a Space's learned app ranking (its frequency table); weights stay global. */
     fun resetSpaceLearning(context: Context, spaceId: String) {
         ensureLoaded(context)
