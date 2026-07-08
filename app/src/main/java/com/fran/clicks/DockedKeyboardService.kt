@@ -367,7 +367,7 @@ class DockedKeyboardService : Service() {
 
     private fun keyRowOverlap(): Int {
         val size = KeyboardSettings.keyboardSize(this)
-        return dp(10 + size * 3 / 100)
+        return dp(12 + size * 3 / 100)
     }
 
     private fun keyVerticalInset(): Int {
@@ -416,18 +416,19 @@ class DockedKeyboardService : Service() {
         return base + (size * growth / 100f)
     }
 
+    private fun goLegendColor(): Int =
+        if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
+
     private fun textColor(label: String): Int {
+        if (label == "enter") return goLegendColor()
         val theme = keyboardVisualTheme()
         if (isHyper3dTheme(theme)) {
             val visualTheme = hyper3dVisualTheme(theme)
             return when {
-                visualTheme == KEYBOARD_THEME_HYPER3D_LIGHT && label == "enter" -> 0xFF104026.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_LIGHT && isFnKey(label) -> 0xFF596170.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF1E2633.toInt()
-                visualTheme == KEYBOARD_THEME_HYPER3D_BLACK && label == "enter" -> 0xFFFF6B6B.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_BLACK && label == "clicks" -> 0xFF9DB4FF.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_BLACK && isFnKey(label) -> 0xFF9AA2B1.toInt()
-                visualTheme == KEYBOARD_THEME_HYPER3D && label == "enter" -> 0xFFEAFFF2.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D && label == "clicks" -> 0xFFEAF0FF.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D && isFnKey(label) -> 0xFF9AA2B1.toInt()
                 else -> 0xFFEEF1F7.toInt()
@@ -435,7 +436,6 @@ class DockedKeyboardService : Service() {
         }
         if (theme == KEYBOARD_THEME_SEEME) {
             return when (label) {
-                "enter" -> 0xFFFFFFFF.toInt()
                 "clicks" -> 0xFFFF5A60.toInt()
                 "123", "back", "shift", "." -> 0xFF8A8A8A.toInt()
                 else -> 0xFFF2F2F2.toInt()

@@ -24,7 +24,7 @@ internal object BrushedDrawables {
     fun ink(label: String, dark: Boolean): Int {
         val p = palette(dark)
         return when (label) {
-            "enter" -> p.goInk
+            "enter" -> if (dark) 0xFF050506.toInt() else 0xFFFFFFFF.toInt()
             "shift_lock" -> 0xFFFFFFFF.toInt()
             "123", "abc", "back", "shift", "period", "." -> p.utilInk
             else -> p.ink

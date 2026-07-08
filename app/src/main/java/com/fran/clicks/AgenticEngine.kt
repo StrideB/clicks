@@ -16,6 +16,20 @@ data class AgenticResult(
 data class AgenticFollowUp(val label: String, val run: () -> Unit)
 
 /**
+ * A share preview card: the "is this the thing?" beat between choosing a chirp and dropping it into
+ * the conversation. Tap = insert [insertText] into the field (never auto-send); [followUp] appears
+ * after the drop for the optional app-leaving action ("Directions for me →").
+ */
+data class ShareCard(
+    val kicker: String,        // "NOW PLAYING · Spotify" / "MEETING SPOT" / "MY LOCATION"
+    val title: String,
+    val subtitle: String,
+    val insertText: String,
+    val art: android.graphics.Bitmap?,
+    val followUp: AgenticFollowUp? = null
+)
+
+/**
  * The rendering + context surface a keyboard hands to [AgenticEngine]. Both [ClicksImeService] and the
  * launcher keyboard (MainActivity) implement this, so every agentic skill executes from ONE place and
  * the two keyboards can't drift. The engine owns the *logic*; the host owns *how it's shown* (the IME
@@ -34,6 +48,7 @@ interface AgenticHost {
     fun showResult(result: AgenticResult)      // the result HUD
     fun insertText(text: String)               // drop text into the field
     fun runAttach()                            // IME: the file picker; launcher: a "not here" note
+    fun showShareCard(card: ShareCard)         // IME: full-bleed card over the keyboard; launcher: strip HUD
 }
 
 /**
@@ -57,6 +72,9 @@ object AgenticEngine {
             t.startsWith("notion ") || t == "notion" -> "notion"
             t == "attach" || t == "file" || t == "files" || t == "photo" || t == "photos" ||
                 t == "attach file" || t == "attach photo" || t == "add file" || t == "send file" -> "attach"
+            t == "song" || t == "share song" || t == "np" || t == "now playing" || t.startsWith("song ") -> "song"
+            t == "place" || t == "share place" || t == "meet here" ||
+                t.startsWith("place ") || t.startsWith("meet at ") -> "place"
             else -> null
         } ?: return false
 
@@ -74,8 +92,74 @@ object AgenticEngine {
             "meet" -> meet(host)
             "notion" -> notion(host, t.removePrefix("notion").trim())
             "attach" -> host.runAttach()
+            "song" -> shareSong(host, t.removePrefix("song").trim())
+            "place" -> sharePlace(host, t.removePrefix("place").removePrefix("meet at").trim())
         }
         return true
+    }
+
+    // --- share cards (song / place) ------------------------------------------------------------------
+    // The go button drops things INTO the conversation; it never ejects the user. Both flows resolve a
+    // shareable artifact, preview it as a card, and insert on tap. App-leaving actions (directions) are
+    // demoted to an optional follow-up after the drop.
+
+    /** Blank [query] → share what's playing right now; otherwise resolve the typed song name. */
+    fun shareSong(host: AgenticHost, query: String = "") {
+        host.showStatus(if (query.isBlank()) "🎵 Reading now playing…" else "🎵 Finding “$query”…")
+        Thread {
+            val song = ShareContent.resolveSong(host.hostContext, query)
+            host.post {
+                when {
+                    song != null -> host.showShareCard(ShareCard(
+                        kicker = song.appLabel?.let { "NOW PLAYING · ${it.uppercase()}" } ?: "SHARE SONG",
+                        title = song.title,
+                        subtitle = song.artist,
+                        insertText = song.insertText,
+                        art = song.art
+                    ))
+                    query.isBlank() -> host.flashStatus("Nothing playing — type a song name, then hold go", 2800)
+                    else -> host.flashStatus("Couldn’t find “$query”", 2200)
+                }
+            }
+        }.start()
+    }
+
+    /** Blank [query] → the user's current spot; otherwise geocode the typed place ("meet at blue bottle"). */
+    fun sharePlace(host: AgenticHost, query: String = "") {
+        if (query.isBlank() && !AgenticLocation.hasPermission(host.hostContext)) {
+            host.flashStatus("📍 Enable location in Clicks", 2600); return
+        }
+        host.showStatus(if (query.isBlank()) "📍 Locating…" else "📍 Finding “$query”…")
+        Thread {
+            val place = if (query.isBlank()) ShareContent.myPlace(host.hostContext)
+                else ShareContent.findPlace(host.hostContext, query)
+            host.post {
+                if (place != null) {
+                    host.showShareCard(ShareCard(
+                        kicker = if (place.isMyLocation) "MY LOCATION" else "MEETING SPOT",
+                        title = place.name.ifBlank { place.address.substringBefore(',').ifBlank { "Here" } },
+                        subtitle = if (place.name.isBlank()) "" else place.address,
+                        insertText = place.insertText,
+                        art = null,
+                        followUp = AgenticFollowUp("🧭 Directions") { openDirections(host, place) }
+                    ))
+                } else if (query.isBlank()) host.flashStatus("📍 Location unavailable", 2200)
+                else host.flashStatus("Couldn’t find “$query”", 2200)
+            }
+        }.start()
+    }
+
+    private fun openDirections(host: AgenticHost, place: ShareContent.PlaceCard) {
+        runCatching {
+            host.hostContext.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=${place.lat},${place.lng}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure {
+            runCatching {
+                host.hostContext.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(place.mapsUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
     }
 
     // --- AI (clipboard) skills ---------------------------------------------------------------------

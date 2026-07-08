@@ -96,6 +96,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     // FrameLayout wrapping the deck so the attach picker can float over the whole keyboard.
     private var imeRoot: android.widget.FrameLayout? = null
     private var attachOverlay: View? = null
+    private var shareCardOverlay: View? = null
     // A file picked via the system picker, staged and waiting to commit once the field regains focus
     // (the target editor loses focus while the picker activity is up, so we can't commit mid-pick).
     private var pendingAttachment: Triple<java.io.File, String, String>? = null
@@ -204,6 +205,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     // at the deck itself, so all existing keyboard logic is unchanged.
     private fun buildInputView(): View {
         attachOverlay = null
+        shareCardOverlay = null
         val deck = buildKeyboard().also { deckView = it }
         return android.widget.FrameLayout(this).apply {
             addView(deck, android.widget.FrameLayout.LayoutParams(
@@ -256,8 +258,9 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
-        // Don't let the attach sheet linger across fields or when the keyboard hides.
+        // Don't let the attach sheet or a share card linger across fields or when the keyboard hides.
         hideAttachPicker()
+        hideShareCard()
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
@@ -351,6 +354,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
     private fun rebuildDeck() {
         lastBuiltTheme = keyboardTheme()
         hideAttachPicker()
+        hideShareCard()
         setInputView(buildInputView())
     }
 
@@ -522,10 +526,10 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                     // Space-swipe cursor control (parity with the launcher): drag left/right on the
                     // space bar to move the caret a character at a time via DPAD key events.
                     if (label == "space") {
-                        val step = dp(9).toFloat()
+                        val step = dp(7).toFloat()
                         var delta = event.rawX - spaceCursorLastX
                         while (abs(delta) >= step) {
-                            keyEvent(if (delta > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
+                            moveTextCursor(delta > 0)
                             spaceCursorMoved = true
                             spaceCursorLastX += if (delta > 0) step else -step
                             delta = event.rawX - spaceCursorLastX
@@ -991,10 +995,17 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val ic = currentInputConnection ?: return
         keyHaptic("space")
         if (emoji) {
+            val trigger = emojiTriggerWord
+            if (trigger.isNotEmpty()) {
+                val before = ic.getTextBeforeCursor(trigger.length, 0)?.toString().orEmpty()
+                if (before.equals(trigger, ignoreCase = true)) {
+                    ic.deleteSurroundingText(trigger.length, 0)
+                }
+            }
             val prev = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
             val sep = if (prev.isNotEmpty() && prev != " ") " " else ""
             ic.commitText(sep + insert, 1)
-            if (emojiTriggerWord.isNotEmpty()) SmartChips.recordEmojiPick(imePrefs(), emojiTriggerWord, insert)
+            if (trigger.isNotEmpty()) SmartChips.recordEmojiPick(imePrefs(), trigger, insert)
         } else {
             ic.commitText(insert, 1)
         }
@@ -1283,10 +1294,10 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     // A follow-up chip: outlined (not filled) so it reads as a secondary next-step next to the Insert CTA.
     private fun agenticFollowUp(label: String, accent: Int, fill: Int, onClick: () -> Unit) = TextView(this).apply {
-        text = label; gravity = Gravity.CENTER; textSize = 12.5f
+        text = label; gravity = Gravity.CENTER; textSize = 11.8f
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         setTextColor(accent)
-        setPadding(dp(13), dp(8), dp(13), dp(8))
+        setPadding(dp(10), dp(7), dp(10), dp(7))
         maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
         background = GradientDrawable().apply {
             setColor(fill); cornerRadius = dp(11).toFloat()
@@ -1401,8 +1412,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
             suggestionStrip?.visibility = View.GONE
             panel.addView(TextView(this).apply {
-                text = "TRY"; gravity = Gravity.CENTER; textSize = 9f; letterSpacing = 0.16f
-                setTextColor(kickerInk); setPadding(dp(2), 0, dp(8), 0)
+                text = "TRY"; gravity = Gravity.CENTER; textSize = 8.8f; letterSpacing = 0.12f
+                setTextColor(kickerInk); setPadding(dp(2), 0, dp(6), 0)
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             starters.forEach { starter ->
@@ -1412,6 +1423,8 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             }
             panel.addView(android.widget.HorizontalScrollView(this).apply {
                 isHorizontalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+                clipToPadding = false
+                setPadding(0, 0, dp(12), 0)
                 addView(row)
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             panel.addView(TextView(this).apply {
@@ -1708,6 +1721,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
         override fun insertText(text: String) { currentInputConnection?.commitText(text, 1); onTextChanged(); updateStrip() }
         override fun runAttach() { showAttachPicker() }
+        override fun showShareCard(card: ShareCard) { showShareCardOverlay(card) }
     }
 
     // Agentic quick-action: hold the go/enter key to drop your current location into the field — no
@@ -1767,16 +1781,13 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     // Starter chips for the held-go-over-empty-field case: Share location runs on tap; the rest seed
     // their trigger into the field so the user just finishes the thought.
+    // Chirps are share verbs, not command verbs: each drops a complete thing into the conversation via
+    // a preview card. No seed-text starters (the "insert `play ` then re-hold go" flow was clunky).
     private fun buildStarters(): List<HudAction> {
         val chips = ArrayList<HudAction>()
+        chips.add(HudAction("\ud83c\udfb5 Song") { AgenticEngine.shareSong(agenticHost) })
+        chips.add(HudAction("\ud83d\udccd My location") { AgenticEngine.sharePlace(agenticHost) })
         if (canAttachHere()) chips.add(HudAction("\ud83d\udcce Attach") { showAttachPicker() })
-        chips.add(HudAction("\ud83d\udccd Share location") { runAgenticLocation() })
-        AgenticRouter.starters(4).forEach { s ->
-            if (s.insert.isBlank()) return@forEach
-            chips.add(HudAction(s.label) {
-                currentInputConnection?.commitText(s.insert, 1); onTextChanged(); updateStrip()
-            })
-        }
         return chips
     }
 
@@ -1817,6 +1828,132 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         val overlay = attachOverlay ?: return
         attachOverlay = null
         (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+    }
+
+    // --- share card ------------------------------------------------------------------------------
+    // The preview beat of a share: a full-bleed card over the keyboard showing exactly what will land
+    // in the conversation (now-playing track with album art, meeting spot with address). One tap
+    // inserts into the field — the user still hits the app's own send. Never auto-sends.
+
+    private fun showShareCardOverlay(card: ShareCard) {
+        val root = imeRoot ?: return
+        hideShareCard()
+        agenticStatus = null; updateStrip()
+        val overlay = buildShareCardView(card)
+        shareCardOverlay = overlay
+        // Pin to the deck's real height: a full-bleed bitmap child would otherwise inflate the IME
+        // window way past the keyboard (the card must cover the keyboard, not the conversation).
+        val cardHeight = deckView?.height?.takeIf { it > 0 } ?: imeKeyboardHeight()
+        root.addView(overlay, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT, cardHeight, Gravity.BOTTOM))
+        animateAttachIn(overlay)
+    }
+
+    fun hideShareCard() {
+        val overlay = shareCardOverlay ?: return
+        shareCardOverlay = null
+        (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+    }
+
+    private fun buildShareCardView(card: ShareCard): View {
+        val tokens = selectedNeuTokens()
+        val radius = dp(18).toFloat()
+        val frame = android.widget.FrameLayout(this).apply {
+            background = GradientDrawable().apply { setColor(0xFF14161B.toInt()); cornerRadius = radius }
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, o: android.graphics.Outline) {
+                    o.setRoundRect(0, 0, view.width, view.height, radius)
+                }
+            }
+            isClickable = true
+        }
+
+        // Backdrop: album art full-bleed under a legibility scrim, or a quiet Neu panel when there's none.
+        if (card.art != null) {
+            frame.addView(android.widget.ImageView(this).apply {
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                setImageBitmap(card.art)
+            }, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+            frame.addView(View(this).apply {
+                background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                    intArrayOf(0x33000000, 0x66000000, 0xE6000000.toInt()))
+            }, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+        } else {
+            frame.background = Neu.drawable(tokens, radius, NeuLevel.RAISED)
+            frame.addView(TextView(this).apply {
+                text = if (card.kicker.contains("LOCATION") || card.kicker.contains("SPOT")) "📍" else "🎵"
+                textSize = 54f; alpha = 0.25f; gravity = Gravity.CENTER
+            }, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            ).apply { topMargin = dp(18) })
+        }
+        val onArt = card.art != null
+        val ink = if (onArt) 0xFFF5F5F7.toInt() else tokens.ink
+        val inkDim = if (onArt) 0xFFB9BEC9.toInt() else tokens.inkDim
+        val mint = 0xFF57E39A.toInt()
+
+        // Bottom-anchored text stack: kicker, title, subtitle, then the tap-to-share pill.
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(12), dp(18), dp(14))
+        }
+        col.addView(TextView(this).apply {
+            text = card.kicker; textSize = 9.5f; letterSpacing = 0.18f
+            setTextColor(mint); typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        })
+        col.addView(TextView(this).apply {
+            text = card.title; textSize = 21f; setTextColor(ink)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+        if (card.subtitle.isNotBlank()) col.addView(TextView(this).apply {
+            text = card.subtitle; textSize = 13.5f; setTextColor(inkDim)
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+        col.addView(TextView(this).apply {
+            text = "Tap to drop into the message"; textSize = 11.5f; setTextColor(inkDim)
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+            background = GradientDrawable().apply {
+                setColor(if (onArt) 0x30FFFFFF else 0x14000000)
+                cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), (mint and 0x00FFFFFF) or 0x55000000)
+            }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        frame.addView(col, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+
+        // Close, top-right.
+        frame.addView(TextView(this).apply {
+            text = "✕"; textSize = 15f; setTextColor(if (onArt) 0xCCFFFFFF.toInt() else inkDim)
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(10), dp(14), dp(10)); isClickable = true
+            setOnClickListener { keyHaptic("back"); hideShareCard() }
+        }, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+            android.widget.FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
+
+        // The whole card is the commit target: insert, dismiss, then offer the optional follow-up.
+        frame.setOnClickListener {
+            agenticConfirmHaptic()
+            hideShareCard()
+            currentInputConnection?.commitText(card.insertText, 1)
+            onTextChanged()
+            val fu = card.followUp
+            if (fu != null) {
+                agenticHud = Hud(card.kicker, "Dropped in — need it yourself?", null,
+                    listOf(HudAction(fu.label) { agenticHud = null; updateStrip(); fu.run() }))
+            }
+            updateStrip()
+        }
+        return frame
     }
 
     private fun animateAttachIn(v: View) {
@@ -2588,18 +2725,19 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun symbolHintColor(): Int = (textColor("q") and 0x00FFFFFF) or (0x72 shl 24)
 
+    private fun goLegendColor(): Int =
+        if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
+
     private fun textColor(label: String): Int {
+        if (label == "enter") return goLegendColor()
         val theme = keyboardVisualTheme()
         if (isHyper3dTheme(theme)) {
             val visualTheme = hyper3dVisualTheme(theme)
             return when {
-                visualTheme == KEYBOARD_THEME_HYPER3D_LIGHT && label == "enter" -> 0xFF104026.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_LIGHT && isFnKey(label) -> 0xFF596170.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF1E2633.toInt()
-                visualTheme == KEYBOARD_THEME_HYPER3D_BLACK && label == "enter" -> 0xFFFF6B6B.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_BLACK && label == "clicks" -> 0xFF9DB4FF.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D_BLACK && isFnKey(label) -> 0xFF9AA2B1.toInt()
-                visualTheme == KEYBOARD_THEME_HYPER3D && label == "enter" -> 0xFFEAFFF2.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D && label == "clicks" -> 0xFFEAF0FF.toInt()
                 visualTheme == KEYBOARD_THEME_HYPER3D && isFnKey(label) -> 0xFF9AA2B1.toInt()
                 else -> 0xFFEEF1F7.toInt()
@@ -2607,7 +2745,6 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
         if (theme == KEYBOARD_THEME_SEEME) {
             return when (label) {
-                "enter" -> 0xFFFFFFFF.toInt()
                 "clicks" -> 0xFFFF5A60.toInt()
                 "123", "back", "shift", "." -> 0xFF8A8A8A.toInt()
                 else -> 0xFFF2F2F2.toInt()
@@ -2673,7 +2810,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun keyRowOverlap(): Int {
         val size = KeyboardSettings.keyboardSize(this)
-        return dp(10 + size * 3 / 100)
+        return dp(12 + size * 3 / 100)
     }
 
     private fun keyVerticalInset(): Int {

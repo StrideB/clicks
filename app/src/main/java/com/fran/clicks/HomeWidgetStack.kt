@@ -974,7 +974,7 @@ private fun CalendarWidgetCard(
             tokens = tokens,
             event = current,
             hasPermission = hasPermission,
-            modifier = Modifier.weight(1.08f)
+            modifier = Modifier.weight(1f)
         )
         Spacer(Modifier.width(10.dp))
         CalendarNextBlock(
@@ -982,7 +982,7 @@ private fun CalendarWidgetCard(
             event = upcoming,
             hasPermission = hasPermission,
             count = events.size,
-            modifier = Modifier.weight(0.92f)
+            modifier = Modifier.weight(1f)
         )
     }
 }
@@ -996,9 +996,10 @@ private fun CalendarNowBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermis
             .clip(RoundedCornerShape(18.dp))
             .recessedTray(tokens, 16, deep = true)
             .padding(horizontal = 12.dp, vertical = 11.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.Top
     ) {
         LabelText("RIGHT NOW", accent)
+        Spacer(Modifier.height(18.dp))
         Column {
             BasicText(
                 text = when {
@@ -1028,15 +1029,20 @@ private fun CalendarNowBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermis
 @Composable
 private fun CalendarNextBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermission: Boolean, count: Int, modifier: Modifier) {
     Column(
-        modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        modifier = modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(18.dp))
+            .recessedTray(tokens, 16, deep = true)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.Top
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             LabelText("UP NEXT", Amber)
-            Spacer(Modifier.width(6.dp))
-            Box(Modifier.height(1.dp).weight(1f).background(InkFaint.copy(alpha = 0.18f)))
             if (count > 1) {
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.weight(1f))
                 BasicText(
                     text = "+${count - 1}",
                     maxLines = 1,
@@ -1044,14 +1050,9 @@ private fun CalendarNextBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermi
                 )
             }
         }
+        Spacer(Modifier.height(18.dp))
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .clip(RoundedCornerShape(17.dp))
-                .recessedTray(tokens, 16, deep = true)
-                .padding(horizontal = 11.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.Center
+            modifier = Modifier.fillMaxWidth()
         ) {
             BasicText(
                 text = when {
@@ -1061,7 +1062,7 @@ private fun CalendarNextBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermi
                 },
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = Ink, fontSize = 13.4.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
+                style = TextStyle(color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.SansSerif)
             )
             Spacer(Modifier.height(5.dp))
             BasicText(
@@ -1072,7 +1073,7 @@ private fun CalendarNextBlock(tokens: NeuTokens, event: CalendarEvent?, hasPermi
                 },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = InkDim, fontSize = 10.4.sp, fontFamily = FontFamily.SansSerif)
+                style = TextStyle(color = InkDim, fontSize = 11.5.sp, fontFamily = FontFamily.SansSerif)
             )
         }
     }

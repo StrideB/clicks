@@ -103,8 +103,11 @@ import com.fran.clicks.keyboard.LivePredictionRouter
 import com.fran.clicks.keyboard.PredictionEngine
 import com.fran.clicks.keyboard.PredictionOverlayManager
 import com.fran.clicks.predict.ContextSnapshot
+import com.fran.clicks.fold.FoldPosture
+import com.fran.clicks.fold.observeFoldPosture
 import com.fran.clicks.predict.LaunchSource
 import com.fran.clicks.predict.Predictor
+import com.fran.clicks.predict.Space
 import com.fran.clicks.predict.SpaceManager
 import com.fran.clicks.keyboard.SmsIngestionEngine
 import com.fran.clicks.keyboard.SmsSeedingCoordinator
@@ -164,9 +167,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     com.fran.clicks.keyboard.KeyboardHost {
 
     // ── KeyboardHost (shared-core seam) — wraps the launcher's in-memory query/composeText ──
-    private fun hostIsChat() = openPane?.kind == PaneKind.CHAT
-    private fun hostText(): String = if (hostIsChat()) composeText else query
-    private fun setHostText(v: String) { if (hostIsChat()) composeText = v else query = v }
+    private fun hostKind() = openPane?.kind
+    private fun hostText(): String = when (hostKind()) {
+        PaneKind.CHAT -> composeText
+        PaneKind.AI -> aiDraftText
+        else -> query
+    }
+    private fun setHostText(v: String) {
+        when (hostKind()) {
+            PaneKind.CHAT -> composeText = v
+            PaneKind.AI -> {
+                aiDraftText = v
+                aiDraftActive = true
+            }
+            else -> query = v
+        }
+    }
     override fun commitText(text: String) {
         val cur = hostText(); val pos = cursorPos ?: cur.length
         setHostText(cur.substring(0, pos) + text + cur.substring(pos))
@@ -277,6 +293,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val iconPackDrawableCache = mutableMapOf<String, List<IconPackIcon>>()
     private var libraryCategoriesCacheSignature: String? = null
     private var libraryCategoriesCache: List<LibraryCategory> = emptyList()
+    private var contextDockSignature: String? = null
+    private var contextDockRefreshRunnable: Runnable? = null
+    private var foldPosture: FoldPosture = FoldPosture.Cover
+    private var foldPreviousSpaceLock: String? = null
+    private var foldAutoLockActive = false
+    private var foldBannerSpace: Space? = null
+    private var unfoldedLibraryContentArea: FrameLayout? = null
     private var composeText = ""
     private var aiDraftText = ""
     private var aiDraftActive = false
@@ -286,6 +309,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastSpaceMs = 0L
     private var lastShiftTapMs = 0L
     private var suggestions: List<String> = emptyList()
+    private var launcherEmojiChips: List<String> = emptyList()
+    private var launcherEmojiTriggerWord: String = ""
     // True right after a glide commits a word, while the strip shows the swipe's other decodings as
     // tap-to-correct alternatives. Any physical key press clears it (see handleKey).
     private var glideJustCommitted = false
@@ -428,7 +453,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var weatherStatsView: TextView
     private lateinit var hubView: LinearLayout
     private lateinit var ribbonView: LinearLayout
+    private lateinit var favoritesDockFrameView: FavoritesDockFlipFrame
     private lateinit var favoritesDockView: LinearLayout
+    private lateinit var favoritesDockContextView: LinearLayout
+    private var favoritesDockContextShowing = false
     private var parallaxEngine: ParallaxSensorEngine? = null
     private lateinit var homeGridView: FrameLayout
     private lateinit var rootView: LinearLayout
@@ -568,6 +596,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         loadGlideWords()
         AgenticRouter.ensureLoaded(this)
         syncVivoDockedExperiment()
+        observeFoldPosture { posture -> handleFoldPosture(posture) }
         render()
         handleKeyboardActionIntent(intent)
         rootView.post { maybeShowKeyboardPlacementIntro() }
@@ -1109,13 +1138,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         rootView = root
         contentFrame = FrameLayout(this).apply {
-            addView(home(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            addView(if (isUnfoldedInnerLayoutActive()) unfoldedHome() else home(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             post { applyLibraryEdgeGestureExclusion() }
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val hideDockForPane = openPane?.kind == PaneKind.SETTINGS
-        val showRootDock = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
+        val unfolded = isUnfoldedInnerLayoutActive()
+        val hideDockForPane = !unfolded && openPane?.kind == PaneKind.SETTINGS
+        val showRootDock = unfolded || keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
         if (showRootDock && !hideDockForPane) {
             keyboardDockView = FrameLayout(this).apply {
                 addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -1130,9 +1160,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         renderFavoritesDock()
         syncDockParallax()
         renderRibbon()
-        openPane?.let { showPane(it, animate = false) }
-        if (libraryOpen) showLibrary(animate = false)
-        if (!libraryOpen && openPane == null) contentFrame.postDelayed({ prewarmLibraryView() }, 140L)
+        if (!unfolded) {
+            openPane?.let { showPane(it, animate = false) }
+            if (libraryOpen) showLibrary(animate = false)
+            if (!libraryOpen && openPane == null) contentFrame.postDelayed({ prewarmLibraryView() }, 140L)
+        }
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
         root.post { captureKeyBounds() }
@@ -1501,6 +1533,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun appLibraryDefaultHome(): Boolean =
         prefs().getBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, false)
 
+    private fun isUnfoldedInnerLayoutActive(): Boolean =
+        foldPosture is FoldPosture.Inner && resources.configuration.screenWidthDp >= 600
+
+    private fun handleFoldPosture(posture: FoldPosture) {
+        val wasInner = isUnfoldedInnerLayoutActive()
+        foldPosture = posture
+        val isInner = isUnfoldedInnerLayoutActive()
+        if (!wasInner && isInner) {
+            applyUnfoldedContextSwitch()
+        } else if (wasInner && !isInner) {
+            restoreFoldedContextIfNeeded()
+        }
+        if (wasInner != isInner && ::rootView.isInitialized) {
+            libraryOpen = if (isInner) false else appLibraryDefaultHome()
+            openPane = if (isInner) null else openPane
+            keyboardSettingsOpen = false
+            render()
+        } else if (isInner) {
+            refreshUnfoldedLibraryContent()
+            renderFavoritesDock()
+        }
+    }
+
+    private fun applyUnfoldedContextSwitch() {
+        val target = SpaceManager.space(this, "work")
+            ?: SpaceManager.spaces(this).firstOrNull { it.enabled && it.id == "home" }
+            ?: SpaceManager.spaces(this).firstOrNull { it.enabled }
+            ?: return
+        foldPreviousSpaceLock = SpaceManager.lockedSpaceId(this)
+        foldAutoLockActive = true
+        foldBannerSpace = target
+        SpaceManager.lock(this, target.id)
+        invalidateLibraryCaches()
+        refreshPredictContext(rerender = true)
+    }
+
+    private fun restoreFoldedContextIfNeeded() {
+        if (!foldAutoLockActive) return
+        SpaceManager.lock(this, foldPreviousSpaceLock)
+        foldPreviousSpaceLock = null
+        foldAutoLockActive = false
+        foldBannerSpace = null
+        invalidateLibraryCaches()
+        refreshPredictContext(rerender = true)
+    }
+
     private fun loadHomeWallpaperDrawable(): Drawable? {
         if (!useLockscreenWallpaperOnHome()) return null
         val manager = WallpaperManager.getInstance(this)
@@ -1586,15 +1664,42 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     topMargin = dp(8)
                 })
                 addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.22f))
+                favoritesDockFrameView = FavoritesDockFlipFrame(context).apply {
+                    clipChildren = false
+                    clipToPadding = false
+                    cameraDistance = resources.displayMetrics.density * 9000f
+                    background = recessedDockBackground()
+                }
+                favoritesDockContextShowing = false
                 favoritesDockView = LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER
                     clipChildren = false
                     clipToPadding = false
-                    setPadding(dp(14), dp(9), dp(14), dp(9))
-                    background = recessedDockBackground()
+                    setPadding(dp(6), dp(9), dp(6), dp(9))
                 }
-                addView(favoritesDockView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
+                favoritesDockContextView = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    clipChildren = false
+                    clipToPadding = false
+                    setPadding(dp(8), dp(9), dp(8), dp(9))
+                    visibility = View.GONE
+                    alpha = 0f
+                    rotationX = 90f
+                }
+                favoritesDockFrameView.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                favoritesDockFrameView.addView(favoritesDockContextView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                favoritesDockFrameView.addView(View(context).apply {
+                    background = GradientDrawable().apply {
+                        setColor(adjustAlpha(activeNeuTokens.inkDim, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.32f else 0.22f))
+                        cornerRadius = dp(1).toFloat()
+                    }
+                }, FrameLayout.LayoutParams(dp(24), dp(2), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                    topMargin = dp(5)
+                })
+                scheduleContextDockRefresh()
+                addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
                     topMargin = dp(6)
                     // Small gap above the docked keyboard deck (its height now accounts for the
                     // suggestion strip, so it no longer bleeds up — see activeRootDockHeight()).
@@ -1621,6 +1726,184 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
         }
+    }
+
+    private fun unfoldedHome(): View {
+        homeTileViews.clear()
+        widgetSearchContentArea = null
+        widgetSearchRendered = false
+        homeEditMode = false
+        homeEditChipView = null
+        unfoldedLibraryContentArea = null
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(18), dp(10), dp(18), dp(12))
+        }
+
+        content.addView(unfoldedGlancePane(), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.05f).apply {
+            marginEnd = dp(14)
+        })
+        content.addView(unfoldedRightPane(), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+            marginStart = dp(14)
+        })
+
+        return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            homeWallpaperLayer()?.let {
+                addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
+            weatherAmbientView = null
+            addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            foldBannerSpace?.let { space ->
+                addView(foldContextBanner(space), FrameLayout.LayoutParams(dp(260), dp(42), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                    topMargin = dp(12)
+                })
+            }
+            weatherDripView = WeatherDripView(context)
+            addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            weatherDripView?.refresh(playMoment = false)
+        }
+    }
+
+    private fun unfoldedGlancePane(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(10)))
+        nowPlayingCardView = ComposeView(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setNowPlayingCardContent()
+            elevation = dp(8).toFloat()
+        }
+        addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        todayAlertView = ComposeView(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setTodayAlertContent()
+        }
+        addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(10)
+        })
+    }
+
+    private fun unfoldedRightPane(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        addView(unfoldedDockRows(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(132)).apply {
+            bottomMargin = dp(12)
+        })
+        addView(unfoldedLibraryPane(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
+    private fun unfoldedDockRows(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        favoritesDockFrameView = FavoritesDockFlipFrame(context).apply {
+            clipChildren = false
+            clipToPadding = false
+            background = recessedDockBackground()
+        }
+        favoritesDockView = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(6), dp(9), dp(6), dp(9))
+        }
+        favoritesDockFrameView.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        favoritesDockContextShowing = false
+        favoritesDockContextView = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(8), dp(9), dp(8), dp(9))
+            visibility = View.VISIBLE
+            alpha = 1f
+            rotationX = 0f
+            background = recessedDockBackground()
+        }
+        addView(favoritesDockContextView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+            topMargin = dp(8)
+        })
+        scheduleContextDockRefresh()
+    }
+
+    private fun unfoldedLibraryPane(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+        background = Neu.drawable(activeNeuTokens, dp(24).toFloat(), NeuLevel.RAISED)
+        addView(libraryHeader(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)).apply {
+            bottomMargin = dp(10)
+        })
+        val area = FrameLayout(context).apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        unfoldedLibraryContentArea = area
+        addView(area, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        post { refreshUnfoldedLibraryContent() }
+    }
+
+    private fun refreshUnfoldedLibraryContent() {
+        val area = unfoldedLibraryContentArea ?: return
+        area.removeAllViews()
+        val child = if (query.isNotBlank()) {
+            if (glassEffectsEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
+        } else {
+            if (libraryGridMode) libraryGrid() else bentoGrid()
+        }
+        area.addView(child, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+    }
+
+    private fun foldContextBanner(space: Space): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), 0, dp(8), 0)
+        background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
+        elevation = dp(8).toFloat()
+        addView(TextView(context).apply {
+            text = "${space.emoji}  ${space.name}"
+            textSize = 12f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(activeNeuTokens.ink)
+            includeFontPadding = false
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(TextView(context).apply {
+            text = "UNDO"
+            gravity = Gravity.CENTER
+            textSize = 9.5f
+            typeface = Typeface.DEFAULT_BOLD
+            letterSpacing = 0.08f
+            setTextColor(Neu.GREEN)
+            includeFontPadding = false
+            background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.PRESSED_SM)
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                SpaceManager.lock(this@MainActivity, foldPreviousSpaceLock)
+                foldPreviousSpaceLock = null
+                foldAutoLockActive = false
+                foldBannerSpace = null
+                invalidateLibraryCaches()
+                refreshPredictContext(rerender = true)
+                render()
+            }
+        }, LinearLayout.LayoutParams(dp(64), dp(26)))
+        alpha = 0f
+        translationY = -dp(8).toFloat()
+        animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
     }
 
     private fun homeTile(id: String, child: View): FrameLayout {
@@ -3041,21 +3324,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             MotionEvent.ACTION_MOVE -> {
                 val dx = event.rawX - stripSwipeStartX
                 val dy = event.rawY - stripSwipeStartY
-                if (!stripSwipeTriggered && (abs(dx) > dp(18) || abs(dy) > dp(18))) {
+                if (!stripSwipeTriggered && (abs(dx) > dp(14) || abs(dy) > dp(14))) {
                     stripSwipeTriggered = true
-                    val upOpensLibrary = gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS) == GESTURE_LIBRARY
-                    when {
-                        abs(dy) > abs(dx) * 1.15f && dy < 0 -> performHomeGesture(gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS))
-                        abs(dy) > abs(dx) * 1.15f && dy > 0 -> performHomeGesture(gestureAction(GESTURE_DOWN_PREF, GESTURE_NOTIFICATIONS))
-                        abs(dx) > abs(dy) * 1.15f && dx > 0 -> openToday()
-                        !upOpensLibrary && abs(dx) > abs(dy) * 1.15f && dx < 0 && openPane == null && widgetBoardView == null -> openLibrary()
-                    }
                 }
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 if (!stripSwipeTriggered) {
-                    haptic(searchHintView)
+                    placeCursorFromTypingStrip(event.rawX)
                 }
                 stripSwipeTriggered = false
                 return true
@@ -3068,7 +3344,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return true
     }
 
+    private fun placeCursorFromTypingStrip(rawX: Float) {
+        val text = hostText()
+        if (text.isEmpty()) {
+            cursorPos = null
+            haptic(searchHintView)
+            return
+        }
+        val loc = IntArray(2)
+        searchHintView.getLocationOnScreen(loc)
+        val contentLeft = loc[0] + searchHintView.totalPaddingLeft
+        val contentRight = loc[0] + searchHintView.width - searchHintView.totalPaddingRight
+        val width = (contentRight - contentLeft).coerceAtLeast(1)
+        val x = (rawX - contentLeft).coerceIn(0f, width.toFloat())
+        val ratio = (x / width.toFloat()).coerceIn(0f, 1f)
+        val pos = (ratio * text.length).toInt().coerceIn(0, text.length)
+        cursorPos = if (pos == text.length) null else pos
+        keyHaptic("space")
+        renderRibbon()
+    }
+
     private fun openLibrary() {
+        if (isUnfoldedInnerLayoutActive()) {
+            query = ""
+            refreshUnfoldedLibraryContent()
+            renderRibbon()
+            return
+        }
         if (libraryOpen || openPane != null) return
         libraryOpen = true
         query = ""
@@ -3080,6 +3382,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun beginLibraryDrag(startedOpen: Boolean, vertical: Boolean = false, fastPath: Boolean = false) {
+        if (isUnfoldedInnerLayoutActive()) return
         if (openPane != null && !startedOpen) return
         libraryDragActive = true
         libraryDragStartedOpen = startedOpen
@@ -4853,7 +5156,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 prefs().edit().putBoolean(LIBRARY_GRID_MODE_PREF, libraryGridMode).apply()
                 libraryViewDirty = true
                 libraryContentReady = false
-                showLibrary(animate = false)
+                if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent() else showLibrary(animate = false)
             }
         }, LinearLayout.LayoutParams(dp(if (glass) 92 else 94), dp(if (glass) 27 else 30)).apply {
             marginEnd = dp(if (glass) 2 else 8)
@@ -4891,7 +5194,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 updateSpaceIcon()
                 libraryViewDirty = true
                 libraryContentReady = false
-                showLibrary(animate = false)
+                if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent() else showLibrary(animate = false)
                 renderFavoritesDock()
                 true
             }
@@ -4998,7 +5301,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun isWidgetUniversalSearchActive(): Boolean =
-        keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET &&
+        !isUnfoldedInnerLayoutActive() &&
+            keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET &&
             openPane == null &&
             !libraryOpen &&
             !keyboardSettingsOpen &&
@@ -5054,28 +5358,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(12), 0, dp(10))
-            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
-                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
-                    letterSpacing = 0.18f
-                    setPadding(dp(2), 0, 0, dp(8))
-                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
-                items.chunked(2).forEach { rowItems ->
-                    addView(LinearLayout(context).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        rowItems.forEachIndexed { columnIndex, result ->
-                            addView(searchResultBentoCard(result, false, columnIndex), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                                if (columnIndex > 0) marginStart = dp(10)
-                            })
-                        }
-                        repeat(2 - rowItems.size) {
-                            addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
-                        }
-                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(120)).apply {
-                        bottomMargin = dp(10)
-                    })
-                }
-            }
             command?.let {
                 addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
                     bottomMargin = dp(10)
@@ -5103,6 +5385,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     bottomMargin = dp(10)
                 })
             }
+            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
+                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.18f
+                    setPadding(dp(2), dp(6), 0, dp(8))
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(28))
+                items.chunked(2).forEach { rowItems ->
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        rowItems.forEachIndexed { columnIndex, result ->
+                            addView(searchResultBentoCard(result, false, columnIndex), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                                if (columnIndex > 0) marginStart = dp(10)
+                            })
+                        }
+                        repeat(2 - rowItems.size) {
+                            addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
+                        }
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(120)).apply {
+                        bottomMargin = dp(10)
+                    })
+                }
+            }
         })
     }
 
@@ -5114,17 +5418,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, if (widgetMode) dp(10) else dp(12), 0, if (widgetMode) dp(18) else dp(10))
-            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
-                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
-                    letterSpacing = 0.18f
-                    setPadding(dp(2), 0, 0, dp(8))
-                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
-                items.forEachIndexed { index, result ->
-                    addView(searchResultRow(result, false, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
-                        bottomMargin = dp(8)
-                    })
-                }
-            }
             addView(mono(if (widgetMode) "UNIVERSAL SEARCH" else "RESULTS", 8.5f, activeNeuTokens.inkFaint).apply {
                 letterSpacing = 0.18f
                 setPadding(dp(2), 0, 0, dp(8))
@@ -5153,6 +5446,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(searchResultRow(result, index == 0 && command == null && aiInline == null, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
                     bottomMargin = dp(8)
                 })
+            }
+            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
+                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.18f
+                    setPadding(dp(2), dp(6), 0, dp(8))
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(28))
+                items.forEachIndexed { index, result ->
+                    addView(searchResultRow(result, false, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
+                        bottomMargin = dp(8)
+                    })
+                }
             }
         })
     }
@@ -8802,7 +9106,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             var touchDownX = 0f; var touchDownY = 0f
             var spaceCursorLastX = 0f
             var spaceCursorMoved = false
-            val cursorStepPx = dp(8).toFloat()
+            val cursorStepPx = dp(6).toFloat()
             // Manual long-press: the OnTouchListener consumes events (returns true), so the
             // View's built-in long-click detection never runs. Detect it ourselves.
             val longPressAction: (() -> Unit)? = when {
@@ -9121,31 +9425,35 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             strip.removeAllViews()
             strip.background = suggestionStripBackground(null, true)
             strip.addView(TextView(this).apply {
-                text = "TRY"; gravity = Gravity.CENTER; textSize = 9.5f; letterSpacing = 0.14f
+                text = "TRY"; gravity = Gravity.CENTER; textSize = 9f; letterSpacing = 0.12f
                 includeFontPadding = false; setTextColor(activeNeuTokens.inkDim)
-                setPadding(dp(4), 0, dp(8), 0)
+                setPadding(dp(4), 0, dp(6), 0)
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             pendingStart.forEach { (label, run) ->
                 row.addView(TextView(this).apply {
-                    text = label; gravity = Gravity.CENTER; textSize = 13.5f; includeFontPadding = false
+                    text = label; gravity = Gravity.CENTER; textSize = 12.2f; includeFontPadding = false
                     setTextColor(activeNeuTokens.ink); maxLines = 1
-                    setPadding(dp(12), dp(6), dp(12), dp(6))
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(dp(10), dp(5), dp(10), dp(5))
                     background = GradientDrawable().apply {
-                        setColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x22000000); cornerRadius = dp(11).toFloat()
+                        setColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x22000000); cornerRadius = dp(10).toFloat()
                         setStroke(dp(1), (activeNeuTokens.inkDim and 0x00FFFFFF) or 0x44000000)
                     }
                     isClickable = true
                     setOnClickListener { keyHaptic("space"); pendingLauncherStarters = emptyList(); run() }
-                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(5) })
             }
             strip.addView(android.widget.HorizontalScrollView(this).apply {
                 isHorizontalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+                clipToPadding = false
+                setPadding(0, 0, dp(12), 0)
                 addView(row)
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             return
         }
         var shown = suggestions.take(3)
+        val emojiChips = launcherEmojiChips
         // Always keep the strip alive: if there are no word candidates, fall back to next-word
         // predictions for the last completed word so it "always shows what you'll type next".
         if (shown.isEmpty()) {
@@ -9164,10 +9472,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val fieldBlank = (if (openPane?.kind == PaneKind.CHAT) composeText else query).isBlank()
         // Persist: after a glide / word commit there may be nothing new to show, but keep the last
         // strip content (esp. the swipe result) until the user clears the field or fresh ones arrive.
-        if (shown.isEmpty() && appColor == null && !canPolish && !fieldBlank && strip.childCount > 0) return
+        if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish && !fieldBlank && strip.childCount > 0) return
         val wasEmpty = strip.childCount == 0
         strip.removeAllViews()
-        if (shown.isEmpty() && appColor == null && !canPolish) { strip.background = null; return }
+        if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish) { strip.background = null; return }
         strip.background = suggestionStripBackground(appColor, pro)
         if (shown.isNotEmpty()) {
             val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
@@ -9184,10 +9492,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     isClickable = true
                     setOnClickListener { keyHaptic("space"); acceptSuggestion(word) }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-                if (i < shown.lastIndex || canPolish) {
+                if (i < shown.lastIndex || emojiChips.isNotEmpty() || canPolish) {
                     strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
                         LinearLayout.LayoutParams(dp(1), dp(16)))
                 }
+            }
+        }
+        emojiChips.forEachIndexed { i, emoji ->
+            strip.addView(TextView(this).apply {
+                text = emoji
+                gravity = Gravity.CENTER
+                textSize = 18f
+                includeFontPadding = false
+                maxLines = 1
+                setTextColor(activeNeuTokens.ink)
+                setPadding(dp(10), 0, dp(10), 0)
+                isClickable = true
+                setOnClickListener { insertLauncherEmojiChip(emoji) }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            if (i < emojiChips.lastIndex || canPolish) {
+                strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
+                    LinearLayout.LayoutParams(dp(1), dp(16)))
             }
         }
         // ✨ Polish the whole composed message (Pro + Gemini, 3+ words). Same sparkle as the IME.
@@ -9253,8 +9578,51 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val accepted = (if (pane?.kind == PaneKind.CHAT) composeText else query).trim().split(" ").filter { it.isNotEmpty() }
         if (accepted.size >= 2) ngramRepo.recordWord(accepted.last(), accepted[accepted.size - 2])
         ngramRepo.prefetchNextWords(word)
+        launcherEmojiTriggerWord = ""
+        launcherEmojiChips = emptyList()
         suggestions = emptyList(); updateSuggestionBar()
         renderRibbon()
+    }
+
+    private fun computeLauncherEmojiChips(word: String) {
+        if (word.length < 2) {
+            launcherEmojiTriggerWord = ""
+            launcherEmojiChips = emptyList()
+            return
+        }
+        launcherEmojiTriggerWord = word.lowercase(Locale.US)
+        launcherEmojiChips = SmartChips.emojiFor(prefs(), launcherEmojiTriggerWord).take(4)
+    }
+
+    private fun insertLauncherEmojiChip(emoji: String) {
+        val trigger = launcherEmojiTriggerWord
+        if (trigger.isBlank()) return
+        keyHaptic("space")
+        replaceCurrentTriggerWith(emoji, trigger)
+        SmartChips.recordEmojiPick(prefs(), trigger, emoji)
+        launcherEmojiTriggerWord = ""
+        launcherEmojiChips = emptyList()
+        suggestions = emptyList()
+        updateSuggestionBar()
+        openPane?.let {
+            if (it.kind == PaneKind.CHAT || it.kind == PaneKind.AI) renderPaneContent(it)
+        }
+        renderRibbon()
+    }
+
+    private fun replaceCurrentTriggerWith(replacement: String, trigger: String) {
+        val text = hostText()
+        val cursor = (cursorPos ?: text.length).coerceIn(0, text.length)
+        val start = (cursor - trigger.length).coerceAtLeast(0)
+        val matches = text.substring(start, cursor).equals(trigger, ignoreCase = true)
+        val replaceStart = if (matches) start else cursor
+        val prefix = text.substring(0, replaceStart)
+        val suffix = text.substring(cursor)
+        val sep = if (prefix.isNotEmpty() && prefix.last() != ' ') " " else ""
+        val next = prefix + sep + replacement + suffix
+        val nextCursor = (prefix.length + sep.length + replacement.length).coerceIn(0, next.length)
+        setHostText(next)
+        cursorPos = if (nextCursor == next.length) null else nextCursor
     }
 
     // ---- AI Polish + inline //commands on the launcher strip (parity with the IME) ----------------
@@ -9363,6 +9731,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             updateAutoCapState(); updateKeyLabels(); render()
         }
         override fun runAttach() { flashLauncherStatus("📎 Attach works in the in-app keyboard", 2600) }
+        override fun showShareCard(card: ShareCard) {
+            // The launcher strip is too small for the full-bleed card; map it onto the result HUD —
+            // same beats (preview → insert → follow-up), lower fidelity.
+            launcherAgenticStatus = null
+            pendingLauncherResult = AgenticResult(
+                card.kicker,
+                if (card.subtitle.isBlank()) card.title else "${card.title} — ${card.subtitle}",
+                card.insertText,
+                card.followUp?.let { listOf(it) } ?: emptyList()
+            )
+            updateSuggestionBar()
+        }
     }
 
     private fun runLauncherAgenticCommand() {
@@ -9418,23 +9798,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (statusMsg != null) android.widget.Toast.makeText(this, statusMsg, android.widget.Toast.LENGTH_SHORT).show()
     }
 
-    // Starter chips for the held-go-over-empty-field case (launcher parity with the IME): Share location
-    // runs on tap; the rest seed their trigger into the field so the user just finishes the thought.
+    // Starter chips for the held-go-over-empty-field case (parity with the IME): share verbs that drop
+    // a complete thing via a preview, not command verbs that seed text and eject the user.
     private fun buildLauncherStarters(): List<Pair<String, () -> Unit>> {
         val chips = ArrayList<Pair<String, () -> Unit>>()
-        chips.add("📍 Share location" to { insertLauncherLocation() })
-        AgenticRouter.starters(4).forEach { s ->
-            if (s.insert.isBlank()) return@forEach
-            chips.add(s.label to { seedLauncherField(s.insert) })
-        }
+        chips.add("🎵 Song" to { AgenticEngine.shareSong(launcherAgenticHost) })
+        chips.add("📍 My location" to { AgenticEngine.sharePlace(launcherAgenticHost) })
         return chips
-    }
-
-    private fun seedLauncherField(prefix: String) {
-        pendingLauncherStarters = emptyList()
-        if (openPane?.kind == PaneKind.CHAT) { composeText += prefix; openPane?.let { renderPaneContent(it) } }
-        else query += prefix
-        updateAutoCapState(); updateKeyLabels(); render()
     }
 
     private fun insertLauncherLocation() {
@@ -9488,11 +9858,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         scheduleLiveAutocorrect()
         val word = currentWordInCompose()
         if (word.length < 2) {
+            computeLauncherEmojiChips("")
             suggestions = emptyList(); updateSuggestionBar()   // strip falls back to next-word preds
             liveRouter.onTextChanged("")
             return
         }
         liveRouter.onTextChanged(word)
+        computeLauncherEmojiChips(word)
         val prev = previousWordInCompose()
         val r = Runnable {
             lastSuggestWord = word
@@ -10840,6 +11212,14 @@ Reply format: ["word1","word2","word3"]"""
                 if (libraryOpen) {
                     if (query.isNotBlank()) query += " "
                 } else {
+                    cursorPos?.let { pos ->
+                        query = query.substring(0, pos) + " " + query.substring(pos)
+                        cursorPos = pos + 1
+                        suggestions = emptyList()
+                        updateSuggestionBar()
+                        renderRibbon()
+                        return
+                    }
                     val now = System.currentTimeMillis()
                     if (now - lastSpaceMs < 500 && query.isNotEmpty() && query.last() == ' ') {
                         query = query.dropLast(1) + ". "
@@ -10863,6 +11243,14 @@ Reply format: ["word1","word2","word3"]"""
                 autocorrectCore.clearPending()
                 if (libraryOpen) { if (query.isNotBlank()) query += "." }
                 else {
+                    cursorPos?.let { pos ->
+                        query = query.substring(0, pos) + "." + query.substring(pos)
+                        cursorPos = pos + 1
+                        suggestions = emptyList()
+                        updateSuggestionBar()
+                        renderRibbon()
+                        return
+                    }
                     tryAutocorrect()
                     query = query.trimEnd() + "."
                     suggestions = emptyList(); updateSuggestionBar()
@@ -10891,6 +11279,16 @@ Reply format: ["word1","word2","word3"]"""
                 keyboardSettingsOpen = !keyboardSettingsOpen; query = ""; render(); return
             }
             "enter" -> {
+                if (isUnfoldedInnerLayoutActive() && openPane == null) {
+                    if (executeTypeToDoCommand(query)) {
+                        query = ""
+                        renderRibbon()
+                        return
+                    }
+                    val result = bestLauncherResultForGo()
+                    if (result != null) openSearchResult(result) else launchInAppGoogleSearch(query)
+                    return
+                }
                 if (libraryOpen) {
                     if (executeTypeToDoCommand(query)) {
                         query = ""
@@ -10941,7 +11339,7 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 autocorrectCore.clearPending()
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
-                if (!libraryOpen && openPane == null && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+                if (!isUnfoldedInnerLayoutActive() && !libraryOpen && openPane == null && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
                     // Auto-open library in docked mode so search shows full-screen results.
                     // Widget mode keeps the homescreen intact while typing.
                     libraryOpen = true
@@ -10964,11 +11362,23 @@ Reply format: ["word1","word2","word3"]"""
         when (label) {
             "back" -> {
                 autocorrectCore.clearPending()
-                aiDraftText = aiDraftText.dropLast(1)
+                val pos = cursorPos
+                if (pos != null && pos > 0) {
+                    aiDraftText = aiDraftText.removeRange(pos - 1, pos)
+                    cursorPos = pos - 1
+                } else {
+                    cursorPos = null
+                    aiDraftText = aiDraftText.dropLast(1)
+                }
                 aiDraftActive = true
             }
             "space" -> {
                 aiDraftActive = true
+                cursorPos?.let { pos ->
+                    aiDraftText = aiDraftText.substring(0, pos) + " " + aiDraftText.substring(pos)
+                    cursorPos = pos + 1
+                    return@let
+                } ?: run {
                 val now = System.currentTimeMillis()
                 if (now - lastSpaceMs < 500 && aiDraftText.isNotEmpty() && aiDraftText.last() == ' ') {
                     aiDraftText = aiDraftText.dropLast(1) + ". "
@@ -10977,10 +11387,16 @@ Reply format: ["word1","word2","word3"]"""
                     aiDraftText += " "
                 }
                 lastSpaceMs = now
+                }
             }
             "period" -> {
                 aiDraftActive = true
-                aiDraftText = aiDraftText.trimEnd() + "."
+                cursorPos?.let { pos ->
+                    aiDraftText = aiDraftText.substring(0, pos) + "." + aiDraftText.substring(pos)
+                    cursorPos = pos + 1
+                } ?: run {
+                    aiDraftText = aiDraftText.trimEnd() + "."
+                }
                 shiftState = ShiftState.ONCE; updateKeyLabels()
             }
             "123" -> { numberPadOpen = true; ensureContactsPermission(); render(); return }
@@ -10999,6 +11415,7 @@ Reply format: ["word1","word2","word3"]"""
                 if (prompt.isNotBlank()) {
                     aiDraftText = ""
                     aiDraftActive = false
+                    cursorPos = null
                     query = ""
                     askGemini(prompt)
                     return
@@ -11006,7 +11423,13 @@ Reply format: ["word1","word2","word3"]"""
             }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
-                aiDraftText += char
+                val pos = cursorPos
+                if (pos != null) {
+                    aiDraftText = aiDraftText.substring(0, pos) + char + aiDraftText.substring(pos)
+                    cursorPos = pos + 1
+                } else {
+                    aiDraftText += char
+                }
                 aiDraftActive = true
                 autocorrectCore.clearPending()
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
@@ -11163,12 +11586,27 @@ Reply format: ["word1","word2","word3"]"""
         when (label) {
             "back" -> {
                 if (autocorrectCore.undoOnBackspace()) { updateAutoCapState(); updateKeyLabels(); return }
-                composeText = composeText.dropLast(1)
+                val pos = cursorPos
+                if (pos != null && pos > 0) {
+                    composeText = composeText.removeRange(pos - 1, pos)
+                    cursorPos = pos - 1
+                } else {
+                    cursorPos = null
+                    composeText = composeText.dropLast(1)
+                }
                 updateAutoCapState(); updateKeyLabels(); scheduleSpellCheck()
             }
             "space" -> {
                 autocorrectCore.clearPending()
                 if (maybeRunLauncherAiCommand()) return
+                cursorPos?.let { pos ->
+                    composeText = composeText.substring(0, pos) + " " + composeText.substring(pos)
+                    cursorPos = pos + 1
+                    suggestions = emptyList(); updateSuggestionBar()
+                    updateAutoCapState(); updateKeyLabels()
+                    renderPaneContent(pane); renderRibbon()
+                    return
+                }
                 val now = System.currentTimeMillis()
                 if (now - lastSpaceMs < 500 && composeText.isNotEmpty() && composeText.last() == ' ') {
                     composeText = composeText.dropLast(1) + ". "
@@ -11184,6 +11622,14 @@ Reply format: ["word1","word2","word3"]"""
             }
             "period" -> {
                 autocorrectCore.clearPending()
+                cursorPos?.let { pos ->
+                    composeText = composeText.substring(0, pos) + "." + composeText.substring(pos)
+                    cursorPos = pos + 1
+                    shiftState = ShiftState.ONCE; updateKeyLabels()
+                    suggestions = emptyList(); updateSuggestionBar()
+                    renderPaneContent(pane); renderRibbon()
+                    return
+                }
                 tryAutocorrect()
                 composeText = composeText.trimEnd() + "."
                 shiftState = ShiftState.ONCE; updateKeyLabels()
@@ -11204,7 +11650,13 @@ Reply format: ["word1","word2","word3"]"""
             else -> {
                 autocorrectCore.clearPending()
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
-                composeText += char
+                val pos = cursorPos
+                if (pos != null) {
+                    composeText = composeText.substring(0, pos) + char + composeText.substring(pos)
+                    cursorPos = pos + 1
+                } else {
+                    composeText += char
+                }
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
                 scheduleSpellCheck()
                 scheduleGeminiSuggestions()
@@ -12369,7 +12821,7 @@ Reply format: ["word1","word2","word3"]"""
     private fun postComposeBubble(target: PaneTarget) {
         val text = composeText.trim(); if (text.isEmpty()) return
         chatLines(target).add(ChatLine(text, true))
-        composeText = ""; shiftState = ShiftState.ONCE
+        composeText = ""; cursorPos = null; shiftState = ShiftState.ONCE
         suggestions = emptyList(); updateSuggestionBar(); updateKeyLabels()
         // In a notification reply pane, actually deliver the message via the app's RemoteInput.
         val key = replyingToKey
@@ -12476,6 +12928,7 @@ Reply format: ["word1","word2","word3"]"""
             return
         }
         if (widgetSearchActive) refreshWidgetSearchContent()
+        if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent()
     }
 
     private fun renderFavoritesDock() {
@@ -12487,6 +12940,7 @@ Reply format: ["word1","word2","word3"]"""
                 gravity = Gravity.CENTER
                 letterSpacing = 0.12f
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            renderFavoritesDockContext()
             return
         }
         dockItems.take(DOCK_APP_LIMIT).forEachIndexed { index, item ->
@@ -12499,6 +12953,224 @@ Reply format: ["word1","word2","word3"]"""
                 if (dockItems.isNotEmpty() || index > 0) marginStart = dp(6)
             })
         }
+        renderFavoritesDockContext()
+    }
+
+    private inner class FavoritesDockFlipFrame(context: Context) : FrameLayout(context) {
+        private var startX = 0f
+        private var startY = 0f
+        private var interceptingFlip = false
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> parent?.requestDisallowInterceptTouchEvent(true)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
+            }
+            return super.dispatchTouchEvent(event)
+        }
+
+        override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.x
+                    startY = event.y
+                    interceptingFlip = false
+                    return false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - startX
+                    val dy = event.y - startY
+                    if (abs(dy) > dp(18) && abs(dy) > abs(dx) * 1.25f) {
+                        interceptingFlip = true
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> interceptingFlip = false
+            }
+            return false
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_UP -> {
+                    if (interceptingFlip && abs(event.y - startY) > dp(28)) {
+                        toggleFavoritesDockContext()
+                        interceptingFlip = false
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        return true
+                    }
+                    interceptingFlip = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    interceptingFlip = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                }
+            }
+            return true
+        }
+    }
+
+    private fun toggleFavoritesDockContext() {
+        setFavoritesDockContextShowing(!favoritesDockContextShowing)
+    }
+
+    private fun setFavoritesDockContextShowing(show: Boolean) {
+        if (!::favoritesDockView.isInitialized || !::favoritesDockContextView.isInitialized) return
+        if (isUnfoldedInnerLayoutActive()) {
+            favoritesDockContextShowing = false
+            favoritesDockView.visibility = View.VISIBLE
+            favoritesDockView.alpha = 1f
+            favoritesDockView.rotationX = 0f
+            favoritesDockContextView.visibility = View.VISIBLE
+            favoritesDockContextView.alpha = 1f
+            favoritesDockContextView.rotationX = 0f
+            renderFavoritesDockContext()
+            return
+        }
+        if (favoritesDockContextShowing == show) return
+        favoritesDockContextShowing = show
+        keyHaptic("space")
+        val duration = 210L
+        val front = favoritesDockView
+        val back = favoritesDockContextView
+        front.animate().cancel()
+        back.animate().cancel()
+        if (show) {
+            renderFavoritesDockContext()
+            back.visibility = View.VISIBLE
+            back.rotationX = 90f
+            back.alpha = 0f
+            front.animate()
+                .rotationX(-90f)
+                .alpha(0f)
+                .setDuration(duration / 2)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    front.visibility = View.GONE
+                    back.animate()
+                        .rotationX(0f)
+                        .alpha(1f)
+                        .setDuration(duration / 2)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+                .start()
+        } else {
+            front.visibility = View.VISIBLE
+            front.rotationX = -90f
+            front.alpha = 0f
+            back.animate()
+                .rotationX(90f)
+                .alpha(0f)
+                .setDuration(duration / 2)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction {
+                    back.visibility = View.GONE
+                    front.animate()
+                        .rotationX(0f)
+                        .alpha(1f)
+                        .setDuration(duration / 2)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+                .start()
+        }
+    }
+
+    private fun renderFavoritesDockContext() {
+        if (!::favoritesDockContextView.isInitialized) return
+        favoritesDockContextView.removeAllViews()
+        contextDockSignature = currentContextDockSignature()
+        val apps = currentContextDockApps()
+        apps.take(DOCK_APP_LIMIT).forEachIndexed { index, app ->
+            favoritesDockContextView.addView(contextDockAppButton(app, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (index > 0) marginStart = dp(6)
+            })
+        }
+        repeat(DOCK_APP_LIMIT - apps.size.coerceAtMost(DOCK_APP_LIMIT)) { index ->
+            favoritesDockContextView.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (apps.isNotEmpty() || index > 0) marginStart = dp(6)
+            })
+        }
+    }
+
+    private fun currentContextDockApps(): List<LibraryApp> {
+        val seen = linkedSetOf<String>()
+        return libraryCategories()
+            .flatMap { it.apps }
+            .filter { app ->
+                val key = app.target.packageName ?: app.target.id
+                seen.add(key)
+            }
+            .take(DOCK_APP_LIMIT)
+    }
+
+    private fun currentContextDockSignature(): String {
+        val appsSig = currentContextDockApps().joinToString("|") { it.target.packageName ?: it.target.id }
+        return listOf(
+            categoryContextBucket(),
+            prefs().getString(APP_USAGE_PREF, "{}").orEmpty(),
+            prefs().getString(APP_LAST_LAUNCH_PREF, "{}").orEmpty(),
+            appsSig
+        ).joinToString("::")
+    }
+
+    private fun scheduleContextDockRefresh() {
+        contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
+        contextDockRefreshRunnable = object : Runnable {
+            override fun run() {
+                if (::favoritesDockContextView.isInitialized) {
+                    val next = currentContextDockSignature()
+                    if (next != contextDockSignature) renderFavoritesDockContext()
+                    handler.postDelayed(this, 60_000L)
+                }
+            }
+        }
+        handler.postDelayed(contextDockRefreshRunnable!!, 60_000L)
+    }
+
+    private fun contextDockAppButton(app: LibraryApp, index: Int): View = FrameLayout(this).apply {
+        isClickable = true
+        setPadding(dp(3), 0, dp(3), 0)
+        alpha = 0f
+        scaleX = 0.92f
+        scaleY = 0.92f
+        postDelayed({
+            animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(180)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }, (index * 24L).coerceAtMost(120L))
+        addView(FrameLayout(context).apply {
+            elevation = dp(2).toFloat()
+            background = dockIconButtonBackground()
+            addView(ImageView(context).apply {
+                setImageDrawable(iconFor(app))
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                adjustViewBounds = true
+                setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }, FrameLayout.LayoutParams(dockIconFrameSize(showDockLabels()), dockIconFrameSize(showDockLabels()), Gravity.CENTER))
+        setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+            }
+            false
+        }
+        setOnClickListener {
+            haptic(this)
+            val target = app.target
+            setFavoritesDockContextShowing(false)
+            if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target)
+            else { pendingLaunchSource = LaunchSource.DOCK; openExternal(target) }
+        }
+        setOnLongClickListener { haptic(this); showOpenMenu(this, app.target); true }
     }
 
     private data class HomeDockItem(
@@ -12613,14 +13285,22 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun styledTypedCommand(text: String): SpannableString {
-        val styled = SpannableString("$text|")
-        styled.setSpan(ScaleXSpan(0.35f), text.length, text.length + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        styled.setSpan(ForegroundColorSpan(0xFFFF5A3C.toInt()), text.length, text.length + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val cursor = (cursorPos ?: text.length).coerceIn(0, text.length)
+        val display = text.substring(0, cursor) + "|" + text.substring(cursor)
+        val styled = SpannableString(display)
+        styled.setSpan(ScaleXSpan(0.35f), cursor, cursor + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        styled.setSpan(ForegroundColorSpan(0xFFFF5A3C.toInt()), cursor, cursor + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         // Color whole text with top app's accent when it's a clear match
         val topApp = filteredRibbonEntries().firstOrNull()
         if (topApp != null && text.trim().length >= 2) {
-            styled.setSpan(ForegroundColorSpan(topApp.accent), 0, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            styled.setSpan(StyleSpan(Typeface.BOLD), 0, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (cursor > 0) {
+                styled.setSpan(ForegroundColorSpan(topApp.accent), 0, cursor, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                styled.setSpan(StyleSpan(Typeface.BOLD), 0, cursor, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            if (cursor < text.length) {
+                styled.setSpan(ForegroundColorSpan(topApp.accent), cursor + 1, display.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                styled.setSpan(StyleSpan(Typeface.BOLD), cursor + 1, display.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
             return styled
         }
         // Fall back to verb coloring
@@ -12628,8 +13308,12 @@ Reply format: ["word1","word2","word3"]"""
         val color = commandVerbColor(verb) ?: return styled
         val start = text.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: return styled
         val end = (start + verb.length).coerceAtMost(text.length)
-        styled.setSpan(ForegroundColorSpan(color), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        styled.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val displayStart = if (start >= cursor) start + 1 else start
+        val displayEnd = if (end > cursor) end + 1 else end
+        if (displayStart < displayEnd) {
+            styled.setSpan(ForegroundColorSpan(color), displayStart, displayEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            styled.setSpan(StyleSpan(Typeface.BOLD), displayStart, displayEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
         return styled
     }
 
@@ -12939,25 +13623,42 @@ Reply format: ["word1","word2","word3"]"""
     private fun librarySearchResults(): List<AppEntry> {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
-        val matches = apps.filter { it.label.contains(q, ignoreCase = true) }
-        // Blend: literal prefix matches always outrank substring matches (typing intent wins),
-        // then the active Space's prediction score orders each tier, alphabetical as tie-break.
+        val matches = apps
+            .mapNotNull { app -> appSearchRelevance(app, q).takeIf { it > 0 }?.let { app to it } }
+        // Typed intent wins: exact/prefix label matches outrank context every time. The active
+        // Space prediction score is only a tie-breaker inside the same text-relevance tier.
         val predictScore: Map<String, Float> = predictContext?.let { snap ->
             runCatching {
-                Predictor.scores(this, matches.map { it.packageName }, snap).toMap()
+                Predictor.scores(this, matches.map { it.first.packageName }, snap).toMap()
             }.getOrNull()
         } ?: emptyMap()
-        return matches.sortedWith { left, right ->
-            val leftStarts = left.label.startsWith(q, ignoreCase = true)
-            val rightStarts = right.label.startsWith(q, ignoreCase = true)
-            when {
-                leftStarts != rightStarts -> if (leftStarts) -1 else 1
-                else -> {
-                    val scoreCompare = (predictScore[right.packageName] ?: 0f)
-                        .compareTo(predictScore[left.packageName] ?: 0f)
-                    if (scoreCompare != 0) scoreCompare else collator.compare(left.label, right.label)
-                }
-            }
+        return matches.sortedWith { leftPair, rightPair ->
+            val left = leftPair.first
+            val right = rightPair.first
+            val relevanceCompare = rightPair.second.compareTo(leftPair.second)
+            if (relevanceCompare != 0) return@sortedWith relevanceCompare
+            val scoreCompare = (predictScore[right.packageName] ?: 0f)
+                .compareTo(predictScore[left.packageName] ?: 0f)
+            if (scoreCompare != 0) scoreCompare else collator.compare(left.label, right.label)
+        }.map { it.first }
+    }
+
+    private fun appSearchRelevance(app: AppEntry, rawQuery: String): Int {
+        val q = rawQuery.lowercase(Locale.US)
+        if (q.isBlank()) return 0
+        val label = app.label.lowercase(Locale.US)
+        val short = app.shortName.lowercase(Locale.US)
+        val pkg = app.packageName.lowercase(Locale.US)
+        val words = label.split(Regex("\\s+")).filter { it.isNotBlank() }
+        return when {
+            label == q || short == q -> 1000
+            label.startsWith(q) || short.startsWith(q) -> 900
+            words.any { it == q } -> 860
+            words.any { it.startsWith(q) } -> 820
+            label.contains(q) || short.contains(q) -> 700
+            pkg.substringAfterLast('.').startsWith(q) -> 260
+            pkg.contains(q) -> 120
+            else -> 0
         }
     }
 
@@ -14224,11 +14925,7 @@ $emailText"""
     private fun filteredRibbonEntries(): List<RibbonEntry> {
         if (numberPadOpen) return searchContacts(query)
         if (query.isBlank()) return homeDockApps().map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
-        return apps
-            .filter { app ->
-                app.label.contains(query, ignoreCase = true) ||
-                    app.packageName.contains(query, ignoreCase = true)
-            }
+        return librarySearchResults()
             .take(8)
             .map { app -> RibbonEntry(app.shortName, app.brandColor, app.toPaneTarget()) }
             .ifEmpty {
@@ -14651,7 +15348,7 @@ $emailText"""
         weatherIconView.setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
         weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
         weatherAmbientView?.setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = false)
-        weatherDripView?.refresh()
+        weatherDripView?.refresh(playMoment = false)
         refreshNowPlayingCard()
     }
 
@@ -14702,7 +15399,7 @@ $emailText"""
                 if (weatherChanged) {
                     weatherIconView.playLivePhotoBurst()
                     weatherAmbientView?.setWeather(result.code, activeNeuTokens.mode, animate = animatedWeatherEnabled())
-                    weatherDripView?.refresh()
+                    weatherDripView?.playLivePhotoBurst()
                     refreshNowPlayingCard()
                 }
             }
@@ -16371,7 +17068,7 @@ $emailText"""
     }
 
     private fun keyRowOverlap(): Int {
-        return dp(10 + keyboardSize * 3 / 100)
+        return dp(12 + keyboardSize * 3 / 100)
     }
 
     private fun keyHorizontalInset(): Int {
@@ -16426,11 +17123,15 @@ $emailText"""
         return base + (keyboardSize * growth / 100f)
     }
 
-    private fun keyTextColor(label: String) = if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+    private fun goLegendColor(): Int =
+        if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
+
+    private fun keyTextColor(label: String) = if (label == "enter") {
+        goLegendColor()
+    } else if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
         BrushedDrawables.ink(label, selectedNeuTokens().mode == NeuMode.DARK)
     } else if (keyboardTheme == KEYBOARD_THEME_SEEME) {
         when (label) {
-            "enter" -> 0xFFFFFFFF.toInt()
             "clicks" -> 0xFFFF5A60.toInt()
             "123", "back", "shift", "period", "abc" -> 0xFF8A8A8A.toInt()
             else -> 0xFFF2F2F2.toInt()
@@ -17043,6 +17744,10 @@ $emailText"""
         private var lastFrame = 0L
         private var flash = 0f
         private var nextBolt = 2.5f
+        private var particleStartedAt = 0L
+        private var particleUntilMs = 0L
+        private var motionScale = 1f
+        private var alphaScale = 1f
         private val rnd = java.util.Random()
 
         fun setWeather(code: Int, neuMode: NeuMode, animate: Boolean) {
@@ -17050,7 +17755,10 @@ $emailText"""
             weatherCode = code
             mode = neuMode
             animator?.cancel()
-            if (animate && changed) {
+            val shouldAnimate = animate && changed && animatedWeatherEnabled()
+            if (shouldAnimate) {
+                particleStartedAt = System.currentTimeMillis()
+                particleUntilMs = particleStartedAt + WEATHER_AMBIENT_BURST_MS
                 progress = 0f
                 animator = ValueAnimator.ofFloat(0f, 1f).apply {
                     duration = WEATHER_AMBIENT_BURST_MS
@@ -17062,6 +17770,7 @@ $emailText"""
                     start()
                 }
             } else {
+                particleUntilMs = 0L
                 progress = 1f
                 invalidate()
             }
@@ -17106,7 +17815,8 @@ $emailText"""
         private fun rebuildParticles() {
             parts.clear(); fog.clear()
             val p = precip()
-            if (p == 0 || !animatedWeatherEnabled()) { stopLoop(); invalidate(); return }
+            val canPlay = p != 0 && animatedWeatherEnabled() && particleUntilMs > System.currentTimeMillis()
+            if (!canPlay) { stopLoop(); invalidate(); return }
             if (width > 0 && height > 0) seed(p)
             startLoop()
         }
@@ -17146,8 +17856,19 @@ $emailText"""
             drawGlows(canvas)
             val p = precip()
             if (!running || p == 0 || !animatedWeatherEnabled()) return
-            if (parts.isEmpty() && fog.isEmpty()) seed(p)
             val now = System.currentTimeMillis()
+            if (now >= particleUntilMs && parts.isEmpty() && fog.isEmpty()) {
+                stopLoop()
+                return
+            }
+            val fade = livePhotoFade(now - particleStartedAt, WEATHER_AMBIENT_BURST_MS)
+            motionScale = 0.22f + 0.78f * fade
+            alphaScale = fade
+            if (now >= particleUntilMs && fade <= 0.02f) {
+                stopLoop()
+                return
+            }
+            if (parts.isEmpty() && fog.isEmpty()) seed(p)
             val dt = if (lastFrame == 0L) 0.016f else ((now - lastFrame) / 1000f).coerceIn(0f, 0.05f)
             lastFrame = now
             when (p) {
@@ -17160,12 +17881,12 @@ $emailText"""
 
         private fun drawRain(canvas: Canvas, dt: Float) {
             val w = width.toFloat(); val h = height.toFloat()
-            val color = if (mode == NeuMode.LIGHT) 0xFF7E8EA4.toInt() else 0xFFCFE0F8.toInt()
+            val color = if (mode == NeuMode.LIGHT) 0xFF2A94CA.toInt() else 0xFF8EDCFF.toInt()
             for (d in parts) {
-                d.x += d.vx * dt; d.y += d.vy * dt
+                d.x += d.vx * dt * motionScale; d.y += d.vy * dt * motionScale
                 if (d.y - d.len > h) { d.y = -rnd.nextFloat() * h * 0.15f; d.x = rnd.nextFloat() * w }
                 if (d.x > w) d.x -= w
-                drawRainDrop(canvas, d.x, d.y, d.vx, d.len, d.size, d.a, color)
+                drawRainDrop(canvas, d.x, d.y, d.vx, d.len, d.size, d.a * alphaScale, color)
             }
             paint.style = Paint.Style.FILL
             paint.shader = null
@@ -17219,10 +17940,10 @@ $emailText"""
             paint.style = Paint.Style.FILL
             for (d in parts) {
                 d.phase += dt * 1.6f
-                d.y += d.vy * dt
-                d.x += kotlin.math.sin(d.phase.toDouble()).toFloat() * d.sway * dt
+                d.y += d.vy * dt * motionScale
+                d.x += kotlin.math.sin(d.phase.toDouble()).toFloat() * d.sway * dt * motionScale
                 if (d.y - d.size > h) { d.y = -d.size - rnd.nextFloat() * h * 0.1f; d.x = rnd.nextFloat() * w }
-                paint.color = adjustAlpha(color, d.a)
+                paint.color = adjustAlpha(color, d.a * alphaScale)
                 canvas.drawCircle(d.x, d.y, d.size, paint)
             }
         }
@@ -17231,11 +17952,11 @@ $emailText"""
             val w = width.toFloat()
             val color = if (mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFFB8C2D0.toInt()
             for (f in fog) {
-                f.x += f.vx * dt
+                f.x += f.vx * dt * motionScale
                 if (f.x - f.size > w) f.x = -f.size
                 if (f.x + f.size < 0f) f.x = w + f.size
                 paint.shader = RadialGradient(f.x, f.y, f.size.coerceAtLeast(1f),
-                    intArrayOf(adjustAlpha(color, f.a), 0x00000000), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
+                    intArrayOf(adjustAlpha(color, f.a * alphaScale), 0x00000000), floatArrayOf(0f, 1f), Shader.TileMode.CLAMP)
                 canvas.drawCircle(f.x, f.y, f.size, paint)
                 paint.shader = null
             }
@@ -17245,7 +17966,7 @@ $emailText"""
             nextBolt -= dt
             if (nextBolt <= 0f) { flash = 1f; nextBolt = 3.5f + rnd.nextFloat() * 6f }
             if (flash > 0f) {
-                paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.11f * flash)
+                paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.11f * flash * alphaScale)
                 canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
                 flash -= dt * 3.2f
                 if (flash < 0f) flash = 0f
@@ -17305,9 +18026,17 @@ $emailText"""
     }
 
     private fun weatherDripRate(): Float = when (prefs().getInt(WEATHER_CODE_PREF, 0)) {
-        55, 57, 65, 67, 82, 99 -> 7f
-        53, 63, 81, 96 -> 4.5f
-        else -> 2.4f
+        55, 57, 65, 67, 82, 99 -> 9f
+        53, 63, 81, 96 -> 6f
+        else -> 3.6f
+    }
+
+    private fun livePhotoFade(elapsedMs: Long, durationMs: Long): Float {
+        val p = (elapsedMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        if (p < 0.68f) return 1f
+        val tail = ((p - 0.68f) / 0.32f).coerceIn(0f, 1f)
+        val smooth = tail * tail * (3f - 2f * tail)
+        return (1f - smooth).coerceIn(0f, 1f)
     }
 
     private class DripDrop(var x: Float, var edgeY: Float, var y: Float, var grow: Float,
@@ -17324,15 +18053,37 @@ $emailText"""
         private var running = false
         private var lastFrame = 0L
         private var spawnAcc = 0f
+        private var burstStartedAt = 0L
+        private var burstUntilMs = 0L
         private val rnd = java.util.Random()
 
-        fun refresh() {
+        fun refresh(playMoment: Boolean = false) {
             val active = weatherIsRainy() && animatedWeatherEnabled() && homeWidgetStackVisible()
             if (active) {
-                if (!running) { running = true; lastFrame = 0L; postInvalidateOnAnimation() }
+                if (playMoment) playLivePhotoBurst()
             } else {
-                running = false; drips.clear(); invalidate()
+                stop()
             }
+        }
+
+        fun playLivePhotoBurst() {
+            if (!weatherIsRainy() || !animatedWeatherEnabled() || !homeWidgetStackVisible()) {
+                stop()
+                return
+            }
+            burstStartedAt = System.currentTimeMillis()
+            burstUntilMs = burstStartedAt + WEATHER_DRIP_BURST_MS
+            running = true
+            lastFrame = 0L
+            spawnAcc = 0f
+            postInvalidateOnAnimation()
+        }
+
+        private fun stop() {
+            running = false
+            burstUntilMs = 0L
+            drips.clear()
+            invalidate()
         }
 
         override fun onVisibilityAggregated(isVisible: Boolean) {
@@ -17363,40 +18114,46 @@ $emailText"""
             super.onDraw(canvas)
             if (!running) return
             val now = System.currentTimeMillis()
+            val fade = livePhotoFade(now - burstStartedAt, WEATHER_DRIP_BURST_MS)
             val dt = if (lastFrame == 0L) 0.016f else ((now - lastFrame) / 1000f).coerceIn(0f, 0.05f)
             lastFrame = now
             val d = resources.displayMetrics.density
             collectEdges()
-            if (edgeBuf.isNotEmpty()) {
-                spawnAcc += dt * weatherDripRate()
+            if (edgeBuf.isNotEmpty() && now < burstUntilMs && fade > 0.04f) {
+                spawnAcc += dt * weatherDripRate() * fade
                 while (spawnAcc >= 1f) {
                     spawnAcc -= 1f
                     val e = edgeBuf[rnd.nextInt(edgeBuf.size)]
                     val x = e[0] + rnd.nextFloat() * (e[1] - e[0])
-                    drips.add(DripDrop(x, e[2], e[2], 0f, (2.2f + rnd.nextFloat() * 1.8f) * d, 0f, false, 0.5f + rnd.nextFloat() * 0.28f))
+                    drips.add(DripDrop(x, e[2], e[2], 0f, (2.8f + rnd.nextFloat() * 2.4f) * d, 0f, false, 0.68f + rnd.nextFloat() * 0.24f))
                 }
             }
-            val color = 0xFF6FA8CC.toInt()
+            val color = 0xFF34B7F4.toInt()
             val h = height.toFloat()
             paint.style = Paint.Style.FILL
             val iter = drips.iterator()
             while (iter.hasNext()) {
                 val drop = iter.next()
                 if (!drop.released) {
-                    drop.grow += dt
+                    drop.grow += dt * (0.72f + 0.28f * fade)
                     val t = (drop.grow / 0.9f).coerceIn(0f, 1f)
                     val rr = drop.r * (0.45f + 0.55f * t)
-                    drawBeadedDrop(canvas, drop.x, drop.edgeY + rr * 0.8f, rr, drop.a, color, attached = true)
+                    drawBeadedDrop(canvas, drop.x, drop.edgeY + rr * 0.8f, rr, drop.a * (0.35f + 0.65f * fade), color, attached = true)
                     if (drop.grow >= 0.9f) { drop.released = true; drop.y = drop.edgeY + rr; drop.vy = 24f * d }
                 } else {
                     drop.vy += 950f * d * dt
                     drop.y += drop.vy * dt
                     drop.a -= dt * 0.45f
                     if (drop.a <= 0f || drop.y - drop.r > h) { iter.remove(); continue }
-                    drawBeadedDrop(canvas, drop.x, drop.y, drop.r * 0.95f, drop.a, color, attached = false)
+                    drawBeadedDrop(canvas, drop.x, drop.y, drop.r * 0.95f, drop.a * (0.50f + 0.50f * fade), color, attached = false)
                 }
             }
-            postInvalidateOnAnimation()
+            if (now < burstUntilMs || drips.isNotEmpty()) {
+                postInvalidateOnAnimation()
+            } else {
+                running = false
+                invalidate()
+            }
         }
 
         private fun drawBeadedDrop(canvas: Canvas, cx: Float, cy: Float, r: Float, alpha: Float, color: Int, attached: Boolean) {
@@ -17413,8 +18170,8 @@ $emailText"""
                 r * 1.65f,
                 intArrayOf(
                     adjustAlpha(0xFFFFFFFF.toInt(), alpha * 0.74f),
-                    adjustAlpha(color, alpha * 0.72f),
-                    adjustAlpha(0xFF1E4D69.toInt(), alpha * 0.24f)
+                    adjustAlpha(color, alpha * 0.88f),
+                    adjustAlpha(0xFF0A5D88.toInt(), alpha * 0.34f)
                 ),
                 floatArrayOf(0f, 0.45f, 1f),
                 Shader.TileMode.CLAMP
@@ -17428,6 +18185,8 @@ $emailText"""
             paint.style = Paint.Style.FILL
             paint.color = adjustAlpha(0xFFFFFFFF.toInt(), alpha * 0.58f)
             canvas.drawOval(cx - r * 0.35f, cy - r * 0.55f, cx - r * 0.06f, cy - r * 0.16f, paint)
+            paint.color = adjustAlpha(0xFF9CE8FF.toInt(), alpha * 0.18f)
+            canvas.drawCircle(cx, cy, r * 1.45f, paint)
         }
     }
 
@@ -17476,14 +18235,16 @@ $emailText"""
             super.onDraw(canvas)
             val now = System.currentTimeMillis()
             val running = animationEnabled && now < animationUntilMs && isShown
-            val t = if (running) ((now - animationStartedAt) % 2600L) / 2600f else 0.12f
+            val fade = if (running) livePhotoFade(now - animationStartedAt, WEATHER_ANIMATION_BURST_MS) else 0.82f
+            val cycleMs = (2600L + ((1f - fade) * 1600L).toLong()).coerceAtLeast(2600L)
+            val t = if (running) ((now - animationStartedAt) % cycleMs) / cycleMs.toFloat() else 0.12f
             val cx = width / 2f
             val cy = height / 2f
             when (weatherCode) {
                 45, 48 -> drawCloud(canvas, cx, cy, 0xFFB7BBC4.toInt(), t, fog = true)
-                51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82 -> drawCloud(canvas, cx, cy, 0xFF8FD694.toInt(), t, rain = true)
+                51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82 -> drawCloud(canvas, cx, cy, 0xFF8FD694.toInt(), t, rain = true, weatherAlpha = fade)
                 71, 73, 75, 77, 85, 86 -> drawCloud(canvas, cx, cy, 0xFFE8EDF7.toInt(), t, snow = true)
-                95, 96, 99 -> drawCloud(canvas, cx, cy, Accent, t, rain = true)
+                95, 96, 99 -> drawCloud(canvas, cx, cy, Accent, t, rain = true, weatherAlpha = fade)
                 1, 2, 3 -> {
                     if (isWeatherNight()) {
                         drawMoon(canvas, cx - dp(7), cy - dp(5), t)
@@ -17528,7 +18289,7 @@ $emailText"""
             canvas.drawCircle(cx + dp(13), cy - dp(13), dp(1).toFloat(), paint)
         }
 
-        private fun drawCloud(canvas: Canvas, cx: Float, cy: Float, color: Int, t: Float, rain: Boolean = false, snow: Boolean = false, fog: Boolean = false) {
+        private fun drawCloud(canvas: Canvas, cx: Float, cy: Float, color: Int, t: Float, rain: Boolean = false, snow: Boolean = false, fog: Boolean = false, weatherAlpha: Float = 1f) {
             val drift = kotlin.math.sin(t * Math.PI * 2).toFloat() * dp(1)
             paint.color = color
             canvas.drawCircle(cx - dp(9) + drift, cy + dp(1), dp(9).toFloat(), paint)
@@ -17542,7 +18303,7 @@ $emailText"""
                     repeat(3) { i ->
                         val x = cx - dp(10) + i * dp(10) + drift
                         val y = cy + dp(18) + ((t * dp(8)) % dp(8))
-                        drawIconRainDrop(canvas, x, y + dp(4), resources.displayMetrics.density * 2.4f, 0xFF8FD694.toInt())
+                        drawIconRainDrop(canvas, x, y + dp(4), resources.displayMetrics.density * 3.15f, 0xFF34B7F4.toInt(), weatherAlpha)
                     }
                 }
                 snow -> {
@@ -17561,7 +18322,7 @@ $emailText"""
             }
         }
 
-        private fun drawIconRainDrop(canvas: Canvas, cx: Float, cy: Float, r: Float, color: Int) {
+        private fun drawIconRainDrop(canvas: Canvas, cx: Float, cy: Float, r: Float, color: Int, alpha: Float) {
             iconDropPath.reset()
             iconDropPath.moveTo(cx, cy - r * 1.55f)
             iconDropPath.cubicTo(cx + r * 1.05f, cy - r * 0.55f, cx + r * 0.86f, cy + r * 0.72f, cx, cy + r * 1.18f)
@@ -17572,13 +18333,13 @@ $emailText"""
                 cy - r * 1.5f,
                 cx,
                 cy + r * 1.2f,
-                intArrayOf(0x77FFFFFF, adjustAlpha(color, 0.95f), adjustAlpha(0xFF2A6B83.toInt(), 0.55f)),
+                intArrayOf(adjustAlpha(0xFFFFFFFF.toInt(), 0.82f * alpha), adjustAlpha(color, 0.96f * alpha), adjustAlpha(0xFF045D8A.toInt(), 0.68f * alpha)),
                 floatArrayOf(0f, 0.55f, 1f),
                 Shader.TileMode.CLAMP
             )
             canvas.drawPath(iconDropPath, paint)
             paint.shader = null
-            paint.color = 0x99FFFFFF.toInt()
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), 0.70f * alpha)
             canvas.drawOval(cx - r * 0.32f, cy - r * 0.78f, cx - r * 0.05f, cy - r * 0.34f, paint)
             paint.style = Paint.Style.FILL
         }
@@ -17668,8 +18429,9 @@ $emailText"""
         private const val WEATHER_STATS_PREF = "weather_stats"
         private const val WEATHER_CODE_PREF = "weather_code"
         private const val WEATHER_FETCHED_AT_PREF = "weather_fetched_at"
-        private const val WEATHER_ANIMATION_BURST_MS = 4000L
-        private const val WEATHER_AMBIENT_BURST_MS = 2600L
+        private const val WEATHER_ANIMATION_BURST_MS = 6500L
+        private const val WEATHER_AMBIENT_BURST_MS = 6500L
+        private const val WEATHER_DRIP_BURST_MS = 6500L
         private const val WIDGET_HOST_ID = 1407
         private const val WIDGET_BIND_REQUEST_CODE = 501
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502
