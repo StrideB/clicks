@@ -27,8 +27,10 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import com.fran.clicks.predict.Place
+import com.fran.clicks.predict.PlaceInference
 import com.fran.clicks.predict.PlaceKind
 import com.fran.clicks.predict.PlaceStore
+import com.fran.clicks.predict.PlaceSuggestionNotifier
 import com.fran.clicks.predict.Predictor
 import com.fran.clicks.predict.Space
 import com.fran.clicks.predict.SpaceManager
@@ -53,6 +55,7 @@ class SpacesSettingsActivity : Activity() {
         private const val PREFS_NAME = "clicks"
         private const val REQ_BLUETOOTH = 41
         private const val REQ_LOCATION = 42
+        private const val REQ_NOTIFICATIONS = 43
         private val HOUR_LABELS = listOf("NIGHT", "DAWN", "AM", "MIDDAY", "PM", "EVE")
         private val KIND_LABELS = mapOf(
             PlaceKind.HOME to "Home", PlaceKind.WORK to "Work", PlaceKind.GYM to "Gym",
@@ -161,6 +164,41 @@ class SpacesSettingsActivity : Activity() {
             }.start()
         }
 
+        // Suggested places — the same one-tap confirms the notification offers.
+        val suggestions = PlaceInference.pending(this)
+        if (suggestions.isNotEmpty()) {
+            section("SUGGESTED PLACES").also { c ->
+                suggestions.forEachIndexed { i, s ->
+                    if (i > 0) c.addView(divider())
+                    c.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, dp(9), 0, dp(9))
+                        addView(LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            addView(text("Is this ${PlaceInference.defaultName(s.kind).lowercase(Locale.US)}?", 15f, t.ink))
+                            addView(text(s.reason, 12f, t.inkDim).apply {
+                                (layoutParams as LinearLayout.LayoutParams).topMargin = dp(1)
+                            })
+                        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                        addView(smallAction("Yes", enabled = true) {
+                            val place = PlaceInference.accept(this@SpacesSettingsActivity, s.key)
+                            PlaceSuggestionNotifier.cancel(this@SpacesSettingsActivity, s.key)
+                            if (place != null) {
+                                Toast.makeText(this@SpacesSettingsActivity, "${place.name} saved", Toast.LENGTH_SHORT).show()
+                            }
+                            render()
+                        })
+                        addView(smallAction("No", enabled = true) {
+                            PlaceInference.dismiss(this@SpacesSettingsActivity, s.key)
+                            PlaceSuggestionNotifier.cancel(this@SpacesSettingsActivity, s.key)
+                            render()
+                        })
+                    })
+                }
+            }
+        }
+
         // Spaces
         section("SPACES").also { c ->
             val lockedId = SpaceManager.lockedSpaceId(this)
@@ -196,6 +234,19 @@ class SpacesSettingsActivity : Activity() {
                     LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = dp(8) })
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(10)
+            })
+            c.addView(divider().apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(12) })
+            c.addView(switchRow(
+                "Suggest places automatically",
+                "Notify when Clicks spots your home, work or an airport from your movement — decided on-device",
+                prefs().getBoolean(PlaceInference.ENABLED_PREF, true),
+            ) { on ->
+                prefs().edit().putBoolean(PlaceInference.ENABLED_PREF, on).apply()
+                if (on && android.os.Build.VERSION.SDK_INT >= 33 &&
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+                }
             })
         }
 

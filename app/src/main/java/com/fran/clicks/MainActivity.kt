@@ -12896,6 +12896,8 @@ Reply format: ["word1","word2","word3"]"""
     private fun refreshPredictContext(rerender: Boolean = false) {
         mediaUiScope.launch(Dispatchers.Default) {
             val snap = runCatching { currentPredictSnapshot() }.getOrNull() ?: return@launch
+            // Piggyback the throttled place-inference pass (home/work/airport suggestions).
+            runCatching { com.fran.clicks.predict.PlaceInference.maybeRun(this@MainActivity) }
             val changed = predictContext?.contextKey() != snap.contextKey()
             predictContext = snap
             if (rerender || changed) {

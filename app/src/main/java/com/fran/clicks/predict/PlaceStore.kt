@@ -98,10 +98,12 @@ object PlaceStore {
 
     /**
      * Stable cluster id for a fix: manual place id when inside one, else an auto grid
-     * cluster once it has enough visits, else "unknown". Also bumps the visit count.
+     * cluster once it has enough visits, else "unknown". Also bumps the visit count
+     * (with an hour-of-day histogram feeding [PlaceInference]).
      */
     fun clusterFor(context: Context, location: Location?): Pair<String, PlaceKind> {
         if (location == null) return "unknown" to PlaceKind.UNKNOWN
+        PlaceInference.onFix(context, location)
         val manual = placeFor(context, location.latitude, location.longitude)
         if (manual != null) return manual.id to manual.kind
         val cell = gridCell(location.latitude, location.longitude)
@@ -118,16 +120,63 @@ object PlaceStore {
         return "$latIdx,$lngIdx"
     }
 
+    /** Center coordinates of a grid cell key (inverse of [gridCell]). */
+    fun cellCenter(cell: String): Pair<Double, Double>? {
+        val parts = cell.split(",")
+        if (parts.size != 2) return null
+        val latIdx = parts[0].toIntOrNull() ?: return null
+        val lngIdx = parts[1].toIntOrNull() ?: return null
+        val lat = latIdx * 0.003
+        val lngStep = 0.003 / cos(Math.toRadians(lat)).coerceAtLeast(0.2)
+        return lat to lngIdx * lngStep
+    }
+
+    /** One auto cluster's visit stats. [hist] is 48 buckets: hour 0-23 weekday, 24-47 weekend. */
+    data class AutoCluster(val cell: String, val count: Int, val hist: IntArray)
+
+    fun autoClusters(context: Context): List<AutoCluster> {
+        val obj = runCatching { JSONObject(PredictCrypto.prefs(context).getString(AUTO_KEY, "{}") ?: "{}") }
+            .getOrDefault(JSONObject())
+        return obj.keys().asSequence().mapNotNull { cell ->
+            val entry = obj.optJSONObject(cell)
+            if (entry == null) {
+                // Legacy plain-count entry from before histograms existed.
+                AutoCluster(cell, obj.optInt(cell, 0), IntArray(48))
+            } else {
+                val arr = entry.optJSONArray("h")
+                val hist = IntArray(48) { i -> arr?.optInt(i, 0) ?: 0 }
+                AutoCluster(cell, entry.optInt("c", 0), hist)
+            }
+        }.toList()
+    }
+
     private fun bumpAutoVisit(context: Context, cell: String): Int {
         val prefs = PredictCrypto.prefs(context)
         val obj = runCatching { JSONObject(prefs.getString(AUTO_KEY, "{}") ?: "{}") }
             .getOrDefault(JSONObject())
-        val next = obj.optInt(cell, 0) + 1
-        obj.put(cell, next)
+        // Entries are {c: total, h: [48]} — hour 0-23 weekday, 24-47 weekend — so the
+        // inference pass can spot overnight/office dwell patterns. Legacy plain ints migrate.
+        val entry = obj.optJSONObject(cell) ?: JSONObject().apply {
+            put("c", obj.optInt(cell, 0))
+            put("h", JSONArray(IntArray(48).toList()))
+        }
+        val next = entry.optInt("c", 0) + 1
+        entry.put("c", next)
+        val cal = java.util.Calendar.getInstance()
+        val weekend = cal.get(java.util.Calendar.DAY_OF_WEEK).let {
+            it == java.util.Calendar.SATURDAY || it == java.util.Calendar.SUNDAY
+        }
+        val idx = cal.get(java.util.Calendar.HOUR_OF_DAY) + if (weekend) 24 else 0
+        val hist = entry.optJSONArray("h") ?: JSONArray(IntArray(48).toList())
+        hist.put(idx, hist.optInt(idx, 0) + 1)
+        entry.put("h", hist)
+        obj.put(cell, entry)
         // Cap the auto-cluster map so a traveling user can't grow it unbounded.
         if (obj.length() > AUTO_CAP) {
+            fun countOf(key: String): Int =
+                obj.optJSONObject(key)?.optInt("c", 0) ?: obj.optInt(key, 0)
             val names = obj.keys().asSequence().toList()
-            names.sortedBy { obj.optInt(it, 0) }.take(obj.length() - AUTO_CAP).forEach { obj.remove(it) }
+            names.sortedBy { countOf(it) }.take(obj.length() - AUTO_CAP).forEach { obj.remove(it) }
         }
         prefs.edit().putString(AUTO_KEY, obj.toString()).apply()
         return next
