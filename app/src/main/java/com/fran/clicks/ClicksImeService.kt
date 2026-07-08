@@ -375,12 +375,12 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
                 if (label == "enter") {
                     addView(keyView(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
-                        marginStart = dp(4)
+                        marginStart = dp(2)
                     })
                 } else if (label == "123") {
                     addView(keyView(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
-                        marginEnd = dp(4)
+                        marginEnd = dp(2)
                     })
                 } else {
                     addView(keyView(label), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, keyWeight(label)))
@@ -419,7 +419,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
             } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
             if (isLetter && this is com.fran.clicks.keyboard.DynamicFlickKeyView) {
-                setKeyFaceInsets(dp(1), keyVerticalInset())
+                setKeyFaceInsets(0, keyVerticalInset())
                 if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                     setLabelPlacement(
                         labelBias = 0.28f,
@@ -2673,7 +2673,7 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
 
     private fun keyRowOverlap(): Int {
         val size = KeyboardSettings.keyboardSize(this)
-        return dp(8 + size * 3 / 100)
+        return dp(10 + size * 3 / 100)
     }
 
     private fun keyVerticalInset(): Int {

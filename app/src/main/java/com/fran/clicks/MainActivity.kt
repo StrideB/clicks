@@ -3056,14 +3056,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             MotionEvent.ACTION_UP -> {
                 if (!stripSwipeTriggered) {
                     haptic(searchHintView)
-                    if (openPane != null) {
-                        keyboardSettingsOpen = false
-                        refreshKeyboardDock()
-                        stripSwipeTriggered = false
-                        return true
-                    }
-                    keyboardSettingsOpen = !keyboardSettingsOpen
-                    refreshKeyboardDock()
                 }
                 stripSwipeTriggered = false
                 return true
@@ -8701,12 +8693,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (label == "enter") {
                     addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
-                        marginStart = dp(4)
+                        marginStart = dp(2)
                     })
                 } else if (label == "123") {
                     addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
-                        marginEnd = dp(4)
+                        marginEnd = dp(2)
                     })
                 } else {
                     // Touch target fills the full cell — no horizontal margins — so there are no
@@ -12453,7 +12445,7 @@ Reply format: ["word1","word2","word3"]"""
             numberPadOpen && typedText.isBlank() -> "TYPE NUMBER  ·  CONTACTS APPEAR ABOVE  ·  GO = DIAL"
             pane?.kind == PaneKind.CHAT && typedText.isBlank() -> "→ ${pane.name.uppercase(Locale.US)}"
             pane?.kind == PaneKind.AI && typedText.isBlank() -> "ASK GEMINI  ·  TAP ASKED OR START TYPING"
-            else -> "SEARCH  ·  CLICKS FOR SETTINGS"
+            else -> "SEARCH"
         }
         if (typedText.isNotBlank() && !keyboardSettingsOpen) {
             searchHintView.textSize = 15f
@@ -16379,12 +16371,11 @@ $emailText"""
     }
 
     private fun keyRowOverlap(): Int {
-        return dp(8 + keyboardSize * 3 / 100)
+        return dp(10 + keyboardSize * 3 / 100)
     }
 
     private fun keyHorizontalInset(): Int {
-        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return dp(1)
-        return dp(1)
+        return 0
     }
 
     private fun goKeySize() = dp(43 + (keyboardSize * 8 / 100))

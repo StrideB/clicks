@@ -132,8 +132,8 @@ class DockedKeyboardService : Service() {
             setPadding(inset, 0, inset, 0)
             labels.forEach { label ->
                 addView(keyView(label), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, keyWeight(label)).apply {
-                    leftMargin = dp(3)
-                    rightMargin = dp(3)
+                    leftMargin = dp(1)
+                    rightMargin = dp(1)
                 })
             }
         }
@@ -367,7 +367,7 @@ class DockedKeyboardService : Service() {
 
     private fun keyRowOverlap(): Int {
         val size = KeyboardSettings.keyboardSize(this)
-        return dp(8 + size * 3 / 100)
+        return dp(10 + size * 3 / 100)
     }
 
     private fun keyVerticalInset(): Int {
