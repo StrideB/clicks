@@ -109,6 +109,7 @@ fun TodayPage(
     brief: Brief,
     hasListenerPermission: Boolean,
     keyboardMode: TodayKeyboardMode = TodayKeyboardMode.DOCKED,
+    transparentShell: Boolean = false,
     onAction: (BriefItem, BriefAction, String?) -> Unit,
     onDismiss: (BriefItem) -> Unit,
     onGrantPermission: () -> Unit,
@@ -123,7 +124,7 @@ fun TodayPage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(tokens.baseCompose)
+            .then(if (transparentShell) Modifier else Modifier.background(tokens.baseCompose))
             .padding(horizontal = 14.dp)
     ) {
         Spacer(Modifier.height(12.dp))

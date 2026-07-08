@@ -31,10 +31,12 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.RenderEffect
 import android.graphics.RadialGradient
+import android.graphics.Matrix
 import android.graphics.Shader
 import android.graphics.Typeface
 import android.app.AlertDialog
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
@@ -119,6 +121,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.fran.clicks.brief.Brief
 import com.fran.clicks.brief.BriefAction
+import com.fran.clicks.brief.BriefCategory
 import com.fran.clicks.brief.BriefClassifier
 import com.fran.clicks.brief.BriefCollector
 import com.fran.clicks.brief.BriefGenerator
@@ -297,9 +300,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var contextDockRefreshRunnable: Runnable? = null
     private var foldPosture: FoldPosture = FoldPosture.Cover
     private var foldPreviousSpaceLock: String? = null
+    private var foldPreviousKeyboardPlacement: String? = null
     private var foldAutoLockActive = false
     private var foldBannerSpace: Space? = null
     private var unfoldedLibraryContentArea: FrameLayout? = null
+    private var unfoldedFocusContentArea: FrameLayout? = null
+    private var unfoldedFocusDockView: View? = null
+    private var innerKeyboardPreviewBoost: Int? = null
+    private var innerKeyboardEditMode = false
     private var composeText = ""
     private var aiDraftText = ""
     private var aiDraftActive = false
@@ -429,6 +437,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var weatherPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var photosPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var photoTrashLauncher: ActivityResultLauncher<IntentSenderRequest>
+    private lateinit var innerWallpaperPickerLauncher: ActivityResultLauncher<Intent>
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
@@ -447,6 +456,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var weatherAmbientView: WeatherAmbientView? = null
     private var weatherDripView: WeatherDripView? = null
     private var homeWallpaperDrawable: Drawable? = null
+    private var innerWallpaperImageView: ImageView? = null
+    private var innerWallpaperEditMode = false
+    private var wallpaperLongPressRunnable: Runnable? = null
     private lateinit var weatherTempView: TextView
     private lateinit var weatherMetaView: TextView
     private lateinit var weatherFeelsView: TextView
@@ -524,6 +536,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (openPane?.kind == PaneKind.PHOTOS) showPane(photosTarget(), animate = false)
                 refreshKeyboardDock()
             }
+        }
+        innerWallpaperPickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val uri = result.data?.data ?: return@registerForActivityResult
+            val flags = result.data?.flags ?: 0
+            val readFlag = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+            runCatching { contentResolver.takePersistableUriPermission(uri, readFlag) }
+            prefs().edit().putString(HOME_INNER_WALLPAPER_URI_PREF, uri.toString()).apply()
+            homeWallpaperDrawable = null
+            Toast.makeText(this, "Inner wallpaper applied.", Toast.LENGTH_SHORT).show()
+            if (::rootView.isInitialized && isUnfoldedInnerLayoutActive()) render()
         }
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
@@ -712,8 +734,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         super.onResume()
         syncDockParallax()
         stopService(Intent(this, DockedKeyboardService::class.java))
+        forceFoldableWidgetPlacement()
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
+        if (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive()) {
+            homeWallpaperDrawable = loadHomeWallpaperDrawable()
+            if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
+        }
         ensureBillingConnected()
         val now = System.currentTimeMillis()
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
@@ -1019,6 +1046,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (innerWallpaperEditMode) return super.dispatchTouchEvent(event)
         if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
         // While a glide/swipe-type gesture is in progress the keyboard owns the touch — suppress
         // launcher gestures (library, widget board, home swipes) so they don't fire mid-swipe.
@@ -1131,30 +1159,48 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyBounds.clear()
         applyTheme()
         syncSystemBars()
+        val unfolded = isUnfoldedInnerLayoutActive()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(activeNeuTokens.base)
+            clipChildren = false
+            clipToPadding = false
+            setBackgroundColor(if (unfolded) Color.TRANSPARENT else activeNeuTokens.base)
             setPadding(0, systemStatusBarHeight(), 0, keyboardBottomLift())
         }
         rootView = root
         contentFrame = FrameLayout(this).apply {
-            addView(if (isUnfoldedInnerLayoutActive()) unfoldedHome() else home(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            addView(if (unfolded) unfoldedHome() else home(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             post { applyLibraryEdgeGestureExclusion() }
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val unfolded = isUnfoldedInnerLayoutActive()
         val hideDockForPane = !unfolded && openPane?.kind == PaneKind.SETTINGS
         val showRootDock = unfolded || keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
         if (showRootDock && !hideDockForPane) {
             keyboardDockView = FrameLayout(this).apply {
-                addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                clipChildren = false
+                clipToPadding = false
+                addView(rootDockInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
             root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, activeRootDockHeight())
         } else {
             keyboardDockView = FrameLayout(this)
         }
-        setContentView(root)
+        if (unfolded) {
+            val shell = FrameLayout(this).apply {
+                setBackgroundColor(activeNeuTokens.base)
+                homeWallpaperLayer()?.let {
+                    addView(it, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                }
+                addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                if (innerWallpaperEditMode) {
+                    addView(innerWallpaperEditOverlay(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                }
+            }
+            setContentView(shell)
+        } else {
+            setContentView(root)
+        }
         updateClock()
         renderHub()
         renderFavoritesDock()
@@ -1182,6 +1228,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             isClickable = true
             setOnTouchListener { _, event -> handleTypingStripGesture(event) }
             searchHintView = TextView(context).apply {
+                text = launcherTypingStripText()
                 textSize = 15f
                 typeface = Typeface.create("sans-serif", Typeface.NORMAL)
                 setTextColor(activeNeuTokens.ink)
@@ -1194,6 +1241,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setOnTouchListener { _, event -> handleTypingStripGesture(event) }
             }
             addView(searchHintView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        }
+    }
+
+    private fun launcherTypingStripText(): CharSequence {
+        val pane = openPane
+        val typedText = when {
+            pane?.kind == PaneKind.CHAT -> composeText
+            pane?.kind == PaneKind.AI -> aiDraftText
+            else -> query
+        }
+        if (typedText.isNotBlank()) return styledTypedCommand(typedText)
+        return when {
+            libraryOpen -> "APP LIBRARY"
+            keyboardSettingsOpen -> "KEYBOARD SETTINGS"
+            numberPadOpen -> "TYPE NUMBER"
+            pane?.kind == PaneKind.CHAT -> "→ ${pane.name.uppercase(Locale.US)}"
+            pane?.kind == PaneKind.AI -> "ASK GEMINI"
+            else -> "SEARCH"
         }
     }
 
@@ -1245,7 +1310,58 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun typingStripBackground(): Drawable {
-        return Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
+        return teclasGlassDrawable(11)
+    }
+
+    private fun teclasGlassDrawable(radiusDp: Int): Drawable {
+        val radius = dp(radiusDp).toFloat()
+        val light = activeNeuTokens.mode == NeuMode.LIGHT
+        val ambientShadow = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(if (light) 0x18000000 else 0x52000000)
+        }
+        val glassWash = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            if (light) {
+                intArrayOf(
+                    adjustAlpha(Color.WHITE, 0.70f),
+                    adjustAlpha(0xFFF0F4F8.toInt(), 0.56f),
+                    adjustAlpha(0xFFE1E7EF.toInt(), 0.46f)
+                )
+            } else {
+                intArrayOf(
+                    adjustAlpha(0xFF20232A.toInt(), 0.72f),
+                    adjustAlpha(0xFF181B21.toInt(), 0.54f),
+                    adjustAlpha(0xFF14161B.toInt(), 0.62f)
+                )
+            }
+        ).apply { cornerRadius = radius }
+        val topSheen = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                adjustAlpha(Color.WHITE, if (light) 0.42f else 0.25f),
+                adjustAlpha(Color.WHITE, if (light) 0.10f else 0.05f),
+                Color.TRANSPARENT
+            )
+        ).apply { cornerRadius = radius }
+        val rim = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(Color.TRANSPARENT)
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.48f else 0.30f))
+        }
+        val underside = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(
+                Color.TRANSPARENT,
+                adjustAlpha(Color.BLACK, if (light) 0.08f else 0.24f)
+            )
+        ).apply { cornerRadius = radius }
+        return LayerDrawable(arrayOf(ambientShadow, glassWash, topSheen, underside, rim)).apply {
+            setLayerInset(0, 0, dp(2), 0, 0)
+            setLayerInset(1, 0, 0, 0, dp(1))
+            setLayerInset(2, dp(1), dp(1), dp(1), dp(radiusDp / 2))
+            setLayerInset(3, dp(1), dp(radiusDp / 2), dp(1), dp(1))
+        }
     }
 
     private fun zeissRecessedBackground(): Drawable {
@@ -1508,8 +1624,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun useLockscreenWallpaperOnHome(): Boolean =
         prefs().getBoolean(HOME_LOCK_WALLPAPER_PREF, false)
 
+    private fun innerHomeWallpaperUri(): Uri? =
+        prefs().getString(HOME_INNER_WALLPAPER_URI_PREF, null)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+
+    private fun innerWallpaperZoom(): Float =
+        prefs().getInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100).coerceIn(100, 260) / 100f
+
+    private fun innerWallpaperOffsetX(): Float =
+        prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_X_PREF, 0).coerceIn(-100, 100) / 100f
+
+    private fun innerWallpaperOffsetY(): Float =
+        prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_Y_PREF, 0).coerceIn(-100, 100) / 100f
+
+    private fun innerWallpaperModeActive(): Boolean =
+        isUnfoldedInnerLayoutActive() && openPane == null && innerHomeWallpaperUri() != null
+
+    private fun normalizeInnerWallpaperTransform() {
+        val zoom = prefs().getInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100)
+        if (zoom < 100) {
+            prefs().edit().putInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100).apply()
+        }
+    }
+
     private fun glassEffectsEnabled(): Boolean =
         prefs().getBoolean(GLASS_EFFECTS_PREF, true)
+
+    private fun appLibraryGlassEnabled(): Boolean =
+        glassEffectsEnabled() || isUnfoldedInnerLayoutActive() || innerWallpaperModeActive()
+
+    private fun focusSurfaceGlassEnabled(): Boolean =
+        glassEffectsEnabled() || isUnfoldedInnerLayoutActive() || innerWallpaperModeActive()
 
     private fun gridWorkspaceLabEnabled(): Boolean =
         prefs().getBoolean(GRID_WORKSPACE_LAB_PREF, false)
@@ -1536,14 +1682,51 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun isUnfoldedInnerLayoutActive(): Boolean =
         foldPosture is FoldPosture.Inner && resources.configuration.screenWidthDp >= 600
 
+    private fun innerKeyboardWidthPercent(): Int =
+        prefs().getInt(INNER_KEYBOARD_WIDTH_PREF, 68).coerceIn(48, 100)
+
+    private fun unfoldedKeyboardPanelWidth(): Int {
+        val maxWidth = resources.displayMetrics.widthPixels
+        return (maxWidth * innerKeyboardWidthPercent() / 100f).toInt().coerceIn(dp(720), maxWidth - dp(36))
+    }
+
+    private fun unfoldedKeyboardPanelSnapLimit(panelWidth: Int = unfoldedKeyboardPanelWidth()): Int =
+        ((resources.displayMetrics.widthPixels - panelWidth) / 2).coerceAtLeast(0)
+
+    private fun unfoldedKeyboardPanelOffsetX(panelWidth: Int = unfoldedKeyboardPanelWidth()): Int =
+        innerKeyboardOffsetX().coerceIn(-unfoldedKeyboardPanelSnapLimit(panelWidth), unfoldedKeyboardPanelSnapLimit(panelWidth))
+
+    private fun forceFoldableWidgetPlacement() {
+        if (!isUnfoldedInnerLayoutActive() || keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) return
+        foldPreviousKeyboardPlacement = foldPreviousKeyboardPlacement ?: keyboardPlacement
+        keyboardPlacement = KEYBOARD_PLACEMENT_WIDGET
+        VivoDockedExperiment.clearViewportTruncation(this)
+        stopService(Intent(this, DockedKeyboardService::class.java))
+    }
+
+    private fun innerKeyboardSizeBoost(): Int =
+        (innerKeyboardPreviewBoost ?: prefs().getInt(INNER_KEYBOARD_SIZE_BOOST_PREF, 52)).coerceIn(-20, 150)
+
+    private fun innerKeyboardOffsetX(): Int =
+        prefs().getInt(INNER_KEYBOARD_OFFSET_X_PREF, 0)
+
+    private fun innerKeyboardOffsetY(): Int =
+        prefs().getInt(INNER_KEYBOARD_OFFSET_Y_PREF, 0)
+
+    private fun effectiveKeyboardSize(): Int =
+        (keyboardSize + if (isUnfoldedInnerLayoutActive()) innerKeyboardSizeBoost() + 12 else 0)
+            .coerceIn(0, if (isUnfoldedInnerLayoutActive()) 190 else 100)
+
     private fun handleFoldPosture(posture: FoldPosture) {
         val wasInner = isUnfoldedInnerLayoutActive()
         foldPosture = posture
         val isInner = isUnfoldedInnerLayoutActive()
         if (!wasInner && isInner) {
+            forceFoldableWidgetPlacement()
             applyUnfoldedContextSwitch()
         } else if (wasInner && !isInner) {
             restoreFoldedContextIfNeeded()
+            restoreFoldedKeyboardPlacementIfNeeded()
         }
         if (wasInner != isInner && ::rootView.isInitialized) {
             libraryOpen = if (isInner) false else appLibraryDefaultHome()
@@ -1551,7 +1734,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             keyboardSettingsOpen = false
             render()
         } else if (isInner) {
+            forceFoldableWidgetPlacement()
             refreshUnfoldedLibraryContent()
+            refreshUnfoldedFocusContent()
             renderFavoritesDock()
         }
     }
@@ -1563,7 +1748,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             ?: return
         foldPreviousSpaceLock = SpaceManager.lockedSpaceId(this)
         foldAutoLockActive = true
-        foldBannerSpace = target
+        foldBannerSpace = null
         SpaceManager.lock(this, target.id)
         invalidateLibraryCaches()
         refreshPredictContext(rerender = true)
@@ -1579,45 +1764,395 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshPredictContext(rerender = true)
     }
 
+    private fun restoreFoldedKeyboardPlacementIfNeeded() {
+        val previous = foldPreviousKeyboardPlacement ?: return
+        foldPreviousKeyboardPlacement = null
+        keyboardPlacement = previous
+        if (previous == KEYBOARD_PLACEMENT_DOCKED) syncVivoDockedExperiment()
+    }
+
     private fun loadHomeWallpaperDrawable(): Drawable? {
-        if (!useLockscreenWallpaperOnHome()) return null
-        val manager = WallpaperManager.getInstance(this)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            runCatching {
-                val descriptor = manager.getWallpaperFile(WallpaperManager.FLAG_LOCK)
-                    ?: manager.getWallpaperFile(WallpaperManager.FLAG_SYSTEM)
-                descriptor?.use {
-                    BitmapFactory.decodeFileDescriptor(it.fileDescriptor)?.let { bitmap ->
-                        return BitmapDrawable(resources, bitmap)
+        if (isUnfoldedInnerLayoutActive()) {
+            normalizeInnerWallpaperTransform()
+            val innerDrawable = innerHomeWallpaperUri()?.let { uri ->
+                runCatching {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        BitmapFactory.decodeStream(input)?.let { bitmap -> BitmapDrawable(resources, bitmap) }
                     }
-                }
+                }.onFailure {
+                    android.util.Log.w("ClicksWallpaper", "Inner wallpaper load failed", it)
+                }.getOrNull()
             }
+            if (innerDrawable != null) return innerDrawable
         }
-        return runCatching { manager.drawable }.getOrNull()
+        if (!isUnfoldedInnerLayoutActive() && !useLockscreenWallpaperOnHome()) return null
+        val manager = WallpaperManager.getInstance(this)
+        fun fileDrawable(which: Int): Drawable? {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null
+            return runCatching {
+                manager.getWallpaperFile(which)?.use { descriptor ->
+                    BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor)
+                        ?.let { bitmap -> BitmapDrawable(resources, bitmap) }
+                }
+            }.onFailure {
+                android.util.Log.w("ClicksWallpaper", "Device wallpaper file load failed for $which", it)
+            }.getOrNull()
+        }
+        val drawable = fileDrawable(WallpaperManager.FLAG_LOCK)
+            ?: fileDrawable(WallpaperManager.FLAG_SYSTEM)
+            ?: runCatching { manager.peekDrawable() }.getOrNull()
+            ?: runCatching { manager.drawable }.getOrNull()
+            ?: runCatching { manager.fastDrawable }.getOrNull()
+        android.util.Log.i(
+            "ClicksWallpaper",
+            "device wallpaper loaded=${drawable != null} type=${drawable?.javaClass?.simpleName}"
+        )
+        return drawable?.constantState?.newDrawable(resources)?.mutate() ?: drawable
     }
 
     private fun homeWallpaperLayer(): View? {
-        val wallpaper = homeWallpaperDrawable ?: loadHomeWallpaperDrawable()?.also { homeWallpaperDrawable = it } ?: return null
+        val wallpaper = homeWallpaperDrawable ?: loadHomeWallpaperDrawable()?.also { homeWallpaperDrawable = it }
+        if (wallpaper == null && !isUnfoldedInnerLayoutActive()) return null
         return FrameLayout(this).apply {
-            addView(ImageView(context).apply {
-                setImageDrawable(wallpaper.constantState?.newDrawable()?.mutate() ?: wallpaper)
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                alpha = if (activeNeuTokens.mode == NeuMode.LIGHT) 0.66f else 0.54f
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    setRenderEffect(RenderEffect.createBlurEffect(dp(5).toFloat(), dp(5).toFloat(), Shader.TileMode.CLAMP))
+            if (wallpaper != null) {
+                if (isUnfoldedInnerLayoutActive()) {
+                    addView(ImageView(context).apply {
+                        setImageDrawable(wallpaper.constantState?.newDrawable(resources)?.mutate() ?: wallpaper)
+                        scaleType = ImageView.ScaleType.MATRIX
+                        alpha = 1f
+                        innerWallpaperImageView = this
+                        post { applyInnerWallpaperMatrix(this) }
+                    }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                } else {
+                    addView(ImageView(context).apply {
+                        setImageDrawable(wallpaper.constantState?.newDrawable(resources)?.mutate() ?: wallpaper)
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        alpha = if (activeNeuTokens.mode == NeuMode.LIGHT) 0.78f else 0.74f
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            setRenderEffect(RenderEffect.createBlurEffect(dp(4).toFloat(), dp(4).toFloat(), Shader.TileMode.CLAMP))
+                        }
+                    }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                 }
-            }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            } else {
+                addView(View(context).apply {
+                    background = GradientDrawable(
+                        GradientDrawable.Orientation.TL_BR,
+                        if (activeNeuTokens.mode == NeuMode.LIGHT) {
+                            intArrayOf(0xFFF1F5F7.toInt(), 0xFFE7F0F3.toInt(), 0xFFF4EFE8.toInt())
+                        } else {
+                            intArrayOf(0xFF111923.toInt(), 0xFF071015.toInt(), 0xFF121016.toInt())
+                        }
+                    )
+                }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            }
             addView(View(context).apply {
                 background = GradientDrawable(
                     GradientDrawable.Orientation.TOP_BOTTOM,
                     if (activeNeuTokens.mode == NeuMode.LIGHT) {
-                        intArrayOf(0x66F4F5F1, 0x99EEF0EA.toInt(), 0xB8DADDD8.toInt())
+                        if (isUnfoldedInnerLayoutActive()) {
+                            intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)
+                        } else {
+                            intArrayOf(0x38F4F5F1, 0x55EEF0EA, 0x78DADDD8)
+                        }
                     } else {
-                        intArrayOf(0xAA06080B.toInt(), 0x9912161C.toInt(), 0xCC050609.toInt())
+                        if (isUnfoldedInnerLayoutActive()) {
+                            intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)
+                        } else {
+                            intArrayOf(0x5206080B, 0x4412161C, 0x73050609)
+                        }
                     }
                 )
             }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
+    }
+
+    private fun applyInnerWallpaperMatrix(image: ImageView) {
+        val drawable = image.drawable ?: return
+        val viewW = image.width.toFloat()
+        val viewH = image.height.toFloat()
+        val drawW = drawable.intrinsicWidth.takeIf { it > 0 }?.toFloat() ?: return
+        val drawH = drawable.intrinsicHeight.takeIf { it > 0 }?.toFloat() ?: return
+        if (viewW <= 0f || viewH <= 0f) return
+        val fillScale = maxOf(viewW / drawW, viewH / drawH)
+        val baseScale = fillScale * innerWallpaperZoom()
+        val scaledW = drawW * baseScale
+        val scaledH = drawH * baseScale
+        val maxX = ((scaledW - viewW) / 2f).coerceAtLeast(0f)
+        val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
+        image.imageMatrix = Matrix().apply {
+            postScale(baseScale, baseScale)
+            postTranslate(
+                (viewW - scaledW) / 2f + maxX * innerWallpaperOffsetX(),
+                (viewH - scaledH) / 2f + maxY * innerWallpaperOffsetY()
+            )
+        }
+    }
+
+    private fun innerWallpaperPanBounds(image: ImageView, zoom: Float = innerWallpaperZoom()): Pair<Float, Float> {
+        val drawable = image.drawable ?: return 0f to 0f
+        val viewW = image.width.toFloat()
+        val viewH = image.height.toFloat()
+        val drawW = drawable.intrinsicWidth.takeIf { it > 0 }?.toFloat() ?: return 0f to 0f
+        val drawH = drawable.intrinsicHeight.takeIf { it > 0 }?.toFloat() ?: return 0f to 0f
+        if (viewW <= 0f || viewH <= 0f) return 0f to 0f
+        val fillScale = maxOf(viewW / drawW, viewH / drawH)
+        val baseScale = fillScale * zoom
+        return (((drawW * baseScale) - viewW) / 2f).coerceAtLeast(1f) to
+            (((drawH * baseScale) - viewH) / 2f).coerceAtLeast(1f)
+    }
+
+    private fun setInnerWallpaperTransform(zoomPercent: Int, offsetXPercent: Int, offsetYPercent: Int) {
+        prefs().edit()
+            .putInt(HOME_INNER_WALLPAPER_ZOOM_PREF, zoomPercent.coerceIn(100, 260))
+            .putInt(HOME_INNER_WALLPAPER_OFFSET_X_PREF, offsetXPercent.coerceIn(-100, 100))
+            .putInt(HOME_INNER_WALLPAPER_OFFSET_Y_PREF, offsetYPercent.coerceIn(-100, 100))
+            .apply()
+        innerWallpaperImageView?.let { applyInnerWallpaperMatrix(it) }
+    }
+
+    private fun cancelWallpaperLongPress() {
+        wallpaperLongPressRunnable?.let { handler.removeCallbacks(it) }
+        wallpaperLongPressRunnable = null
+    }
+
+    private fun installWallpaperEditLongPress(surface: View) {
+        val touchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        var downX = 0f
+        var downY = 0f
+        surface.isLongClickable = false
+        surface.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    cancelWallpaperLongPress()
+                    downX = event.rawX
+                    downY = event.rawY
+                    val runnable = Runnable {
+                        wallpaperLongPressRunnable = null
+                        if (!todayOpen && !libraryOpen && !libraryDragActive && widgetBoardView == null && openPane == null) {
+                            haptic(view)
+                            openDeviceWallpaperPicker(view)
+                        }
+                    }
+                    wallpaperLongPressRunnable = runnable
+                    handler.postDelayed(runnable, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (abs(event.rawX - downX) > touchSlop || abs(event.rawY - downY) > touchSlop) {
+                        cancelWallpaperLongPress()
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> cancelWallpaperLongPress()
+            }
+            false
+        }
+    }
+
+    private fun innerWallpaperEditOverlay(): View = FrameLayout(this).apply {
+        isClickable = true
+        isFocusable = true
+        setBackgroundColor(Color.TRANSPARENT)
+
+        var startX = 0f
+        var startY = 0f
+        var startOffsetX = prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_X_PREF, 0)
+        var startOffsetY = prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_Y_PREF, 0)
+        var startZoom = prefs().getInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100)
+        var startDistance = 0f
+
+        setOnTouchListener { _, event ->
+            val image = innerWallpaperImageView ?: return@setOnTouchListener true
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.x
+                    startY = event.y
+                    startOffsetX = prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_X_PREF, 0)
+                    startOffsetY = prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_Y_PREF, 0)
+                    startZoom = prefs().getInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100)
+                    true
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (event.pointerCount >= 2) {
+                        startDistance = distance(event)
+                        startZoom = prefs().getInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (event.pointerCount >= 2 && startDistance > 0f) {
+                        val ratio = (distance(event) / startDistance).takeIf { it.isFinite() } ?: 1f
+                        val nextZoom = (startZoom * ratio).toInt().coerceIn(100, 260)
+                        setInnerWallpaperTransform(
+                            nextZoom,
+                            prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_X_PREF, 0),
+                            prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_Y_PREF, 0)
+                        )
+                    } else {
+                        val (maxX, maxY) = innerWallpaperPanBounds(image)
+                        val nextX = (startOffsetX + ((event.x - startX) / maxX * 100f)).toInt().coerceIn(-100, 100)
+                        val nextY = (startOffsetY + ((event.y - startY) / maxY * 100f)).toInt().coerceIn(-100, 100)
+                        setInnerWallpaperTransform(
+                            prefs().getInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100),
+                            nextX,
+                            nextY
+                        )
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    haptic(this)
+                    true
+                }
+                else -> true
+            }
+        }
+
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), 0, dp(8), 0)
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
+            addView(mono("DRAG TO MOVE · PINCH TO SIZE", 9f, activeNeuTokens.inkDim).apply {
+                letterSpacing = 0.12f
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            fun chip(label: String, run: () -> Unit) = TextView(context).apply {
+                text = label
+                gravity = Gravity.CENTER
+                textSize = 9f
+                letterSpacing = 0.10f
+                includeFontPadding = false
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(activeNeuTokens.ink)
+                background = Neu.drawable(activeNeuTokens, dp(13).toFloat(), NeuLevel.PRESSED_SM)
+                setOnClickListener {
+                    haptic(this)
+                    run()
+                }
+            }
+            addView(chip("CHANGE") {
+                innerWallpaperEditMode = false
+                openInnerWallpaperPicker()
+            }, LinearLayout.LayoutParams(dp(78), dp(30)).apply { marginStart = dp(8) })
+            addView(chip("DONE") {
+                innerWallpaperEditMode = false
+                render()
+            }, LinearLayout.LayoutParams(dp(66), dp(30)).apply { marginStart = dp(8) })
+        }, FrameLayout.LayoutParams(dp(430), dp(46), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+            topMargin = systemStatusBarHeight() + dp(18)
+        })
+    }
+
+    private fun distance(event: MotionEvent): Float {
+        if (event.pointerCount < 2) return 0f
+        val dx = event.getX(0) - event.getX(1)
+        val dy = event.getY(0) - event.getY(1)
+        return kotlin.math.sqrt(dx * dx + dy * dy)
+    }
+
+    private fun openDeviceWallpaperPicker(anchor: View) {
+        haptic(anchor)
+        if (isUnfoldedInnerLayoutActive()) {
+            innerWallpaperEditMode = true
+            homeWallpaperDrawable = loadHomeWallpaperDrawable()
+            if (homeWallpaperDrawable == null) openInnerWallpaperPicker() else render()
+            return
+        }
+        prefs().edit().putBoolean(HOME_LOCK_WALLPAPER_PREF, true).apply()
+        homeWallpaperDrawable = null
+        val intent = Intent(Intent.ACTION_SET_WALLPAPER)
+        runCatching { startActivity(intent) }
+            .onFailure {
+                Toast.makeText(this, "Wallpaper picker isn't available here.", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun openInnerWallpaperPicker() {
+        homeWallpaperDrawable = null
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        runCatching { innerWallpaperPickerLauncher.launch(intent) }
+            .onFailure {
+                Toast.makeText(this, "Image picker isn't available here.", Toast.LENGTH_SHORT).show()
+            }
+    }
+
+    private fun showInnerWallpaperOptions(anchor: View) {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED)
+            addView(mono("INNER WALLPAPER", 9f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.18f
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
+        }
+        fun addSlider(label: String, pref: String, value: Int, min: Int, max: Int) {
+            panel.addView(TextView(this).apply {
+                text = label
+                textSize = 11f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(activeNeuTokens.inkDim)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22).apply { })
+            panel.addView(SeekBar(this).apply {
+                this.max = max - min
+                progress = value.coerceIn(min, max) - min
+                progressDrawable?.alpha = 180
+                thumb?.alpha = 220
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        prefs().edit().putInt(pref, min + progress).apply()
+                        homeWallpaperDrawable = null
+                        if (this@MainActivity::rootView.isInitialized) render()
+                    }
+                    override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) { seekBar?.let { haptic(it) } }
+                })
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
+        }
+        addSlider("Zoom", HOME_INNER_WALLPAPER_ZOOM_PREF, prefs().getInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100), 70, 220)
+        addSlider("Move left / right", HOME_INNER_WALLPAPER_OFFSET_X_PREF, prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_X_PREF, 0), -100, 100)
+        addSlider("Move up / down", HOME_INNER_WALLPAPER_OFFSET_Y_PREF, prefs().getInt(HOME_INNER_WALLPAPER_OFFSET_Y_PREF, 0), -100, 100)
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        lateinit var popup: PopupWindow
+        fun action(label: String, run: () -> Unit): TextView = TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER
+            textSize = 10f
+            letterSpacing = 0.08f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(activeNeuTokens.ink)
+            includeFontPadding = false
+            background = Neu.drawable(activeNeuTokens, dp(14).toFloat(), NeuLevel.PRESSED_SM)
+            setOnClickListener {
+                haptic(this)
+                popup.dismiss()
+                run()
+            }
+        }
+        actions.addView(action("CHANGE") { openInnerWallpaperPicker() }, LinearLayout.LayoutParams(0, dp(34), 1f).apply { rightMargin = dp(8) })
+        actions.addView(action("RESET") {
+            prefs().edit()
+                .putInt(HOME_INNER_WALLPAPER_ZOOM_PREF, 100)
+                .putInt(HOME_INNER_WALLPAPER_OFFSET_X_PREF, 0)
+                .putInt(HOME_INNER_WALLPAPER_OFFSET_Y_PREF, 0)
+                .apply()
+            homeWallpaperDrawable = null
+            render()
+        }, LinearLayout.LayoutParams(0, dp(34), 1f))
+        panel.addView(actions, LinearLayout.LayoutParams.MATCH_PARENT, dp(42).apply { })
+        popup = PopupWindow(panel, dp(330), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            elevation = dp(14).toFloat()
+        }
+        popup.showAtLocation(anchor, Gravity.CENTER, 0, 0)
     }
 
     private fun home(): View {
@@ -1688,6 +2223,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     alpha = 0f
                     rotationX = 90f
                 }
+                favoritesDockFrameView.addView(DynamicGlassPlate(context, radiusDp = 19, strength = 1.72f, edgeInsetDp = 0).apply {
+                    setGlassProgress(1f)
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 favoritesDockFrameView.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 favoritesDockFrameView.addView(favoritesDockContextView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 favoritesDockFrameView.addView(View(context).apply {
@@ -1717,9 +2255,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            homeWallpaperLayer()?.let {
-                addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }
+            installWallpaperEditLongPress(this)
             weatherAmbientView = null
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView = WeatherDripView(context)
@@ -1729,44 +2265,636 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun unfoldedHome(): View {
+        forceFoldableWidgetPlacement()
         homeTileViews.clear()
         widgetSearchContentArea = null
         widgetSearchRendered = false
         homeEditMode = false
         homeEditChipView = null
         unfoldedLibraryContentArea = null
+        unfoldedFocusContentArea = null
+        unfoldedFocusDockView = null
+        favoritesDockContextShowing = false
 
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
+        val focusArea = FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            setPadding(dp(18), dp(10), dp(18), dp(12))
         }
-
-        content.addView(unfoldedGlancePane(), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.05f).apply {
-            marginEnd = dp(14)
-        })
-        content.addView(unfoldedRightPane(), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-            marginStart = dp(14)
-        })
+        unfoldedFocusContentArea = focusArea
+        val panelWidth = unfoldedKeyboardPanelWidth()
+        val panelOffsetX = unfoldedKeyboardPanelOffsetX(panelWidth).toFloat()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(30), dp(14), dp(30), dp(18))
+            addView(unfoldedFocusTopBar(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)).apply {
+                bottomMargin = dp(12)
+            })
+            addView(FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                translationX = panelOffsetX
+                addView(focusArea, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(panelWidth, 0, 1f).apply {
+                bottomMargin = dp(10)
+            })
+            val dock = unfoldedFocusDock()
+            val dockStage = FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                translationX = panelOffsetX
+                addView(dock, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }
+            unfoldedFocusDockView = dockStage
+            addView(dockStage, LinearLayout.LayoutParams(panelWidth, dp(82)))
+        }
 
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            homeWallpaperLayer()?.let {
-                addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }
+            installWallpaperEditLongPress(this)
             weatherAmbientView = null
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            foldBannerSpace?.let { space ->
-                addView(foldContextBanner(space), FrameLayout.LayoutParams(dp(260), dp(42), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-                    topMargin = dp(12)
-                })
-            }
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh(playMoment = false)
+            post { refreshUnfoldedFocusContent() }
+        }
+    }
+
+    private fun refreshUnfoldedFocusContent() {
+        val area = unfoldedFocusContentArea ?: return
+        val searching = query.isNotBlank()
+        val showLibrary = libraryOpen || innerLibraryLocked()
+        val showToday = todayOpen
+        val dockVisible = !searching && !showToday && (!libraryOpen || innerLibraryLocked())
+        setUnfoldedFocusDockVisible(dockVisible)
+        area.removeAllViews()
+        val child = when {
+            searching -> unfoldedSearchCanvas()
+            showToday -> unfoldedTodayCanvas()
+            showLibrary -> unfoldedAppLibraryCanvas()
+            else -> null
+        }
+        child?.let {
+            area.addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+    }
+
+    private fun setUnfoldedFocusDockVisible(visible: Boolean) {
+        val dock = unfoldedFocusDockView ?: return
+        val lp = dock.layoutParams as? LinearLayout.LayoutParams
+        val targetHeight = if (visible) dp(82) else 0
+        if (lp != null && lp.height != targetHeight) {
+            lp.height = targetHeight
+            dock.layoutParams = lp
+        }
+        dock.animate().cancel()
+        dock.visibility = if (visible) View.VISIBLE else View.GONE
+        dock.alpha = if (visible) 1f else 0f
+        dock.translationY = if (visible) 0f else dp(12).toFloat()
+    }
+
+    private fun innerLibraryLocked(): Boolean =
+        prefs().getBoolean(INNER_LIBRARY_LOCKED_PREF, false)
+
+    private fun setInnerLibraryLocked(locked: Boolean) {
+        prefs().edit().putBoolean(INNER_LIBRARY_LOCKED_PREF, locked).apply()
+        refreshUnfoldedFocusContent()
+    }
+
+    private fun innerGlassPanel(content: View, radiusDp: Int = 28): View = FrameLayout(this).apply {
+        clipChildren = false
+        clipToPadding = false
+        addView(DynamicGlassPlate(context, radiusDp = radiusDp, strength = 1.72f, edgeInsetDp = 0).apply {
+            setGlassProgress(1f)
+        }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+    }
+
+    private fun unfoldedSearchCanvas(): View = innerGlassPanel(LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        setPadding(dp(20), dp(16), dp(20), dp(18))
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(context).apply {
+                text = "Search"
+                textSize = 22f
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                includeFontPadding = false
+                setTextColor(activeNeuTokens.ink)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(context).apply {
+                text = query
+                textSize = 12f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(activeNeuTokens.inkDim)
+                gravity = Gravity.RIGHT
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)).apply {
+            bottomMargin = dp(10)
+        })
+        addView(unfoldedSearchResultsList(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    })
+
+    private fun unfoldedAppLibraryCanvas(): View = innerGlassPanel(LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        setPadding(dp(18), dp(14), dp(18), dp(16))
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(context).apply {
+                text = "App Library"
+                textSize = 22f
+                typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                includeFontPadding = false
+                setTextColor(activeNeuTokens.ink)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(context).apply {
+                text = if (innerLibraryLocked()) "LOCKED" else "PIN"
+                gravity = Gravity.CENTER
+                textSize = 9.5f
+                typeface = Typeface.DEFAULT_BOLD
+                letterSpacing = 0.08f
+                includeFontPadding = false
+                setTextColor(activeNeuTokens.ink)
+                background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), if (innerLibraryLocked()) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
+                isClickable = true
+                setOnClickListener {
+                    haptic(this)
+                    setInnerLibraryLocked(!innerLibraryLocked())
+                }
+            }, LinearLayout.LayoutParams(dp(72), dp(30)).apply {
+                marginEnd = dp(8)
+            })
+            addView(TextView(context).apply {
+                text = if (libraryGridMode) "Categories" else "Grid"
+                gravity = Gravity.CENTER
+                textSize = 10.5f
+                typeface = Typeface.DEFAULT_BOLD
+                includeFontPadding = false
+                setTextColor(activeNeuTokens.ink)
+                background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED_SM)
+                isClickable = true
+                setOnClickListener {
+                    haptic(this)
+                    libraryGridMode = !libraryGridMode
+                    prefs().edit().putBoolean(LIBRARY_GRID_MODE_PREF, libraryGridMode).apply()
+                    refreshUnfoldedFocusContent()
+                }
+            }, LinearLayout.LayoutParams(dp(96), dp(30)))
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(34)).apply {
+            bottomMargin = dp(10)
+        })
+        val child = if (libraryGridMode) libraryGrid() else bentoGrid()
+        addView(child, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    })
+
+    private fun unfoldedTodayCanvas(): View = innerGlassPanel(FrameLayout(this).apply {
+        clipChildren = false
+        clipToPadding = false
+        setPadding(dp(8), dp(8), dp(8), dp(8))
+        addView(ComposeView(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setContent {
+                val brief by briefRepository.brief.collectAsState()
+                TodayPage(
+                    tokens = activeNeuTokens,
+                    brief = brief,
+                    hasListenerPermission = isNotificationAccessEnabled(),
+                    keyboardMode = TodayKeyboardMode.WIDGET,
+                    transparentShell = true,
+                    onAction = { item, action, reply -> fireBriefAction(item, action, reply) },
+                    onDismiss = { item -> dismissBriefItem(item) },
+                    onGrantPermission = { openNotificationAccessSettings() }
+                )
+            }
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    })
+
+    private data class InnerFocusAction(
+        val label: String,
+        val accent: Int,
+        val run: () -> Unit
+    )
+
+    private data class InnerFocusHero(
+        val eyebrow: String,
+        val title: String,
+        val subtitle: String,
+        val glyph: String,
+        val accent: Int,
+        val secondaryAccent: Int,
+        val sideNowTitle: String,
+        val sideNowBody: String,
+        val sideMediaTitle: String,
+        val sideMediaBody: String,
+        val actions: List<InnerFocusAction>,
+        val run: () -> Unit
+    )
+
+    private fun activeSpaceForUi(): Space? {
+        val locked = SpaceManager.lockedSpaceId(this)?.let { SpaceManager.space(this, it) }
+        if (locked != null) return locked
+        return predictContext?.let { SpaceManager.detect(this, it).space }
+            ?: SpaceManager.spaces(this).firstOrNull { it.enabled && it.id == "home" }
+            ?: SpaceManager.spaces(this).firstOrNull { it.enabled }
+    }
+
+    private fun lockSpaceFromInnerCanvas(space: Space?) {
+        haptic(contentFrame)
+        SpaceManager.lock(this, space?.id)
+        invalidateLibraryCaches()
+        refreshPredictContext(rerender = false)
+        render()
+    }
+
+    private fun briefAccent(category: BriefCategory): Int = when (category) {
+        BriefCategory.MESSAGE -> 0xFF5FD0C4.toInt()
+        BriefCategory.EMAIL -> 0xFFFF6B6B.toInt()
+        BriefCategory.CALL -> 0xFF7DB7FF.toInt()
+        BriefCategory.CALENDAR -> 0xFFF5C451.toInt()
+        BriefCategory.WEATHER -> weatherAmbientLightColor()
+        BriefCategory.MUSIC -> 0xFF8FD694.toInt()
+        BriefCategory.OTHER -> Accent
+    }
+
+    private fun unfoldedFocusHero(): InnerFocusHero {
+        val brief = if (::briefRepository.isInitialized) briefRepository.brief.value else Brief.EMPTY
+        val briefItems = brief.items
+        val media = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+        val nextEvent = calendarEvents.minByOrNull { it.beginMs }
+        val weatherTemp = prefs().getString(WEATHER_TEMP_PREF, "--").orEmpty()
+        val weatherMeta = prefs().getString(WEATHER_META_PREF, "Local weather").orEmpty()
+        val space = activeSpaceForUi()
+        if (briefItems.isNotEmpty()) {
+            val primary = briefItems.first()
+            val accent = briefAccent(primary.category)
+            return InnerFocusHero(
+                eyebrow = "Today",
+                title = primary.title.ifBlank { "Review what needs action." },
+                subtitle = primary.subtitle.ifBlank { "Tap to open your Today brief." },
+                glyph = primary.category.name.take(3),
+                accent = accent,
+                secondaryAccent = 0xFF8FD694.toInt(),
+                sideNowTitle = nextEvent?.title ?: "${weatherTemp} · ${weatherMeta}",
+                sideNowBody = nextEvent?.let { "${it.dayLabel.ifBlank { "Today" }} · ${it.timeLabel}" } ?: "Weather stays calm until it matters.",
+                sideMediaTitle = media?.sourceApp?.takeIf { it.isNotBlank() } ?: "Music",
+                sideMediaBody = media?.let { "${it.title} · ${it.artist}" } ?: "Music appears when it becomes context.",
+                actions = emptyList(),
+                run = { openToday() }
+            )
+        }
+        if (nextEvent != null) {
+            return InnerFocusHero(
+                eyebrow = nextEvent.dayLabel.ifBlank { "Calendar" },
+                title = nextEvent.title.ifBlank { "Next event" },
+                subtitle = "${nextEvent.timeLabel}${nextEvent.location.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""}",
+                glyph = "CAL",
+                accent = 0xFFF5C451.toInt(),
+                secondaryAccent = 0xFF7DB7FF.toInt(),
+                sideNowTitle = "${weatherTemp} · ${weatherMeta}",
+                sideNowBody = "Weather and calendar share the glance without crowding the canvas.",
+                sideMediaTitle = media?.sourceApp ?: "Music",
+                sideMediaBody = media?.let { "${it.title} · ${it.artist}" } ?: "No active playback.",
+                actions = emptyList(),
+                run = { openCalendarEventOrRequest(nextEvent) }
+            )
+        }
+        if (media?.isPlaying == true) {
+            return InnerFocusHero(
+                eyebrow = "Now Playing",
+                title = media.title.ifBlank { "Keep listening." },
+                subtitle = listOf(media.artist, media.sourceApp).filter { it.isNotBlank() }.joinToString(" · ").ifBlank { "Tap to open Music." },
+                glyph = "♪",
+                accent = media.appIconColor,
+                secondaryAccent = 0xFF8FD694.toInt(),
+                sideNowTitle = "${weatherTemp} · ${weatherMeta}",
+                sideNowBody = "The rest of the launcher stays quiet while music owns the moment.",
+                sideMediaTitle = media.sourceApp.ifBlank { "Music" },
+                sideMediaBody = "Tap the hero to open the player.",
+                actions = emptyList(),
+                run = { openHere(musicTarget()) }
+            )
+        }
+        return InnerFocusHero(
+            eyebrow = space?.name ?: "Clicks",
+            title = "Type to do anything.",
+            subtitle = "The inner screen stays calm: one focus card, a few actions, favorite apps, and the keyboard always ready.",
+            glyph = space?.emoji ?: "C",
+            accent = weatherAmbientLightColor(),
+            secondaryAccent = Accent,
+            sideNowTitle = "${weatherTemp} · ${weatherMeta}",
+            sideNowBody = "Weather is a quiet signal, not a dashboard.",
+            sideMediaTitle = "App Library",
+            sideMediaBody = "Type or swipe when you need every app.",
+            actions = emptyList(),
+            run = { }
+        )
+    }
+
+    private fun unfoldedFocusTopBar(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        clipChildren = false
+        clipToPadding = false
+        addView(unfoldedWeatherChip(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun unfoldedWeatherChip(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        isClickable = true
+        setOnClickListener {
+            haptic(this)
+            if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        addView(TextView(context).apply {
+            text = prefs().getString(WEATHER_TEMP_PREF, "--")
+            textSize = 38f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(activeNeuTokens.ink)
+            includeFontPadding = false
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(12) })
+        addView(TextView(context).apply {
+            text = prefs().getString(WEATHER_META_PREF, "Local weather")
+            textSize = 14f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(activeNeuTokens.inkDim)
+            includeFontPadding = false
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+
+    private fun unfoldedContextSelector(): View = HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        overScrollMode = View.OVER_SCROLL_NEVER
+        background = Neu.drawable(activeNeuTokens, dp(21).toFloat(), NeuLevel.PRESSED_SM)
+        setPadding(dp(6), dp(5), dp(6), dp(5))
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val spaces = SpaceManager.spaces(this@MainActivity).filter { it.enabled }.take(5)
+        val active = activeSpaceForUi()
+        row.addView(unfoldedContextPill(null, active == null), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply {
+            marginEnd = dp(6)
+        })
+        spaces.forEachIndexed { index, space ->
+            row.addView(unfoldedContextPill(space, active?.id == space.id), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply {
+                if (index < spaces.lastIndex) marginEnd = dp(6)
+            })
+        }
+        addView(row, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun unfoldedContextPill(space: Space?, selected: Boolean): View = TextView(this).apply {
+        text = if (space == null) "Auto" else "${space.emoji} ${space.name}"
+        gravity = Gravity.CENTER
+        textSize = 12.5f
+        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        includeFontPadding = false
+        setTextColor(if (selected) activeNeuTokens.ink else activeNeuTokens.inkDim)
+        setPadding(dp(16), 0, dp(16), 0)
+        background = if (selected) Neu.drawable(activeNeuTokens, dp(17).toFloat(), NeuLevel.RAISED_SM) else ColorDrawable(Color.TRANSPARENT)
+        isClickable = true
+        setOnClickListener { lockSpaceFromInnerCanvas(space) }
+    }
+
+    private fun unfoldedFocusMain(hero: InnerFocusHero): View = FrameLayout(this).apply {
+        clipChildren = false
+        clipToPadding = false
+        val maxCardWidth = dp(920).coerceAtMost(resources.displayMetrics.widthPixels - dp(260)).coerceAtLeast(dp(560))
+        addView(unfoldedHeroCard(hero), FrameLayout.LayoutParams(maxCardWidth, dp(136), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = dp(10)
+        })
+    }
+
+    private fun unfoldedHeroCard(hero: InnerFocusHero): View = FrameLayout(this).apply {
+        clipChildren = false
+        clipToPadding = false
+        isClickable = true
+        setOnClickListener { haptic(this); hero.run() }
+        background = unfoldedHeroBackground(hero.accent, hero.secondaryAccent)
+        elevation = dp(2).toFloat()
+        addView(View(context).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                adjustAlpha(brighten(hero.accent), 0.92f),
+                adjustAlpha(hero.accent, 0.72f),
+                adjustAlpha(hero.secondaryAccent, 0.72f)
+            )).apply {
+                cornerRadius = dp(2).toFloat()
+            }
+        }, FrameLayout.LayoutParams(dp(3), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.LEFT or Gravity.CENTER_VERTICAL).apply {
+            topMargin = dp(22)
+            bottomMargin = dp(22)
+        })
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(24), dp(16), dp(18), dp(16))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = hero.eyebrow.uppercase(Locale.US)
+                    textSize = 9.2f
+                    letterSpacing = 0.20f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    includeFontPadding = false
+                    setTextColor(hero.accent)
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(8)
+                })
+                addView(TextView(context).apply {
+                    text = hero.title
+                    textSize = 18.5f
+                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                    includeFontPadding = false
+                    setTextColor(activeNeuTokens.ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    letterSpacing = 0f
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(7)
+                })
+                addView(TextView(context).apply {
+                    text = hero.subtitle
+                    textSize = 12.5f
+                    setLineSpacing(dp(2).toFloat(), 1.0f)
+                    typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                    includeFontPadding = false
+                    setTextColor(activeNeuTokens.inkDim)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply { marginEnd = dp(14) })
+            addView(unfoldedHeroGlyph(hero), LinearLayout.LayoutParams(dp(76), dp(76)))
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun unfoldedHeroGlyph(hero: InnerFocusHero): View = FrameLayout(this).apply {
+        background = unfoldedGlyphWellBackground(hero.accent)
+        addView(TextView(context).apply {
+            text = hero.glyph.take(3).uppercase(Locale.US)
+            gravity = Gravity.CENTER
+            textSize = if (hero.glyph.length <= 1) 23f else 16f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            includeFontPadding = false
+            setTextColor(activeNeuTokens.ink)
+            background = Neu.drawable(activeNeuTokens, dp(19).toFloat(), NeuLevel.RAISED_SM)
+        }, FrameLayout.LayoutParams(dp(50), dp(50), Gravity.CENTER))
+    }
+
+    private fun unfoldedSideRail(hero: InnerFocusHero): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        clipChildren = false
+        clipToPadding = false
+        addView(unfoldedSideCard("Now", hero.sideNowTitle, hero.sideNowBody), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+            bottomMargin = dp(12)
+        })
+        addView(unfoldedSideCard("Music", hero.sideMediaTitle, hero.sideMediaBody), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+            bottomMargin = dp(12)
+        })
+        addView(unfoldedSideCard("Library", "Type or swipe up", "Apps stay hidden until the user asks for them."), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+    }
+
+    private fun unfoldedSideCard(label: String, title: String, body: String): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(20), dp(16), dp(20), dp(16))
+        background = Neu.drawable(activeNeuTokens, dp(24).toFloat(), NeuLevel.RAISED_SM)
+        addView(TextView(context).apply {
+            text = label.uppercase(Locale.US)
+            textSize = 9f
+            letterSpacing = 0.16f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(activeNeuTokens.inkFaint)
+            includeFontPadding = false
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(10)
+        })
+        addView(TextView(context).apply {
+            text = title
+            textSize = 17f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            setTextColor(activeNeuTokens.ink)
+            includeFontPadding = false
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = dp(7)
+        })
+        addView(TextView(context).apply {
+            text = body
+            textSize = 12.5f
+            setLineSpacing(dp(1).toFloat(), 1.0f)
+            setTextColor(activeNeuTokens.inkDim)
+            includeFontPadding = false
+            maxLines = 3
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
+    }
+
+    private fun unfoldedFocusActions(actions: List<InnerFocusAction>): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER
+        clipChildren = false
+        clipToPadding = false
+        val visible = actions.take(3)
+        visible.forEachIndexed { index, action ->
+            addView(unfoldedActionChip(action), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (index > 0) marginStart = dp(14)
+            })
+        }
+        repeat(3 - visible.size) { index ->
+            addView(View(context), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (visible.isNotEmpty() || index > 0) marginStart = dp(14)
+            })
+        }
+    }
+
+    private fun unfoldedActionChip(action: InnerFocusAction): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        isClickable = true
+        setOnClickListener { haptic(this); action.run() }
+        setPadding(dp(18), 0, dp(18), 0)
+        background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED_SM)
+        addView(View(context).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(brighten(action.accent), action.accent)).apply {
+                cornerRadius = dp(12).toFloat()
+                setStroke(dp(1), adjustAlpha(Color.WHITE, 0.16f))
+            }
+        }, LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(14) })
+        addView(TextView(context).apply {
+            text = action.label
+            textSize = 15f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+            includeFontPadding = false
+            setTextColor(activeNeuTokens.ink)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+    }
+
+    private fun unfoldedFocusDock(): View = FrameLayout(this).apply {
+        clipChildren = false
+        clipToPadding = false
+        background = recessedDockBackground()
+        addView(DynamicGlassPlate(context, radiusDp = 19, strength = 1.72f, edgeInsetDp = 0).apply {
+            setGlassProgress(1f)
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        favoritesDockContextView = LinearLayout(context)
+        favoritesDockView = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        scheduleContextDockRefresh()
+    }
+
+    private fun unfoldedHeroBackground(accent: Int, secondary: Int): Drawable {
+        val tray = Neu.drawable(activeNeuTokens, dp(24).toFloat(), NeuLevel.PRESSED_SM)
+        val innerLift = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED_SM)
+        val tint = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
+            adjustAlpha(accent, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.05f else 0.08f),
+            Color.TRANSPARENT,
+            adjustAlpha(secondary, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.025f else 0.04f)
+        )).apply { cornerRadius = dp(22).toFloat() }
+        return LayerDrawable(arrayOf(tray, innerLift, tint)).apply {
+            val inset = dp(5)
+            setLayerInset(1, inset, inset, inset, inset)
+            setLayerInset(2, inset, inset, inset, inset)
+        }
+    }
+
+    private fun unfoldedGlyphWellBackground(accent: Int): Drawable {
+        val well = Neu.drawable(activeNeuTokens, dp(28).toFloat(), NeuLevel.PRESSED)
+        val glow = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(28).toFloat()
+            setColor(adjustAlpha(accent, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.045f else 0.08f))
+        }
+        return LayerDrawable(arrayOf(well, glow)).apply {
+            val inset = dp(3)
+            setLayerInset(1, inset, inset, inset, inset)
         }
     }
 
@@ -1817,6 +2945,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipToPadding = false
             setPadding(dp(6), dp(9), dp(6), dp(9))
         }
+        favoritesDockFrameView.addView(DynamicGlassPlate(context, radiusDp = 19, strength = 1.72f, edgeInsetDp = 0).apply {
+            setGlassProgress(1f)
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         favoritesDockFrameView.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
@@ -1843,7 +2974,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         clipChildren = false
         clipToPadding = false
         setPadding(dp(10), dp(10), dp(10), dp(10))
-        background = Neu.drawable(activeNeuTokens, dp(24).toFloat(), NeuLevel.RAISED)
+        background = teclasGlassDrawable(24)
         addView(libraryHeader(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)).apply {
             bottomMargin = dp(10)
         })
@@ -1860,7 +2991,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val area = unfoldedLibraryContentArea ?: return
         area.removeAllViews()
         val child = if (query.isNotBlank()) {
-            if (glassEffectsEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
+            if (appLibraryGlassEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
         } else {
             if (libraryGridMode) libraryGrid() else bentoGrid()
         }
@@ -2904,23 +4035,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun openToday() {
         if (todayOpen || libraryOpen || openPane != null || !::contentFrame.isInitialized) return
+        cancelWallpaperLongPress()
         todayOpen = true
         briefRepository.refresh()
-        val overlay = ComposeView(this).apply {
-            setBackgroundColor(activeNeuTokens.base)
+        if (isUnfoldedInnerLayoutActive()) {
+            query = ""
+            keyboardSettingsOpen = false
+            refreshUnfoldedFocusContent()
+            renderRibbon()
+            haptic(contentFrame)
+            return
+        }
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
             isClickable = true // swallow taps so they don't fall through to home
-            setContent {
-                val brief by briefRepository.brief.collectAsState()
-                TodayPage(
-                    tokens = activeNeuTokens,
-                    brief = brief,
-                    hasListenerPermission = isNotificationAccessEnabled(),
-                    keyboardMode = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) TodayKeyboardMode.WIDGET else TodayKeyboardMode.DOCKED,
-                    onAction = { item, action, reply -> fireBriefAction(item, action, reply) },
-                    onDismiss = { item -> dismissBriefItem(item) },
-                    onGrantPermission = { openNotificationAccessSettings() }
-                )
-            }
+            addView(DynamicGlassPlate(context, radiusDp = 0, strength = 1.9f, edgeInsetDp = 0).apply {
+                setGlassProgress(1f)
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(ComposeView(context).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                setContent {
+                    val brief by briefRepository.brief.collectAsState()
+                    TodayPage(
+                        tokens = activeNeuTokens,
+                        brief = brief,
+                        hasListenerPermission = isNotificationAccessEnabled(),
+                        keyboardMode = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) TodayKeyboardMode.WIDGET else TodayKeyboardMode.DOCKED,
+                        transparentShell = true,
+                        onAction = { item, action, reply -> fireBriefAction(item, action, reply) },
+                        onDismiss = { item -> dismissBriefItem(item) },
+                        onGrantPermission = { openNotificationAccessSettings() }
+                    )
+                }
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
         todayPageView = overlay
         contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -2932,6 +4079,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun closeToday() {
         todayOpen = false
+        if (isUnfoldedInnerLayoutActive()) {
+            refreshUnfoldedFocusContent()
+            renderRibbon()
+            return
+        }
         val overlay = todayPageView ?: return
         todayPageView = null
         val w = contentFrame.width.takeIf { it > 0 }?.toFloat() ?: resources.displayMetrics.widthPixels.toFloat()
@@ -3080,6 +4232,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun handleLibrarySwipe(event: MotionEvent): Boolean {
+        if (innerWallpaperEditMode) return false
         if (widgetKeyboardSwapActive()) {
             librarySwipeTriggered = false
             librarySwipeBlockedByWidget = false
@@ -3112,7 +4265,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         contentFrame.getLocationOnScreen(loc)
         val inContent = event.rawY >= loc[1] && event.rawY <= loc[1] + contentFrame.height
         val upOpensLibrary = gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS) == GESTURE_LIBRARY
-        val sideLibraryEnabled = !upOpensLibrary
+        val sideLibraryEnabled = isUnfoldedInnerLayoutActive() || !upOpensLibrary
         val rightEdgeStart = sideLibraryEnabled &&
             isLibraryRightEdgeStart(event.rawX, event.rawY, loc[0], loc[1])
 
@@ -3131,7 +4284,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
                 librarySwipeFromKeyboard = isInsideKeyboard(event.rawX, event.rawY)
-                if (rightEdgeStart && !librarySwipeFromKeyboard && !libraryOpen && openPane == null) {
+                if (rightEdgeStart && !isUnfoldedInnerLayoutActive() && !librarySwipeFromKeyboard && !libraryOpen && openPane == null) {
                     librarySwipeTriggered = true
                     librarySwipeBlockedByWidget = false
                     beginLibraryDrag(startedOpen = false, fastPath = true)
@@ -3144,6 +4297,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (!inContent) return false
                 val dx = event.rawX - librarySwipeStartX
                 val dy = event.rawY - librarySwipeStartY
+                if (abs(dx) > dp(8) || abs(dy) > dp(8)) cancelWallpaperLongPress()
                 libraryDragTouchX = event.rawX
                 if (librarySwipeBlockedByWidget) {
                     val wantsSideLibraryDrag = abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f &&
@@ -3162,12 +4316,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     when {
                         dy < 0 && !libraryOpen && openPane == null -> {
                             librarySwipeTriggered = true
+                            if (isUnfoldedInnerLayoutActive()) {
+                                openLibrary()
+                                return true
+                            }
                             beginLibraryDrag(startedOpen = false, vertical = true)
                             updateLibraryDrag(dy)
                             return true
                         }
                         dy > 0 && libraryOpen -> {
                             librarySwipeTriggered = true
+                            if (isUnfoldedInnerLayoutActive()) {
+                                closeLibrary()
+                                return true
+                            }
                             beginLibraryDrag(startedOpen = true, vertical = true)
                             updateLibraryDrag(dy)
                             return true
@@ -3179,12 +4341,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     when {
                         sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
                             librarySwipeTriggered = true
+                            if (isUnfoldedInnerLayoutActive()) {
+                                openLibrary()
+                                return true
+                            }
                             beginLibraryDrag(startedOpen = false)
                             updateLibraryDrag(dx)
                             return true
                         }
                         dx > 0 && libraryOpen -> {
                             librarySwipeTriggered = true
+                            if (isUnfoldedInnerLayoutActive()) {
+                                closeLibrary()
+                                return true
+                            }
                             beginLibraryDrag(startedOpen = true)
                             updateLibraryDrag(dx)
                             return true
@@ -3251,6 +4421,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun handlePaneSwipe(event: MotionEvent): Boolean {
+        if (innerWallpaperEditMode) return false
         val paneKind = openPane?.kind
         if (!::contentFrame.isInitialized || (paneKind != PaneKind.MUSIC && paneKind != PaneKind.PHOTOS) || libraryOpen || widgetBoardView != null) return false
         when (event.actionMasked) {
@@ -3318,6 +4489,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun handleTypingStripGesture(event: MotionEvent): Boolean {
+        if (innerWallpaperEditMode) return false
         if (widgetKeyboardSwapActive()) return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -3370,16 +4542,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun openLibrary() {
-        if (isUnfoldedInnerLayoutActive()) {
-            query = ""
-            refreshUnfoldedLibraryContent()
-            renderRibbon()
-            return
-        }
         if (libraryOpen || openPane != null) return
         libraryOpen = true
         query = ""
         keyboardSettingsOpen = false
+        if (isUnfoldedInnerLayoutActive()) {
+            todayOpen = false
+            refreshUnfoldedFocusContent()
+            renderRibbon()
+            syncNowPlayingCardVisibility()
+            refreshNowPlayingCard()
+            return
+        }
         showLibrary(animate = true)
         renderRibbon()
         syncNowPlayingCardVisibility()
@@ -3387,7 +4561,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun beginLibraryDrag(startedOpen: Boolean, vertical: Boolean = false, fastPath: Boolean = false) {
-        if (isUnfoldedInnerLayoutActive()) return
         if (openPane != null && !startedOpen) return
         libraryDragActive = true
         libraryDragStartedOpen = startedOpen
@@ -3558,6 +4731,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         renderRibbon()
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
+        if (isUnfoldedInnerLayoutActive()) {
+            refreshUnfoldedFocusContent()
+            return
+        }
         val closing = libraryView ?: return
         val targetX = if (slideLeft) -closing.width.toFloat() else closing.width.toFloat()
         closing.animate().translationX(targetX).setDuration(240)
@@ -4910,7 +6087,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun appLibrary(): View {
-        val glass = glassEffectsEnabled()
+        val glass = appLibraryGlassEnabled()
         val cached = libraryView as? FrameLayout
         if (
             !libraryViewDirty &&
@@ -5001,7 +6178,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             libraryView?.alpha = 1f
         }
         val gridChild = if (query.isNotBlank()) {
-            if (glassEffectsEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
+            if (appLibraryGlassEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
         }
                     else if (libraryGridMode) libraryGrid() else bentoGrid()
         // When the App Library IS the home surface, it has no favorites dock of its own, so mount
@@ -5134,7 +6311,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun libraryHeader(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        val glass = glassEffectsEnabled()
+        val glass = appLibraryGlassEnabled()
         setPadding(if (glass) dp(16) else dp(12), 0, if (glass) dp(12) else dp(10), 0)
         background = libraryHeaderBackground()
         elevation = dp(if (glass) 3 else 10).toFloat()
@@ -5225,84 +6402,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun libraryHeaderBackground(): Drawable {
-        if (!glassEffectsEnabled()) {
+        if (!appLibraryGlassEnabled()) {
             return Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
         }
-        val baseNeu = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
-        val light = activeNeuTokens.mode == NeuMode.LIGHT
-        val glassFace = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            if (light) {
-                intArrayOf(
-                    adjustAlpha(Color.WHITE, 0.34f),
-                    adjustAlpha(activeNeuTokens.baseHi, 0.22f),
-                    adjustAlpha(activeNeuTokens.base, 0.12f),
-                    adjustAlpha(activeNeuTokens.baseLo, 0.18f)
-                )
-            } else {
-                intArrayOf(
-                    adjustAlpha(Color.WHITE, 0.16f),
-                    adjustAlpha(activeNeuTokens.baseHi, 0.36f),
-                    adjustAlpha(activeNeuTokens.base, 0.24f),
-                    adjustAlpha(activeNeuTokens.baseLo, 0.34f)
-                )
-            }
-        ).apply {
-            cornerRadius = dp(18).toFloat()
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.42f else 0.16f))
-        }
-        val bevel = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(
-                adjustAlpha(Color.WHITE, if (light) 0.52f else 0.26f),
-                Color.TRANSPARENT,
-                adjustAlpha(Color.BLACK, if (light) 0.12f else 0.30f)
-            )
-        ).apply { cornerRadius = dp(18).toFloat() }
-        val seatedShade = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(
-                adjustAlpha(activeNeuTokens.baseLo, if (light) 0.12f else 0.26f),
-                Color.TRANSPARENT,
-                adjustAlpha(Color.WHITE, if (light) 0.16f else 0.08f)
-            )
-        ).apply { cornerRadius = dp(18).toFloat() }
-        return LayerDrawable(arrayOf(baseNeu, glassFace, seatedShade, bevel))
+        return teclasGlassDrawable(18)
     }
 
     private fun libraryModeToggleBackground(): Drawable {
-        if (!glassEffectsEnabled()) {
+        if (!appLibraryGlassEnabled()) {
             return Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
         }
-        val light = activeNeuTokens.mode == NeuMode.LIGHT
-        val base = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            if (light) {
-                intArrayOf(
-                    adjustAlpha(Color.WHITE, 0.22f),
-                    adjustAlpha(activeNeuTokens.base, 0.16f),
-                    adjustAlpha(activeNeuTokens.baseLo, 0.14f)
-                )
-            } else {
-                intArrayOf(
-                    adjustAlpha(activeNeuTokens.baseLo, 0.72f),
-                    adjustAlpha(activeNeuTokens.base, 0.52f),
-                    adjustAlpha(activeNeuTokens.baseHi, 0.30f)
-                )
-            }
-        ).apply {
-            cornerRadius = dp(15).toFloat()
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.34f else 0.12f))
-        }
-        val wellShade = GradientDrawable(
-            GradientDrawable.Orientation.BOTTOM_TOP,
-            intArrayOf(adjustAlpha(Color.BLACK, if (light) 0.10f else 0.24f), Color.TRANSPARENT)
-        ).apply { cornerRadius = dp(15).toFloat() }
-        val innerLight = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(adjustAlpha(Color.WHITE, if (light) 0.22f else 0.10f), Color.TRANSPARENT)
-        ).apply { cornerRadius = dp(15).toFloat() }
-        return LayerDrawable(arrayOf(base, wellShade, innerLight))
+        return teclasGlassDrawable(15)
     }
 
     private fun isWidgetUniversalSearchActive(): Boolean =
@@ -5333,7 +6443,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            addView(DynamicGlassPlate(context, radiusDp = 24).apply {
+            addView(DynamicGlassPlate(context, radiusDp = 24, strength = 1.72f, edgeInsetDp = 0).apply {
                 setGlassProgress(1f)
             }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             content.setPadding(
@@ -5343,6 +6453,103 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 content.paddingBottom + dp(10)
             )
             addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+    }
+
+    private fun unfoldedSearchResultsList(): View = ScrollView(this).apply {
+        isVerticalScrollBarEnabled = false
+        overScrollMode = View.OVER_SCROLL_NEVER
+        clipToPadding = false
+        val results = universalSearchResults()
+        val command = searchCommandPreview()
+        val aiInline = searchAiInlineState()
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(18))
+            if (results.isEmpty() && command == null && aiInline == null) {
+                addView(TextView(context).apply {
+                    text = "No results for \"$query\""
+                    textSize = 14f
+                    gravity = Gravity.CENTER
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
+                return@apply
+            }
+            command?.let {
+                addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply {
+                    bottomMargin = dp(8)
+                })
+            }
+            aiInline?.let {
+                addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(8)
+                })
+            }
+            val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
+            visibleResults.take(6).chunked(2).forEachIndexed { rowIndex, rowItems ->
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    rowItems.forEachIndexed { columnIndex, result ->
+                        val index = rowIndex * 2 + columnIndex
+                        addView(unfoldedSearchResultTile(result, index == 0 && command == null && aiInline == null, index), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                            if (columnIndex > 0) marginStart = dp(10)
+                        })
+                    }
+                    repeat(2 - rowItems.size) {
+                        addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
+                    }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(74)).apply {
+                    bottomMargin = dp(8)
+                })
+            }
+        })
+    }
+
+    private fun unfoldedSearchResultTile(result: SearchResult, isBest: Boolean, index: Int): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            alpha = 0f
+            translationY = dp(6).toFloat()
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = searchCardBackground(result.kind, isBest, 18)
+            postDelayed({
+                animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setDuration(180)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            }, (index * 20L).coerceAtMost(160L))
+            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(38), dp(38)).apply {
+                marginEnd = dp(11)
+            })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = highlightedLabel(result.title, query)
+                    textSize = 13.8f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                addView(mono(result.subtitle.uppercase(Locale.US), 8.4f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.06f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, dp(4), 0, 0)
+                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(searchKindTag(result.kind), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(20)).apply {
+                marginStart = dp(8)
+            })
+            setOnClickListener { haptic(this); openSearchResult(result) }
         }
     }
 
@@ -5576,7 +6783,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun searchCardBackground(kind: SearchKind, isBest: Boolean, radiusDp: Int): Drawable {
-        if (!glassEffectsEnabled()) {
+        if (!focusSurfaceGlassEnabled()) {
             val base = Neu.drawable(activeNeuTokens, dp(radiusDp).toFloat(), if (isBest) NeuLevel.RAISED else NeuLevel.RAISED_SM)
             if (!isBest) return base
             val ring = GradientDrawable().apply {
@@ -5704,7 +6911,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun searchCommandBackground(): Drawable {
-        if (!glassEffectsEnabled()) {
+        if (!focusSurfaceGlassEnabled()) {
             val base = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED)
             val ring = GradientDrawable().apply {
                 setColor(Color.TRANSPARENT)
@@ -5847,7 +7054,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun bentoGrid(): View = ScrollView(this).apply {
-        if (!glassEffectsEnabled()) {
+        if (!appLibraryGlassEnabled()) {
             addView(classicBentoGridContent())
             return@apply
         }
@@ -6035,7 +7242,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun categoryBentoBackground(accent: Int): Drawable {
-        if (!glassEffectsEnabled()) {
+        if (!appLibraryGlassEnabled()) {
             return if (activeNeuTokens.mode == NeuMode.LIGHT) {
                 Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
             } else {
@@ -6350,7 +7557,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun libraryGrid(): View = ScrollView(this).apply {
-        if (!glassEffectsEnabled()) return classicLibraryGrid()
+        if (!appLibraryGlassEnabled()) return classicLibraryGrid()
         val plainGrid = this
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -6378,7 +7585,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(liquid, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             addView(scroll, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             post {
-                val progress = if (libraryOpen) 1f else 0f
+                val progress = if (libraryOpen || innerLibraryLocked() || isUnfoldedInnerLayoutActive()) 1f else 0f
                 updateLibraryGridDragEffects(progress, width * 0.5f)
                 scroll.applyFishEye()
             }
@@ -6681,6 +7888,268 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    private fun rootDockInputView(): View =
+        if (isUnfoldedInnerLayoutActive() && openPane == null) unfoldedInnerKeyboardDock() else dockedInputView()
+
+    private fun unfoldedInnerKeyboardDock(): View {
+        val panelWidth = unfoldedKeyboardPanelWidth()
+        return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            background = ColorDrawable(Color.TRANSPARENT)
+            widgetKeyboardHost = this
+
+            val socket = KeyboardSocketView(context).apply {
+                alpha = 0f
+                visibility = View.GONE
+            }
+            widgetSocketView = socket
+            addView(socket, FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+
+            val keyboardPanel = FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                translationX = unfoldedKeyboardPanelOffsetX(panelWidth).toFloat()
+                translationY = innerKeyboardOffsetY().toFloat()
+                if (innerKeyboardEditMode) {
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    background = unfoldedKeyboardEditFrameBackground()
+                }
+                addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            }
+            widgetKeyboardModule = keyboardPanel
+            addView(keyboardPanel, FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+
+            widgetCoachView = TextView(context).apply {
+                text = "Swipe to browse · tap to install"
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                textSize = 11f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(0xFFEAF7EF.toInt())
+                setPadding(dp(12), 0, dp(12), 0)
+                background = swapPillBackground(0xCC111A16.toInt(), 0x6638D67A)
+                alpha = 0f
+                visibility = View.GONE
+            }
+            addView(widgetCoachView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(30), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(12)
+            })
+
+            widgetDotsView = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                alpha = 0f
+                visibility = View.GONE
+            }
+            addView(widgetDotsView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = dp(8)
+            })
+            updateWidgetThemeDots()
+
+            val grabber = TextView(context).apply {
+                text = ""
+                gravity = Gravity.CENTER
+                textSize = 8f
+                letterSpacing = 0.14f
+                includeFontPadding = false
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(activeNeuTokens.inkDim)
+                background = unfoldedKeyboardHandleBackground()
+                isClickable = true
+                if (innerKeyboardEditMode) {
+                    setOnTouchListener(innerKeyboardMoveListener(keyboardPanel))
+                } else {
+                    setOnLongClickListener {
+                        haptic(this)
+                        innerKeyboardEditMode = true
+                        render()
+                        true
+                    }
+                }
+            }
+            keyboardPanel.addView(grabber, FrameLayout.LayoutParams(if (innerKeyboardEditMode) dp(72) else dp(94), if (innerKeyboardEditMode) dp(24) else dp(10), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = if (innerKeyboardEditMode) dp(5) else dp(9)
+            })
+
+            if (innerKeyboardEditMode) {
+                val doneHandle = TextView(context).apply {
+                    text = "DONE"
+                    gravity = Gravity.CENTER
+                    textSize = 8f
+                    letterSpacing = 0.14f
+                    includeFontPadding = false
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.inkDim)
+                    background = unfoldedKeyboardHandleBackground()
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        innerKeyboardEditMode = false
+                        render()
+                    }
+                }
+                keyboardPanel.addView(doneHandle, FrameLayout.LayoutParams(dp(68), dp(24), Gravity.TOP or Gravity.RIGHT).apply {
+                    topMargin = dp(5)
+                    rightMargin = dp(8)
+                })
+                val resizeHandle = TextView(context).apply {
+                    text = "↘"
+                    gravity = Gravity.CENTER
+                    textSize = 17f
+                    includeFontPadding = false
+                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    background = unfoldedKeyboardHandleBackground()
+                    setOnTouchListener(innerKeyboardResizeListener(keyboardPanel))
+                }
+                keyboardPanel.addView(resizeHandle, FrameLayout.LayoutParams(dp(38), dp(38), Gravity.BOTTOM or Gravity.RIGHT).apply {
+                    rightMargin = dp(8)
+                    bottomMargin = dp(12)
+                })
+            }
+        }
+    }
+
+    private fun unfoldedKeyboardHandleBackground(): Drawable =
+        Neu.drawable(activeNeuTokens, dp(14).toFloat(), NeuLevel.RAISED_SM)
+
+    private fun unfoldedKeyboardEditFrameBackground(): Drawable =
+        Neu.drawable(activeNeuTokens, dp(24).toFloat(), NeuLevel.PRESSED_SM)
+
+    private fun innerKeyboardSnapMaxX(panel: View): Int {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val panelWidth = panel.width.takeIf { it > 0 }
+            ?: (panel.layoutParams?.width ?: 0).takeIf { it > 0 }
+            ?: (screenWidth * innerKeyboardWidthPercent() / 100f).toInt()
+        return ((screenWidth - panelWidth) / 2).coerceAtLeast(0)
+    }
+
+    private fun nearestInnerKeyboardSnap(rawX: Int, panel: View): Int {
+        val maxX = innerKeyboardSnapMaxX(panel)
+        if (maxX <= dp(6)) return 0
+        val snaps = intArrayOf(-maxX, 0, maxX)
+        return snaps.minBy { abs(rawX - it) }
+    }
+
+    private fun innerKeyboardMoveListener(panel: View): View.OnTouchListener {
+        var startRawX = 0f
+        var startRawY = 0f
+        var startX = 0
+        var startY = 0
+        return View.OnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startRawX = event.rawX
+                    startRawY = event.rawY
+                    startX = innerKeyboardOffsetX()
+                    startY = innerKeyboardOffsetY()
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                    haptic(view)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val maxX = innerKeyboardSnapMaxX(panel).coerceAtLeast(dp(4))
+                    val nextX = (startX + event.rawX - startRawX).toInt().coerceIn(-maxX, maxX)
+                    val nextY = (startY + event.rawY - startRawY).toInt().coerceIn(-dp(72), dp(18))
+                    panel.translationX = nextX.toFloat()
+                    panel.translationY = nextY.toFloat()
+                    prefs().edit()
+                        .putInt(INNER_KEYBOARD_OFFSET_X_PREF, nextX)
+                        .putInt(INNER_KEYBOARD_OFFSET_Y_PREF, nextY)
+                        .apply()
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    haptic(view)
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    val snapX = nearestInnerKeyboardSnap(panel.translationX.toInt(), panel)
+                    prefs().edit()
+                        .putInt(INNER_KEYBOARD_OFFSET_X_PREF, snapX)
+                        .putInt(INNER_KEYBOARD_OFFSET_Y_PREF, panel.translationY.toInt())
+                        .apply()
+                    panel.animate()
+                        .translationX(snapX.toFloat())
+                        .setDuration(180L)
+                        .setInterpolator(DecelerateInterpolator())
+                        .withEndAction { keyboardDockView.post { captureKeyBounds() } }
+                        .start()
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
+    private fun innerKeyboardResizeListener(panel: View): View.OnTouchListener {
+        var startRawX = 0f
+        var startRawY = 0f
+        var startWidth = 0
+        var startBoost = 0
+        var nextWidth = 0
+        var nextBoost = 0
+        var dragged = false
+        return View.OnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startRawX = event.rawX
+                    startRawY = event.rawY
+                    startWidth = innerKeyboardWidthPercent()
+                    startBoost = innerKeyboardSizeBoost()
+                    nextWidth = startWidth
+                    nextBoost = startBoost
+                    dragged = false
+                    innerKeyboardPreviewBoost = startBoost
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                    haptic(view)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - startRawX
+                    val dy = event.rawY - startRawY
+                    if (abs(dx) > dp(4) || abs(dy) > dp(4)) dragged = true
+                    val widthDelta = (dx / resources.displayMetrics.widthPixels * 100f).toInt()
+                    nextWidth = (startWidth + widthDelta).coerceIn(48, 100)
+                    nextBoost = (startBoost - (dy / dp(3).coerceAtLeast(1))).toInt().coerceIn(-20, 150)
+                    innerKeyboardPreviewBoost = nextBoost
+                    val lp = panel.layoutParams as? FrameLayout.LayoutParams
+                    if (lp != null) {
+                        lp.width = (resources.displayMetrics.widthPixels * nextWidth / 100f).toInt()
+                            .coerceIn(dp(720), resources.displayMetrics.widthPixels - dp(36))
+                        panel.layoutParams = lp
+                    }
+                    panel.pivotY = panel.height.toFloat().coerceAtLeast(1f)
+                    panel.scaleY = (1f + ((nextBoost - startBoost) / 155f)).coerceIn(0.72f, 1.52f)
+                    if (::keyboardDockView.isInitialized) {
+                        val dockLp = keyboardDockView.layoutParams
+                        if (dockLp != null) {
+                            dockLp.height = activeRootDockHeight()
+                            keyboardDockView.layoutParams = dockLp
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    innerKeyboardPreviewBoost = null
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    if (dragged && event.actionMasked == MotionEvent.ACTION_UP) {
+                        prefs().edit()
+                            .putInt(INNER_KEYBOARD_WIDTH_PREF, nextWidth)
+                            .putInt(INNER_KEYBOARD_SIZE_BOOST_PREF, nextBoost)
+                            .apply()
+                        haptic(view)
+                        render()
+                    } else {
+                        haptic(view)
+                        keyboardDockView.post { captureKeyBounds() }
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
     private enum class MusicMode { SPOTIFY_FULL, APPLE_FULL, SIMPLE }
 
     // Decides whether the full click-wheel experience applies. It requires Pro AND that the
@@ -6809,7 +8278,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyViews.clear()
         keyBounds.clear()
         keyboardDockView.removeAllViews()
-        keyboardDockView.addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        keyboardDockView.addView(rootDockInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         keyboardDockView.post { captureKeyBounds() }
     }
 
@@ -8618,7 +10087,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             // Suggestion strip at the TOP of the keyboard (Gboard-style), above all key rows.
             if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen) {
-                val stripHeight = launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+                val stripHeight = if (isUnfoldedInnerLayoutActive()) {
+                    keyboardSuggestionStripHeight()
+                } else {
+                    launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+                }
                 addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, stripHeight).apply {
                     marginStart = dp(8)
                     marginEnd = dp(8)
@@ -8691,6 +10164,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(sizeValueView, LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT))
             }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
+            if (isUnfoldedInnerLayoutActive()) {
+                addView(innerKeyboardWidthSetting(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                addView(innerKeyboardHeightSetting(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+
             addView(settingToggle("HAPTIC FEEDBACK", hapticsEnabled) {
                 hapticsEnabled = !hapticsEnabled
                 prefs().edit().putBoolean(HAPTICS_PREF, hapticsEnabled).apply()
@@ -8711,6 +10189,76 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 keyboardSettingsOpen = false
                 openHere(clicksSettingsTarget())
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
+        }
+    }
+
+    private fun innerKeyboardWidthSetting(): View {
+        var valueView: TextView? = null
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, 0)
+            addView(mono("INNER WIDTH", 9f, InkDim).apply { letterSpacing = 0.12f }, LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(SeekBar(context).apply {
+                max = 52
+                progress = innerKeyboardWidthPercent() - 48
+                thumbTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(KeyEdge)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        valueView?.text = "${p + 48}%"
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(s: SeekBar?) {
+                        val next = ((s?.progress ?: 20) + 48).coerceIn(48, 100)
+                        prefs().edit().putInt(INNER_KEYBOARD_WIDTH_PREF, next).apply()
+                        s?.let { haptic(it) }
+                        render()
+                    }
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            })
+            valueView = mono("${innerKeyboardWidthPercent()}%", 9f, Accent2).apply { gravity = Gravity.RIGHT }
+            addView(valueView, LinearLayout.LayoutParams(dp(42), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    private fun innerKeyboardHeightSetting(): View {
+        var valueView: TextView? = null
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, 0)
+            addView(mono("INNER HEIGHT", 9f, InkDim).apply { letterSpacing = 0.12f }, LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(SeekBar(context).apply {
+                max = 140
+                progress = innerKeyboardSizeBoost() + 20
+                thumbTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(KeyEdge)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        valueView?.text = "${p - 20}"
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(s: SeekBar?) {
+                        val next = ((s?.progress ?: 56) - 20).coerceIn(-20, 120)
+                        prefs().edit().putInt(INNER_KEYBOARD_SIZE_BOOST_PREF, next).apply()
+                        s?.let { haptic(it) }
+                        render()
+                    }
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            })
+            valueView = mono("${innerKeyboardSizeBoost()}", 9f, Accent2).apply { gravity = Gravity.RIGHT }
+            addView(valueView, LinearLayout.LayoutParams(dp(42), ViewGroup.LayoutParams.WRAP_CONTENT))
         }
     }
 
@@ -9319,6 +10867,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun launcherSuggestionStripOuterHeight(): Int {
         val h = launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+        if (isUnfoldedInnerLayoutActive()) return keyboardSuggestionStripHeight() + dp(2)
         return if (h > 0) h + dp(2) else 0
     }
     private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(9) else 0
@@ -9328,7 +10877,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(10), dp(2), dp(10), dp(2))
-            visibility = if (launcherSuggestionStripAnimatedHeight > 0) View.VISIBLE else View.GONE
+            visibility = if (launcherSuggestionStripAnimatedHeight > 0 || isUnfoldedInnerLayoutActive()) View.VISIBLE else View.GONE
         }
         suggestionStripView = strip
         updateSuggestionBar()
@@ -9362,11 +10911,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         suggestionStripView?.let { strip ->
             val lp = (strip.layoutParams as? LinearLayout.LayoutParams)
             if (lp != null) {
-                lp.height = h
-                lp.topMargin = if (h > 0) dp(2) else 0
+                val reserve = isUnfoldedInnerLayoutActive()
+                lp.height = if (reserve) keyboardSuggestionStripHeight() else h
+                lp.topMargin = if (h > 0 || reserve) dp(2) else 0
                 strip.layoutParams = lp
             }
-            strip.visibility = if (h > 0) View.VISIBLE else View.GONE
+            strip.visibility = if (h > 0 || isUnfoldedInnerLayoutActive()) View.VISIBLE else View.GONE
         }
         if (::keyboardDockView.isInitialized && keyboardDockView.parent != null) {
             val lp = keyboardDockView.layoutParams
@@ -11403,6 +12953,7 @@ Reply format: ["word1","word2","word3"]"""
                 if (isUnfoldedInnerLayoutActive() && openPane == null) {
                     if (executeTypeToDoCommand(query)) {
                         query = ""
+                        refreshUnfoldedFocusContent()
                         renderRibbon()
                         return
                     }
@@ -11475,7 +13026,8 @@ Reply format: ["word1","word2","word3"]"""
                 scheduleGeminiSuggestions()
             }
         }
-        if (libraryOpen) scheduleLibraryRefresh()
+        if (libraryOpen && !isUnfoldedInnerLayoutActive()) scheduleLibraryRefresh()
+        if (isUnfoldedInnerLayoutActive() && openPane == null) refreshUnfoldedFocusContent()
         renderRibbon()
     }
 
@@ -13033,14 +14585,14 @@ Reply format: ["word1","word2","word3"]"""
             searchHintView.text = styledTypedCommand(typedText)
         } else {
             searchHintView.translationY = 0f
-            searchHintView.textSize = if (isVivoDevice()) 8.6f else 9.5f
-            searchHintView.typeface = Typeface.create("sans-serif-thin", Typeface.NORMAL)
-            searchHintView.letterSpacing = if (isVivoDevice()) 0.14f else 0.18f
+            searchHintView.textSize = if (libraryOpen) 10.8f else if (isVivoDevice()) 8.6f else 9.5f
+            searchHintView.typeface = Typeface.create(if (libraryOpen) "sans-serif-medium" else "sans-serif-thin", if (libraryOpen) Typeface.BOLD else Typeface.NORMAL)
+            searchHintView.letterSpacing = if (libraryOpen) 0.11f else if (isVivoDevice()) 0.14f else 0.18f
             searchHintView.ellipsize = android.text.TextUtils.TruncateAt.END
             searchHintView.includeFontPadding = false
             searchHintView.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
             searchHintView.setPadding(dp(10), dp(2), dp(6), dp(3))
-            searchHintView.setTextColor(activeNeuTokens.inkDim)
+            searchHintView.setTextColor(if (libraryOpen) activeNeuTokens.ink else activeNeuTokens.inkDim)
             searchHintView.text = hint
         }
         val widgetSearchActive = isWidgetUniversalSearchActive()
@@ -13330,7 +14882,7 @@ Reply format: ["word1","word2","word3"]"""
                     .setInterpolator(DecelerateInterpolator())
                     .start()
             }, (index * 24L).coerceAtMost(120L))
-            val iconFrame = dockIconFrameSize(showLabel)
+            val iconFrame = if (isUnfoldedInnerLayoutActive()) dp(58) else dockIconFrameSize(showLabel)
             addView(FrameLayout(context).apply {
                 elevation = dp(2).toFloat()
                 background = dockIconButtonBackground()
@@ -13339,13 +14891,14 @@ Reply format: ["word1","word2","word3"]"""
                         setImageDrawable(iconFor(libraryApp))
                         scaleType = ImageView.ScaleType.FIT_CENTER
                         adjustViewBounds = true
-                        setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
+                        val innerPad = if (isUnfoldedInnerLayoutActive()) dp(8) else appIconInnerPadding()
+                        setPadding(innerPad, innerPad, innerPad, innerPad)
                     }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 } else {
                     addView(TextView(context).apply {
                         text = "♪"
                         gravity = Gravity.CENTER
-                        textSize = 23f
+                        textSize = if (isUnfoldedInnerLayoutActive()) 28f else 23f
                         typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                         setTextColor(item.accent)
                         includeFontPadding = false
@@ -16009,7 +17562,7 @@ $emailText"""
     private fun widgetKeyboardHorizontalBleed(): Int = dp(10)
 
     private fun recessedDockBackground(): Drawable {
-        return Neu.drawable(activeNeuTokens, dp(19).toFloat(), NeuLevel.PRESSED_SM)
+        return teclasGlassDrawable(19)
     }
 
     private fun dockIconButtonBackground(): Drawable {
@@ -17479,38 +19032,42 @@ $emailText"""
     }
 
     private fun keyRowHeight(): Int {
+        val size = effectiveKeyboardSize()
         val base = if (keyboardSettingsOpen) 44 else 56
         val growth = if (keyboardSettingsOpen) 8 else 20
-        return dp(base + (keyboardSize * growth / 100))
+        return dp(base + (size * growth / 100))
     }
 
     private fun keyVerticalInset(): Int {
-        if (keyboardTheme == KEYBOARD_THEME_CLICKS || keyboardTheme == KEYBOARD_THEME_GOKEYS || keyboardTheme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme()) return dp(10 + keyboardSize * 5 / 100)
-        return dp(7 + keyboardSize * 4 / 100)
+        val size = effectiveKeyboardSize()
+        if (keyboardTheme == KEYBOARD_THEME_CLICKS || keyboardTheme == KEYBOARD_THEME_GOKEYS || keyboardTheme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme()) return dp(10 + size * 5 / 100)
+        return dp(7 + size * 4 / 100)
     }
 
     private fun keyRowOverlap(): Int {
-        return dp(12 + keyboardSize * 3 / 100)
+        val size = effectiveKeyboardSize()
+        return dp(12 + size * 3 / 100)
     }
 
     private fun keyHorizontalInset(): Int {
         return 0
     }
 
-    private fun goKeySize() = dp(43 + (keyboardSize * 8 / 100))
+    private fun goKeySize() = dp(43 + (effectiveKeyboardSize() * 8 / 100))
 
     private fun themedGoKeySize(): Int {
-        return dp(39 + (keyboardSize * 6 / 100))
+        return dp(39 + (effectiveKeyboardSize() * 6 / 100))
     }
 
     private fun clickWheelSize(): Int {
+        val size = effectiveKeyboardSize()
         val dockBound = keyboardHeight() - dp(16)
         val widthBound = resources.displayMetrics.widthPixels - dp(18)
-        val preferred = dp(272 + (keyboardSize * 16 / 100))
+        val preferred = dp(272 + (size * 16 / 100))
         return preferred.coerceAtMost(dockBound).coerceAtMost(widthBound).coerceAtLeast(dp(246))
     }
 
-    private fun hintBottomGap() = dp(2 + (keyboardSize * 2 / 100))
+    private fun hintBottomGap() = dp(2 + (effectiveKeyboardSize() * 2 / 100))
     private fun keyboardHeight(): Int {
         val rowCount = 4
         val rowsHeight = keyRowHeight() * rowCount
@@ -17523,7 +19080,8 @@ $emailText"""
     private fun keyboardBottomLift() = dp(3)
 
     private fun keyTextSize(label: String): Float {
-        if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + keyboardSize * 2f / 100f
+        val size = effectiveKeyboardSize()
+        if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + size * 2f / 100f
         if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
             val brushedBase = when (label) {
                 "shift", "period" -> 22f
@@ -17538,11 +19096,11 @@ $emailText"""
                 "space" -> 2f
                 else -> 2.5f
             }
-            return brushedBase + (keyboardSize * brushedGrowth / 100f)
+            return brushedBase + (size * brushedGrowth / 100f)
         }
         val base = when (label) { "shift" -> 24f; "space" -> 18f; "123", "clicks", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
         val growth = when (label) { "shift" -> 2.5f; "space" -> 2f; "123", "clicks", "enter", "back", "period", "abc" -> 1.5f; else -> 2.5f }
-        return base + (keyboardSize * growth / 100f)
+        return base + (size * growth / 100f)
     }
 
     private fun goLegendColor(): Int =
@@ -17630,13 +19188,19 @@ $emailText"""
     private fun syncSystemBars() {
         if (isFinishing) return
         val mediaDock = openPane?.usesMediaDock() == true
+        val innerWallpaperCanvas = isUnfoldedInnerLayoutActive() && openPane == null && !libraryOpen
         val darkBars = mediaDock || activeNeuTokens.mode == NeuMode.DARK
+        window.statusBarColor = if (innerWallpaperCanvas) {
+            if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFE9ECEF.toInt() else 0xFF070A0E.toInt()
+        } else {
+            if (darkBars) Color.BLACK else activeNeuTokens.base
+        }
         window.navigationBarColor = if (darkBars) Color.BLACK else activeNeuTokens.base
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }
 
-        val lightStatus = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock
+        val lightStatus = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock && !(innerWallpaperCanvas && activeNeuTokens.mode == NeuMode.DARK)
         val lightNav = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock
         var flags = window.decorView.systemUiVisibility
         flags = if (lightStatus) flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
@@ -17883,9 +19447,10 @@ $emailText"""
 
         override fun onDraw(canvas: Canvas) {
             if (width <= 0 || height <= 0) return
-            val base = activeNeuTokens.base
-            val baseHi = activeNeuTokens.baseHi
-            val baseLo = activeNeuTokens.baseLo
+            val light = mode == NeuMode.LIGHT
+            val base = if (light) 0xFFEAF0F5.toInt() else 0xFF181B21.toInt()
+            val baseHi = if (light) Color.WHITE else 0xFF20232A.toInt()
+            val baseLo = if (light) 0xFFD9E0E8.toInt() else 0xFF14161B.toInt()
             val edgeInset = dp(3).toFloat()
             val bodyRadius = dp(30).toFloat()
             val body = RectF(edgeInset, edgeInset, width - edgeInset, height - edgeInset)
@@ -17893,9 +19458,9 @@ $emailText"""
             paint.style = Paint.Style.STROKE
             repeat(4) { index ->
                 val grow = dp(index + 1).toFloat()
-                val alpha = (if (mode == NeuMode.LIGHT) 0.12f else 0.34f) * dragProgress / (index + 1)
+                val alpha = (if (light) 0.14f else 0.42f) * dragProgress / (index + 1)
                 paint.strokeWidth = grow
-                paint.color = adjustAlpha(if (mode == NeuMode.LIGHT) Color.WHITE else Color.BLACK, alpha)
+                paint.color = adjustAlpha(if (light) Color.WHITE else Color.BLACK, alpha)
                 canvas.drawRoundRect(
                     RectF(body.left - grow, body.top - grow, body.right + grow, body.bottom + grow),
                     bodyRadius + grow,
@@ -17908,9 +19473,9 @@ $emailText"""
             paint.shader = android.graphics.LinearGradient(
                 body.left, body.top, body.right, body.bottom,
                 intArrayOf(
-                    adjustAlpha(baseHi, if (mode == NeuMode.LIGHT) 0.32f else 0.56f),
-                    adjustAlpha(base, if (mode == NeuMode.LIGHT) 0.22f else 0.46f),
-                    adjustAlpha(baseLo, if (mode == NeuMode.LIGHT) 0.30f else 0.66f)
+                    adjustAlpha(baseHi, if (light) 0.34f else 0.22f),
+                    adjustAlpha(base, if (light) 0.16f else 0.14f),
+                    adjustAlpha(baseLo, if (light) 0.25f else 0.30f)
                 ),
                 floatArrayOf(0f, 0.48f, 1f),
                 Shader.TileMode.CLAMP
@@ -17924,9 +19489,9 @@ $emailText"""
                 0f,
                 body.bottom,
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.22f else 0.28f),
-                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.08f else 0.12f),
-                    adjustAlpha(Color.BLACK, if (mode == NeuMode.LIGHT) 0.06f else 0.12f)
+                    adjustAlpha(Color.WHITE, if (light) 0.34f else 0.16f),
+                    adjustAlpha(Color.WHITE, if (light) 0.10f else 0.03f),
+                    adjustAlpha(Color.BLACK, if (light) 0.06f else 0.22f)
                 ),
                 floatArrayOf(0f, 0.28f, 1f),
                 Shader.TileMode.CLAMP
@@ -17939,8 +19504,8 @@ $emailText"""
                 body.top + dp(28),
                 width * 0.78f,
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.18f else 0.18f),
-                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.05f else 0.06f),
+                    adjustAlpha(Color.WHITE, if (light) 0.30f else 0.13f),
+                    adjustAlpha(Color.WHITE, if (light) 0.08f else 0.035f),
                     Color.TRANSPARENT
                 ),
                 floatArrayOf(0f, 0.38f, 1f),
@@ -17952,7 +19517,7 @@ $emailText"""
             canvas.restore()
             paint.shader = null
 
-            val glowAlpha = (if (mode == NeuMode.LIGHT) 0.16f else 0.23f) * ambientStrength * (0.45f + dragProgress * 0.55f)
+            val glowAlpha = (if (light) 0.16f else 0.18f) * ambientStrength * (0.45f + dragProgress * 0.55f)
             paint.shader = RadialGradient(
                 width * 0.24f,
                 height * 0.20f,
@@ -17976,9 +19541,9 @@ $emailText"""
             paint.shader = android.graphics.LinearGradient(
                 0f, body.top, 0f, body.bottom,
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.42f else 0.36f),
-                    adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.11f else 0.08f),
-                    adjustAlpha(Color.BLACK, if (mode == NeuMode.LIGHT) 0.18f else 0.46f)
+                    adjustAlpha(Color.WHITE, if (light) 0.58f else 0.38f),
+                    adjustAlpha(Color.WHITE, if (light) 0.12f else 0.05f),
+                    adjustAlpha(Color.BLACK, if (light) 0.18f else 0.62f)
                 ),
                 floatArrayOf(0f, 0.52f, 1f),
                 Shader.TileMode.CLAMP
@@ -17991,7 +19556,7 @@ $emailText"""
             canvas.clipPath(Path().apply { addRoundRect(body, bodyRadius, bodyRadius, Path.Direction.CW) })
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(1).toFloat()
-            paint.color = adjustAlpha(Color.WHITE, if (mode == NeuMode.LIGHT) 0.20f else 0.16f)
+            paint.color = adjustAlpha(Color.WHITE, if (light) 0.20f else 0.10f)
             val streakGap = dp(96).toFloat()
             var sx = -height.toFloat()
             while (sx < width + height) {
@@ -18006,9 +19571,9 @@ $emailText"""
             paint.shader = android.graphics.LinearGradient(
                 rect.left, 0f, rect.right, 0f,
                 intArrayOf(
-                    adjustAlpha(baseHi, if (mode == NeuMode.LIGHT) 0.38f else 0.24f),
+                    adjustAlpha(baseHi, if (light) 0.38f else 0.24f),
                     adjustAlpha(base, 0.86f),
-                    adjustAlpha(baseLo, if (mode == NeuMode.LIGHT) 0.34f else 0.72f)
+                    adjustAlpha(baseLo, if (light) 0.34f else 0.72f)
                 ),
                 floatArrayOf(0f, 0.48f, 1f),
                 Shader.TileMode.CLAMP
@@ -18018,9 +19583,9 @@ $emailText"""
 
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(1).toFloat()
-            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), if (mode == NeuMode.LIGHT) 0.32f else 0.14f)
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), if (light) 0.32f else 0.14f)
             canvas.drawLine(dp(4).toFloat(), rect.top + dp(16), dp(4).toFloat(), rect.bottom - dp(16), paint)
-            paint.color = adjustAlpha(0xFF000000.toInt(), if (mode == NeuMode.LIGHT) 0.18f else 0.58f)
+            paint.color = adjustAlpha(0xFF000000.toInt(), if (light) 0.18f else 0.58f)
             canvas.drawLine(edgeWidth - dp(2).toFloat(), rect.top + dp(18), edgeWidth - dp(2).toFloat(), rect.bottom - dp(18), paint)
 
             paint.style = Paint.Style.FILL
@@ -18066,6 +19631,9 @@ $emailText"""
         override fun onDraw(canvas: Canvas) {
             if (width <= 0 || height <= 0) return
             val light = activeNeuTokens.mode == NeuMode.LIGHT
+            val glassTop = if (light) Color.WHITE else 0xFF20232A.toInt()
+            val glassMid = if (light) 0xFFEAF0F5.toInt() else 0xFF181B21.toInt()
+            val glassBottom = if (light) 0xFFD9E0E8.toInt() else 0xFF14161B.toInt()
             val radius = dp(radiusDp).toFloat()
             val alphaBoost = strength.coerceIn(0.5f, 2.25f)
             val edgeInset = dp(edgeInsetDp).toFloat()
@@ -18094,9 +19662,9 @@ $emailText"""
                 0f,
                 rect.bottom,
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, ((if (light) 0.30f else 0.16f) * alphaBoost).coerceAtMost(if (light) 0.72f else 0.38f) * progress),
-                    adjustAlpha(activeNeuTokens.baseHi, ((if (light) 0.20f else 0.12f) * alphaBoost).coerceAtMost(if (light) 0.52f else 0.32f) * progress),
-                    adjustAlpha(activeNeuTokens.baseLo, ((if (light) 0.22f else 0.38f) * alphaBoost).coerceAtMost(if (light) 0.60f else 0.82f) * progress)
+                    adjustAlpha(glassTop, ((if (light) 0.38f else 0.68f) * alphaBoost).coerceAtMost(if (light) 0.78f else 0.86f) * progress),
+                    adjustAlpha(glassMid, ((if (light) 0.28f else 0.50f) * alphaBoost).coerceAtMost(if (light) 0.62f else 0.78f) * progress),
+                    adjustAlpha(glassBottom, ((if (light) 0.34f else 0.70f) * alphaBoost).coerceAtMost(if (light) 0.68f else 0.90f) * progress)
                 ),
                 floatArrayOf(0f, 0.46f, 1f),
                 Shader.TileMode.CLAMP
@@ -18109,7 +19677,7 @@ $emailText"""
                 height * 0.08f,
                 width * 0.88f,
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, ((if (light) 0.18f else 0.10f) * alphaBoost).coerceAtMost(if (light) 0.46f else 0.24f) * progress),
+                    adjustAlpha(Color.WHITE, ((if (light) 0.22f else 0.12f) * alphaBoost).coerceAtMost(if (light) 0.52f else 0.24f) * progress),
                     Color.TRANSPARENT
                 ),
                 floatArrayOf(0f, 1f),
@@ -18129,9 +19697,9 @@ $emailText"""
                 0f,
                 height.toFloat(),
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, ((if (light) 0.44f else 0.30f) * alphaBoost).coerceAtMost(if (light) 0.78f else 0.54f) * progress),
+                    adjustAlpha(Color.WHITE, ((if (light) 0.48f else 0.34f) * alphaBoost).coerceAtMost(if (light) 0.82f else 0.56f) * progress),
                     adjustAlpha(Color.WHITE, (0.04f * alphaBoost).coerceAtMost(0.12f) * progress),
-                    adjustAlpha(Color.BLACK, ((if (light) 0.10f else 0.42f) * alphaBoost).coerceAtMost(if (light) 0.22f else 0.82f) * progress)
+                    adjustAlpha(Color.BLACK, ((if (light) 0.12f else 0.54f) * alphaBoost).coerceAtMost(if (light) 0.24f else 0.88f) * progress)
                 ),
                 floatArrayOf(0f, 0.52f, 1f),
                 Shader.TileMode.CLAMP
@@ -18798,6 +20366,10 @@ $emailText"""
         private const val KeyHighlight = 0xFF3A3E4A.toInt()
         private const val PREFS_NAME = "clicks"
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
+        private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
+        private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"
+        private const val INNER_KEYBOARD_OFFSET_X_PREF = "inner_keyboard_offset_x"
+        private const val INNER_KEYBOARD_OFFSET_Y_PREF = "inner_keyboard_offset_y"
         private const val TOUCH_MODEL_PREF = "touch_model_v1"
         private const val APP_ICON_SIZE_PREF = "app_icon_size"
         private const val KEYBOARD_PLACEMENT_PREF = "keyboard_placement"
@@ -18839,6 +20411,11 @@ $emailText"""
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
+        private const val HOME_INNER_WALLPAPER_URI_PREF = "home_inner_wallpaper_uri"
+        private const val HOME_INNER_WALLPAPER_ZOOM_PREF = "home_inner_wallpaper_zoom"
+        private const val HOME_INNER_WALLPAPER_OFFSET_X_PREF = "home_inner_wallpaper_offset_x"
+        private const val HOME_INNER_WALLPAPER_OFFSET_Y_PREF = "home_inner_wallpaper_offset_y"
+        private const val INNER_LIBRARY_LOCKED_PREF = "inner_library_locked"
         private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
         private const val GRID_WORKSPACE_LAB_PREF = "grid_workspace_lab"
         private const val DOCK_APP_LIMIT = 5
