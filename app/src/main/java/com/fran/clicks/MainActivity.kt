@@ -306,6 +306,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var musicSearchDebounce: Runnable? = null
     private var spotifyQuickQuery: String = ""
     private var spotifyQuickResults: List<SearchResult> = emptyList()
+    private var gmailSearchDebounce: Runnable? = null
+    private var gmailQuickQuery: String = ""
+    private var gmailQuickResults: List<SearchResult> = emptyList()
+    private var fileSearchDebounce: Runnable? = null
+    private var fileQuickQuery: String = ""
+    private var fileQuickResults: List<SearchResult> = emptyList()
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -5209,6 +5215,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.TRAVEL -> Neu.PURPLE
         SearchKind.AI -> Neu.PURPLE
         SearchKind.MUSIC -> Neu.GREEN
+        SearchKind.FILE -> Neu.BLUE
     }
 
     private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
@@ -5220,6 +5227,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.APP -> "A"
         SearchKind.TRAVEL -> "✈"
         SearchKind.MUSIC -> "♪"
+        SearchKind.FILE -> "F"
     }
 
     private data class SearchCommandPreview(val title: String, val subtitle: String, val glyph: String)
@@ -8850,6 +8858,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var launcherPolishing = false
     private var pendingLauncherCommand: AgenticRouter.Command? = null
     private var pendingLauncherActions: List<Pair<String, String>> = emptyList()
+    // Hold go over an empty field → discoverable starter chips instead of the old auto-location.
+    private var pendingLauncherStarters: List<Pair<String, () -> Unit>> = emptyList()
+    // Shared-engine surfaces (parity with the IME): a working-status banner and a result HUD.
+    private var launcherAgenticStatus: String? = null
+    private var pendingLauncherResult: AgenticResult? = null
 
     private fun showSuggestionStrip() = true
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
@@ -8892,6 +8905,60 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             return
         }
+        // Shared-engine working banner (mood/stock/notion/weather in flight).
+        val agenticStatus = launcherAgenticStatus
+        if (agenticStatus != null) {
+            strip.removeAllViews()
+            strip.background = suggestionStripBackground(null, true)
+            strip.addView(TextView(this).apply {
+                text = agenticStatus; gravity = Gravity.CENTER; textSize = 14.5f
+                includeFontPadding = false; setTextColor(0xFFCBB4FF.toInt())
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            return
+        }
+        // Shared-engine result HUD: title + body, optional Insert, follow-up chips, close.
+        val result = pendingLauncherResult
+        if (result != null) {
+            strip.removeAllViews()
+            strip.background = suggestionStripBackground(null, true)
+            strip.addView(TextView(this).apply {
+                text = if (result.body.length > 60) result.body.take(58).trimEnd() + "…" else result.body
+                gravity = Gravity.CENTER_VERTICAL; textSize = 13.5f; includeFontPadding = false
+                setTextColor(activeNeuTokens.ink); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(8), 0, dp(6), 0)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            result.insert?.let { ins ->
+                strip.addView(TextView(this).apply {
+                    text = "INSERT"; gravity = Gravity.CENTER; textSize = 10.5f; letterSpacing = 0.1f
+                    setTextColor(0xFFCBB4FF.toInt()); setPadding(dp(11), 0, dp(11), 0)
+                    background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
+                    isClickable = true
+                    setOnClickListener {
+                        keyHaptic("space"); pendingLauncherResult = null
+                        launcherAgenticHost.insertText(ins)
+                    }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+            }
+            result.followUps.take(2).forEach { fu ->
+                strip.addView(TextView(this).apply {
+                    text = fu.label; gravity = Gravity.CENTER; textSize = 12f; includeFontPadding = false
+                    setTextColor(activeNeuTokens.ink); setPadding(dp(11), 0, dp(11), 0)
+                    background = GradientDrawable().apply {
+                        setColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x22000000); cornerRadius = dp(9).toFloat()
+                        setStroke(dp(1), (activeNeuTokens.inkDim and 0x00FFFFFF) or 0x44000000)
+                    }
+                    isClickable = true
+                    setOnClickListener { keyHaptic("space"); pendingLauncherResult = null; updateSuggestionBar(); fu.run() }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+            }
+            strip.addView(TextView(this).apply {
+                text = "✕"; gravity = Gravity.CENTER; textSize = 14f
+                setTextColor(activeNeuTokens.inkDim); setPadding(dp(10), 0, dp(6), 0)
+                isClickable = true
+                setOnClickListener { keyHaptic("back"); pendingLauncherResult = null; updateSuggestionBar() }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(2) })
+            return
+        }
         val pendingCmd = pendingLauncherCommand
         if (pendingCmd != null) {
             strip.removeAllViews()
@@ -8932,6 +8999,35 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         LinearLayout.LayoutParams(dp(1), dp(16)))
                 }
             }
+            return
+        }
+        val pendingStart = pendingLauncherStarters
+        if (pendingStart.isNotEmpty()) {
+            strip.removeAllViews()
+            strip.background = suggestionStripBackground(null, true)
+            strip.addView(TextView(this).apply {
+                text = "TRY"; gravity = Gravity.CENTER; textSize = 9.5f; letterSpacing = 0.14f
+                includeFontPadding = false; setTextColor(activeNeuTokens.inkDim)
+                setPadding(dp(4), 0, dp(8), 0)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            pendingStart.forEach { (label, run) ->
+                row.addView(TextView(this).apply {
+                    text = label; gravity = Gravity.CENTER; textSize = 13.5f; includeFontPadding = false
+                    setTextColor(activeNeuTokens.ink); maxLines = 1
+                    setPadding(dp(12), dp(6), dp(12), dp(6))
+                    background = GradientDrawable().apply {
+                        setColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x22000000); cornerRadius = dp(11).toFloat()
+                        setStroke(dp(1), (activeNeuTokens.inkDim and 0x00FFFFFF) or 0x44000000)
+                    }
+                    isClickable = true
+                    setOnClickListener { keyHaptic("space"); pendingLauncherStarters = emptyList(); run() }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) })
+            }
+            strip.addView(android.widget.HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+                addView(row)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             return
         }
         var shown = suggestions.take(3)
@@ -9115,8 +9211,55 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun launcherCommandText(): String =
         if (openPane?.kind == PaneKind.CHAT) composeText else query
 
+    private fun launcherClipboardText(): String {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return ""
+        val clip = cm.primaryClip ?: return ""
+        if (clip.itemCount == 0) return ""
+        return clip.getItemAt(0).coerceToText(this)?.toString()?.trim().orEmpty()
+    }
+
+    private fun flashLauncherStatus(msg: String, ms: Long) {
+        launcherAgenticStatus = msg; updateSuggestionBar()
+        handler.postDelayed({ if (launcherAgenticStatus == msg) { launcherAgenticStatus = null; updateSuggestionBar() } }, ms)
+    }
+
+    // How the shared AgenticEngine renders into the launcher keyboard — parity with the IME's host.
+    // Attach is the one non-portable skill: the launcher edits its own field, so there's no external
+    // editor to commitContent a file into.
+    private val launcherAgenticHost = object : AgenticHost {
+        override val hostContext: Context get() = this@MainActivity
+        override fun prefs() = this@MainActivity.prefs()
+        override fun clipboardText() = launcherClipboardText()
+        override fun isPro() = ProManager.isUnlocked(this@MainActivity)
+        override fun isGoogleConnected() = GmailAuth(this@MainActivity).isConnected
+        override fun post(action: () -> Unit) { runOnUiThread(action) }
+        override fun clearField(consumed: String) {
+            if (openPane?.kind == PaneKind.CHAT) { composeText = ""; openPane?.let { renderPaneContent(it) } } else query = ""
+            updateAutoCapState(); updateKeyLabels(); render()
+        }
+        override fun showStatus(msg: String) { launcherAgenticStatus = msg; updateSuggestionBar() }
+        override fun flashStatus(msg: String, ms: Long) { flashLauncherStatus(msg, ms) }
+        override fun showResult(result: AgenticResult) {
+            launcherAgenticStatus = null; pendingLauncherResult = result; updateSuggestionBar()
+        }
+        override fun insertText(text: String) {
+            launcherAgenticStatus = null
+            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } } else query += text
+            updateAutoCapState(); updateKeyLabels(); render()
+        }
+        override fun runAttach() { flashLauncherStatus("📎 Attach works in the in-app keyboard", 2600) }
+    }
+
     private fun runLauncherAgenticCommand() {
         val raw = launcherCommandText()
+        // Clip-skills (mood, stock, notion, attach…) run through the shared engine — identical to the IME.
+        if (AgenticEngine.tryClipSkill(launcherAgenticHost, raw)) return
+        // Empty field: show discoverable starter chips (Share location + top skills) instead of
+        // silently classifying "" into the location command — the "selection of things to do".
+        if (raw.isBlank()) {
+            val starters = buildLauncherStarters()
+            if (starters.isNotEmpty()) { pendingLauncherStarters = starters; updateSuggestionBar(); return }
+        }
         val cmd = AgenticRouter.classify(raw)
         if (cmd != null) { pendingLauncherCommand = cmd; updateSuggestionBar(); return }
         val geminiReady = raw.isNotBlank() && ProManager.isUnlocked(this) && geminiConfigured()
@@ -9147,7 +9290,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val cmd = pendingLauncherCommand ?: return
         pendingLauncherCommand = null
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherLocation(); return }
-        if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherWeather(cmd.arg); return }
+        if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); AgenticEngine.runWeather(launcherAgenticHost, cmd.arg); return }
         if (cmd.insertText != null) {
             if (openPane?.kind == PaneKind.CHAT) composeText = cmd.insertText else query = cmd.insertText
             suggestions = emptyList(); updateAutoCapState(); updateKeyLabels(); render()
@@ -9160,26 +9303,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (statusMsg != null) android.widget.Toast.makeText(this, statusMsg, android.widget.Toast.LENGTH_SHORT).show()
     }
 
+    // Starter chips for the held-go-over-empty-field case (launcher parity with the IME): Share location
+    // runs on tap; the rest seed their trigger into the field so the user just finishes the thought.
+    private fun buildLauncherStarters(): List<Pair<String, () -> Unit>> {
+        val chips = ArrayList<Pair<String, () -> Unit>>()
+        chips.add("📍 Share location" to { insertLauncherLocation() })
+        AgenticRouter.starters(4).forEach { s ->
+            if (s.insert.isBlank()) return@forEach
+            chips.add(s.label to { seedLauncherField(s.insert) })
+        }
+        return chips
+    }
+
+    private fun seedLauncherField(prefix: String) {
+        pendingLauncherStarters = emptyList()
+        if (openPane?.kind == PaneKind.CHAT) { composeText += prefix; openPane?.let { renderPaneContent(it) } }
+        else query += prefix
+        updateAutoCapState(); updateKeyLabels(); render()
+    }
+
     private fun insertLauncherLocation() {
+        pendingLauncherStarters = emptyList()
         if (!AgenticLocation.hasPermission(this)) {
             android.widget.Toast.makeText(this, "Enable location for Clicks", android.widget.Toast.LENGTH_SHORT).show()
             return
         }
         mediaUiScope.launch {
             val text = withContext(Dispatchers.IO) { AgenticLocation.currentLocationText(this@MainActivity) } ?: return@launch
-            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
-            else query += text
-            updateKeyLabels(); render()
-        }
-    }
-
-    private fun insertLauncherWeather(place: String) {
-        mediaUiScope.launch {
-            val text = withContext(Dispatchers.IO) { WeatherApi.lookup(place) }
-            if (text == null) {
-                android.widget.Toast.makeText(this@MainActivity, "Couldn’t get weather for “$place”", android.widget.Toast.LENGTH_SHORT).show()
-                return@launch
-            }
             if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
             else query += text
             updateKeyLabels(); render()
@@ -10545,6 +10695,8 @@ Reply format: ["word1","word2","word3"]"""
         }
         pendingLauncherCommand = null
         pendingLauncherActions = emptyList()
+        pendingLauncherStarters = emptyList()
+        pendingLauncherResult = null
         glideJustCommitted = false   // leaving the post-swipe "tap an alternative" window
         val pane = openPane
         if (pane?.kind == PaneKind.CHAT) { handleChatKey(label, pane); return }
@@ -10760,6 +10912,8 @@ Reply format: ["word1","word2","word3"]"""
         // Instant refresh for ≤2 chars (first letters feel snappy), debounce longer queries
         handler.postDelayed(r, if (query.length <= 2) 0L else 120L)
         scheduleMusicSearch()
+        scheduleEmailSearch()
+        scheduleFileSearch()
     }
 
     /** Debounced in-launcher Spotify search. Populates [spotifyQuickResults] for the current query so
@@ -10785,13 +10939,109 @@ Reply format: ["word1","word2","word3"]"""
                         accent = 0xFF1DB954.toInt(),   // Spotify green
                         kind = SearchKind.MUSIC,
                         target = null
-                    ) { mediaUiScope.launch { spotifyApi.playTrack(track.uri) }; Unit }
+                    ) { playSpotifyTrackFromSearch(track) }
                 }
                 if (libraryOpen) refreshLibraryContent()
             }
         }
         musicSearchDebounce = r
         handler.postDelayed(r, 320L)
+    }
+
+    private fun scheduleEmailSearch() {
+        gmailSearchDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        if (q.length < 3 || !gmailAuth.isConnected) {
+            if (gmailQuickResults.isNotEmpty()) { gmailQuickResults = emptyList(); gmailQuickQuery = "" }
+            return
+        }
+        if (q == gmailQuickQuery) return
+        val r = Runnable {
+            gmailSearchDebounce = null
+            mediaUiScope.launch {
+                val messages = withContext(Dispatchers.IO) {
+                    runCatching {
+                        gmailApi.search(q, maxResults = 4)
+                            .take(4)
+                            .mapNotNull { gmailApi.message(it) }
+                    }.getOrDefault(emptyList())
+                }
+                if (query.trim() != q) return@launch
+                gmailQuickQuery = q
+                gmailQuickResults = messages.map { msg ->
+                    SearchResult(
+                        title = msg.subject.ifBlank { travelFrom(msg.from).ifBlank { "Email" } },
+                        subtitle = listOf(travelFrom(msg.from), msg.snippet)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" · ")
+                            .take(120),
+                        accent = 0xFFF5C451.toInt(),
+                        kind = SearchKind.EMAIL,
+                        target = null
+                    ) { openEmail(msg) }
+                }
+                if (libraryOpen) refreshLibraryContent()
+            }
+        }
+        gmailSearchDebounce = r
+        handler.postDelayed(r, 420L)
+    }
+
+    private fun scheduleFileSearch() {
+        fileSearchDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        if (q.length < 3) {
+            if (fileQuickResults.isNotEmpty()) { fileQuickResults = emptyList(); fileQuickQuery = "" }
+            return
+        }
+        if (q == fileQuickQuery) return
+        val r = Runnable {
+            fileSearchDebounce = null
+            mediaUiScope.launch {
+                val files = withContext(Dispatchers.IO) { searchLocalFiles(q, limit = 5) }
+                if (query.trim() != q) return@launch
+                fileQuickQuery = q
+                fileQuickResults = files.map { file ->
+                    SearchResult(
+                        title = file.name,
+                        subtitle = file.mimeType?.takeIf { it.isNotBlank() } ?: "File",
+                        accent = Neu.BLUE,
+                        kind = SearchKind.FILE,
+                        target = null
+                    ) { openLocalFile(file) }
+                }
+                if (libraryOpen) refreshLibraryContent()
+            }
+        }
+        fileSearchDebounce = r
+        handler.postDelayed(r, 360L)
+    }
+
+    private fun playSpotifyTrackFromSearch(track: SpotifyTrack) {
+        mediaUiScope.launch {
+            val started = withContext(Dispatchers.IO) {
+                runCatching { spotifyApi.playTrack(track.uri) }.getOrDefault(false)
+            }
+            if (started) {
+                Toast.makeText(this@MainActivity, "Playing ${track.name}", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val spotifyIntent = Intent(Intent.ACTION_VIEW, Uri.parse(track.uri)).apply {
+                setPackage("com.spotify.music")
+            }
+            val opened = runCatching {
+                startActivity(spotifyIntent)
+                true
+            }.getOrDefault(false)
+            if (!opened) {
+                val webUrl = if (track.id.startsWith("spotify:")) {
+                    "https://open.spotify.com/search/${Uri.encode(track.name + " " + track.artist)}"
+                } else {
+                    "https://open.spotify.com/track/${Uri.encode(track.id)}"
+                }
+                startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(webUrl)), "Spotify can't play this track here")
+            }
+        }
     }
 
     private fun handleChatKey(label: String, pane: PaneTarget) {
@@ -12539,20 +12789,14 @@ Reply format: ["word1","word2","word3"]"""
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         val results = mutableListOf<SearchResult>()
-        // Smart routing: auto-decide whether this reads as a web lookup or an AI question, put that
-        // first (the "best" tab), and offer the other mode right below so you can switch.
-        if (q.length >= 2) {
-            val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) }
-            val ai = SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) }
-            if (looksLikeWebSearch(q)) { results.add(web); results.add(ai.copy(title = "Ask Gemini instead")) }
-            else { results.add(ai); results.add(web.copy(title = "Search the web instead")) }
-        }
-        librarySearchResults().take(6).forEach { app ->
-            results.add(SearchResult(app.label, "Open app", app.brandColor, SearchKind.APP, app.toPaneTarget()))
+        librarySearchResults().take(5).forEach { app ->
+            results.add(SearchResult(app.label, "Open", app.brandColor, SearchKind.APP, app.toPaneTarget()))
         }
         // Playable Spotify tracks for this query (fetched async in scheduleMusicSearch) — tap to play
         // in place, no need to leave the homescreen.
         if (spotifyQuickQuery == q) results.addAll(spotifyQuickResults)
+        if (gmailQuickQuery == q) results.addAll(gmailQuickResults)
+        if (fileQuickQuery == q) results.addAll(fileQuickResults)
         if (looksLikeTravelQuery(q)) {
             val boarding = q.lowercase(Locale.US).contains("boarding") || q.lowercase(Locale.US).contains("pass")
             results.add(0, SearchResult(
@@ -12563,6 +12807,23 @@ Reply format: ["word1","word2","word3"]"""
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
+        if (q.length >= 2) {
+            val directHits = results.isNotEmpty()
+            val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) }
+            val ai = SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) }
+            when {
+                !directHits && looksLikeWebSearch(q) -> {
+                    results.add(web)
+                    results.add(ai.copy(title = "Ask Gemini instead"))
+                }
+                !directHits -> {
+                    results.add(ai)
+                    results.add(web.copy(title = "Search the web instead"))
+                }
+                looksLikeAiQuestion(q) -> results.add(ai)
+                else -> results.add(web.copy(title = "Search web for \"$q\""))
+            }
+        }
         return results.distinctBy { "${it.kind}:${it.title}:${it.subtitle}" }.take(14)
     }
 
@@ -12873,6 +13134,45 @@ Reply format: ["word1","word2","word3"]"""
         // Open the message in Gmail on the web via a subject search (reliable without RFC id).
         val url = "https://mail.google.com/mail/u/0/#search/" + Uri.encode(msg.subject.ifBlank { travelFrom(msg.from) })
         startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser available")
+    }
+
+    private data class LocalFileHit(val name: String, val uri: Uri, val mimeType: String?)
+
+    private fun searchLocalFiles(q: String, limit: Int): List<LocalFileHit> {
+        val fileUri = MediaStore.Files.getContentUri("external")
+        val projection = arrayOf(
+            MediaStore.Files.FileColumns._ID,
+            MediaStore.Files.FileColumns.DISPLAY_NAME,
+            MediaStore.Files.FileColumns.MIME_TYPE
+        )
+        val results = mutableListOf<LocalFileHit>()
+        runCatching {
+            contentResolver.query(
+                fileUri,
+                projection,
+                "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?",
+                arrayOf("%$q%"),
+                "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+                while (cursor.moveToNext() && results.size < limit) {
+                    val name = cursor.getString(nameCol)?.takeIf { it.isNotBlank() } ?: continue
+                    val uri = ContentUris.withAppendedId(fileUri, cursor.getLong(idCol))
+                    results.add(LocalFileHit(name, uri, cursor.getString(mimeCol)))
+                }
+            }
+        }
+        return results
+    }
+
+    private fun openLocalFile(file: LocalFileHit) {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(file.uri, file.mimeType?.takeIf { it.isNotBlank() } ?: "*/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startSafeIntent(intent, "No app can open this file")
     }
 
     private fun openBoardingPass(ref: BoardingPassRef) {
@@ -16510,6 +16810,7 @@ $emailText"""
 
     private inner class WeatherAmbientView(context: Context) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rainPath = Path()
         private var weatherCode = 0
         private var mode = NeuMode.DARK
         private var progress = 1f
@@ -16639,17 +16940,56 @@ $emailText"""
 
         private fun drawRain(canvas: Canvas, dt: Float) {
             val w = width.toFloat(); val h = height.toFloat()
-            val color = if (mode == NeuMode.LIGHT) 0xFF6E7A88.toInt() else 0xFFBFD0E8.toInt()
-            paint.style = Paint.Style.STROKE
-            paint.strokeCap = Paint.Cap.ROUND
+            val color = if (mode == NeuMode.LIGHT) 0xFF7E8EA4.toInt() else 0xFFCFE0F8.toInt()
             for (d in parts) {
                 d.x += d.vx * dt; d.y += d.vy * dt
                 if (d.y - d.len > h) { d.y = -rnd.nextFloat() * h * 0.15f; d.x = rnd.nextFloat() * w }
                 if (d.x > w) d.x -= w
-                paint.strokeWidth = d.size
-                paint.color = adjustAlpha(color, d.a)
-                canvas.drawLine(d.x, d.y, d.x - d.vx * 0.016f, d.y - d.len, paint)
+                drawRainDrop(canvas, d.x, d.y, d.vx, d.len, d.size, d.a, color)
             }
+            paint.style = Paint.Style.FILL
+            paint.shader = null
+        }
+
+        private fun drawRainDrop(canvas: Canvas, x: Float, y: Float, vx: Float, len: Float, size: Float, alpha: Float, color: Int) {
+            val slant = vx * 0.017f
+            val topX = x - slant
+            val topY = y - len
+            val half = (size * 1.25f).coerceAtLeast(resources.displayMetrics.density * 0.9f)
+            rainPath.reset()
+            rainPath.moveTo(topX, topY)
+            rainPath.cubicTo(
+                topX + half * 1.8f, topY + len * 0.32f,
+                x + half * 1.4f, y - half * 1.6f,
+                x + half * 0.35f, y
+            )
+            rainPath.cubicTo(
+                x - half * 0.55f, y + half * 0.15f,
+                x - half * 1.55f, y - half * 1.7f,
+                topX, topY
+            )
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.LinearGradient(
+                topX,
+                topY,
+                x,
+                y,
+                intArrayOf(
+                    0x00000000,
+                    adjustAlpha(color, alpha * 0.58f),
+                    adjustAlpha(0xFFFFFFFF.toInt(), alpha * 0.46f)
+                ),
+                floatArrayOf(0f, 0.62f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawPath(rainPath, paint)
+            paint.shader = null
+
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = (half * 0.26f).coerceAtLeast(0.7f)
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), alpha * 0.32f)
+            canvas.drawLine(topX + half * 0.35f, topY + len * 0.30f, x - half * 0.15f, y - half * 1.1f, paint)
             paint.style = Paint.Style.FILL
         }
 
@@ -16758,6 +17098,7 @@ $emailText"""
     // touches straight through and pauses when off-screen.
     private inner class WeatherDripView(context: Context) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val dropPath = Path()
         private val drips = ArrayList<DripDrop>()
         private val edgeBuf = ArrayList<FloatArray>()
         private var running = false
@@ -16825,19 +17166,48 @@ $emailText"""
                     drop.grow += dt
                     val t = (drop.grow / 0.9f).coerceIn(0f, 1f)
                     val rr = drop.r * (0.45f + 0.55f * t)
-                    paint.color = adjustAlpha(color, drop.a)
-                    canvas.drawCircle(drop.x, drop.edgeY + rr * 0.7f, rr, paint)
+                    drawBeadedDrop(canvas, drop.x, drop.edgeY + rr * 0.8f, rr, drop.a, color, attached = true)
                     if (drop.grow >= 0.9f) { drop.released = true; drop.y = drop.edgeY + rr; drop.vy = 24f * d }
                 } else {
                     drop.vy += 950f * d * dt
                     drop.y += drop.vy * dt
                     drop.a -= dt * 0.45f
                     if (drop.a <= 0f || drop.y - drop.r > h) { iter.remove(); continue }
-                    paint.color = adjustAlpha(color, drop.a)
-                    canvas.drawCircle(drop.x, drop.y, drop.r * 0.8f, paint)
+                    drawBeadedDrop(canvas, drop.x, drop.y, drop.r * 0.95f, drop.a, color, attached = false)
                 }
             }
             postInvalidateOnAnimation()
+        }
+
+        private fun drawBeadedDrop(canvas: Canvas, cx: Float, cy: Float, r: Float, alpha: Float, color: Int, attached: Boolean) {
+            val top = cy - r * if (attached) 0.75f else 1.35f
+            val bottom = cy + r * if (attached) 0.82f else 1.28f
+            dropPath.reset()
+            dropPath.moveTo(cx, top)
+            dropPath.cubicTo(cx + r * 1.06f, cy - r * 0.45f, cx + r * 0.92f, bottom - r * 0.16f, cx, bottom)
+            dropPath.cubicTo(cx - r * 0.92f, bottom - r * 0.16f, cx - r * 1.06f, cy - r * 0.45f, cx, top)
+            paint.style = Paint.Style.FILL
+            paint.shader = RadialGradient(
+                cx - r * 0.35f,
+                cy - r * 0.45f,
+                r * 1.65f,
+                intArrayOf(
+                    adjustAlpha(0xFFFFFFFF.toInt(), alpha * 0.74f),
+                    adjustAlpha(color, alpha * 0.72f),
+                    adjustAlpha(0xFF1E4D69.toInt(), alpha * 0.24f)
+                ),
+                floatArrayOf(0f, 0.45f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawPath(dropPath, paint)
+            paint.shader = null
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = (r * 0.16f).coerceAtLeast(0.75f)
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), alpha * 0.34f)
+            canvas.drawPath(dropPath, paint)
+            paint.style = Paint.Style.FILL
+            paint.color = adjustAlpha(0xFFFFFFFF.toInt(), alpha * 0.58f)
+            canvas.drawOval(cx - r * 0.35f, cy - r * 0.55f, cx - r * 0.06f, cy - r * 0.16f, paint)
         }
     }
 
@@ -16848,6 +17218,7 @@ $emailText"""
 
     private inner class AnimatedWeatherIconView(context: Context) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val iconDropPath = Path()
         private var weatherCode = 0
         private var animationEnabled = true
         private var animationUntilMs = 0L
@@ -16948,11 +17319,10 @@ $emailText"""
             paint.strokeCap = Paint.Cap.ROUND
             when {
                 rain -> {
-                    paint.color = 0xFF8FD694.toInt()
                     repeat(3) { i ->
                         val x = cx - dp(10) + i * dp(10) + drift
                         val y = cy + dp(18) + ((t * dp(8)) % dp(8))
-                        canvas.drawLine(x, y, x - dp(2), y + dp(7), paint)
+                        drawIconRainDrop(canvas, x, y + dp(4), resources.displayMetrics.density * 2.4f, 0xFF8FD694.toInt())
                     }
                 }
                 snow -> {
@@ -16969,6 +17339,28 @@ $emailText"""
                     }
                 }
             }
+        }
+
+        private fun drawIconRainDrop(canvas: Canvas, cx: Float, cy: Float, r: Float, color: Int) {
+            iconDropPath.reset()
+            iconDropPath.moveTo(cx, cy - r * 1.55f)
+            iconDropPath.cubicTo(cx + r * 1.05f, cy - r * 0.55f, cx + r * 0.86f, cy + r * 0.72f, cx, cy + r * 1.18f)
+            iconDropPath.cubicTo(cx - r * 0.86f, cy + r * 0.72f, cx - r * 1.05f, cy - r * 0.55f, cx, cy - r * 1.55f)
+            paint.style = Paint.Style.FILL
+            paint.shader = android.graphics.LinearGradient(
+                cx,
+                cy - r * 1.5f,
+                cx,
+                cy + r * 1.2f,
+                intArrayOf(0x77FFFFFF, adjustAlpha(color, 0.95f), adjustAlpha(0xFF2A6B83.toInt(), 0.55f)),
+                floatArrayOf(0f, 0.55f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawPath(iconDropPath, paint)
+            paint.shader = null
+            paint.color = 0x99FFFFFF.toInt()
+            canvas.drawOval(cx - r * 0.32f, cy - r * 0.78f, cx - r * 0.05f, cy - r * 0.34f, paint)
+            paint.style = Paint.Style.FILL
         }
     }
 

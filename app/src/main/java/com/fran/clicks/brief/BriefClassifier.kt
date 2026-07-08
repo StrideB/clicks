@@ -131,7 +131,9 @@ object BriefClassifier {
         )
         patterns.forEach { re ->
             val m = re.find(cleaned) ?: return@forEach
-            val group = (m.groups[2]?.value ?: m.value).trim()
+            // The second pattern has no capturing groups, so guard on group count before reading group 2.
+            val captured = if (m.groups.size > 2) m.groups[2]?.value else null
+            val group = (captured ?: m.value).trim()
             if (group.isNotBlank()) return group.trimWords(5)
         }
         return cleaned.split(Regex("\\s+")).filter { it.length > 2 }.take(4).joinToString(" ")

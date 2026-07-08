@@ -101,14 +101,14 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
     suspend fun skipToNext() = command("POST", "https://api.spotify.com/v1/me/player/next")
     suspend fun skipToPrevious() = command("POST", "https://api.spotify.com/v1/me/player/previous")
 
-    suspend fun playTrack(trackUri: String) = withContext(Dispatchers.IO) {
-        val token = auth.getValidToken() ?: return@withContext
+    suspend fun playTrack(trackUri: String): Boolean = withContext(Dispatchers.IO) {
+        val token = auth.getValidToken() ?: return@withContext false
         commandWithBody("PUT", "https://api.spotify.com/v1/me/player/play", token,
             "{\"uris\":[\"$trackUri\"]}")
     }
 
-    suspend fun playContext(contextUri: String, offsetIndex: Int = 0) = withContext(Dispatchers.IO) {
-        val token = auth.getValidToken() ?: return@withContext
+    suspend fun playContext(contextUri: String, offsetIndex: Int = 0): Boolean = withContext(Dispatchers.IO) {
+        val token = auth.getValidToken() ?: return@withContext false
         commandWithBody("PUT", "https://api.spotify.com/v1/me/player/play", token,
             "{\"context_uri\":\"$contextUri\",\"offset\":{\"position\":$offsetIndex}}")
     }
@@ -336,8 +336,8 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
         }
     }
 
-    private fun commandWithBody(method: String, url: String, token: String, body: String) {
-        runCatching {
+    private fun commandWithBody(method: String, url: String, token: String, body: String): Boolean {
+        return runCatching {
             val bytes = body.toByteArray(Charsets.UTF_8)
             val conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = method
@@ -347,9 +347,10 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
                 doOutput = true; connectTimeout = 8000; readTimeout = 8000
             }
             conn.outputStream.use { it.write(bytes) }
-            conn.responseCode
+            val ok = conn.responseCode in 200..299
             conn.disconnect()
-        }
+            ok
+        }.getOrDefault(false)
     }
 
     private fun get(url: String, token: String): HttpURLConnection? = runCatching {
