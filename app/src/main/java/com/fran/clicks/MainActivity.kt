@@ -11697,6 +11697,10 @@ Reply format: ["word1","word2","word3"]"""
             renderFavoritesDock()
             renderPaneContent(clicksSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingAction("SPACES →") {
+            haptic(this)
+            startActivity(Intent(this@MainActivity, SpacesSettingsActivity::class.java))
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingToggle("APP LIBRARY HOME", appLibraryDefaultHome()) {
             val next = !appLibraryDefaultHome()
             prefs().edit().putBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, next).apply()

@@ -65,6 +65,12 @@
             android:theme="@style/AppTheme" />
 
         <activity
+            android:name=".SpacesSettingsActivity"
+            android:exported="true"
+            android:label="Spaces"
+            android:theme="@style/AppTheme" />
+
+        <activity
             android:name=".grid.GridWorkspaceActivity"
             android:exported="false"
             android:label="Grid Workspace"

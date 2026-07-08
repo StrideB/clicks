@@ -161,6 +161,21 @@ class ImeSettingsActivity : Activity() {
                 background = android.graphics.drawable.GradientDrawable().apply { setColor(accent); cornerRadius = dp(12).toFloat() }
                 setOnClickListener { startActivity(android.content.Intent(this@ImeSettingsActivity, AgenticSkillsActivity::class.java)) }
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            c.addView(TextView(this).apply {
+                text = "Spaces — context prediction"
+                gravity = Gravity.CENTER; textSize = 14.5f
+                setTextColor(accent)
+                typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                setPadding(0, dp(11), 0, dp(11)); isClickable = true
+                background = GradientDrawable().apply {
+                    setColor(0x00000000)
+                    setStroke(dp(1), (accent and 0x00FFFFFF) or 0x88000000.toInt())
+                    cornerRadius = dp(12).toFloat()
+                }
+                setOnClickListener { startActivity(android.content.Intent(this@ImeSettingsActivity, SpacesSettingsActivity::class.java)) }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(8)
+            })
         }
 
         // Skill connections — optional API keys (free tiers) that unlock more agentic skills.
