@@ -2874,6 +2874,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 onAlertLongClick = { item ->
                     haptic(this@setNowPlayingCardContent)
                     dismissAlertItem(item)
+                },
+                widgetModes = widgetStackModes(),
+                onStackEdit = {
+                    haptic(this@setNowPlayingCardContent)
+                    showWidgetStackEditor()
                 }
             )
         }
@@ -5615,6 +5620,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.AI -> Neu.PURPLE
         SearchKind.MUSIC -> Neu.GREEN
         SearchKind.FILE -> Neu.BLUE
+        SearchKind.SETTING -> goKeyColor
     }
 
     private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
@@ -5627,6 +5633,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.TRAVEL -> "✈"
         SearchKind.MUSIC -> "♪"
         SearchKind.FILE -> "F"
+        SearchKind.SETTING -> "⚙"
     }
 
     private data class SearchCommandPreview(val title: String, val subtitle: String, val glyph: String)
@@ -13817,6 +13824,9 @@ Reply format: ["word1","word2","word3"]"""
         librarySearchResults().take(5).forEach { app ->
             results.add(SearchResult(app.label, "Open", app.brandColor, SearchKind.APP, app.toPaneTarget()))
         }
+        // Type-to-customize: matching launcher settings surface as tappable results that apply
+        // live in place — search is the settings screen.
+        results.addAll(settingSearchResults())
         // Playable Spotify tracks for this query (fetched async in scheduleMusicSearch) — tap to play
         // in place, no need to leave the homescreen.
         if (spotifyQuickQuery == q) results.addAll(spotifyQuickResults)
@@ -13885,6 +13895,306 @@ Reply format: ["word1","word2","word3"]"""
         val lower = text.lowercase(Locale.US)
         return listOf("flight", "flights", "boarding", "boarding pass", "trip", "trips", "travel", "itinerary")
             .any { lower.contains(it) }
+    }
+
+    // ── Type-to-customize ────────────────────────────────────────────────────
+    // Launcher settings exposed as universal-search results. Typing "glass", "accent",
+    // "icon pack"… surfaces the matching control as a result card; tapping applies it
+    // immediately and the results re-render in place with the new state. Search is the
+    // settings screen — the pane stays available for browsing, but is never required.
+
+    private data class SettingSearchEntry(
+        val title: String,
+        val state: String,
+        val keywords: List<String>,
+        val perform: () -> Unit
+    )
+
+    private fun settingSearchResults(): List<SearchResult> {
+        val q = query.trim().lowercase(Locale.US)
+        if (q.length < 3) return emptyList()
+        fun score(entry: SettingSearchEntry): Int = entry.keywords.maxOf { kw ->
+            when {
+                kw == q -> 3
+                kw.startsWith(q) -> 2
+                q.length >= 4 && kw.contains(q) -> 1
+                else -> 0
+            }
+        }
+        return settingSearchEntries()
+            .map { it to score(it) }
+            .filter { it.second > 0 }
+            .sortedByDescending { it.second }
+            .take(4)
+            .map { (entry, _) ->
+                SearchResult(entry.title, entry.state, goKeyColor, SearchKind.SETTING, null) {
+                    entry.perform()
+                }
+            }
+    }
+
+    private fun toggleStateLabel(enabled: Boolean): String =
+        if (enabled) "On · tap to turn off" else "Off · tap to turn on"
+
+    private fun settingSearchEntries(): List<SettingSearchEntry> {
+        val entries = mutableListOf<SettingSearchEntry>()
+        entries.add(SettingSearchEntry(
+            "Glass effects", toggleStateLabel(glassEffectsEnabled()),
+            listOf("glass", "effects", "blur", "frosted")
+        ) {
+            prefs().edit().putBoolean(GLASS_EFFECTS_PREF, !glassEffectsEnabled()).apply()
+            libraryView?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
+            libraryView = null
+            libraryContentArea = null
+            libraryViewMode = null
+            libraryViewGlass = null
+            libraryViewDirty = true
+            libraryContentReady = false
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Dock labels", toggleStateLabel(showDockLabels()),
+            listOf("dock", "labels", "dock labels", "app names")
+        ) {
+            prefs().edit().putBoolean(DOCK_LABELS_PREF, !showDockLabels()).apply()
+            renderFavoritesDock()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Animated weather", toggleStateLabel(animatedWeatherEnabled()),
+            listOf("weather", "animated weather", "animation", "rain")
+        ) {
+            val next = !animatedWeatherEnabled()
+            prefs().edit().putBoolean(ANIMATED_WEATHER_PREF, next).apply()
+            if (::weatherIconView.isInitialized) weatherIconView.setAnimationEnabled(next)
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Haptic feedback", toggleStateLabel(hapticsEnabled),
+            listOf("haptic", "haptics", "vibration", "feedback")
+        ) {
+            hapticsEnabled = !hapticsEnabled
+            prefs().edit().putBoolean(HAPTICS_PREF, hapticsEnabled).apply()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "App Library as home", toggleStateLabel(appLibraryDefaultHome()),
+            listOf("library", "app library", "library home")
+        ) {
+            prefs().edit().putBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, !appLibraryDefaultHome()).apply()
+            libraryContentReady = false
+            libraryViewDirty = true
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Lockscreen wallpaper", toggleStateLabel(useLockscreenWallpaperOnHome()),
+            listOf("wallpaper", "lockscreen", "background")
+        ) {
+            prefs().edit().putBoolean(HOME_LOCK_WALLPAPER_PREF, !useLockscreenWallpaperOnHome()).apply()
+            homeWallpaperDrawable = loadHomeWallpaperDrawable()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Accent color", "${currentGoColorName()} · tap for next",
+            listOf("accent", "color", "theme color", "highlight")
+        ) {
+            cycleGoColor()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Launcher look", "${themeModeName()} · tap for next",
+            listOf("dark", "light", "look", "mode", "theme", "dark mode", "light mode")
+        ) {
+            cycleThemeMode()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Keyboard theme", "${widgetThemeName(keyboardTheme)} · tap for next",
+            listOf("keyboard", "keys", "keyboard theme", "skeuo", "gokeys")
+        ) {
+            cycleKeyboardTheme()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Keyboard placement",
+            if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) "Docked · tap for widget" else "Widget · tap for docked",
+            listOf("keyboard", "placement", "docked", "widget keyboard", "place")
+        ) {
+            setKeyboardPlacement(
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) KEYBOARD_PLACEMENT_WIDGET
+                else KEYBOARD_PLACEMENT_DOCKED
+            )
+        })
+        entries.add(SettingSearchEntry(
+            "Icon size", "${iconSizeLabel()} · tap for next",
+            listOf("icon size", "icons", "size")
+        ) {
+            cycleIconSize()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Icon pack", "${activeIconPackLabel()} · tap for next",
+            listOf("icon pack", "icons", "pack")
+        ) {
+            cycleIconPack()
+            refreshSearchSurfaces()
+        })
+        WidgetStackModes.WIDGET_IDS.forEach { id ->
+            val name = WidgetStackModes.displayName(id)
+            val mode = widgetStackMode(id)
+            entries.add(SettingSearchEntry(
+                "$name widget",
+                "${WidgetStackModes.modeLabel(mode)} · tap for ${WidgetStackModes.modeLabel(WidgetStackModes.nextMode(mode))}",
+                listOf("widget", "widgets", "stack", name.lowercase(Locale.US), "${name.lowercase(Locale.US)} widget")
+            ) {
+                setWidgetStackMode(id, WidgetStackModes.nextMode(widgetStackMode(id)))
+                refreshSearchSurfaces()
+            })
+        }
+        entries.add(SettingSearchEntry(
+            "Spaces", "Contextual home setup",
+            listOf("spaces", "space", "places")
+        ) {
+            startActivity(Intent(this@MainActivity, SpacesSettingsActivity::class.java))
+        })
+        entries.add(SettingSearchEntry(
+            "Gestures", "Swipe actions",
+            listOf("gesture", "gestures", "swipe")
+        ) {
+            openHere(clicksSettingsTarget())
+        })
+        entries.add(SettingSearchEntry(
+            "Clicks Settings", "Open the full pane",
+            listOf("settings", "setting", "preferences", "customize", "options", "configure")
+        ) {
+            openHere(clicksSettingsTarget())
+        })
+        return entries
+    }
+
+    // Re-render whichever search surface is showing so an applied setting is visible
+    // immediately, with the query and keyboard untouched.
+    private fun refreshSearchSurfaces() {
+        if (libraryOpen) refreshLibraryContent()
+        if (isWidgetUniversalSearchActive()) refreshWidgetSearchContent()
+        if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent()
+    }
+
+    private fun currentGoColorName(): String =
+        GO_COLORS.firstOrNull { it.color == goKeyColor }?.name?.lowercase(Locale.US)?.replaceFirstChar { it.uppercase() } ?: "Custom"
+
+    private fun cycleGoColor() {
+        val idx = GO_COLORS.indexOfFirst { it.color == goKeyColor }
+        applyGoKeyColor(GO_COLORS[(idx + 1).mod(GO_COLORS.size)].color, refreshSettings = false)
+    }
+
+    private fun themeModeName(): String = when (themeMode) {
+        THEME_MODE_DARK -> "Dark"
+        THEME_MODE_LIGHT -> "Light"
+        else -> "System"
+    }
+
+    private fun cycleThemeMode() {
+        val order = listOf(THEME_MODE_SYSTEM, THEME_MODE_DARK, THEME_MODE_LIGHT)
+        themeMode = order[(order.indexOf(themeMode) + 1).mod(order.size)]
+        prefs().edit().putString(THEME_MODE_PREF, themeMode).apply()
+        updateLauncherTheme(animated = true, forceRender = true)
+    }
+
+    private fun cycleKeyboardTheme() {
+        val order = listOf(
+            KEYBOARD_THEME_DEFAULT, KEYBOARD_THEME_CLICKS, KEYBOARD_THEME_SKEUO, KEYBOARD_THEME_GOKEYS,
+            KEYBOARD_THEME_HYPER3D, KEYBOARD_THEME_HYPER3D_BLACK, KEYBOARD_THEME_HYPER3D_LIGHT,
+            KEYBOARD_THEME_BRUSHED, KEYBOARD_THEME_SEEME
+        ).filter { it != KEYBOARD_THEME_SKEUO || ProManager.isUnlocked(this) }
+        keyboardTheme = order[(order.indexOf(keyboardTheme) + 1).mod(order.size)]
+        prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
+        render()
+    }
+
+    private fun iconSizeLabel(): String = when {
+        appIconSize >= 70 -> "Large"
+        appIconSize >= 35 -> "Medium"
+        else -> "Default"
+    }
+
+    private fun cycleIconSize() {
+        val presets = listOf(0, 35, 70)
+        appIconSize = presets.firstOrNull { it > appIconSize } ?: presets.first()
+        prefs().edit().putInt(APP_ICON_SIZE_PREF, appIconSize).apply()
+        renderFavoritesDock()
+    }
+
+    private fun cycleIconPack() {
+        val packs = iconPacks()
+        if (packs.isEmpty()) {
+            Toast.makeText(this, "No icon packs installed", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val options = listOf<String?>(null) + packs.map { it.packageName }
+        val current = prefs().getString(ACTIVE_ICON_PACK_PREF, null)
+        val next = options[(options.indexOf(current) + 1).mod(options.size)]
+        if (next == null) prefs().edit().remove(ACTIVE_ICON_PACK_PREF).apply()
+        else prefs().edit().putString(ACTIVE_ICON_PACK_PREF, next).apply()
+        renderFavoritesDock()
+        renderRibbon()
+    }
+
+    // ── Widget stack visibility ──────────────────────────────────────────────
+
+    private fun widgetStackMode(id: String): String =
+        prefs().getString(WIDGET_STACK_MODE_PREF_PREFIX + id, WidgetStackModes.AUTO) ?: WidgetStackModes.AUTO
+
+    private fun setWidgetStackMode(id: String, mode: String) {
+        prefs().edit().putString(WIDGET_STACK_MODE_PREF_PREFIX + id, mode).apply()
+        refreshNowPlayingCard()
+    }
+
+    private fun widgetStackModes(): Map<String, String> =
+        WidgetStackModes.WIDGET_IDS.associateWith { widgetStackMode(it) }
+
+    // In-place editor for the stack, reached by long-pressing the pager-dot rail (or the
+    // hidden-stack placeholder). Tapping a row cycles AUTO → PINNED → HIDDEN live.
+    private fun showWidgetStackEditor() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), dp(4))
+        }
+        content.addView(mono("AUTO SHOWS A WIDGET WHEN IT HAS CONTEXT · PIN KEEPS IT FIRST · HIDE REMOVES IT", 8.5f, InkDim).apply {
+            letterSpacing = 0.08f
+            setPadding(0, 0, 0, dp(10))
+        })
+        WidgetStackModes.WIDGET_IDS.forEach { id ->
+            lateinit var modeView: TextView
+            content.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(2), dp(11), dp(2), dp(11))
+                background = border(Line)
+                isClickable = true
+                addView(TextView(context).apply {
+                    text = WidgetStackModes.displayName(id)
+                    textSize = 13f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(Ink)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                modeView = mono(WidgetStackModes.modeLabel(widgetStackMode(id)), 10f, Accent2).apply { letterSpacing = 0.08f }
+                addView(modeView)
+                setOnClickListener {
+                    haptic(this)
+                    val next = WidgetStackModes.nextMode(widgetStackMode(id))
+                    setWidgetStackMode(id, next)
+                    modeView.text = WidgetStackModes.modeLabel(next)
+                }
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Widget stack")
+            .setView(content)
+            .setPositiveButton("Done", null)
+            .show()
     }
 
     // ── Travel: flights & boarding passes from Gmail ─────────────────────────
@@ -18548,6 +18858,7 @@ $emailText"""
         private const val WIDGET_BIND_REQUEST_CODE = 501
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502
         private const val WIDGET_IDS_PREF = "widget_board_ids"
+        private const val WIDGET_STACK_MODE_PREF_PREFIX = "widget_stack_mode_"
         private const val WIDGET_BOARD_COLUMNS = 4
         private const val WIDGET_BOARD_MIN_ROWS = 8
         private const val WIDGET_BOARD_MAX_ROWS = 12
