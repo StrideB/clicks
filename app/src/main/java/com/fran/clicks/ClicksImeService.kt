@@ -1617,12 +1617,14 @@ class ClicksImeService : InputMethodService(), com.fran.clicks.keyboard.Keyboard
         }
         if (shown.isEmpty() && !canPolish && chips.isEmpty() && !showFix) {
             strip.background = null
-            // Don't leave the strip stuck hidden when idle: if no agentic panel/HUD/autofill is
-            // active, the strip must be visible (even if empty) so it reliably reappears when typing
-            // resumes — the "sometimes the suggestion box doesn't show" bug.
+            // Nothing to show: hide the strip entirely when the field is empty (fresh keyboard / not
+            // typing) so there's no empty bar; keep it present once there's text so it reliably
+            // reappears as you type. onTextChanged -> scheduleSuggestions -> updateStrip resurfaces it.
             if (agenticHud == null && agenticStatus == null && pendingCommand == null &&
                 inlineScroll?.visibility != View.VISIBLE) {
-                suggestionStrip?.visibility = View.VISIBLE
+                val fieldEmpty = currentInputConnection?.getTextBeforeCursor(1, 0).isNullOrEmpty() &&
+                    currentInputConnection?.getTextAfterCursor(1, 0).isNullOrEmpty()
+                suggestionStrip?.visibility = if (fieldEmpty) View.GONE else View.VISIBLE
             }
             return
         }

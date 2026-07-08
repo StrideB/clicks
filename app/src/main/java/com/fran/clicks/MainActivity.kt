@@ -9475,7 +9475,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish && !fieldBlank && strip.childCount > 0) return
         val wasEmpty = strip.childCount == 0
         strip.removeAllViews()
-        if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish) { strip.background = null; return }
+        if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish) {
+            // Nothing to show: hide the strip when the field is blank (not typing) so there's no empty
+            // bar; keep the space once there's text so it reappears on the next keystroke.
+            strip.background = null
+            strip.visibility = if (fieldBlank) View.GONE else View.VISIBLE
+            return
+        }
+        strip.visibility = View.VISIBLE
         strip.background = suggestionStripBackground(appColor, pro)
         if (shown.isNotEmpty()) {
             val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
