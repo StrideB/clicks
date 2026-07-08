@@ -137,6 +137,38 @@ Widget clicks should perform the real action:
 - Recent people opens the actual notification/conversation where possible.
 - Email opens the actual notification/email where possible.
 
+Each stack widget has a user-controlled visibility mode, persisted per widget
+(`widget_stack_mode_<id>` in the `clicks` prefs):
+
+- `auto` (default): the classic contextual behavior described above.
+- `pin`: the widget sorts to the top of the stack whenever it has anything to
+  show. Pinned music stays up while a media session merely exists (paused counts).
+- `hide`: the widget never appears.
+
+Modes are edited in place by long-pressing the pager-dot rail on the stack (or
+tapping the hidden-stack placeholder when everything is hidden), or through
+type-to-customize by typing `widgets` or a widget name. Card long-presses remain
+content actions; they are not used for configuration.
+
+## Type-To-Customize
+
+Launcher settings are exposed as universal-search results (`SearchKind.SETTING`).
+Typing `glass`, `accent`, `icon pack`, `dark`, `widgets`, `haptics`, etc. surfaces
+the matching setting as a result card; tapping it applies the change immediately
+and re-renders the results in place with the new state. Search is the primary
+settings surface — the settings pane still exists for browsing, but should never
+be required for a common tweak.
+
+Rules for this surface:
+
+- Toggles flip live. Multi-value settings (accent color, launcher look, keyboard
+  theme, icon size, icon pack) cycle to the next value per tap, showing the
+  current value in the subtitle.
+- Settings results rank below app matches and are capped at 4.
+- Setting cards use the user's accent color (`goKeyColor`) and the `⚙` glyph.
+- New user-facing settings should be registered in `settingSearchEntries()` in
+  addition to any pane UI, so they stay searchable.
+
 ## Music
 
 The launcher has an in-launcher Music experience:

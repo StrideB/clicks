@@ -101,6 +101,36 @@ data class ContextWidgetItem(
     val lastUpdated: Long = 0L
 )
 
+// Per-widget visibility for the contextual stack. AUTO is the classic contextual behavior,
+// PIN keeps a widget at the top of the stack whenever it has anything to show, HIDE removes it.
+object WidgetStackModes {
+    const val AUTO = "auto"
+    const val PIN = "pin"
+    const val HIDE = "hide"
+    val WIDGET_IDS = listOf("music", "calendar", "news", "maps", "alerts")
+
+    fun displayName(id: String): String = when (id) {
+        "music" -> "Music"
+        "calendar" -> "Calendar"
+        "news" -> "News"
+        "maps" -> "Maps"
+        "alerts" -> "Alerts"
+        else -> id
+    }
+
+    fun modeLabel(mode: String): String = when (mode) {
+        PIN -> "PINNED"
+        HIDE -> "HIDDEN"
+        else -> "AUTO"
+    }
+
+    fun nextMode(mode: String): String = when (mode) {
+        AUTO -> PIN
+        PIN -> HIDE
+        else -> AUTO
+    }
+}
+
 private sealed interface WidgetItem {
     val id: String
     val lastUpdated: Long
@@ -201,24 +231,43 @@ fun HomeWidgetStack(
     alertItems: List<ContextWidgetItem> = emptyList(),
     onAlertClick: (ContextWidgetItem) -> Unit = {},
     onAlertLongClick: (ContextWidgetItem) -> Unit = {},
+    widgetModes: Map<String, String> = emptyMap(),
+    onStackEdit: (() -> Unit)? = null,
 ) {
     if (!visible) return
     WidgetNeuTokens = tokens
 
+    fun mode(id: String) = widgetModes[id] ?: WidgetStackModes.AUTO
     val now = System.currentTimeMillis()
     val pages = buildList {
-        if (isMusicPlaying) {
+        // PIN keeps music up while a session merely exists (paused counts); AUTO needs playback.
+        if (mode("music") != WidgetStackModes.HIDE &&
+            (isMusicPlaying || (mode("music") == WidgetStackModes.PIN && title.isNotBlank()))
+        ) {
             add(WidgetItem.Music(now, title, artist, sourceApp, Color(sourceColor), albumArt))
         }
-        mapsItems.firstOrNull()?.let { add(WidgetItem.Maps(it.lastUpdated, it)) }
+        if (mode("maps") != WidgetStackModes.HIDE) {
+            mapsItems.firstOrNull()?.let { add(WidgetItem.Maps(it.lastUpdated, it)) }
+        }
         // Email & people are actionable comms — they now live in the Today brief, not the ambient
         // widget stack. (emailItems / recentPeople params kept for API stability.)
-        newsItems.firstOrNull()?.let { add(WidgetItem.News(it.lastUpdated, it)) }
-        if (alertItems.isNotEmpty()) {
+        if (mode("news") != WidgetStackModes.HIDE) {
+            newsItems.firstOrNull()?.let { add(WidgetItem.News(it.lastUpdated, it)) }
+        }
+        if (mode("alerts") != WidgetStackModes.HIDE && alertItems.isNotEmpty()) {
             add(WidgetItem.Alerts(alertItems.maxOf { it.lastUpdated }, alertItems))
         }
-        add(WidgetItem.Calendar(calendarEvents.maxOfOrNull { it.beginMs } ?: 0L, calendarEvents, hasCalendarPermission))
-    }.sortedByDescending { it.lastUpdated }
+        if (mode("calendar") != WidgetStackModes.HIDE) {
+            add(WidgetItem.Calendar(calendarEvents.maxOfOrNull { it.beginMs } ?: 0L, calendarEvents, hasCalendarPermission))
+        }
+    }.sortedWith(
+        compareByDescending<WidgetItem> { mode(it.id.substringBefore(':')) == WidgetStackModes.PIN }
+            .thenByDescending { it.lastUpdated }
+    )
+    if (pages.isEmpty()) {
+        HiddenStackPlaceholder(tokens, onStackEdit)
+        return
+    }
     val pageCount = pages.size
     val pagerState = rememberPagerState(pageCount = { pageCount })
     val scope = rememberCoroutineScope()
@@ -298,7 +347,15 @@ fun HomeWidgetStack(
         }
         if (pageCount > 1) {
             Column(
-                Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .let { m ->
+                        // Long-press the dot rail to edit which widgets live in the stack.
+                        if (onStackEdit != null) {
+                            m.combinedClickable(onClick = {}, onLongClick = onStackEdit)
+                        } else m
+                    }
+                    .padding(start = 10.dp, end = 12.dp, top = 14.dp, bottom = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 repeat(pageCount) { index ->
@@ -319,6 +376,28 @@ fun HomeWidgetStack(
                 }
             }
         }
+    }
+}
+
+// Shown when every stack widget is set to HIDE — keeps a quiet way back instead of a dead box.
+@Composable
+private fun HiddenStackPlaceholder(tokens: NeuTokens, onStackEdit: (() -> Unit)?) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(18.dp))
+            .background(tokens.baseCompose)
+            .let { m -> if (onStackEdit != null) m.clickable(onClick = onStackEdit) else m },
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        LabelText("WIDGETS HIDDEN", InkFaint)
+        Spacer(Modifier.height(6.dp))
+        BasicText(
+            text = "Tap to edit, or type \"widgets\"",
+            maxLines = 1,
+            style = TextStyle(color = InkFaint, fontSize = 10.5.sp, fontFamily = FontFamily.SansSerif)
+        )
     }
 }
 
