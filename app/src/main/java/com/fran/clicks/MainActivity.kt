@@ -8588,6 +8588,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyboard(): View {
+        syncLauncherSuggestionStripHeightForBuild()
         val overlayLayer = FrameLayout(this)
         predictionOverlay.overlayLayer = overlayLayer
 
@@ -8610,10 +8611,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             // Suggestion strip at the TOP of the keyboard (Gboard-style), above all key rows.
             if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen) {
-                addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyboardSuggestionStripHeight()).apply {
+                val stripHeight = launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+                addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, stripHeight).apply {
                     marginStart = dp(8)
                     marginEnd = dp(8)
-                    topMargin = dp(2)
+                    topMargin = if (stripHeight > 0) dp(2) else 0
                     bottomMargin = 0
                 })
             }
@@ -9274,6 +9276,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Suggestions ──────────────────────────────────────────────────────────
 
     private var suggestionStripView: LinearLayout? = null
+    private var launcherSuggestionStripExpanded = false
+    private var launcherSuggestionStripAnimatedHeight = 0
+    private var launcherSuggestionStripAnimator: ValueAnimator? = null
     private var launcherPolishing = false
     private var pendingLauncherCommand: AgenticRouter.Command? = null
     private var pendingLauncherActions: List<Pair<String, String>> = emptyList()
@@ -9287,6 +9292,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
     private fun keyboardTypingWellHeight() = dp(36)
     private fun keyboardSuggestionStripHeight() = dp(28)
+    private fun launcherSuggestionText(): String = when (openPane?.kind) {
+        PaneKind.CHAT -> composeText
+        PaneKind.AI -> aiDraftText
+        else -> query
+    }
+    private fun launcherSuggestionStripShouldExpand(): Boolean =
+        showSuggestionStrip() &&
+            !numberPadOpen &&
+            !keyboardSettingsOpen &&
+            launcherSuggestionText().isNotBlank()
+
+    private fun syncLauncherSuggestionStripHeightForBuild() {
+        val target = if (launcherSuggestionStripShouldExpand()) keyboardSuggestionStripHeight() else 0
+        if (launcherSuggestionStripAnimator?.isRunning == true) return
+        launcherSuggestionStripExpanded = target > 0
+        launcherSuggestionStripAnimatedHeight = target
+    }
+
+    private fun launcherSuggestionStripOuterHeight(): Int {
+        val h = launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+        return if (h > 0) h + dp(2) else 0
+    }
     private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(9) else 0
 
     private fun suggestionStrip(): View {
@@ -9294,10 +9321,60 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(10), dp(2), dp(10), dp(2))
+            visibility = if (launcherSuggestionStripAnimatedHeight > 0) View.VISIBLE else View.GONE
         }
         suggestionStripView = strip
         updateSuggestionBar()
         return strip
+    }
+
+    private fun setLauncherSuggestionStripExpanded(expand: Boolean, animate: Boolean = true) {
+        val target = if (expand) keyboardSuggestionStripHeight() else 0
+        if (launcherSuggestionStripExpanded == expand && launcherSuggestionStripAnimatedHeight == target) return
+        launcherSuggestionStripExpanded = expand
+        launcherSuggestionStripAnimator?.cancel()
+        val start = launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+        if (!animate || start == target) {
+            launcherSuggestionStripAnimatedHeight = target
+            applyLauncherSuggestionStripHeight(target)
+            return
+        }
+        launcherSuggestionStripAnimator = ValueAnimator.ofInt(start, target).apply {
+            duration = 170L
+            interpolator = DecelerateInterpolator(1.8f)
+            addUpdateListener {
+                launcherSuggestionStripAnimatedHeight = it.animatedValue as Int
+                applyLauncherSuggestionStripHeight(launcherSuggestionStripAnimatedHeight)
+            }
+            start()
+        }
+    }
+
+    private fun applyLauncherSuggestionStripHeight(height: Int) {
+        val h = height.coerceIn(0, keyboardSuggestionStripHeight())
+        suggestionStripView?.let { strip ->
+            val lp = (strip.layoutParams as? LinearLayout.LayoutParams)
+            if (lp != null) {
+                lp.height = h
+                lp.topMargin = if (h > 0) dp(2) else 0
+                strip.layoutParams = lp
+            }
+            strip.visibility = if (h > 0) View.VISIBLE else View.GONE
+        }
+        if (::keyboardDockView.isInitialized && keyboardDockView.parent != null) {
+            val lp = keyboardDockView.layoutParams
+            if (lp != null && !widgetPaneUsesRootDock()) {
+                lp.height = activeRootDockHeight()
+                keyboardDockView.layoutParams = lp
+            }
+        }
+        widgetKeyboardHost?.let { host ->
+            val lp = host.layoutParams
+            if (lp != null && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && !widgetPaneUsesRootDock()) {
+                lp.height = widgetKeyboardHeight()
+                host.layoutParams = lp
+            }
+        }
     }
 
     // If a shown suggestion or the current word names an installed app (e.g. "spotify"), return that
@@ -9314,6 +9391,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun updateSuggestionBar() {
         val strip = suggestionStripView ?: return
+        val fieldBlank = launcherSuggestionText().isBlank()
+        val forceExpanded =
+            launcherPolishing ||
+                launcherAgenticStatus != null ||
+                pendingLauncherResult != null ||
+                pendingLauncherCommand != null ||
+                pendingLauncherActions.isNotEmpty() ||
+                pendingLauncherStarters.isNotEmpty()
+        setLauncherSuggestionStripExpanded(!fieldBlank || forceExpanded)
+        if (fieldBlank && !forceExpanded) {
+            strip.removeAllViews()
+            strip.background = null
+            return
+        }
         // AI Polish in flight: hold the strip on a soft "Polishing…" banner until the rewrite lands.
         if (launcherPolishing) {
             strip.removeAllViews()
@@ -9469,14 +9560,37 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val pro = ProManager.isUnlocked(this)
         val canPolish = launcherPolishAvailable()
         val appColor = suggestionStripAppColor(shown)
-        val fieldBlank = (if (openPane?.kind == PaneKind.CHAT) composeText else query).isBlank()
         // Persist: after a glide / word commit there may be nothing new to show, but keep the last
         // strip content (esp. the swipe result) until the user clears the field or fresh ones arrive.
         if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish && !fieldBlank && strip.childCount > 0) return
         val wasEmpty = strip.childCount == 0
         strip.removeAllViews()
-        if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish) { strip.background = null; return }
         strip.background = suggestionStripBackground(appColor, pro)
+        strip.addView(TextView(this).apply {
+            text = "TYPING"
+            gravity = Gravity.CENTER
+            textSize = 8.5f
+            letterSpacing = 0.14f
+            includeFontPadding = false
+            setTextColor(activeNeuTokens.inkDim)
+            typeface = Typeface.create("monospace", Typeface.BOLD)
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+            marginEnd = dp(8)
+        })
+        if (shown.isNotEmpty() || emojiChips.isNotEmpty() || canPolish) {
+            strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x28000000) },
+                LinearLayout.LayoutParams(dp(1), dp(16)).apply { marginEnd = dp(4) })
+        } else {
+            strip.addView(TextView(this).apply {
+                text = currentWordInCompose().ifBlank { launcherSuggestionText() }
+                gravity = Gravity.CENTER_VERTICAL
+                textSize = 13f
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(activeNeuTokens.inkDim)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
         if (shown.isNotEmpty()) {
             val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
             shown.forEachIndexed { i, word ->
@@ -15563,7 +15677,7 @@ $emailText"""
     }
 
     private fun widgetKeyboardHeight(): Int {
-        return (keyboardHeight() + dp(28)).coerceIn(dp(238), dp(360))
+        return (keyboardHeight() + launcherSuggestionStripOuterHeight()).coerceAtMost(dp(360))
     }
 
     private fun PaneTarget.usesMediaDock(): Boolean {
@@ -15579,9 +15693,7 @@ $emailText"""
         // keyboardHeight() budgets the typing well + key rows but NOT the Gboard-style suggestion
         // strip mounted at the top of the deck (see keyboard()). Without adding it, the deck is
         // ~30dp taller than this slot and bleeds upward over the favorites dock / typing strip.
-        val suggestion = if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen)
-            keyboardSuggestionStripHeight() + dp(2) else 0
-        return keyboardHeight() + suggestion
+        return keyboardHeight() + launcherSuggestionStripOuterHeight()
     }
 
     private fun widgetKeyboardHorizontalBleed(): Int = dp(10)
