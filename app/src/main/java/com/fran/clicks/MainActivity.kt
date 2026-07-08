@@ -102,6 +102,10 @@ import com.fran.clicks.keyboard.KeyPreviewManager
 import com.fran.clicks.keyboard.LivePredictionRouter
 import com.fran.clicks.keyboard.PredictionEngine
 import com.fran.clicks.keyboard.PredictionOverlayManager
+import com.fran.clicks.predict.ContextSnapshot
+import com.fran.clicks.predict.LaunchSource
+import com.fran.clicks.predict.Predictor
+import com.fran.clicks.predict.SpaceManager
 import com.fran.clicks.keyboard.SmsIngestionEngine
 import com.fran.clicks.keyboard.SmsSeedingCoordinator
 import com.fran.clicks.keyboard.SpatialScorer
@@ -349,6 +353,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastMusicPlaying = false
     private lateinit var mediaSessionSource: MediaSessionSource
     private val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    // Prediction engine: last computed context (refreshed off-main), which launch surface
+    // is about to fire, and the drawer's Space icon for live updates.
+    @Volatile private var predictContext: ContextSnapshot? = null
+    private var pendingLaunchSource = LaunchSource.OTHER
+    private var spaceIconView: TextView? = null
 
     // "Today" brief — a page to the left of home, plus a teaser below the widget stack.
     private lateinit var briefRepository: BriefRepository
@@ -687,6 +697,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             preloadSpotifyLibrary()
         }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
+        refreshPredictContext()
         if (::ribbonView.isInitialized) {
             updateClock()
             renderHub()
@@ -4832,6 +4843,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
             setTextColor(activeNeuTokens.ink); includeFontPadding = false
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(spaceIcon(), LinearLayout.LayoutParams(dp(if (glass) 27 else 30), dp(if (glass) 27 else 30)).apply {
+            marginEnd = dp(8)
+        })
         addView(TextView(context).apply {
             text = if (libraryGridMode) "Categories" else "Grid"
             gravity = Gravity.CENTER
@@ -4852,6 +4866,62 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, LinearLayout.LayoutParams(dp(if (glass) 92 else 94), dp(if (glass) 27 else 30)).apply {
             marginEnd = dp(if (glass) 2 else 8)
         })
+    }
+
+    /**
+     * The drawer's one new element: a domed neumorphic badge showing the active Space.
+     * Tap to switch or lock the Space (Auto returns to detection); the drawer and dock
+     * rearrange to match. Drawn with the same Neu language as the rest of the shell.
+     */
+    private fun spaceIcon(): View = TextView(this).apply {
+        gravity = Gravity.CENTER
+        textSize = 13f
+        includeFontPadding = false
+        background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED_SM)
+        isClickable = true
+        spaceIconView = this
+        updateSpaceIcon()
+        setOnClickListener { view ->
+            haptic(view)
+            val spaces = SpaceManager.spaces(this@MainActivity).filter { it.enabled }
+            val lockedId = SpaceManager.lockedSpaceId(this@MainActivity)
+            val detected = predictContext?.let { SpaceManager.detect(this@MainActivity, it).space }
+            val popup = android.widget.PopupMenu(this@MainActivity, view)
+            popup.menu.add(0, -1, 0, "Auto" + (detected?.let { "  ·  ${it.emoji} ${it.name}" } ?: ""))
+                .isCheckable = true
+            popup.menu.getItem(0).isChecked = lockedId == null
+            spaces.forEachIndexed { i, space ->
+                popup.menu.add(0, i, i + 1, "${space.emoji}  ${space.name}").isCheckable = true
+                popup.menu.getItem(i + 1).isChecked = lockedId == space.id
+            }
+            popup.setOnMenuItemClickListener { item ->
+                SpaceManager.lock(this@MainActivity, if (item.itemId < 0) null else spaces[item.itemId].id)
+                updateSpaceIcon()
+                libraryViewDirty = true
+                libraryContentReady = false
+                showLibrary(animate = false)
+                renderFavoritesDock()
+                true
+            }
+            popup.show()
+        }
+    }
+
+    private fun updateSpaceIcon() {
+        val icon = spaceIconView ?: return
+        val snap = predictContext
+        val locked = SpaceManager.lockedSpaceId(this) != null
+        val space = when {
+            snap != null -> SpaceManager.detect(this, snap).space
+            locked -> SpaceManager.lockedSpaceId(this)?.let { SpaceManager.space(this, it) }
+            else -> null
+        }
+        icon.text = space?.emoji ?: "◎"
+        icon.alpha = if (locked) 1f else 0.88f
+        icon.contentDescription = buildString {
+            append("Space: ").append(space?.name ?: "detecting")
+            if (locked) append(" (locked)")
+        }
     }
 
     private fun libraryHeaderBackground(): Drawable {
@@ -5848,6 +5918,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     openHere(target)
                     true
                 } else {
+                    pendingLaunchSource = LaunchSource.DRAWER
                     openExternal(target)
                 }
                 if (opened) {
@@ -5948,6 +6019,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(12), 0, dp(8))
+            predictedLibraryApps(8).takeIf { it.isNotEmpty() }?.let {
+                addView(tileGrid(it, 4, gridPhysics = true))
+            }
             addView(tileGrid(apps.map { it.toLibraryApp() }, 4, gridPhysics = true))
         })
     }.let { plainScroll ->
@@ -5987,9 +6061,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, dp(12), 0, dp(8))
+                predictedLibraryApps(8).takeIf { it.isNotEmpty() }?.let {
+                    addView(tileGrid(it, 4, gridPhysics = false))
+                }
                 addView(tileGrid(apps.map { it.toLibraryApp() }, 4, gridPhysics = false))
             })
         }
+    }
+
+    /**
+     * Leading drawer block: the active Space's predicted apps, rendered with the exact
+     * same tiles as the grid below (reorder only — the full alphabetical grid stays
+     * intact underneath). Empty until the prediction context is ready.
+     */
+    private fun predictedLibraryApps(n: Int): List<LibraryApp> {
+        val eligible = apps.filter { it.packageName != packageName }
+        val predicted = predictedPackages(eligible.map { it.packageName }, n) ?: return emptyList()
+        val byPackage = eligible.associateBy { it.packageName }
+        return predicted.mapNotNull { byPackage[it]?.toLibraryApp() }
     }
 
     private fun tileGrid(items: List<LibraryApp>, columns: Int, gridPhysics: Boolean = false): View = LinearLayout(this).apply {
@@ -6047,6 +6136,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     openHere(target)
                     true
                 } else {
+                    pendingLaunchSource = LaunchSource.DRAWER
                     openExternal(target)
                 }
                 if (opened) {
@@ -12459,7 +12549,11 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 false
             }
-            setOnClickListener { haptic(this); if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target) }
+            setOnClickListener {
+                haptic(this)
+                if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target)
+                else { pendingLaunchSource = LaunchSource.DOCK; openExternal(target) }
+            }
             setOnLongClickListener { haptic(this); showOpenMenu(this, target); true }
         }
     }
@@ -12480,7 +12574,11 @@ Reply format: ["word1","word2","word3"]"""
                 }
                 false
             }
-            setOnClickListener { haptic(this); if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target) else openExternal(target) }
+            setOnClickListener {
+                haptic(this)
+                if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target)
+                else { pendingLaunchSource = LaunchSource.SEARCH; openExternal(target) }
+            }
             setOnLongClickListener { haptic(this); showOpenMenu(this, target); true }
         }
     }
@@ -12734,11 +12832,48 @@ Reply format: ["word1","word2","word3"]"""
             .putString(APP_LAST_LAUNCH_PREF, launches.toString())
             .apply()
         MostUsedAppsWidget.refreshAll(this)
+        val source = pendingLaunchSource
+        pendingLaunchSource = LaunchSource.OTHER
+        mediaUiScope.launch(Dispatchers.Default) {
+            runCatching {
+                Predictor.recordLaunch(this@MainActivity, packageName, source, currentPredictSnapshot())
+            }
+            refreshPredictContext(rerender = true)
+        }
         if (!libraryGridMode) {
             libraryViewDirty = true
             libraryContentReady = false
         }
         renderFavoritesDock()
+    }
+
+    /** Fresh context snapshot; call off the main thread (calendar/location on cache miss). */
+    private fun currentPredictSnapshot(): ContextSnapshot {
+        val playing = if (::mediaSessionSource.isInitialized) {
+            mediaSessionSource.nowPlaying.value?.isPlaying == true
+        } else false
+        return Predictor.snapshotNow(this, mediaPlaying = playing)
+    }
+
+    /** Recompute the prediction context off-main; optionally re-render dock + Space icon. */
+    private fun refreshPredictContext(rerender: Boolean = false) {
+        mediaUiScope.launch(Dispatchers.Default) {
+            val snap = runCatching { currentPredictSnapshot() }.getOrNull() ?: return@launch
+            val changed = predictContext?.contextKey() != snap.contextKey()
+            predictContext = snap
+            if (rerender || changed) {
+                withContext(Dispatchers.Main) {
+                    if (::favoritesDockView.isInitialized) renderFavoritesDock()
+                    updateSpaceIcon()
+                }
+            }
+        }
+    }
+
+    /** Predictor ranking for the current context, or null when not ready (cold start path). */
+    private fun predictedPackages(candidates: List<String>, n: Int): List<String>? {
+        val snap = predictContext ?: return null
+        return runCatching { Predictor.topApps(this, n, candidates, snap) }.getOrNull()
     }
 
     private fun appUsageCounts(): Map<String, Int> {
@@ -13254,7 +13389,10 @@ Reply format: ["word1","word2","word3"]"""
         when {
             target.kind == PaneKind.AI -> askGemini(target.preview)
             target.kind == PaneKind.MUSIC || target.packageName == null -> openHere(target)
-            else -> openExternal(target)
+            else -> {
+                if (pendingLaunchSource == LaunchSource.OTHER) pendingLaunchSource = LaunchSource.SEARCH
+                openExternal(target)
+            }
         }
     }
 
@@ -13463,6 +13601,7 @@ Reply format: ["word1","word2","word3"]"""
                     else -> collator.compare(left.label, right.label)
                 }
             } ?: return false
+        pendingLaunchSource = LaunchSource.COMMAND
         openExternal(target.toPaneTarget())
         return true
     }
@@ -14033,15 +14172,22 @@ $emailText"""
             .take(DOCK_APP_LIMIT)
         if (favorites.size >= DOCK_APP_LIMIT) return favorites
         val favoritePackages = favorites.map { it.packageName }.toSet()
+        val candidates = apps.filter { it.packageName !in favoritePackages && it.packageName !in hidden }
+        // User-pinned favorites always keep their slots; free slots go to the prediction
+        // engine's ranking for the active Space, with plain usage order as cold-start fallback.
+        val predicted = predictedPackages(candidates.map { it.packageName }, DOCK_APP_LIMIT - favorites.size)
         val usage = appUsageCounts()
-        val oftenUsed = apps
-            .filter { it.packageName !in favoritePackages && it.packageName !in hidden }
+        val oftenUsed = candidates
             .sortedWith { left, right ->
                 val usageCompare = (usage[right.packageName] ?: 0).compareTo(usage[left.packageName] ?: 0)
                 if (usageCompare != 0) usageCompare else collator.compare(left.label, right.label)
             }
             .filter { (usage[it.packageName] ?: 0) > 0 }
-        return (favorites + oftenUsed).take(DOCK_APP_LIMIT)
+        val fill = if (predicted.isNullOrEmpty()) oftenUsed else {
+            val byPackage = candidates.associateBy { it.packageName }
+            (predicted.mapNotNull { byPackage[it] } + oftenUsed).distinctBy { it.packageName }
+        }
+        return (favorites + fill).take(DOCK_APP_LIMIT)
     }
 
     private fun favoritePackages(): Set<String> = prefs().getStringSet(FAVORITE_APPS_PREF, emptySet()) ?: emptySet()

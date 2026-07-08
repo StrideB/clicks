@@ -11,6 +11,10 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <!-- Spaces prediction: detect car kit / headphones as a context trigger. Runtime-requested
+         only when the user enables a Bluetooth trigger in Spaces settings; everything degrades
+         gracefully without it. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />

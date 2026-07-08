@@ -444,6 +444,14 @@ class GridWorkspaceActivity : Activity(), GridWorkspaceView.Host {
         val intent = if (cls != null) Intent().setClassName(pkg, cls) else packageManager.getLaunchIntentForPackage(pkg)
         intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { startActivity(intent) }
+            .onSuccess {
+                Thread {
+                    runCatching {
+                        com.fran.clicks.predict.Predictor.recordLaunch(
+                            this, pkg, com.fran.clicks.predict.LaunchSource.OTHER)
+                    }
+                }.start()
+            }
             .onFailure { Toast.makeText(this, "Can't open ${item.label}", Toast.LENGTH_SHORT).show() }
     }
 
