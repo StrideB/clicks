@@ -1,0 +1,379 @@
+package com.fran.clicks.predict
+
+import android.content.Context
+import android.util.Log
+import com.fran.clicks.db.AppTransitionEntry
+import com.fran.clicks.db.PredictDatabase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import org.json.JSONObject
+import kotlin.math.exp
+import kotlin.random.Random
+
+/**
+ * On-device next-app prediction: a contextual bandit that blends a per-context frequency
+ * prior (strong from day one, seeded from the launcher's existing usage counts) with a
+ * sparse linear scorer that learns online from every launch. No network, no training loop;
+ * one launch = one cheap weight update. State persists encrypted via [PredictCrypto]; the
+ * raw transition log lands encrypted in Room ([PredictDatabase]).
+ *
+ * Blend per app:  final = (1 - alpha) * sigmoid(w·x) + alpha * freqPrior
+ * where alpha decays from 0.7 toward 0.15 as a context accumulates observations, and an
+ * epsilon-greedy swap keeps exploring while epsilon decays from 0.2 toward 0.03.
+ */
+object Predictor {
+
+    private const val TAG = "Predictor"
+    private const val STATE_KEY = "predict_state_v1"
+    private const val SEEDED_KEY = "predict_seeded"
+    private const val LR = 0.05f
+    private const val L2 = 1e-4f
+    private const val LOG_CAP = 4000
+    private const val MAX_NEGATIVES = 4
+    private const val DAILY_DECAY = 0.98f
+
+    /** Deterministic ranking for tests when set. */
+    @Volatile var randomSeed: Long? = null
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // ---- learned state (guarded by [lock]) --------------------------------------------
+    private val lock = Any()
+    private var loaded = false
+    private var weights = HashMap<String, HashMap<String, Float>>() // pkg -> feature -> w
+    private var freqCtx = HashMap<String, HashMap<String, Float>>() // ctxKey -> pkg -> count
+    private var freqSpace = HashMap<String, HashMap<String, Float>>() // spaceId -> pkg -> count
+    private var freqGlobal = HashMap<String, Float>()               // pkg -> count
+    private var ctxCount = HashMap<String, Float>()                 // ctxKey -> observations
+    private var totalLaunches = 0f
+    private var lastDecayDay = 0L
+    private var recentApps = ArrayDeque<String>()                   // newest first, max 2
+    private var insertsSincePrune = 0
+
+    // What we last surfaced (dock/drawer top row), for negative updates + confirm bonus.
+    private var lastShown: List<String> = emptyList()
+
+    // ---- public API --------------------------------------------------------------------
+
+    /** Snapshot of the current context; maintains the recent-app chain internally. */
+    fun snapshotNow(context: Context, mediaPlaying: Boolean = false): ContextSnapshot {
+        ensureLoaded(context)
+        val (last, prev) = synchronized(lock) {
+            recentApps.firstOrNull() to recentApps.getOrNull(1)
+        }
+        return ContextSensors.snapshot(context, last, prev, mediaPlaying)
+    }
+
+    /** Active Space for this context (manual lock respected). */
+    fun currentSpace(context: Context, snapshot: ContextSnapshot = snapshotNow(context)): SpaceDetection {
+        ensureLoaded(context)
+        return SpaceManager.detect(context, snapshot)
+    }
+
+    /**
+     * Rank [candidates] (installed launchable packages) for this context. Pinned apps of
+     * the active Space lead in pin order; excluded apps never appear. Never returns empty
+     * while candidates exist — cold start falls back to seeded most-used ordering.
+     */
+    fun topApps(
+        context: Context,
+        n: Int,
+        candidates: Collection<String>,
+        snapshot: ContextSnapshot = snapshotNow(context),
+    ): List<String> {
+        ensureLoaded(context)
+        if (candidates.isEmpty() || n <= 0) return emptyList()
+        val space = SpaceManager.detect(context, snapshot).space
+        val ranked = rankedScores(space, snapshot, candidates).map { it.first }
+        val pinned = space.pinned.filter { it in candidates }
+        val body = ranked.filter { it !in pinned }
+        val ordered = (pinned + body).toMutableList()
+
+        // Epsilon-greedy: occasionally promote a plausible lower-ranked app so the
+        // linear layer keeps getting signal outside the frequency winners.
+        val eps = maxOf(0.03f, 0.2f * exp(-totalLaunches / 300f))
+        val rng = randomSeed?.let { Random(it) } ?: Random.Default
+        if (ordered.size > n + 1 && rng.nextFloat() < eps) {
+            val swapFrom = n + rng.nextInt(minOf(n, ordered.size - n))
+            val swapTo = maxOf(pinned.size, n - 1)
+            val candidate = ordered.removeAt(swapFrom)
+            ordered.add(swapTo, candidate)
+        }
+        val result = ordered.take(n)
+        synchronized(lock) { lastShown = result }
+        return result
+    }
+
+    /** Scores for every candidate, best first — used by search biasing and debug. */
+    fun scores(
+        context: Context,
+        candidates: Collection<String>,
+        snapshot: ContextSnapshot = snapshotNow(context),
+    ): List<Pair<String, Float>> {
+        ensureLoaded(context)
+        val space = SpaceManager.detect(context, snapshot).space
+        return rankedScores(space, snapshot, candidates)
+    }
+
+    /**
+     * The online update: the user opened [pkg] in [snapshot]'s context. Positive example
+     * for the launched app (boosted when we predicted it, damped when found via search),
+     * negative for apps we surfaced that were passed over. Also appends an encrypted row
+     * to the transition log.
+     */
+    fun recordLaunch(
+        context: Context,
+        pkg: String,
+        source: LaunchSource,
+        snapshot: ContextSnapshot = snapshotNow(context),
+    ) {
+        ensureLoaded(context)
+        val x = snapshot.features()
+        val ctxKey = snapshot.contextKey()
+        val space = SpaceManager.detect(context, snapshot).space
+        val wasPredicted: Boolean
+        synchronized(lock) {
+            wasPredicted = pkg in lastShown
+            val mult = when {
+                source == LaunchSource.SEARCH -> 0.5f  // weaker signal: user hunted for it
+                wasPredicted -> 1.5f                   // confirms the surfaced prediction
+                else -> 1f
+            }
+            // Positive update for the launched app.
+            val w = weights.getOrPut(pkg) { HashMap() }
+            val err = (1f - sigmoid(dot(w, x))) * LR * mult
+            x.forEach { f -> w[f] = (w[f] ?: 0f) * (1f - L2) + err }
+            // Negative updates for surfaced-but-ignored apps.
+            lastShown.asSequence().filter { it != pkg }.take(MAX_NEGATIVES).forEach { p ->
+                val wp = weights.getOrPut(p) { HashMap() }
+                val push = sigmoid(dot(wp, x)) * LR
+                x.forEach { f -> wp[f] = (wp[f] ?: 0f) * (1f - L2) - push }
+            }
+            // Frequency priors.
+            freqCtx.getOrPut(ctxKey) { HashMap() }.merge(pkg, 1f, Float::plus)
+            freqSpace.getOrPut(space.id) { HashMap() }.merge(pkg, 1f, Float::plus)
+            freqGlobal.merge(pkg, 1f, Float::plus)
+            ctxCount.merge(ctxKey, 1f, Float::plus)
+            totalLaunches += 1f
+            if (recentApps.firstOrNull() != pkg) {
+                recentApps.addFirst(pkg)
+                while (recentApps.size > 2) recentApps.removeLast()
+            }
+        }
+        persistAsync(context)
+        logTransition(context, snapshot, pkg, source, wasPredicted)
+    }
+
+    /** Forget a Space's learned app ranking (its frequency table); weights stay global. */
+    fun resetSpaceLearning(context: Context, spaceId: String) {
+        ensureLoaded(context)
+        synchronized(lock) { freqSpace.remove(spaceId) }
+        persistAsync(context)
+    }
+
+    /** Full wipe: weights, priors, transition log, auto place clusters. */
+    fun resetAllLearning(context: Context) {
+        synchronized(lock) {
+            weights.clear(); freqCtx.clear(); freqSpace.clear(); freqGlobal.clear()
+            ctxCount.clear(); totalLaunches = 0f; recentApps.clear(); lastShown = emptyList()
+        }
+        PredictCrypto.prefs(context).edit().remove(STATE_KEY).remove(SEEDED_KEY).apply()
+        PlaceStore.resetAutoClusters(context)
+        scope.launch { runCatching { PredictDatabase.get(context).transitionDao().clearAll() } }
+    }
+
+    /** Human-readable top scores for the current context — for debugging/tuning. */
+    fun debugDump(context: Context, candidates: Collection<String>): String {
+        val snap = snapshotNow(context)
+        val space = SpaceManager.detect(context, snap)
+        val top = scores(context, candidates, snap).take(10)
+        return buildString {
+            appendLine("ctx=${snap.contextKey()} space=${space.space.name} strong=${space.strong} locked=${space.locked}")
+            appendLine("features=${snap.features()}")
+            appendLine("totalLaunches=$totalLaunches ctxObs=${ctxCount[snap.contextKey()] ?: 0f}")
+            top.forEach { (pkg, s) -> appendLine("  %.4f  %s".format(s, pkg)) }
+        }
+    }
+
+    // ---- scoring ------------------------------------------------------------------------
+
+    private fun rankedScores(
+        space: Space,
+        snapshot: ContextSnapshot,
+        candidates: Collection<String>,
+    ): List<Pair<String, Float>> {
+        val x = snapshot.features()
+        val ctxKey = snapshot.contextKey()
+        synchronized(lock) {
+            val ctxFreq = freqCtx[ctxKey] ?: emptyMap()
+            val spaceFreq = freqSpace[space.id] ?: emptyMap()
+            val ctxTotal = ctxFreq.values.sum().coerceAtLeast(1f)
+            val spaceTotal = spaceFreq.values.sum().coerceAtLeast(1f)
+            val globalTotal = freqGlobal.values.sum().coerceAtLeast(1f)
+            val obs = ctxCount[ctxKey] ?: 0f
+            val alpha = maxOf(0.15f, 0.7f * exp(-obs / 40f))
+            return candidates.asSequence()
+                .filter { it !in space.excluded }
+                .map { pkg ->
+                    val lin = sigmoid(dot(weights[pkg], x))
+                    val prior = 0.5f * (ctxFreq[pkg] ?: 0f) / ctxTotal +
+                        0.3f * (spaceFreq[pkg] ?: 0f) / spaceTotal +
+                        0.2f * (freqGlobal[pkg] ?: 0f) / globalTotal
+                    pkg to ((1f - alpha) * lin + alpha * prior)
+                }
+                .sortedByDescending { it.second }
+                .toList()
+        }
+    }
+
+    private fun dot(w: Map<String, Float>?, x: List<String>): Float {
+        if (w == null) return 0f
+        var sum = 0f
+        x.forEach { f -> sum += w[f] ?: 0f }
+        return sum
+    }
+
+    private fun sigmoid(v: Float): Float = 1f / (1f + exp(-v))
+
+    // ---- persistence ----------------------------------------------------------------------
+
+    private fun ensureLoaded(context: Context) {
+        if (loaded) {
+            maybeDecay(context)
+            return
+        }
+        synchronized(lock) {
+            if (loaded) return
+            val prefs = PredictCrypto.prefs(context)
+            runCatching {
+                val raw = prefs.getString(STATE_KEY, null) ?: return@runCatching
+                val o = JSONObject(raw)
+                weights = nestedFloatMap(o.optJSONObject("weights"))
+                freqCtx = nestedFloatMap(o.optJSONObject("freqCtx"))
+                freqSpace = nestedFloatMap(o.optJSONObject("freqSpace"))
+                freqGlobal = floatMap(o.optJSONObject("global"))
+                ctxCount = floatMap(o.optJSONObject("ctxCount"))
+                totalLaunches = o.optDouble("total", 0.0).toFloat()
+                lastDecayDay = o.optLong("lastDecayDay", 0L)
+                recentApps = ArrayDeque(
+                    (o.optJSONArray("recent") ?: org.json.JSONArray()).let { arr ->
+                        (0 until arr.length()).map { arr.optString(it) }
+                    }
+                )
+            }.onFailure { Log.w(TAG, "state load failed, starting fresh", it) }
+            if (!prefs.getBoolean(SEEDED_KEY, false)) {
+                seedFromUsageCounts(context)
+                prefs.edit().putBoolean(SEEDED_KEY, true).apply()
+            }
+            loaded = true
+        }
+        maybeDecay(context)
+    }
+
+    /**
+     * Cold-start seed: the launcher has been counting launches in "app_usage_counts" long
+     * before this engine existed — import those as the global prior so the first ranking
+     * is already the user's real most-used order.
+     */
+    private fun seedFromUsageCounts(context: Context) {
+        runCatching {
+            val raw = context.applicationContext.getSharedPreferences("clicks", Context.MODE_PRIVATE)
+                .getString("app_usage_counts", "{}") ?: "{}"
+            val o = JSONObject(raw)
+            o.keys().forEach { pkg ->
+                val c = o.optInt(pkg, 0)
+                if (c > 0) freqGlobal[pkg] = c.toFloat()
+            }
+            Log.i(TAG, "seeded global prior with ${freqGlobal.size} apps")
+        }
+    }
+
+    /** Rolling daily decay so stale habits fade: counts *= 0.98 per elapsed day. */
+    private fun maybeDecay(context: Context) {
+        val today = System.currentTimeMillis() / (24 * 60 * 60 * 1000L)
+        var changed = false
+        synchronized(lock) {
+            if (lastDecayDay == 0L) { lastDecayDay = today; changed = true }
+            else if (today > lastDecayDay) {
+                val factor = Math.pow(DAILY_DECAY.toDouble(), (today - lastDecayDay).toDouble()).toFloat()
+                listOf(freqCtx, freqSpace).forEach { table ->
+                    table.values.forEach { m -> m.keys.forEach { k -> m[k] = m[k]!! * factor } }
+                }
+                freqGlobal.keys.forEach { k -> freqGlobal[k] = freqGlobal[k]!! * factor }
+                ctxCount.keys.forEach { k -> ctxCount[k] = ctxCount[k]!! * factor }
+                lastDecayDay = today
+                changed = true
+            }
+        }
+        if (changed) persistAsync(context)
+    }
+
+    private fun persistAsync(context: Context) {
+        val app = context.applicationContext
+        scope.launch {
+            val json = synchronized(lock) {
+                JSONObject().apply {
+                    put("weights", toJson(weights))
+                    put("freqCtx", toJson(freqCtx))
+                    put("freqSpace", toJson(freqSpace))
+                    put("global", JSONObject(freqGlobal.toMap()))
+                    put("ctxCount", JSONObject(ctxCount.toMap()))
+                    put("total", totalLaunches.toDouble())
+                    put("lastDecayDay", lastDecayDay)
+                    put("recent", org.json.JSONArray(recentApps.toList()))
+                }.toString()
+            }
+            runCatching { PredictCrypto.prefs(app).edit().putString(STATE_KEY, json).apply() }
+                .onFailure { Log.w(TAG, "state persist failed", it) }
+        }
+    }
+
+    private fun logTransition(
+        context: Context,
+        snapshot: ContextSnapshot,
+        pkg: String,
+        source: LaunchSource,
+        wasPredicted: Boolean,
+    ) {
+        val app = context.applicationContext
+        scope.launch {
+            runCatching {
+                val payload = JSONObject().apply {
+                    put("ctxKey", snapshot.contextKey())
+                    put("features", org.json.JSONArray(snapshot.features()))
+                    put("pkg", pkg)
+                    put("source", source.name)
+                    put("predicted", wasPredicted)
+                }.toString()
+                val dao = PredictDatabase.get(app).transitionDao()
+                dao.insert(AppTransitionEntry(ts = snapshot.timestamp, blob = PredictCrypto.encrypt(payload)))
+                if (++insertsSincePrune >= 50) {
+                    insertsSincePrune = 0
+                    dao.pruneTo(LOG_CAP)
+                }
+            }.onFailure { Log.w(TAG, "transition log failed", it) }
+        }
+    }
+
+    // ---- JSON helpers -----------------------------------------------------------------------
+
+    private fun toJson(map: Map<String, Map<String, Float>>): JSONObject {
+        val o = JSONObject()
+        map.forEach { (k, inner) -> o.put(k, JSONObject(inner.toMap())) }
+        return o
+    }
+
+    private fun nestedFloatMap(o: JSONObject?): HashMap<String, HashMap<String, Float>> {
+        val out = HashMap<String, HashMap<String, Float>>()
+        o?.keys()?.forEach { k -> out[k] = floatMap(o.optJSONObject(k)) }
+        return out
+    }
+
+    private fun floatMap(o: JSONObject?): HashMap<String, Float> {
+        val out = HashMap<String, Float>()
+        o?.keys()?.forEach { k -> out[k] = o.optDouble(k, 0.0).toFloat() }
+        return out
+    }
+}

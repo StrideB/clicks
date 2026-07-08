@@ -73,6 +73,9 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
+    // Prediction engine at-rest encryption: EncryptedSharedPreferences for model weights,
+    // Keystore-backed AES/GCM for transition-log rows. Nothing leaves the device.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("androidx.dynamicanimation:dynamicanimation-ktx:1.0.0-alpha03")
     implementation("com.android.billingclient:billing-ktx:7.1.1")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")

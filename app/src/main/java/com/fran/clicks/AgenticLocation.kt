@@ -18,7 +18,8 @@ object AgenticLocation {
         context.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             context.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-    private fun lastKnown(context: Context): Location? {
+    /** Most recent cached fix across providers; also feeds the prediction engine's place clustering. */
+    fun lastKnown(context: Context): Location? {
         if (!hasPermission(context)) return null
         val mgr = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
         val providers = listOf(
