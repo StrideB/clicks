@@ -23,6 +23,11 @@ data class ContextSnapshot(
     val lastApp: String?,         // package opened most recently
     val prevApp: String?,         // package opened before that
     val timestamp: Long,
+    /**
+     * Far from the user's normal life: the device timezone differs from the usual one,
+     * or the fix is 300+ km from the saved Home place. Drives Travel auto-detection.
+     */
+    val awayFromHome: Boolean = false,
 ) {
 
     /**
@@ -41,6 +46,7 @@ data class ContextSnapshot(
         if (charging) add("charging")
         if (mediaPlaying) add("media")
         if (calendar != CalendarProximity.FREE) add("cal:${calendar.name}")
+        if (awayFromHome) add("away")
         lastApp?.let { add("last:${it.hashCode()}") }
         if (lastApp != null && prevApp != null) add("bigram:${prevApp.hashCode()}>${lastApp.hashCode()}")
         add("bias")
@@ -50,6 +56,8 @@ data class ContextSnapshot(
     fun contextKey(): String {
         val day = if (isWeekend) "we" else "wd"
         val motion = if (driving) "drv" else "still"
-        return "h$hourBucket|$day|$placeId|$motion|bt${btDevice.name}"
+        // "|away" is appended only when true so every context key learned at home keeps matching.
+        val away = if (awayFromHome) "|away" else ""
+        return "h$hourBucket|$day|$placeId|$motion|bt${btDevice.name}$away"
     }
 }

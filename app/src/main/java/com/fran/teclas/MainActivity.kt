@@ -1972,24 +1972,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     )
                 }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
-            addView(View(context).apply {
-                background = GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    if (activeNeuTokens.mode == NeuMode.LIGHT) {
-                        if (isUnfoldedInnerLayoutActive()) {
-                            intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)
+            if (wallpaper == null) {
+                addView(View(context).apply {
+                    background = GradientDrawable(
+                        GradientDrawable.Orientation.TOP_BOTTOM,
+                        if (activeNeuTokens.mode == NeuMode.LIGHT) {
+                            intArrayOf(0x10F4F5F1, 0x18EEF0EA, 0x22DADDD8)
                         } else {
-                            intArrayOf(0x38F4F5F1, 0x55EEF0EA, 0x78DADDD8)
+                            intArrayOf(0x2206080B, 0x1A12161C, 0x2A050609)
                         }
-                    } else {
-                        if (isUnfoldedInnerLayoutActive()) {
-                            intArrayOf(Color.TRANSPARENT, Color.TRANSPARENT)
-                        } else {
-                            intArrayOf(0x5206080B, 0x4412161C, 0x73050609)
-                        }
-                    }
-                )
-            }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                    )
+                }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            }
         }
     }
 
@@ -2044,8 +2038,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun installWallpaperEditLongPress(surface: View) {
         val touchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
-        val cancelSlop = maxOf(touchSlop * 2, dp(18))
-        val holdDelay = android.view.ViewConfiguration.getLongPressTimeout().toLong() + 420L
+        val cancelSlop = maxOf(touchSlop, dp(10))
+        val holdDelay = android.view.ViewConfiguration.getLongPressTimeout().toLong() + 900L
         var downX = 0f
         var downY = 0f
         surface.isLongClickable = false
@@ -14476,10 +14470,11 @@ Reply format: ["word1","word2","word3"]"""
             }
             refreshPredictContext(rerender = true)
         }
-        if (!libraryGridMode) {
-            libraryViewDirty = true
-            libraryContentReady = false
-        }
+        // Both library modes depend on launch data now: bento sorts categories by usage,
+        // and the grid leads with the predicted row — leaving grid mode out kept the
+        // predictions frozen at whatever the first render saw.
+        libraryViewDirty = true
+        libraryContentReady = false
         renderFavoritesDock()
     }
 

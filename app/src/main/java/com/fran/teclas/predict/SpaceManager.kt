@@ -15,6 +15,8 @@ data class SpaceTriggers(
     val weekdaysOnly: Boolean? = null,           // true = Mon-Fri, false = weekend only
     val placeKinds: Set<PlaceKind> = emptySet(), // matched against snapshot.placeKind
     val placeIds: Set<String> = emptySet(),      // specific saved places (settings: "at Gym")
+    /** OR-alternative inside the place group: matches when far from normal life (trip abroad). */
+    val awayFromHome: Boolean = false,
     val driving: Boolean = false,
     val btCar: Boolean = false,
     val headphones: Boolean = false,
@@ -61,7 +63,11 @@ object SpaceManager {
     fun defaults(): List<Space> = listOf(
         Space("driving", "Driving", "🚗", SpaceTriggers(driving = true), priority = 100),
         Space("fitness", "Fitness", "💪", SpaceTriggers(placeKinds = setOf(PlaceKind.GYM)), priority = 90),
-        Space("travel", "Travel", "✈️", SpaceTriggers(placeKinds = setOf(PlaceKind.AIRPORT)), priority = 85),
+        Space(
+            "travel", "Travel", "✈️",
+            SpaceTriggers(placeKinds = setOf(PlaceKind.AIRPORT), awayFromHome = true),
+            priority = 85,
+        ),
         Space(
             "commute", "Commute", "🚇",
             SpaceTriggers(hourBuckets = setOf(1, 2, 4, 5), weekdaysOnly = true, headphones = true),
@@ -130,13 +136,17 @@ object SpaceManager {
                 best = space; bestSpecificity = specificity; bestStrong = strong
             }
         }
+        // No trigger matched. Being away from home is still a hard fact — falling back to
+        // "Home" on a trip abroad is exactly wrong, so away prefers Travel.
+        val awayTravel = if (best == null && snapshot.awayFromHome) all.find { it.id == "travel" } else null
         val fallback = best
+            ?: awayTravel
             ?: all.find { it.id == lastActiveId }
             ?: all.find { it.id == "home" }
             ?: all.firstOrNull()
             ?: defaults().first { it.id == "home" }
         lastActiveId = fallback.id
-        return SpaceDetection(fallback, strong = best != null && bestStrong, locked = false)
+        return SpaceDetection(fallback, strong = (best != null && bestStrong) || awayTravel != null, locked = false)
     }
 
     /** Null when a specified group fails; otherwise (matched group count, any strong group). */
@@ -151,8 +161,9 @@ object SpaceManager {
             if (s.isWeekend == it) return null
             groups++
         }
-        if (t.placeKinds.isNotEmpty() || t.placeIds.isNotEmpty()) {
-            val hit = s.placeKind in t.placeKinds || s.placeId in t.placeIds
+        if (t.placeKinds.isNotEmpty() || t.placeIds.isNotEmpty() || t.awayFromHome) {
+            val hit = s.placeKind in t.placeKinds || s.placeId in t.placeIds ||
+                (t.awayFromHome && s.awayFromHome)
             if (!hit) return null
             groups++; strong = true
         }
@@ -191,6 +202,7 @@ object SpaceManager {
                     s.triggers.weekdaysOnly?.let { put("weekdaysOnly", it) }
                     put("placeKinds", JSONArray(s.triggers.placeKinds.map { it.name }))
                     put("placeIds", JSONArray(s.triggers.placeIds.toList()))
+                    put("awayFromHome", s.triggers.awayFromHome)
                     put("driving", s.triggers.driving); put("btCar", s.triggers.btCar)
                     put("headphones", s.triggers.headphones); put("calendarBusy", s.triggers.calendarBusy)
                 })
@@ -220,6 +232,10 @@ object SpaceManager {
                     placeKinds = strings(t.optJSONArray("placeKinds"))
                         .mapNotNull { runCatching { PlaceKind.valueOf(it) }.getOrNull() }.toSet(),
                     placeIds = strings(t.optJSONArray("placeIds")).toSet(),
+                    // Configs saved before the away signal existed lack the key; the built-in
+                    // Travel space gains it on load so existing installs get trip detection.
+                    awayFromHome = if (t.has("awayFromHome")) t.optBoolean("awayFromHome")
+                    else o.optString("id") == "travel" && o.optBoolean("builtin", true),
                     driving = t.optBoolean("driving"),
                     btCar = t.optBoolean("btCar"),
                     headphones = t.optBoolean("headphones"),

@@ -28,10 +28,14 @@ object ContextSensors {
     private const val DRIVING_SPEED_MS = 6f          // ~13 mph sustained fix speed
     private const val FRESH_FIX_MS = 10 * 60 * 1000L
 
+    private const val AWAY_DISTANCE_M = 300_000f     // 300 km from the saved Home place
+    private const val TZ_MIN_SAMPLES = 24            // ~a day of awake-hours before a "usual" timezone exists
+
     private var cachedAt = 0L
     private var cachedPlace: Pair<String, PlaceKind> = "unknown" to PlaceKind.UNKNOWN
     private var cachedSpeedDriving = false
     private var cachedCalendar = CalendarProximity.FREE
+    private var cachedAway = false
 
     fun snapshot(
         context: Context,
@@ -63,6 +67,7 @@ object ContextSensors {
             lastApp = lastApp,
             prevApp = prevApp,
             timestamp = System.currentTimeMillis(),
+            awayFromHome = cachedAway,
         )
     }
 
@@ -76,13 +81,65 @@ object ContextSensors {
     }
 
     private fun refreshSlowSignals(context: Context) {
+        var freshFix: android.location.Location? = null
         runCatching {
             val fix = AgenticLocation.lastKnown(context)
             val fresh = fix != null && (System.currentTimeMillis() - fix.time) < FRESH_FIX_MS
+            if (fresh) freshFix = fix
             cachedPlace = PlaceStore.clusterFor(context, if (fresh) fix else null)
             cachedSpeedDriving = fresh && fix!!.hasSpeed() && fix.speed > DRIVING_SPEED_MS
         }
         cachedCalendar = runCatching { calendarProximity(context) }.getOrDefault(CalendarProximity.FREE)
+        cachedAway = runCatching { awayFromHome(context, freshFix) }.getOrDefault(false)
+    }
+
+    /**
+     * Away from normal life? Two independent detectors, either one fires:
+     *  - the device timezone differs from the learned usual timezone (works with no
+     *    location permission at all — an overseas trip flips this within one refresh);
+     *  - a fresh fix is 300+ km from the saved Home place.
+     * Never true while actually inside a saved HOME/WORK place.
+     */
+    private fun awayFromHome(context: Context, freshFix: android.location.Location?): Boolean {
+        if (cachedPlace.second == PlaceKind.HOME || cachedPlace.second == PlaceKind.WORK) {
+            trackTimezone(context) // keep learning the usual zone while at home
+            return false
+        }
+        val tzAway = trackTimezone(context)
+        val distanceAway = freshFix?.let { fix ->
+            PlaceStore.places(context).find { it.kind == PlaceKind.HOME }?.let { home ->
+                PlaceStore.distanceM(home.lat, home.lng, fix.latitude, fix.longitude) > AWAY_DISTANCE_M
+            }
+        } ?: false
+        return tzAway || distanceAway
+    }
+
+    /**
+     * Bump the current timezone's observation count and report whether the device is in a
+     * zone other than the usual (most-observed) one. Needs [TZ_MIN_SAMPLES] observations
+     * before it ever reports away, so a fresh install can't misfire.
+     */
+    private fun trackTimezone(context: Context): Boolean {
+        val prefs = PredictCrypto.prefs(context)
+        val zone = java.util.TimeZone.getDefault().id
+        val obj = runCatching { org.json.JSONObject(prefs.getString("predict_timezones", "{}") ?: "{}") }
+            .getOrDefault(org.json.JSONObject())
+        // At most one observation per hour, so weeks of a trip can't dethrone the home zone quickly.
+        val now = System.currentTimeMillis()
+        if (now - prefs.getLong("predict_tz_last_bump", 0L) > 60 * 60 * 1000L) {
+            obj.put(zone, obj.optInt(zone, 0) + 1)
+            prefs.edit().putString("predict_timezones", obj.toString())
+                .putLong("predict_tz_last_bump", now).apply()
+        }
+        var total = 0
+        var usual: String? = null
+        var usualCount = -1
+        obj.keys().forEach { key ->
+            val count = obj.optInt(key, 0)
+            total += count
+            if (count > usualCount) { usual = key; usualCount = count }
+        }
+        return total >= TZ_MIN_SAMPLES && usual != null && usual != zone
     }
 
     /** Connected classic-BT audio device, classified as car kit vs headphones. */

@@ -50,6 +50,9 @@ object Predictor {
     private var totalLaunches = 0f
     private var lastDecayDay = 0L
     private var recentApps = ArrayDeque<String>()                   // newest first, max 2
+    // Last launches per Space (pkg -> newest timestamp), so what you opened this morning in
+    // a Space outranks months-old habits there. Capped per space.
+    private var recentBySpace = HashMap<String, HashMap<String, Long>>()
     private var insertsSincePrune = 0
 
     // What we last surfaced (dock/drawer top row), for negative updates + confirm bonus.
@@ -85,8 +88,9 @@ object Predictor {
     ): List<String> {
         ensureLoaded(context)
         if (candidates.isEmpty() || n <= 0) return emptyList()
-        val space = SpaceManager.detect(context, snapshot).space
-        val ranked = rankedScores(space, snapshot, candidates).map { it.first }
+        val detection = SpaceManager.detect(context, snapshot)
+        val space = detection.space
+        val ranked = rankedScores(detection, snapshot, candidates).map { it.first }
         val pinned = space.pinned.filter { it in candidates }
         val body = ranked.filter { it !in pinned }
         val ordered = (pinned + body).toMutableList()
@@ -113,8 +117,7 @@ object Predictor {
         snapshot: ContextSnapshot = snapshotNow(context),
     ): List<Pair<String, Float>> {
         ensureLoaded(context)
-        val space = SpaceManager.detect(context, snapshot).space
-        return rankedScores(space, snapshot, candidates)
+        return rankedScores(SpaceManager.detect(context, snapshot), snapshot, candidates)
     }
 
     /**
@@ -154,6 +157,9 @@ object Predictor {
             // Frequency priors.
             freqCtx.getOrPut(ctxKey) { HashMap() }.merge(pkg, 1f, Float::plus)
             freqSpace.getOrPut(space.id) { HashMap() }.merge(pkg, 1f, Float::plus)
+            val recent = recentBySpace.getOrPut(space.id) { HashMap() }
+            recent[pkg] = snapshot.timestamp
+            if (recent.size > 30) recent.entries.minByOrNull { it.value }?.let { recent.remove(it.key) }
             freqGlobal.merge(pkg, 1f, Float::plus)
             ctxCount.merge(ctxKey, 1f, Float::plus)
             totalLaunches += 1f
@@ -183,10 +189,33 @@ object Predictor {
         }
     }
 
+    /**
+     * What a Space has learned, launch counts included, newest-signal first — the
+     * transparency list shown in the Space editor. No minimum threshold: if you opened one
+     * app once while the Space was active, it shows up here immediately.
+     */
+    fun spaceLearned(context: Context, spaceId: String, n: Int): List<Pair<String, Int>> {
+        ensureLoaded(context)
+        synchronized(lock) {
+            val table = freqSpace[spaceId] ?: return emptyList()
+            val recent = recentBySpace[spaceId] ?: emptyMap()
+            return table.entries
+                .sortedWith(
+                    compareByDescending<Map.Entry<String, Float>> { recent[it.key] ?: 0L }
+                        .thenByDescending { it.value }
+                )
+                .take(n)
+                .map { it.key to it.value.toInt().coerceAtLeast(1) }
+        }
+    }
+
     /** Forget a Space's learned app ranking (its frequency table); weights stay global. */
     fun resetSpaceLearning(context: Context, spaceId: String) {
         ensureLoaded(context)
-        synchronized(lock) { freqSpace.remove(spaceId) }
+        synchronized(lock) {
+            freqSpace.remove(spaceId)
+            recentBySpace.remove(spaceId)
+        }
         persistAsync(context)
     }
 
@@ -195,6 +224,7 @@ object Predictor {
         synchronized(lock) {
             weights.clear(); freqCtx.clear(); freqSpace.clear(); freqGlobal.clear()
             ctxCount.clear(); totalLaunches = 0f; recentApps.clear(); lastShown = emptyList()
+            recentBySpace.clear()
         }
         PredictCrypto.prefs(context).edit().remove(STATE_KEY).remove(SEEDED_KEY).apply()
         PlaceStore.resetAutoClusters(context)
@@ -217,27 +247,43 @@ object Predictor {
     // ---- scoring ------------------------------------------------------------------------
 
     private fun rankedScores(
-        space: Space,
+        detection: SpaceDetection,
         snapshot: ContextSnapshot,
         candidates: Collection<String>,
     ): List<Pair<String, Float>> {
+        val space = detection.space
         val x = snapshot.features()
         val ctxKey = snapshot.contextKey()
         synchronized(lock) {
             val ctxFreq = freqCtx[ctxKey] ?: emptyMap()
             val spaceFreq = freqSpace[space.id] ?: emptyMap()
+            val recent = recentBySpace[space.id] ?: emptyMap()
             val ctxTotal = ctxFreq.values.sum().coerceAtLeast(1f)
             val spaceTotal = spaceFreq.values.sum().coerceAtLeast(1f)
             val globalTotal = freqGlobal.values.sum().coerceAtLeast(1f)
             val obs = ctxCount[ctxKey] ?: 0f
             val alpha = maxOf(0.15f, 0.7f * exp(-obs / 40f))
+            // When the Space is a deliberate signal (manually locked, or detected from a
+            // strong trigger like a place / driving / being away), what the user actually
+            // does in that Space must dominate the months-old global habit prior — this is
+            // what makes freshly opened apps on a trip stick instead of drowning under the
+            // seeded home ranking.
+            val engaged = detection.locked || detection.strong
+            val wCtx = if (engaged) 0.30f else 0.45f
+            val wSpace = if (engaged) 0.30f else 0.25f
+            val wGlobal = if (engaged) 0.10f else 0.15f
+            val wRecent = if (engaged) 0.30f else 0.15f
+            val now = snapshot.timestamp
             return candidates.asSequence()
                 .filter { it !in space.excluded }
                 .map { pkg ->
                     val lin = sigmoid(dot(weights[pkg], x))
-                    val prior = 0.5f * (ctxFreq[pkg] ?: 0f) / ctxTotal +
-                        0.3f * (spaceFreq[pkg] ?: 0f) / spaceTotal +
-                        0.2f * (freqGlobal[pkg] ?: 0f) / globalTotal
+                    val ageHours = recent[pkg]?.let { (now - it) / 3_600_000f }
+                    val recency = if (ageHours == null || ageHours < 0f) 0f else exp(-ageHours / 24f)
+                    val prior = wCtx * (ctxFreq[pkg] ?: 0f) / ctxTotal +
+                        wSpace * (spaceFreq[pkg] ?: 0f) / spaceTotal +
+                        wGlobal * (freqGlobal[pkg] ?: 0f) / globalTotal +
+                        wRecent * recency
                     pkg to ((1f - alpha) * lin + alpha * prior)
                 }
                 .sortedByDescending { it.second }
@@ -279,6 +325,15 @@ object Predictor {
                         (0 until arr.length()).map { arr.optString(it) }
                     }
                 )
+                recentBySpace = HashMap()
+                o.optJSONObject("recentSpace")?.let { rs ->
+                    rs.keys().forEach { spaceId ->
+                        val inner = rs.optJSONObject(spaceId) ?: return@forEach
+                        val m = HashMap<String, Long>()
+                        inner.keys().forEach { pkg -> m[pkg] = inner.optLong(pkg, 0L) }
+                        recentBySpace[spaceId] = m
+                    }
+                }
             }.onFailure { Log.w(TAG, "state load failed, starting fresh", it) }
             if (!prefs.getBoolean(SEEDED_KEY, false)) {
                 seedFromUsageCounts(context)
@@ -340,6 +395,9 @@ object Predictor {
                     put("total", totalLaunches.toDouble())
                     put("lastDecayDay", lastDecayDay)
                     put("recent", org.json.JSONArray(recentApps.toList()))
+                    put("recentSpace", JSONObject().also { rs ->
+                        recentBySpace.forEach { (spaceId, m) -> rs.put(spaceId, JSONObject(m.toMap())) }
+                    })
                 }.toString()
             }
             runCatching { PredictCrypto.prefs(app).edit().putString(STATE_KEY, json).apply() }

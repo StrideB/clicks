@@ -215,6 +215,7 @@ class SpacesSettingsActivity : ComponentActivity() {
                     if (snap.headphones) add("headphones")
                     if (snap.mediaPlaying) add("music playing")
                     if (snap.charging) add("charging")
+                    if (snap.awayFromHome) add("away from home")
                 }
                 detail = "Signals: " + bits.joinToString(" · ")
             }
@@ -463,6 +464,32 @@ class SpacesSettingsActivity : ComponentActivity() {
             }
             NeuButton("Exclude an app", Modifier.fillMaxWidth().padding(top = 8.dp), filled = false) {
                 openAppPicker(exclude = space.excluded.toSet()) { pkg -> commit(space.copy(excluded = space.excluded + pkg)) }
+            }
+        }
+
+        Section("LEARNED FOR THIS SPACE") {
+            val learned = remember(tick) {
+                Predictor.spaceLearned(this@SpacesSettingsActivity, space.id, 10)
+            }
+            if (learned.isEmpty()) {
+                Label(
+                    "Nothing yet. Open apps while ${space.name} is active (or locked) and they " +
+                        "appear here instantly — this is exactly what the drawer and dock rank from.",
+                    12.5.sp, t.inkDimCompose,
+                )
+            } else {
+                Label("Every launch recorded while ${space.name} was active. Freshest first.",
+                    12.5.sp, t.inkDimCompose, bottomPad = 4.dp)
+                learned.forEachIndexed { i, (pkg, count) ->
+                    if (i > 0) Hairline()
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(appLabel(pkg), Modifier.weight(1f), color = t.inkCompose, fontSize = 14.5.sp)
+                        Text(if (count == 1) "1 open" else "$count opens", color = t.inkDimCompose, fontSize = 12.sp)
+                    }
+                }
             }
         }
 
