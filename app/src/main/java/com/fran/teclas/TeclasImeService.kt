@@ -2431,6 +2431,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             strokeJoin = Paint.Join.ROUND
         }
         private val trailPath = Path()
+        // Gradient colors are theme-derived and stable for the whole gesture; computing them (and a
+        // fresh IntArray) inside dispatchDraw allocated on every frame of every glide.
+        private var trailColorsCache: IntArray? = null
+        // The gradient tracks the trail's endpoints; rebuilding the shader only after ~6px of
+        // movement (instead of every frame) keeps the visual identical without per-frame allocation.
+        private var trailShaderEndX = Float.NaN
+        private var trailShaderEndY = Float.NaN
         private var glidePersisting = false
         private var glideFadeRunnable: Runnable? = null
         private val touchSlop = ViewConfiguration.get(this@TeclasImeService).scaledTouchSlop
@@ -2489,6 +2496,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             traced.clear()
             trailLocal.clear()
             trailTimes.clear()
+            trailColorsCache = null // recompute next gesture so theme switches take effect
+            trailPaint.shader = null
+            trailShaderEndX = Float.NaN
+            trailShaderEndY = Float.NaN
             glideClassifier?.clear()
             invalidate()
         }
@@ -2511,16 +2522,22 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
                 val start = trailLocal.first()
                 val end = trailLocal.last()
-                val colors = glideTrailColors()
-                trailPaint.shader = android.graphics.LinearGradient(
-                    start.first,
-                    start.second,
-                    end.first,
-                    end.second,
-                    colors,
-                    null,
-                    Shader.TileMode.CLAMP
-                )
+                val colors = trailColorsCache ?: glideTrailColors().also { trailColorsCache = it }
+                val endMoved = (end.first - trailShaderEndX).let { it * it } +
+                    (end.second - trailShaderEndY).let { it * it }
+                if (trailPaint.shader == null || endMoved.isNaN() || endMoved > 36f) {
+                    trailPaint.shader = android.graphics.LinearGradient(
+                        start.first,
+                        start.second,
+                        end.first,
+                        end.second,
+                        colors,
+                        null,
+                        Shader.TileMode.CLAMP
+                    )
+                    trailShaderEndX = end.first
+                    trailShaderEndY = end.second
+                }
                 trailPaint.strokeWidth = dp(12).toFloat()
                 trailPaint.alpha = 58
                 canvas.drawPath(trailPath, trailPaint)
