@@ -1,6 +1,6 @@
-# Clicks — Neumorphic homescreen redesign + Light/Dark/System theme
+# Teclas — Neumorphic homescreen redesign + Light/Dark/System theme
 
-Reskin the entire Clicks launcher homescreen in a **dark-and-light neumorphic (soft UI) design language**, and add a **theme setting** (Dark / Light / System) that switches the whole launcher. This spec matches an approved interactive prototype — match its look, proportions, and per-widget treatments exactly.
+Reskin the entire Teclas launcher homescreen in a **dark-and-light neumorphic (soft UI) design language**, and add a **theme setting** (Dark / Light / System) that switches the whole launcher. This spec matches an approved interactive prototype — match its look, proportions, and per-widget treatments exactly.
 
 ## Ground rules
 - **This is a visual reskin + a theme setting. Do NOT change behavior, data, layout structure, or features.** Same widgets, same order, same conditional logic, same click/long-press actions.
@@ -81,4 +81,4 @@ Match the prototype's proportions: compact weather, tall centered widget stack, 
 End with a summary of what changed, any `// TODO:` left, and confirmation `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug` succeeds.
 
 ## Reference
-Approved prototype: `work/artifacts/clicks_home_full_stack/index.html` (full stack, dark+light, correct proportions). Supporting mocks: `clicks_neumorphic_system/` (all screens), `clicks_music_redesign/`, `clicks_launcher_redesign/` (real-vs-redesign). Match their look, the token values above, and the per-widget treatments.
+Approved prototype: `work/artifacts/teclas_home_full_stack/index.html` (full stack, dark+light, correct proportions). Supporting mocks: `teclas_neumorphic_system/` (all screens), `teclas_music_redesign/`, `teclas_launcher_redesign/` (real-vs-redesign). Match their look, the token values above, and the per-widget treatments.

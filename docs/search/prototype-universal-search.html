@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clicks Universal Search, Widget Mode</title>
+<title>Teclas Universal Search, Widget Mode</title>
 <style>
   .dark{
     --base:#181b21; --base-hi:#20242c; --base-lo:#0e1014;
@@ -116,7 +116,7 @@
 <body>
 <div class="wrap">
   <div class="title">
-    <div class="k">Clicks · Universal Search</div>
+    <div class="k">Teclas · Universal Search</div>
     <h1>Not just apps — the whole launcher</h1>
     <p>Type-to-search across apps, contacts, email, messages, calendar, travel, and Gemini AI — plus type-to-do commands. Results slide up from behind the keyboard; the keyboard is never covered.</p>
   </div>
@@ -180,7 +180,7 @@ function results(raw){
     ]};
   }
   if(q.startsWith('what time is my flight')||q.startsWith('what time')){
-    return {title:'Clicks AI',cat:'GEMINI',ai:{answer:'Your flight <b>UA 2481</b> departs <span class="cmd">6:40 PM</span> from SFO, gate B12. Check-in is open.',btns:['Open boarding pass','Directions to SFO']},items:[
+    return {title:'Teclas AI',cat:'GEMINI',ai:{answer:'Your flight <b>UA 2481</b> departs <span class="cmd">6:40 PM</span> from SFO, gate B12. Check-in is open.',btns:['Open boarding pass','Directions to SFO']},items:[
       {kind:'TRAVEL',t:'UA 2481 · SFO → JFK',s:'Today 6:40 PM · Seat 14C'},
       {kind:'CALENDAR',t:'Leave for airport',s:'Today 4:15 PM'},
     ]};
@@ -212,7 +212,7 @@ function rowHtml(x){
   </div>`;
 }
 function aiHtml(ai){
-  return `<div class="ai"><div class="ai-h"><div class="ai-ic">C</div><div><div style="font-size:12px;font-weight:600;color:var(--ink)">Clicks AI</div><div style="font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1px;color:var(--purple)">GEMINI</div></div></div>
+  return `<div class="ai"><div class="ai-h"><div class="ai-ic">C</div><div><div style="font-size:12px;font-weight:600;color:var(--ink)">Teclas AI</div><div style="font-family:ui-monospace,monospace;font-size:8px;letter-spacing:1px;color:var(--purple)">GEMINI</div></div></div>
     <div class="ai-b">${ai.answer}</div>
     <div class="ai-btns">${ai.btns.map((b,i)=>`<div class="ai-btn${i===ai.btns.length-1?' primary':''}">${b}</div>`).join('')}</div></div>`;
 }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Clicks Foldable Inner Focus Canvas</title>
+  <title>Teclas Foldable Inner Focus Canvas</title>
   <style>
     :root {
       color-scheme: dark;
@@ -470,7 +470,7 @@
         <button class="app" style="--app-a:#c4b5ff;--app-b:#5941b7">A</button>
       </section>
 
-      <section class="keyboard-shell" aria-label="Clicks keyboard">
+      <section class="keyboard-shell" aria-label="Teclas keyboard">
         <div class="typing" id="typing">SEARCH</div>
         <div class="keys" id="keys"></div>
       </section>
@@ -549,7 +549,7 @@
       ["q","w","e","r","t","y","u","i","o","p"],
       ["a","s","d","f","g","h","j","k","l"],
       ["⇧","z","x","c","v","b","n","m","⌫"],
-      ["123","clicks","space",".","GO"]
+      ["123","teclas","space",".","GO"]
     ];
 
     const keys = document.getElementById("keys");
@@ -558,7 +558,7 @@
       el.className = "row r" + (index + 1);
       row.forEach(label => {
         const key = document.createElement("div");
-        key.className = "key" + (["123","clicks","⇧","⌫","."].includes(label) ? " fn" : "") + (label === "GO" ? " go" : "");
+        key.className = "key" + (["123","teclas","⇧","⌫","."].includes(label) ? " fn" : "") + (label === "GO" ? " go" : "");
         key.textContent = label;
         key.addEventListener("pointerdown", () => {
           key.style.transform = "translateY(4px)";

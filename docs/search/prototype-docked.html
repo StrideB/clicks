@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clicks Docked Search, Neumorphic</title>
+<title>Teclas Docked Search, Neumorphic</title>
 <style>
   .dark{
     --base:#181b21; --base-hi:#20242c; --base-lo:#0e1014;
@@ -65,7 +65,7 @@
   .tmeta .ts{font-size:9.5px;letter-spacing:.8px;color:var(--ink-faint);text-transform:uppercase;margin-top:4px;font-family:ui-monospace,monospace;}
   .tmeta .tp{font-size:11px;color:var(--ink-dim);margin-top:4px;line-height:1.4;}
 
-  /* Clicks AI answer card */
+  /* Teclas AI answer card */
   .ai{border-radius:20px;background:var(--base);box-shadow:var(--raised);padding:14px;grid-column:1 / -1;}
   .ai-head{display:flex;align-items:center;gap:10px;}
   .ai-ic{width:34px;height:34px;border-radius:11px;background:var(--base);box-shadow:var(--raised-sm);display:flex;align-items:center;justify-content:center;color:var(--purple);font-size:15px;font-weight:800;}
@@ -90,7 +90,7 @@
   .key{flex:1 1 0;min-width:0;height:32px;border-radius:8px;background:var(--base);box-shadow:var(--raised-sm);font-size:13px;color:var(--ink);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.05s;}
   .key:active{box-shadow:var(--pressed-sm);transform:translateY(1px);}
   .key.wide{flex:1.6 1 0;}.key.sp{flex:4 1 0;color:var(--ink-dim);font-size:10px;letter-spacing:2px;}
-  .key.clicks{color:var(--green);font-size:10px;}.key.go{color:var(--accent);font-weight:700;}.key.n123{color:var(--ink-dim);font-size:10px;}
+  .key.teclas{color:var(--green);font-size:10px;}.key.go{color:var(--accent);font-weight:700;}.key.n123{color:var(--ink-dim);font-size:10px;}
   .navstub{display:flex;justify-content:center;padding:6px 0 9px;flex:0 0 auto;}
   .navstub i{width:104px;height:5px;border-radius:99px;background:var(--base);box-shadow:var(--pressed-sm);}
 
@@ -101,9 +101,9 @@
 <body>
 <div class="wrap">
   <div class="title">
-    <div class="k">Clicks · Docked Search</div>
+    <div class="k">Teclas · Docked Search</div>
     <h1>Docked search, neumorphic</h1>
-    <p>Your docked search — bento result grid (apps + contextual cards + Clicks AI answers) above the fixed keyboard. Type to see it fill in. Same design language as the home redesign.</p>
+    <p>Your docked search — bento result grid (apps + contextual cards + Teclas AI answers) above the fixed keyboard. Type to see it fill in. Same design language as the home redesign.</p>
   </div>
   <div class="controls">
     <span class="lbl">MODE</span>
@@ -123,7 +123,7 @@
             <div class="scroll"><div class="bento" id="bento"></div></div>
           </div>
           <div class="kb">
-            <div class="strip"><span class="q" id="q"><span class="ph">Search apps · clicks for settings</span></span><span class="caret" id="caret" style="display:none"></span><span class="z">ZEISS</span></div>
+            <div class="strip"><span class="q" id="q"><span class="ph">Search apps · teclas for settings</span></span><span class="caret" id="caret" style="display:none"></span><span class="z">ZEISS</span></div>
             <div id="keys"></div>
           </div>
         </div>
@@ -131,14 +131,14 @@
       </div>
     </div>
   </div>
-  <div class="note"><b>Docked search</b> keeps the keyboard fixed at the bottom and fills the space above with a bento grid: matched apps as tiles, contextual results (messages, calendar) as wider cards, and <b>Clicks AI</b> (Gemini) answers inline. All neumorphic — raised tiles, carved wells, monochrome + accent chips.</div>
+  <div class="note"><b>Docked search</b> keeps the keyboard fixed at the bottom and fills the space above with a bento grid: matched apps as tiles, contextual results (messages, calendar) as wider cards, and <b>Teclas AI</b> (Gemini) answers inline. All neumorphic — raised tiles, carved wells, monochrome + accent chips.</div>
 </div>
 
 <script>
 const ROWS=[['q','w','e','r','t','y','u','i','o','p'],['a','s','d','f','g','h','j','k','l'],['↑','z','x','c','v','b','n','m','⌫']];
 const keys=document.getElementById('keys');
 ROWS.forEach((row,ri)=>{const r=document.createElement('div');r.className='krow'+(ri===1?' ind':'');row.forEach(ch=>{const e=document.createElement('div');e.className='key'+(ch==='↑'||ch==='⌫'?' wide':'');e.textContent=ch;e.dataset.ch=(ch.length===1&&/[a-z]/.test(ch))?ch:'';r.appendChild(e);});keys.appendChild(r);});
-const fr=document.createElement('div');fr.className='krow';fr.innerHTML='<div class="key n123 wide">123</div><div class="key clicks">clicks</div><div class="key sp">space</div><div class="key">.</div><div class="key go wide">GO</div>';keys.appendChild(fr);
+const fr=document.createElement('div');fr.className='krow';fr.innerHTML='<div class="key n123 wide">123</div><div class="key teclas">teclas</div><div class="key sp">space</div><div class="key">.</div><div class="key go wide">GO</div>';keys.appendChild(fr);
 
 let query='wha';
 
@@ -155,7 +155,7 @@ function results(q){
     {type:'ctx',t:'New Messages',sub:'WHATSAPP · 1 PERSON',preview:'See what 1 person sent you',chip:'#F5C451',g:'M'},
     {type:'app',t:'WhatsApp Business',chip:'#28E06A',g:'W',hl:'Wha'},
   ]};
-  if(q.startsWith('next app')) return {title:'Clicks AI', cat:'GEMINI', items:[
+  if(q.startsWith('next app')) return {title:'Teclas AI', cat:'GEMINI', items:[
     {type:'ai',asked:'next appointment',answer:'Your next appointment is <span class="cmd">Standup</span> today, 9:30–10:00 am.',btns:['Join','Open calendar']},
     {type:'app',t:'Calendar',chip:'#F5C451',g:'C'},
     {type:'app',t:'Airbnb',chip:'#FF5A3C',g:'A'},
@@ -166,7 +166,7 @@ function results(q){
 function tileHtml(x){
   if(x.type==='ai'){
     return `<div class="ai">
-      <div class="ai-head"><div class="ai-ic">C</div><div><div class="ai-title">Clicks AI</div><div class="ai-sub">GEMINI</div></div></div>
+      <div class="ai-head"><div class="ai-ic">C</div><div><div class="ai-title">Teclas AI</div><div class="ai-sub">GEMINI</div></div></div>
       <div style="font-size:9px;color:var(--ink-faint);font-family:ui-monospace,monospace;letter-spacing:1px;margin-top:10px">ASKED</div>
       <div class="ai-bubble" style="margin-top:5px;color:var(--ink-dim)">${x.asked}</div>
       <div style="font-size:9px;color:var(--purple);font-family:ui-monospace,monospace;letter-spacing:1px;margin-top:10px">● GEMINI</div>
@@ -191,7 +191,7 @@ function tileHtml(x){
 function render(){
   const q=document.getElementById('q'),caret=document.getElementById('caret');
   if(query){q.innerHTML=query.replace(/ /g,'&nbsp;');caret.style.display='';}
-  else{q.innerHTML='<span class="ph">Search apps · clicks for settings</span>';caret.style.display='none';}
+  else{q.innerHTML='<span class="ph">Search apps · teclas for settings</span>';caret.style.display='none';}
   const res=results(query);
   document.getElementById('rtitle').textContent=res.title;
   document.getElementById('rcat').textContent=res.cat;

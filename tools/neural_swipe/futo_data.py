@@ -157,7 +157,7 @@ def load_futo_rows(path_or_dir, limit=None):
 
 
 def load_jsonl_rows(*paths):
-    """Load rows from JSONL files (e.g. exported by the Clicks swipe collector web app). Same schema
+    """Load rows from JSONL files (e.g. exported by the Teclas swipe collector web app). Same schema
     as FUTO — so your own captured swipes train through the identical path. Mix with FUTO rows freely."""
     import json
     rows = []

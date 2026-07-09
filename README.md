@@ -1,17 +1,18 @@
-# Clicks
+# Teclas
 
-Clicks is a native Android launcher built around typing as the primary action. It is not the old icon-list scaffold, not the old Message Hub prototype, and not the left-column/right-ribbon communicator mockup. The current launcher is a centered premium homescreen with contextual widgets, a favorites dock, a custom on-screen keyboard, type-to-do search, app library, media controls, photos, and native Android integrations.
+Teclas is a native Android launcher built around typing as the primary action. It is not the old icon-list scaffold, not the old Message Hub prototype, and not the left-column/right-ribbon communicator mockup. The current launcher is a centered premium homescreen with contextual widgets, a favorites dock, a custom on-screen keyboard, type-to-do search, app library, media controls, photos, and native Android integrations.
 
-Package: `com.fran.clicks`  
-Platform: Android app, Kotlin, classic Android views plus Jetpack Compose surfaces  
-SDK: `minSdk 31`, `targetSdk 35`, `compileSdk 35`
+Package: `com.fran.teclas`  
+Platform: Android app, Kotlin, Jetpack Compose (settings/panes) plus native views for the launcher core and IME  
+SDK: `minSdk 31`, `targetSdk 37`, `compileSdk 37`  
+Toolchain: Gradle 9.6 (configuration cache), AGP 9.2 (built-in Kotlin), Kotlin 2.3, versions managed in `gradle/libs.versions.toml`
 
 ## Current Product Shape
 
 The launcher has two keyboard placement modes:
 
-- **Docked mode**: the current Clicks command-console layout. The typing strip and keyboard are fixed below the homescreen content. Typing can open the full app/library search experience because the keyboard owns the bottom of the phone.
-- **Widget mode**: the same keyboard/input engine is mounted as a homescreen widget. Typing stays on the homescreen and does not auto-open the full app library. The `clicks` key becomes `DOCK`, which switches back to Docked mode.
+- **Docked mode**: the current Teclas command-console layout. The typing strip and keyboard are fixed below the homescreen content. Typing can open the full app/library search experience because the keyboard owns the bottom of the phone.
+- **Widget mode**: the same keyboard/input engine is mounted as a homescreen widget. Typing stays on the homescreen and does not auto-open the full app library. The `teclas` key becomes `DOCK`, which switches back to Docked mode.
 
 New installs show a first-run picker for Docked vs Widget. The same setting is also available in Keyboard Settings under `PLACE`.
 
@@ -85,7 +86,7 @@ Shared behavior:
 Keyboard themes:
 
 - `default`
-- `clicks`
+- `teclas`
 - `skeuo`
 - `gokeys`
 
@@ -93,7 +94,7 @@ The GoKeys reference keyboard geometry and visual treatment is scoped to the `go
 
 Widget mode special behavior:
 
-- The visible `clicks` key label changes to `DOCK`.
+- The visible `teclas` key label changes to `DOCK`.
 - Pressing `DOCK` switches to Docked mode.
 - Typing does not auto-open the app library, so the widget remains visible.
 
@@ -139,7 +140,7 @@ The widget stack is a centered homescreen module. It is not a left rail, not a l
 
 Music appears only while media is playing. Email and people widgets appear when there is content. Calendar remains available as a persistent context widget.
 
-Widget clicks should perform the real action:
+Widget teclas should perform the real action:
 
 - Music opens the in-launcher now playing screen.
 - Calendar opens the calendar event or create-event flow on long press.
@@ -147,7 +148,7 @@ Widget clicks should perform the real action:
 - Email opens the actual notification/email where possible.
 
 Each stack widget has a user-controlled visibility mode, persisted per widget
-(`widget_stack_mode_<id>` in the `clicks` prefs):
+(`widget_stack_mode_<id>` in the `teclas` prefs):
 
 - `auto` (default): the classic contextual behavior described above.
 - `pin`: the widget sorts to the top of the stack whenever it has anything to
@@ -192,7 +193,7 @@ Music screen modes include art-focused and dark record/player-style presentation
 
 ## ZEISS Optics / Photos
 
-Clicks includes a launcher photo experience:
+Teclas includes a launcher photo experience:
 
 - Opens from the Vivo-only ZEISS button area.
 - Shows recent local photos.
@@ -225,6 +226,12 @@ Build debug APK:
 
 ```sh
 env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug
+```
+
+Build the minified release APK (R8 + resource shrinking, arm64-only, signed with the same shared debug key so it installs over debug builds):
+
+```sh
+env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleRelease
 ```
 
 Install on the current Vivo test device:

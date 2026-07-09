@@ -1,8 +1,8 @@
-# Clicks Neumorphic Design Spec — complete, code-level
+# Teclas Neumorphic Design Spec — complete, code-level
 
-This is the **authoritative design bible** for the neumorphic homescreen reskin. It hands over exact values, shadow strings, structures, and proportions so the implementation is a translation, not an interpretation. The approved prototype at `work/artifacts/clicks_home_full_stack/index.html` is the **source of truth** — when in doubt, open it and read the CSS/DOM directly. Everything below is extracted from it.
+This is the **authoritative design bible** for the neumorphic homescreen reskin. It hands over exact values, shadow strings, structures, and proportions so the implementation is a translation, not an interpretation. The approved prototype at `work/artifacts/teclas_home_full_stack/index.html` is the **source of truth** — when in doubt, open it and read the CSS/DOM directly. Everything below is extracted from it.
 
-> Read this ALONGSIDE `clicks-neumorphic-home-codex-prompt.md` (which has the task scope, theme-setting behavior, and constraints). This file is the pixel/design detail.
+> Read this ALONGSIDE `teclas-neumorphic-home-codex-prompt.md` (which has the task scope, theme-setting behavior, and constraints). This file is the pixel/design detail.
 
 ---
 
@@ -186,4 +186,4 @@ DON'T: add borders, gloss/inner-white highlights, colored edge-light, accent spi
 - [ ] Semantic label colors preserved exactly (green/red/amber/blue/teal).
 - [ ] Keys depress on touch; DOCK green, GO accent.
 - [ ] Dark / Light / System all apply globally from one theme resolve; System follows OS live.
-- [ ] Open `clicks_home_full_stack/index.html` side-by-side — the build matches it.
+- [ ] Open `teclas_home_full_stack/index.html` side-by-side — the build matches it.

@@ -25,7 +25,7 @@ Relevant code in `MainActivity.kt`:
 - Avoid per-keystroke jank — animate the height change, or reserve height only while composing.
 
 ## Reference
-The **IME** already does the simple version cleanly: `ClicksImeService.updateStrip()` sets
+The **IME** already does the simple version cleanly: `TeclasImeService.updateStrip()` sets
 `suggestionStrip.visibility = GONE` when the field is empty and `VISIBLE` otherwise (the IME's strip
 collapses because its height isn't baked into a fixed total). Use that as the behavior model; the
 launcher just also needs the **container/keyboard height** to follow.

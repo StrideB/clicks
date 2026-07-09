@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clicks Search, Docked vs Widget</title>
+<title>Teclas Search, Docked vs Widget</title>
 <style>
   .dark{
     --base:#181b21; --base-hi:#20242c; --base-lo:#0e1014;
@@ -77,7 +77,7 @@
   .key{flex:1 1 0;min-width:0;height:26px;border-radius:7px;background:var(--base);box-shadow:var(--raised-sm);font-size:11px;color:var(--ink);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.05s;}
   .key:active{box-shadow:var(--pressed-sm);}
   .key.wide{flex:1.6 1 0;}.key.sp{flex:4 1 0;color:var(--ink-dim);font-size:9px;}
-  .key.clicks,.key.dock{color:var(--green);font-size:8px;}.key.go{color:var(--accent);font-weight:700;font-size:9px;}.key.n123{color:var(--ink-dim);font-size:9px;}
+  .key.teclas,.key.dock{color:var(--green);font-size:8px;}.key.go{color:var(--accent);font-weight:700;font-size:9px;}.key.n123{color:var(--ink-dim);font-size:9px;}
 
   /* widget-mode home chrome */
   .weather{display:flex;align-items:center;gap:10px;padding:6px 4px 6px;flex:0 0 auto;}
@@ -99,7 +99,7 @@
 <body>
 <div class="wrap">
   <div class="title">
-    <div class="k">Clicks · Search Placement</div>
+    <div class="k">Teclas · Search Placement</div>
     <h1>Docked vs Widget search</h1>
     <p>Same query, same neumorphic language, two placements. Docked: keyboard owns the bottom, results fill everything above. Widget: keyboard is a homescreen card, results sit above it while weather + dock stay in frame. Type on either.</p>
   </div>
@@ -128,7 +128,7 @@ function results(q){
     {type:'app',t:'WhatsApp',chip:'#28E06A',g:'W',hl:'Wha'},
     {type:'ctx',t:'New Messages',sub:'WHATSAPP · 1 PERSON',preview:'See what 1 person sent you',chip:'#F5C451',g:'M'},
   ]};
-  if(q.startsWith('next app')) return {title:'Clicks AI',cat:'GEMINI',items:[
+  if(q.startsWith('next app')) return {title:'Teclas AI',cat:'GEMINI',items:[
     {type:'ai',asked:'next appointment',answer:'Next is <span class="cmd">Standup</span>, 9:30 am.'},
     {type:'app',t:'Calendar',chip:'#F5C451',g:'C'},
   ]};
@@ -136,7 +136,7 @@ function results(q){
 }
 function tileHtml(x){
   if(x.type==='ai') return `<div class="tile wide" style="flex-direction:column;align-items:stretch;gap:8px">
-    <div style="display:flex;align-items:center;gap:8px"><div class="ic" style="width:28px;height:28px"><span class="glyph" style="width:28px;height:28px;border-radius:9px;background:var(--base);box-shadow:var(--raised-sm);color:var(--purple)">C</span></div><div class="tt" style="font-size:12px">Clicks AI · <span style="color:var(--purple)">Gemini</span></div></div>
+    <div style="display:flex;align-items:center;gap:8px"><div class="ic" style="width:28px;height:28px"><span class="glyph" style="width:28px;height:28px;border-radius:9px;background:var(--base);box-shadow:var(--raised-sm);color:var(--purple)">C</span></div><div class="tt" style="font-size:12px">Teclas AI · <span style="color:var(--purple)">Gemini</span></div></div>
     <div style="border-radius:10px;background:var(--base);box-shadow:var(--pressed-sm);padding:9px;font-size:11.5px;color:var(--ink);line-height:1.5">${x.answer}</div></div>`;
   if(x.type==='ctx') return `<div class="tile wide" style="--chip:${x.chip}"><div class="ic"><span class="glyph">${x.g}</span></div><div style="flex:1;min-width:0"><div class="tt">${x.t}</div><div class="ts">${x.sub}</div><div class="tp">${x.preview}</div></div></div>`;
   const title=x.hl?`<span class="hl">${x.hl}</span>${x.t.slice(x.hl.length)}`:x.t;
@@ -146,9 +146,9 @@ function keyboard(kind){
   const ROWS=[['q','w','e','r','t','y','u','i','o','p'],['a','s','d','f','g','h','j','k','l'],['↑','z','x','c','v','b','n','m','⌫']];
   let html='';
   ROWS.forEach((r,ri)=>{html+=`<div class="krow${ri===1?' ind':''}">`+r.map(c=>`<div class="key${c==='↑'||c==='⌫'?' wide':''}">${c}</div>`).join('')+`</div>`;});
-  const cmd = kind==='widget'?'<div class="key dock">DOCK</div>':'<div class="key clicks">clicks</div>';
+  const cmd = kind==='widget'?'<div class="key dock">DOCK</div>':'<div class="key teclas">teclas</div>';
   html+=`<div class="krow"><div class="key n123 wide">123</div>${cmd}<div class="key sp">space</div><div class="key">.</div><div class="key go wide">GO</div></div>`;
-  const ph = kind==='widget'?'Type on homescreen…':'Search apps · clicks for settings';
+  const ph = kind==='widget'?'Type on homescreen…':'Search apps · teclas for settings';
   const q = query? `<span class="q">${query.replace(/ /g,'&nbsp;')}</span><span class="caret"></span>` : `<span class="ph">${ph}</span>`;
   return `<div class="kb ${kind}"><div class="strip">${q}<span class="z">ZEISS</span></div>${html}</div>`;
 }

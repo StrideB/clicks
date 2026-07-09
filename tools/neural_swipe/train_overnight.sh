@@ -12,7 +12,7 @@
 #   pip install torch numpy onnx onnxruntime pyarrow huggingface_hub
 #
 # Add YOUR OWN captured swipes (from the collector web app) before training — they personalize it:
-#   cat ~/Downloads/clicks_swipes_*.jsonl >> futo_data/train.jsonl
+#   cat ~/Downloads/teclas_swipes_*.jsonl >> futo_data/train.jsonl
 #
 # Run:
 #   ./train_overnight.sh                 # sensible big config

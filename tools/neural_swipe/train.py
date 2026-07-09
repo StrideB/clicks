@@ -1,5 +1,5 @@
 """
-Train the neural swipe decoder and export it for the `clicks` launcher.
+Train the neural swipe decoder and export it for the `teclas` launcher.
 
 Produces exactly what NeuralSwipeEngine.kt loads:
   neural_swipe_engine.onnx   input "src" [1,50,4]  ->  output word logits [1, vocab]

@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>Clicks · Swipe Collector</title></head><body style="margin:0">
+<title>Teclas · Swipe Collector</title></head><body style="margin:0">
 <style>
   :root{
     --ground:#0b0f14; --surface:#141b24; --key:#1e2833; --key-hi:#2a3a49;
@@ -63,7 +63,7 @@
 <div class="app">
   <header>
     <div>
-      <div class="eyebrow">Clicks · swipe capture</div>
+      <div class="eyebrow">Teclas · swipe capture</div>
       <div class="count">session <b id="n">0</b> · stored <span id="tot" class="mono">0</span></div>
     </div>
     <div class="count mono" id="goal">goal 100</div>
@@ -123,7 +123,7 @@
   }
   window.addEventListener("resize", sizeCanvas); setTimeout(sizeCanvas,0);
 
-  var STORE="clicks_swipe_samples";
+  var STORE="teclas_swipe_samples";
   function load(){ try{return JSON.parse(localStorage.getItem(STORE))||[]}catch(e){return[]} }
   function save(a){ try{localStorage.setItem(STORE, JSON.stringify(a))}catch(e){} }
   var samples=load(), session=0;
@@ -195,7 +195,7 @@
     samples.push({
       word:w, canvas_width:+rect.width.toFixed(1), canvas_height:+rect.height.toFixed(1),
       orientation: window.innerWidth>window.innerHeight?"landscape-primary":"portrait-primary",
-      data:pts, potentially_invalid_sentence:false, source:"clicks-collector"
+      data:pts, potentially_invalid_sentence:false, source:"teclas-collector"
     });
     save(samples); session++; refresh(); flash("saved ✓ ("+w+")");
     setTimeout(fade,180); nextWord();
@@ -215,7 +215,7 @@
     var jsonl=samples.map(function(s){return JSON.stringify(s);}).join("\n")+"\n";
     var blob=new Blob([jsonl],{type:"application/x-ndjson"});
     var a=document.createElement("a"); a.href=URL.createObjectURL(blob);
-    a.download="clicks_swipes_"+samples.length+".jsonl"; a.click();
+    a.download="teclas_swipes_"+samples.length+".jsonl"; a.click();
     setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
     flash("downloaded "+samples.length+" swipes");
   };

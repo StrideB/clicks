@@ -1,4 +1,4 @@
-# Clicks Neumorphic — Round 2 Full Design Pass (authoritative)
+# Teclas Neumorphic — Round 2 Full Design Pass (authoritative)
 
 I am the designer. This document is the complete, self-contained spec to bring the neumorphic
 homescreen fully in line with the approved look. It contains the design decisions AND the exact code
@@ -10,9 +10,9 @@ the pager, the theme token values, or the Dark/Light/System selector logic. Keep
 `env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug`
 green; commit incrementally.
 
-Files in play: `app/src/main/java/com/fran/clicks/Neu.kt`,
-`app/src/main/java/com/fran/clicks/HomeWidgetStack.kt`,
-`app/src/main/java/com/fran/clicks/MainActivity.kt`.
+Files in play: `app/src/main/java/com/fran/teclas/Neu.kt`,
+`app/src/main/java/com/fran/teclas/HomeWidgetStack.kt`,
+`app/src/main/java/com/fran/teclas/MainActivity.kt`.
 
 ---
 

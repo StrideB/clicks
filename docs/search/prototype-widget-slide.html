@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clicks Widget Search, Slide From Keyboard</title>
+<title>Teclas Widget Search, Slide From Keyboard</title>
 <style>
   .dark{
     --base:#181b21; --base-hi:#20242c; --base-lo:#0e1014;
@@ -104,7 +104,7 @@
 <body>
 <div class="wrap">
   <div class="title">
-    <div class="k">Clicks · Widget Search</div>
+    <div class="k">Teclas · Widget Search</div>
     <h1>Results slide from behind the keyboard</h1>
     <p>Type: weather + dock slide away, results rise up from behind the keyboard into the freed space. Clear: results slide back down behind the keyboard, chrome returns. Results never cover the keyboard.</p>
   </div>
@@ -157,7 +157,7 @@ function results(q){
     {type:'ctx',t:'New Messages',sub:'WHATSAPP · 1 PERSON',preview:'See what 1 person sent you',chip:'#F5C451',g:'M'},
     {type:'app',t:'WhatsApp Business',chip:'#28E06A',g:'W',hl:'Wha'},
   ]};
-  if(q.startsWith('next app')) return {title:'Clicks AI',cat:'GEMINI',items:[
+  if(q.startsWith('next app')) return {title:'Teclas AI',cat:'GEMINI',items:[
     {type:'ai',answer:'Next is <span class="cmd">Standup</span> today, 9:30 am.'},
     {type:'app',t:'Calendar',chip:'#F5C451',g:'C'},
     {type:'app',t:'Airbnb',chip:'#FF5A3C',g:'A'},
@@ -165,7 +165,7 @@ function results(q){
   return {title:'Results',cat:'SEARCH',items:[{type:'app',t:'No matches',chip:'#565d66',g:'?'}]};
 }
 function tileHtml(x){
-  if(x.type==='ai') return `<div class="tile" style="flex-direction:column;align-items:stretch;gap:8px"><div style="display:flex;align-items:center;gap:8px"><div class="ic" style="width:26px;height:26px"><span class="glyph" style="width:26px;height:26px;border-radius:8px;background:var(--base);box-shadow:var(--raised-sm);color:var(--purple)">C</span></div><div class="tt" style="font-size:12px">Clicks AI · <span style="color:var(--purple)">Gemini</span></div></div><div class="ai-b">${x.answer}</div></div>`;
+  if(x.type==='ai') return `<div class="tile" style="flex-direction:column;align-items:stretch;gap:8px"><div style="display:flex;align-items:center;gap:8px"><div class="ic" style="width:26px;height:26px"><span class="glyph" style="width:26px;height:26px;border-radius:8px;background:var(--base);box-shadow:var(--raised-sm);color:var(--purple)">C</span></div><div class="tt" style="font-size:12px">Teclas AI · <span style="color:var(--purple)">Gemini</span></div></div><div class="ai-b">${x.answer}</div></div>`;
   if(x.type==='ctx') return `<div class="tile" style="--chip:${x.chip}"><div class="ic"><span class="glyph">${x.g}</span></div><div style="flex:1;min-width:0"><div class="tt">${x.t}</div><div class="ts">${x.sub}</div><div class="tp">${x.preview}</div></div></div>`;
   const title=x.hl?`<span class="hl">${x.hl}</span>${x.t.slice(x.hl.length)}`:x.t;
   return `<div class="tile" style="--chip:${x.chip}"><div class="ic"><span class="glyph">${x.g}</span></div><div><div class="tt">${title}</div><div class="ts">APP</div></div></div>`;
