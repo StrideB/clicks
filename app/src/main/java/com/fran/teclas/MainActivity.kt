@@ -774,7 +774,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
-        if (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive()) {
+        // Reload when we're mirroring the device wallpaper (no launcher-picked override), so a
+        // wallpaper the user changes device-side shows up here on the next resume.
+        if (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive() || activeHomeWallpaperUri() == null) {
             homeWallpaperDrawable = loadHomeWallpaperDrawable()
             if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
         }
@@ -1967,8 +1969,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 android.util.Log.w("TeclasWallpaper", "Device wallpaper file load failed for $which", it)
             }.getOrNull()
         }
-        val drawable = fileDrawable(WallpaperManager.FLAG_LOCK)
-            ?: fileDrawable(WallpaperManager.FLAG_SYSTEM)
+        // Default to the device HOME (system) wallpaper — "whatever the user is using" — and
+        // only prefer the lockscreen image when the user turned that toggle on. Live wallpapers
+        // have no file/bitmap, so these all return null for them (see the live-wallpaper note).
+        val preferLock = useLockscreenWallpaperOnHome()
+        val primary = if (preferLock) WallpaperManager.FLAG_LOCK else WallpaperManager.FLAG_SYSTEM
+        val secondary = if (preferLock) WallpaperManager.FLAG_SYSTEM else WallpaperManager.FLAG_LOCK
+        val drawable = fileDrawable(primary)
+            ?: fileDrawable(secondary)
             ?: runCatching { manager.peekDrawable() }.getOrNull()
             ?: runCatching { manager.drawable }.getOrNull()
             ?: runCatching { manager.fastDrawable }.getOrNull()
@@ -13537,6 +13545,23 @@ Reply format: ["word1","word2","word3"]"""
                     runCatching { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) }
                 }
                 renderPaneContent(teclasSettingsTarget())
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        }
+        if (activeHomeWallpaperUri() != null) {
+            parent.addView(settingAction("USE DEVICE WALLPAPER") {
+                // Clear the launcher-picked image so it mirrors whatever wallpaper the device is set to.
+                prefs().edit()
+                    .remove(HOME_COVER_WALLPAPER_URI_PREF)
+                    .remove(HOME_INNER_WALLPAPER_URI_PREF)
+                    .apply()
+                homeWallpaperDrawable = loadHomeWallpaperDrawable()
+                haptic(this)
+                // Android 13+ only lets the default home app read the user's wallpaper.
+                val msg = if (homeWallpaperDrawable != null) "Using your device wallpaper"
+                else "Set Teclas as your default launcher to read the device wallpaper"
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                render()
+                openHere(teclasSettingsTarget())
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         }
         parent.addView(settingToggle("LOCKSCREEN WALLPAPER HOME", useLockscreenWallpaperOnHome()) {
