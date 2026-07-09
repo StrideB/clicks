@@ -108,6 +108,14 @@ object GridWorkspaceStore {
     fun hasSpaceBoard(context: Context, spaceId: String): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY_SPACE_PREFIX + spaceId)
 
+    /** Wipe every Space board layout (e.g. a one-time reset when the seed model changes). */
+    fun clearAllSpaceBoards(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+        prefs.all.keys.filter { it.startsWith(KEY_SPACE_PREFIX) }.forEach { editor.remove(it) }
+        editor.apply()
+    }
+
     private fun loadKey(context: Context, key: String): List<GridItem> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(key, null) ?: return emptyList()

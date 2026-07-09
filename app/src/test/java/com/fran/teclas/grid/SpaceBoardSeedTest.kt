@@ -24,6 +24,12 @@ class SpaceBoardSeedTest {
         assertTrue("no app tile intrudes on the reserved widget zone", items.all { it.cellY < 3 })
     }
 
+    @Test fun `default seeds a single top row of pinned apps, rest reserved for widgets`() {
+        val items = SpaceBoardSeed.seed(apps(10)) // default cols=4, rows=6, reserve=5 -> 1 app row
+        assertEquals(4, items.size)
+        assertTrue("apps stay on the top row", items.all { it.cellY == 0 })
+    }
+
     @Test fun `empty app list yields an empty board`() {
         assertTrue(SpaceBoardSeed.seed(emptyList()).isEmpty())
     }

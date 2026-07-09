@@ -13,10 +13,11 @@ object SpaceBoardSeed {
     data class SeedApp(val packageName: String, val className: String?, val label: String?)
 
     /**
-     * Lay [apps] left-to-right, top-to-bottom as APP tiles. [reserveBottomRows] keeps the
-     * lower rows clear as an obvious "drop widgets here" zone. Caps at the space available.
+     * Lay [apps] left-to-right across the top as APP tiles. [reserveBottomRows] keeps the lower
+     * rows clear for widgets, which dominate the board. Default reserves everything but the top
+     * row, so the apps are a single pinned strip and the rest is the widget canvas.
      */
-    fun seed(apps: List<SeedApp>, cols: Int = GRID_COLS, rows: Int = GRID_ROWS, reserveBottomRows: Int = 3): List<GridItem> {
+    fun seed(apps: List<SeedApp>, cols: Int = GRID_COLS, rows: Int = GRID_ROWS, reserveBottomRows: Int = GRID_ROWS - 1): List<GridItem> {
         val appRows = (rows - reserveBottomRows).coerceAtLeast(1)
         val capacity = cols * appRows
         return apps.take(capacity).mapIndexed { i, app ->

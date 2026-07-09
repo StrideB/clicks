@@ -4,13 +4,16 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewOutlineProvider
 import android.widget.FrameLayout
 import kotlin.math.abs
 import kotlin.math.min
@@ -102,6 +105,27 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
 
     // ------------------------------------------------------------------ build
 
+    private val widgetFrameRadius: Float get() = dpF(20f)
+
+    /**
+     * Uniform widget overlay: clip every hosted widget to the same rounded rectangle and sit
+     * it on the same faint backing, so a square widget and a round-cornered one read as one
+     * consistent set of cards instead of a jumble of shapes.
+     */
+    private fun applyWidgetFrame(frame: FrameLayout) {
+        frame.background = GradientDrawable().apply {
+            cornerRadius = widgetFrameRadius
+            setColor(0x14FFFFFF)                 // faint fill behind transparent widgets
+            setStroke(dp(1), 0x24FFFFFF)         // hairline edge
+        }
+        frame.clipToOutline = true
+        frame.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, outline: Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, widgetFrameRadius)
+            }
+        }
+    }
+
     private fun rebuild() {
         removeAllViews()
         childForId.clear()
@@ -110,6 +134,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
                 GridItemType.APP -> AppItemView(context, item, false)
                 GridItemType.FOLDER -> AppItemView(context, item, true)
                 GridItemType.WIDGET -> FrameLayout(context).apply {
+                    applyWidgetFrame(this)
                     val inner = host.createWidgetView(item.widgetId)
                     if (inner != null) {
                         addView(inner, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {

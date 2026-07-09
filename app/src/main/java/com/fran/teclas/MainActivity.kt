@@ -561,6 +561,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         appWidgetHost.startListening()
         spaceBoardController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
+        // One-time reset: earlier builds auto-seeded boards with predicted apps; the board now
+        // seeds only the Space's pinned apps as a top strip, so clear the old layouts once.
+        if (!prefs().getBoolean("space_boards_pinned_seed_v2", false)) {
+            com.fran.teclas.grid.GridWorkspaceStore.clearAllSpaceBoards(this)
+            prefs().edit().putBoolean("space_boards_pinned_seed_v2", true).apply()
+        }
         widgetPersistenceRepository = WidgetPersistenceRepository(this)
         widgetSpecsCache = loadWidgetSpecsFromStore()
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
@@ -7303,19 +7309,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    /** The active Space's apps, ranked, to seed a fresh board. */
-    private fun spaceBoardSeedApps(): List<com.fran.teclas.grid.SpaceBoardSeed.SeedApp> {
-        val eligible = apps.filter { it.packageName != packageName }
-        val predicted = predictedPackages(eligible.map { it.packageName }, 12) ?: emptyList()
-        val usage = appUsageCounts()
-        // Prefer the prediction ranking; when it isn't warm yet, fall back to most-used
-        // (not alphabetical) so a fresh board still leads with apps that make sense.
-        val usageOrdered = eligible.sortedWith(
-            compareByDescending<AppEntry> { usage[it.packageName] ?: 0 }.thenBy { collator.compare(it.label, it.label) }
-        )
-        val byPkg = eligible.associateBy { it.packageName }
-        val ordered = (predicted.mapNotNull { byPkg[it] } + usageOrdered).distinctBy { it.packageName }
-        return ordered.take(12).map {
+    /**
+     * The top pinned-apps strip for a fresh board — the apps the user pinned to this Space
+     * (in Spaces settings), not a guess. Empty until they pin some; the board hint tells
+     * them how. Everything below is theirs to fill with widgets.
+     */
+    private fun spaceBoardSeedApps(space: Space): List<com.fran.teclas.grid.SpaceBoardSeed.SeedApp> {
+        val byPkg = apps.associateBy { it.packageName }
+        return space.pinned.mapNotNull { byPkg[it] }.take(com.fran.teclas.grid.GRID_COLS).map {
             com.fran.teclas.grid.SpaceBoardSeed.SeedApp(it.packageName, it.componentName.className, it.shortName)
         }
     }
@@ -7325,7 +7326,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (libraryOpen) closeLibrary()
         if (openPane != null) closePane()
         val space = activeSpaceForUi() ?: return
-        spaceBoardController.open(space.id, spaceBoardSeedApps())
+        spaceBoardController.open(space.id, spaceBoardSeedApps(space))
         val container = object : FrameLayout(this) {
             private var downX = 0f; private var downY = 0f; private var swiping = false
             override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
@@ -7363,7 +7364,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     setOnClickListener { closeSpaceBoard() }
                 }, LinearLayout.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)))
-            addView(mono("Tap to open · long-press an empty cell to add apps & widgets", 9f, InkDim).apply {
+            addView(mono("Pin the apps you want up top · long-press an empty cell to add apps & widgets", 9f, InkDim).apply {
                 setPadding(dp(2), 0, 0, dp(8)); letterSpacing = 0.06f
             }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(spaceBoardController.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
