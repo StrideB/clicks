@@ -355,7 +355,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
-    private enum class WidgetKeyboardSwapState { SEATED, DETACHING, DETACHED, SEATING }
     private var widgetSwapState = WidgetKeyboardSwapState.SEATED
     private var widgetCommittedTheme = KEYBOARD_THEME_DEFAULT
     private var widgetPreviewTheme = KEYBOARD_THEME_DEFAULT
@@ -3060,27 +3059,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
     })
 
-    private data class InnerFocusAction(
-        val label: String,
-        val accent: Int,
-        val run: () -> Unit
-    )
-
-    private data class InnerFocusHero(
-        val eyebrow: String,
-        val title: String,
-        val subtitle: String,
-        val glyph: String,
-        val accent: Int,
-        val secondaryAccent: Int,
-        val sideNowTitle: String,
-        val sideNowBody: String,
-        val sideMediaTitle: String,
-        val sideMediaBody: String,
-        val actions: List<InnerFocusAction>,
-        val run: () -> Unit
-    )
-
     private fun activeSpaceForUi(): Space? {
         val locked = SpaceManager.lockedSpaceId(this)?.let { SpaceManager.space(this, it) }
         if (locked != null) return locked
@@ -3641,7 +3619,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val module = FrameLayout(context).apply {
                 clipChildren = false
                 clipToPadding = false
-                background = homeKeyboardWidgetBackground()
+                background = homeKeyboardWidgetBackground(activeNeuTokens)
                 setOnTouchListener { _, event -> handleWidgetKeyboardDetachedTouch(event) }
             }
             widgetKeyboardModule = module
@@ -3692,7 +3670,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun populateWidgetKeyboardModule(module: FrameLayout) {
         module.removeAllViews()
-        module.background = homeKeyboardWidgetBackground()
+        module.background = homeKeyboardWidgetBackground(activeNeuTokens)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -6110,19 +6088,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private data class WidgetBoardMetrics(
-        val cellWidth: Int,
-        val cellHeight: Int,
-        val gutter: Int,
-        val rows: Int
-    ) {
-        val canvasHeight: Int get() = rows * cellHeight + (rows - 1).coerceAtLeast(0) * gutter
-        fun leftForCell(cellX: Int) = cellX * (cellWidth + gutter)
-        fun topForCell(cellY: Int) = cellY * (cellHeight + gutter)
-        fun widthForSpan(spanX: Int) = spanX * cellWidth + (spanX - 1).coerceAtLeast(0) * gutter
-        fun heightForSpan(spanY: Int) = spanY * cellHeight + (spanY - 1).coerceAtLeast(0) * gutter
-    }
-
     private fun widgetBoardMetrics(specs: List<WidgetSpec> = savedWidgetSpecs()): WidgetBoardMetrics {
         val gutter = dp(8)
         val available = resources.displayMetrics.widthPixels - dp(32)
@@ -6136,7 +6101,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            background = widgetEmptyBackground()
+            background = widgetEmptyBackground(activeNeuTokens)
             addView(TextView(context).apply {
                 text = "+"
                 textSize = 34f
@@ -6464,7 +6429,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(LinearLayout(context).apply {
                 isClickable = true
                 orientation = LinearLayout.VERTICAL
-                background = widgetPickerSheetBackground()
+                background = widgetPickerSheetBackground(activeNeuTokens)
                 elevation = dp(18).toFloat()
                 setPadding(dp(16), dp(14), dp(16), dp(16))
                 addView(LinearLayout(context).apply {
@@ -6601,7 +6566,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), if (expanded) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
             isClickable = true
             addView(FrameLayout(context).apply {
-                background = dockIconButtonBackground()
+                background = dockIconButtonBackground(activeNeuTokens)
                 setPadding(dp(7), dp(7), dp(7), dp(7))
                 addView(ImageView(context).apply {
                     if (icon != null) setImageDrawable(icon)
@@ -6644,10 +6609,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(12), dp(11), dp(12), dp(10))
-            background = widgetProviderRowBackground()
+            background = widgetProviderRowBackground(activeNeuTokens)
             isClickable = true
             addView(FrameLayout(context).apply {
-                background = dockIconButtonBackground()
+                background = dockIconButtonBackground(activeNeuTokens)
                 setPadding(dp(8), dp(8), dp(8), dp(8))
                 addView(ImageView(context).apply {
                     setImageDrawable(icon ?: packageManager.getApplicationIcon(provider.provider.packageName))
@@ -7858,8 +7823,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.SETTING -> "⚙"
         SearchKind.WEB -> "W"
     }
-
-    private data class SearchCommandPreview(val title: String, val subtitle: String, val glyph: String)
 
     private fun searchCommandPreview(): SearchCommandPreview? {
         val clean = query.trim()
@@ -9198,8 +9161,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
     }
-
-    private enum class MusicMode { SPOTIFY_FULL, APPLE_FULL, SIMPLE }
 
     // Decides whether the full click-wheel experience applies. It requires Pro AND that the
     // active media source matches a connected service. If the user is playing from anything
@@ -13875,8 +13836,6 @@ Reply format: ["word1","word2","word3"]"""
         }
     }
 
-    private enum class WheelZone { CENTER, LEFT, RIGHT, TOP, BOTTOM }
-
     // ── Transient volume HUD (iPod-style) shown while the wheel adjusts volume ─
 
     private fun showVolumeHud() {
@@ -15996,7 +15955,7 @@ Reply format: ["word1","word2","word3"]"""
         val iconFrameSize = if (isUnfoldedInnerLayoutActive()) dp(58) else dockIconFrameSize(showDockLabels())
         addView(FrameLayout(context).apply {
             elevation = dp(2).toFloat()
-            background = dockIconButtonBackground()
+            background = dockIconButtonBackground(activeNeuTokens)
             addView(ImageView(context).apply {
                 setImageDrawable(iconFor(app))
                 scaleType = ImageView.ScaleType.FIT_CENTER
@@ -16020,13 +15979,6 @@ Reply format: ["word1","word2","word3"]"""
         }
         setOnLongClickListener { haptic(this); showOpenMenu(this, app.target); true }
     }
-
-    private data class HomeDockItem(
-        val app: AppEntry?,
-        val target: PaneTarget,
-        val label: String,
-        val accent: Int
-    )
 
     private fun homeDockItems(): List<HomeDockItem> {
         val hidden = hiddenHomePackages()
@@ -16062,7 +16014,7 @@ Reply format: ["word1","word2","word3"]"""
             val iconFrame = if (isUnfoldedInnerLayoutActive()) dp(58) else dockIconFrameSize(showLabel)
             addView(FrameLayout(context).apply {
                 elevation = dp(2).toFloat()
-                background = dockIconButtonBackground()
+                background = dockIconButtonBackground(activeNeuTokens)
                 if (libraryApp != null) {
                     addView(ImageView(context).apply {
                         setImageDrawable(iconFor(libraryApp))
@@ -16687,13 +16639,6 @@ Reply format: ["word1","word2","word3"]"""
     // immediately and the results re-render in place with the new state. Search is the
     // settings screen — the pane stays available for browsing, but is never required.
 
-    private data class SettingSearchEntry(
-        val title: String,
-        val state: String,
-        val keywords: List<String>,
-        val perform: () -> Unit
-    )
-
     private fun settingSearchResults(): List<SearchResult> {
         val q = query.trim().lowercase(Locale.US)
         if (q.length < 3) return emptyList()
@@ -17249,8 +17194,6 @@ Reply format: ["word1","word2","word3"]"""
         startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser available")
     }
 
-    private data class LocalFileHit(val name: String, val uri: Uri, val mimeType: String?)
-
     private fun searchLocalFiles(q: String, limit: Int): List<LocalFileHit> {
         val fileUri = MediaStore.Files.getContentUri("external")
         val projection = arrayOf(
@@ -17691,13 +17634,6 @@ Reply format: ["word1","word2","word3"]"""
             }
         }
     }
-
-    private data class GeminiAction(
-        val action: String,
-        val target: String = "",
-        val message: String = "",
-        val answer: String = ""
-    )
 
     // Ask Gemini to classify a free-form request into a structured, executable action.
     private fun fetchGeminiAction(prompt: String): GeminiAction {
@@ -18688,18 +18624,6 @@ $emailText"""
         return WeatherSnapshot(temp, feels, humidity, wind, code, weatherCodeLabel(code))
     }
 
-    private fun weatherCodeLabel(code: Int): String = when (code) {
-        0 -> "Clear"
-        1, 2 -> "Partly cloudy"
-        3 -> "Cloudy"
-        45, 48 -> "Fog"
-        51, 53, 55, 56, 57 -> "Drizzle"
-        61, 63, 65, 66, 67, 80, 81, 82 -> "Rain"
-        71, 73, 75, 77, 85, 86 -> "Snow"
-        95, 96, 99 -> "Storm"
-        else -> "Local weather"
-    }
-
     private fun weatherAmbientLightColor(): Int {
         val code = prefs().getInt(WEATHER_CODE_PREF, 0)
         return when {
@@ -18725,87 +18649,9 @@ $emailText"""
         return if (activeNeuTokens.mode == NeuMode.LIGHT) base else base * 0.82f
     }
 
-    private fun mono(text: String, size: Float, color: Int) = TextView(this).apply {
-        this.text = text; textSize = size; typeface = Typeface.MONOSPACE; setTextColor(color); includeFontPadding = false
-    }
-
-    private fun border(color: Int) = GradientDrawable().apply { setColor(Color.TRANSPARENT); setStroke(dp(1), color) }
-
-    private fun highlight(color: Int) = GradientDrawable().apply {
-        setColor(Color.argb(34, Color.red(color), Color.green(color), Color.blue(color))); setStroke(dp(2), color)
-    }
-
-    private fun highlightedLabel(label: String, match: String): SpannableString {
-        val styled = SpannableString(label)
-        val q = match.trim()
-        if (q.isBlank()) return styled
-        val start = label.lowercase(Locale.US).indexOf(q.lowercase(Locale.US))
-        if (start < 0) return styled
-        val end = (start + q.length).coerceAtMost(label.length)
-        styled.setSpan(ForegroundColorSpan(Neu.GREEN), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        styled.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        return styled
-    }
-
-    private fun frostedHeaderBg(): Drawable {
-        val base = GradientDrawable().apply { setColor(0xCC16181D.toInt()) }
-        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(0x18FFFFFF, 0x00FFFFFF))
-        return LayerDrawable(arrayOf(base, sheen))
-    }
-
-    private fun musicHeaderGlassBg(): Drawable {
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x6616181D,
-            0x4A101217,
-            0x6A07080A
-        )).apply {
-            cornerRadius = dp(0).toFloat()
-        }
-        val blurTint = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
-            0x1FFFFFFF,
-            0x08000000,
-            0x22000000
-        ))
-        val lowerEdge = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x00FFFFFF,
-            0x24000000
-        ))
-        return LayerDrawable(arrayOf(base, blurTint, lowerEdge))
-    }
-
-    private fun libraryHeaderGlassBg(): Drawable {
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x7A171A20,
-            0x55111318,
-            0x7607080A
-        ))
-        val sheen = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
-            0x22FFFFFF,
-            0x06000000,
-            0x18000000
-        ))
-        val edge = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x14FFFFFF,
-            0x00000000,
-            0x2A000000
-        ))
-        return LayerDrawable(arrayOf(base, sheen, edge))
-    }
-
-    private fun roundedPanel(fill: Int, radius: Int, stroke: Int? = null) =
-        GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(brighten(fill), fill)).apply {
-            cornerRadius = radius.toFloat()
-            stroke?.let { setStroke(dp(1), it) }
-        }
-
-    private fun weatherHeaderBackground(): Drawable {
-        return GradientDrawable().apply { setColor(Color.TRANSPARENT) }
-    }
-
-    private fun homeKeyboardWidgetBackground(): Drawable {
-        return Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.RAISED)
-    }
+    // NOTE: Pure drawing helpers (mono, border, highlight, highlightedLabel, header glass
+    // backgrounds, roundedPanel, colour math, …) moved verbatim to ThemeDrawables.kt as
+    // top-level/Context-extension functions. Call sites below are unchanged.
 
     private fun widgetKeyboardHeight(): Int {
         return (keyboardHeight() + launcherSuggestionStripOuterHeight()).coerceAtMost(dp(360))
@@ -18813,10 +18659,6 @@ $emailText"""
 
     private fun widgetKeyboardSlotHeight(): Int =
         if (widgetKeyboardHidden && widgetKeyboardSliderAvailable()) widgetKeyboardCollapsedDockHeight() else widgetKeyboardHeight()
-
-    private fun PaneTarget.usesMediaDock(): Boolean {
-        return kind == PaneKind.MUSIC || kind == PaneKind.PHOTOS
-    }
 
     private fun widgetPaneUsesRootDock(): Boolean {
         return keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && openPane?.usesMediaDock() == true
@@ -18844,41 +18686,12 @@ $emailText"""
         return teclasGlassDrawable(19)
     }
 
-    private fun dockIconButtonBackground(): Drawable {
-        return Neu.drawable(activeNeuTokens, dp(99).toFloat(), NeuLevel.RAISED_SM)
-    }
-
     private fun libraryIconButtonBackground(radiusDp: Int = 13, stroke: Int? = Line): Drawable {
         return if (activeNeuTokens.mode == NeuMode.LIGHT) {
-            dockIconButtonBackground()
+            dockIconButtonBackground(activeNeuTokens)
         } else {
             roundedPanel(Panel2, dp(radiusDp), stroke)
         }
-    }
-
-    private fun widgetCircleBackground(): Drawable {
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xFF20242C.toInt(),
-            0xFF111419.toInt(),
-            0xFF07080B.toInt()
-        )).apply {
-            shape = GradientDrawable.OVAL
-            setStroke(dp(1), 0xFF2A303A.toInt())
-        }
-        val shade = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0x33000000,
-            0x00000000
-        )).apply { shape = GradientDrawable.OVAL }
-        return LayerDrawable(arrayOf(base, shade)).apply {
-            setLayerInset(1, dp(2), dp(2), dp(2), dp(18))
-        }
-    }
-
-    private fun widgetBoardScrimBackground(): Drawable {
-        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            0xD0070A0E.toInt(),
-            0xF0040508.toInt()
-        ))
     }
 
     private fun widgetTileBackground(): Drawable {
@@ -18913,64 +18726,6 @@ $emailText"""
             setLayerInset(1, 0, 0, 0, 0)
             setLayerInset(2, dp(1), dp(1), dp(1), dp(1))
         }
-    }
-
-    private fun widgetChromeBackground(): Drawable {
-        val light = activeNeuTokens.mode == NeuMode.LIGHT
-        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
-            intArrayOf(adjustAlpha(Color.WHITE, 0.20f), adjustAlpha(Color.WHITE, 0.06f), Color.TRANSPARENT)
-        } else {
-            intArrayOf(adjustAlpha(Color.WHITE, 0.10f), adjustAlpha(activeNeuTokens.baseLo, 0.18f), Color.TRANSPARENT)
-        }).apply {
-            cornerRadius = dp(13).toFloat()
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.30f else 0.10f))
-        }
-    }
-
-    private fun widgetPickerSheetBackground(): Drawable {
-        val light = activeNeuTokens.mode == NeuMode.LIGHT
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
-            intArrayOf(
-                adjustAlpha(Color.WHITE, 0.30f),
-                adjustAlpha(activeNeuTokens.baseHi, 0.22f),
-                adjustAlpha(activeNeuTokens.baseLo, 0.20f)
-            )
-        } else {
-            intArrayOf(
-                adjustAlpha(activeNeuTokens.baseHi, 0.42f),
-                adjustAlpha(activeNeuTokens.base, 0.34f),
-                adjustAlpha(activeNeuTokens.baseLo, 0.48f)
-            )
-        }).apply {
-            cornerRadius = dp(28).toFloat()
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.40f else 0.16f))
-        }
-        return base
-    }
-
-    private fun widgetEmptyBackground(): Drawable {
-        val light = activeNeuTokens.mode == NeuMode.LIGHT
-        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
-            intArrayOf(adjustAlpha(Color.WHITE, 0.24f), adjustAlpha(activeNeuTokens.baseHi, 0.16f), adjustAlpha(activeNeuTokens.baseLo, 0.18f))
-        } else {
-            intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.34f), adjustAlpha(activeNeuTokens.base, 0.28f), adjustAlpha(activeNeuTokens.baseLo, 0.40f))
-        }).apply {
-            cornerRadius = dp(26).toFloat()
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.34f else 0.16f))
-        }
-    }
-
-    private fun widgetProviderRowBackground(): Drawable {
-        val light = activeNeuTokens.mode == NeuMode.LIGHT
-        val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
-            intArrayOf(adjustAlpha(Color.WHITE, 0.20f), adjustAlpha(activeNeuTokens.baseHi, 0.13f), adjustAlpha(activeNeuTokens.baseLo, 0.16f))
-        } else {
-            intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.30f), adjustAlpha(activeNeuTokens.base, 0.24f), adjustAlpha(activeNeuTokens.baseLo, 0.34f))
-        }).apply {
-            cornerRadius = dp(22).toFloat()
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.30f else 0.13f))
-        }
-        return base
     }
 
     private fun libraryCategories(): List<LibraryCategory> {
@@ -19332,7 +19087,7 @@ $emailText"""
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(FrameLayout(context).apply {
-                    background = dockIconButtonBackground()
+                    background = dockIconButtonBackground(activeNeuTokens)
                     setPadding(dp(7), dp(7), dp(7), dp(7))
                     addView(ImageView(context).apply {
                         setImageDrawable(iconFor(app))
@@ -19427,7 +19182,7 @@ $emailText"""
             isClickable = true
             background = if (isMatched) Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.RAISED) else null
             addView(FrameLayout(context).apply {
-                background = dockIconButtonBackground()
+                background = dockIconButtonBackground(activeNeuTokens)
                 setPadding(dp(6), dp(6), dp(6), dp(6))
                 if (drawable != null) {
                     addView(ImageView(context).apply {
@@ -19459,43 +19214,6 @@ $emailText"""
                 onClick()
             }
         }
-    }
-
-    private fun iconPackDisplayName(icon: IconPackIcon): String {
-        return icon.drawableName
-            .replace(Regex("^(ic_|icon_|app_|drawable_)"), "")
-            .replace('_', ' ')
-            .replace('-', ' ')
-            .trim()
-            .replace(Regex("\\s+"), " ")
-            .ifBlank { icon.drawableName }
-    }
-
-    private fun filteredIconPackIcons(
-        icons: List<IconPackIcon>,
-        queryText: String,
-        matched: IconPackIcon?
-    ): List<IconPackIcon> {
-        val q = queryText.trim().lowercase(Locale.US)
-        val filtered = if (q.isBlank()) {
-            icons
-        } else {
-            val terms = q.split(Regex("\\s+")).filter { it.isNotBlank() }
-            icons.filter { icon ->
-                val label = iconPackDisplayName(icon).lowercase(Locale.US)
-                val raw = icon.drawableName.lowercase(Locale.US).replace('_', ' ').replace('-', ' ')
-                terms.all { term -> label.contains(term) || raw.contains(term) }
-            }.sortedWith(compareBy<IconPackIcon> {
-                val label = iconPackDisplayName(it).lowercase(Locale.US)
-                when {
-                    label == q -> 0
-                    label.startsWith(q) -> 1
-                    else -> 2
-                }
-            }.thenBy { iconPackDisplayName(it) })
-        }
-        if (matched == null || q.isNotBlank()) return filtered
-        return listOf(matched) + filtered.filterNot { it.drawableName == matched.drawableName }
     }
 
     private fun showAppIconChooser(anchor: View, app: LibraryApp) {
@@ -19597,12 +19315,6 @@ $emailText"""
         }.getOrNull()
         iconPackMatchCache[key] = result
         return result
-    }
-
-    private fun drawableFromIconPack(packPackage: String, drawableName: String): Drawable? {
-        val res = runCatching { packageManager.getResourcesForApplication(packPackage) }.getOrNull() ?: return null
-        val id = res.getIdentifier(drawableName, "drawable", packPackage)
-        return if (id == 0) null else runCatching { res.getDrawable(id, theme) }.getOrNull()
     }
 
     private inner class DockKeyView(context: Context) : TextView(context) {
@@ -20094,13 +19806,13 @@ $emailText"""
             val visualLabel = if (label == "shift" && shiftState == ShiftState.LOCK) "shift_lock" else label
             return BrushedDrawables.key(visualLabel, pressed = false, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED, goColor = goKeyColor)
         }
-        if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false)
+        if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
         hyper3dKeyDrawable(label)?.let { return it }
-        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = false)
+        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = false, light = keyboardLightMode())
         if (label == "123") return themed123KeyBackground(pressed = false)
         return when (keyboardTheme) {
-            KEYBOARD_THEME_TECLAS -> physicalKeyBackground(pressed = false, premium = false, fn = isFnKey(label))
-            KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = false, premium = true, fn = isFnKey(label))
+            KEYBOARD_THEME_TECLAS -> physicalKeyBackground(pressed = false, premium = false, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
+            KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = false, premium = true, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
             else -> keyBackground()
         }
     }
@@ -20113,13 +19825,13 @@ $emailText"""
             val visualLabel = if (label == "shift" && shiftState == ShiftState.LOCK) "shift_lock" else label
             return BrushedDrawables.key(visualLabel, pressed = true, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED, goColor = brighten(goKeyColor))
         }
-        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true)
+        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
         hyper3dKeyDrawable(label)?.let { return it }
-        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = true)
+        if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = true, light = keyboardLightMode())
         if (label == "123") return themed123KeyBackground(pressed = true)
         return when (keyboardTheme) {
-            KEYBOARD_THEME_TECLAS -> physicalKeyBackground(pressed = true, premium = false, fn = isFnKey(label))
-            KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = true, premium = true, fn = isFnKey(label))
+            KEYBOARD_THEME_TECLAS -> physicalKeyBackground(pressed = true, premium = false, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
+            KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = true, premium = true, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
             else -> keyBackground(KeyHighlight)
         }
     }
@@ -20146,32 +19858,6 @@ $emailText"""
             else -> return null
         }
         return runCatching { resources.getDrawable(id, theme) }.getOrNull()
-    }
-
-    private fun goKeysKeyBackground(label: String, pressed: Boolean): Drawable {
-        val isGo = label == "enter"
-        val radius = dp(if (isGo) 9 else 6).toFloat()
-        if (isGo) {
-            return GradientDrawable().apply {
-                setColor(if (pressed) 0xFFE35C16.toInt() else 0xFFFF7A2A.toInt())
-                cornerRadius = radius
-                setStroke(dp(1), if (pressed) 0xFFE35C16.toInt() else 0xFFFF8A43.toInt())
-            }
-        }
-        if (keyboardLightMode()) {
-            return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-                if (pressed) 0xFFD0D6DF.toInt() else 0xFFF3F5F8.toInt(),
-                if (pressed) 0xFFB8C1CE.toInt() else 0xFFDCE2EA.toInt()
-            )).apply {
-                cornerRadius = radius
-                setStroke(dp(1), if (pressed) 0xFFAAB4C1.toInt() else 0xFFFFFFFF.toInt())
-            }
-        }
-        return GradientDrawable().apply {
-            setColor(if (pressed) 0xFF1A1D22.toInt() else 0xFF22262D.toInt())
-            cornerRadius = radius
-            setStroke(dp(1), if (pressed) 0xFF16191E.toInt() else 0xFF2E333B.toInt())
-        }
     }
 
     private fun themed123KeyBackground(pressed: Boolean): Drawable {
@@ -20214,8 +19900,6 @@ $emailText"""
         }
     }
 
-    private fun isFnKey(label: String) = label in setOf("123", "teclas", "back", "shift", "abc", "period")
-
     private fun keyBackground() = keyBackground(null)
 
     private fun keyBackground(fillColor: Int?): Drawable {
@@ -20223,137 +19907,6 @@ $emailText"""
             Neu.drawable(activeNeuTokens, dp(7).toFloat(), NeuLevel.PRESSED_SM)
         } else {
             Neu.drawable(activeNeuTokens, dp(7).toFloat(), NeuLevel.RAISED_SM)
-        }
-    }
-
-    private fun physicalKeyBackground(pressed: Boolean, premium: Boolean, fn: Boolean): Drawable {
-        val teclas = keyboardTheme == KEYBOARD_THEME_TECLAS
-        val radius = dp(when {
-            premium -> 10
-            teclas -> 5
-            else -> 9
-        }).toFloat()
-        if (keyboardLightMode()) {
-            val skirt = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-                0xFFB3BCC9.toInt(),
-                0xFF8E99A8.toInt(),
-                0xFF687482.toInt()
-            )).apply {
-                cornerRadius = radius
-                setStroke(dp(1), 0x88FFFFFF.toInt())
-            }
-            val outerRim = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-                if (pressed) 0xFFD3DBE5.toInt() else 0xFFFFFFFF.toInt(),
-                if (pressed) 0xFFAEB8C6.toInt() else 0xFFCBD3DE.toInt()
-            )).apply {
-                cornerRadius = radius
-                setStroke(dp(1), 0xFFFFFFFF.toInt())
-            }
-            val face = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-                if (pressed) 0xFFD2DAE4.toInt() else 0xFFF5F7FA.toInt(),
-                if (pressed) 0xFFBBC5D1.toInt() else 0xFFDCE3EC.toInt(),
-                if (pressed) 0xFFA4AFBD.toInt() else 0xFFC2CCD8.toInt()
-            )).apply {
-                cornerRadius = radius
-                setStroke(dp(1), if (pressed) 0xFFA6B1BE.toInt() else 0xFFFFFFFF.toInt())
-            }
-            val topGlint = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x99FFFFFF.toInt(), 0x00FFFFFF)).apply {
-                cornerRadius = radius
-            }
-            val warmBleed = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-                if (fn && !pressed) 0x22F5C451 else if (pressed) 0x33FF5A3C else 0x00000000,
-                0x00000000
-            )).apply {
-                cornerRadius = radius
-            }
-            return LayerDrawable(arrayOf(skirt, outerRim, face, warmBleed, topGlint)).apply {
-                val drop = if (pressed) dp(1) else dp(if (premium) 7 else 6)
-                val side = dp(2)
-                setLayerInset(0, dp(1), drop, dp(1), 0)
-                setLayerInset(1, side, dp(if (pressed) 1 else 0), side, drop)
-                setLayerInset(2, side + dp(1), dp(1), side + dp(1), drop + dp(1))
-                setLayerInset(3, side + dp(2), dp(4), side + dp(2), drop + dp(1))
-                setLayerInset(4, side + dp(3), dp(2), side + dp(3), dp(20))
-            }
-        }
-        val skirt = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            when {
-                premium -> 0xFF14171D.toInt()
-                teclas -> 0xFF050609.toInt()
-                else -> 0xFF07080B.toInt()
-            },
-            if (teclas) 0xFF020304.toInt() else 0xFF050609.toInt(),
-            0xFF010102.toInt()
-        )).apply {
-            cornerRadius = radius
-            setStroke(dp(1), 0xFF040507.toInt())
-        }
-        val outerRim = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            when {
-                pressed -> 0xFFFF8E68.toInt()
-                premium -> 0xFF525866.toInt()
-                teclas -> 0xFF24272F.toInt()
-                else -> 0xFF34373E.toInt()
-            },
-            if (teclas) 0xFF05060A.toInt() else 0xFF090A0D.toInt()
-        )).apply {
-            cornerRadius = radius
-            setStroke(dp(1), if (premium) 0xFF05060A.toInt() else 0xFF040507.toInt())
-        }
-        val faceColors = when {
-            pressed -> intArrayOf(0xFFFF9B72.toInt(), 0xFFFF5A3C.toInt(), 0xFF9C2F11.toInt())
-            premium -> intArrayOf(0xFF4B505B.toInt(), 0xFF2D323D.toInt(), 0xFF151821.toInt(), 0xFF08090D.toInt())
-            teclas -> intArrayOf(0xFF2B2E35.toInt(), 0xFF202329.toInt(), 0xFF15171C.toInt(), 0xFF0A0B0E.toInt())
-            else -> intArrayOf(0xFF34373E.toInt(), 0xFF202329.toInt(), 0xFF14161B.toInt(), 0xFF0B0C10.toInt())
-        }
-        val face = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, faceColors).apply {
-            cornerRadius = radius
-            setStroke(dp(1), if (pressed) 0xFFFFB199.toInt() else if (premium) 0xFF3C4350.toInt() else if (teclas) 0xFF111318.toInt() else 0xFF05060A.toInt())
-        }
-        val topGlint = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            if (pressed) 0x66FFFFFF else if (premium) 0x55FFFFFF else if (teclas) 0x20FFFFFF else 0x3DFFFFFF,
-            0x00FFFFFF
-        )).apply {
-            cornerRadius = radius
-        }
-        val warmBleed = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(
-            if (fn && !pressed) (if (teclas) 0x16F5C451 else 0x22F5C451) else if (pressed) 0x66FF5A3C else 0x00000000,
-            0x00000000
-        )).apply {
-            cornerRadius = radius
-        }
-        return LayerDrawable(arrayOf(skirt, outerRim, face, warmBleed, topGlint)).apply {
-            val drop = if (pressed) dp(1) else dp(when {
-                premium -> 8
-                teclas -> 8
-                else -> 5
-            })
-            val side = if (premium) dp(2) else dp(if (teclas) 2 else 1)
-            setLayerInset(0, dp(1), drop, dp(1), 0)
-            setLayerInset(1, side, dp(if (pressed) 1 else 0), side, drop)
-            setLayerInset(2, side + dp(1), dp(1), side + dp(1), drop + dp(if (premium) 1 else 0))
-            setLayerInset(3, side + dp(2), dp(if (teclas) 5 else 3), side + dp(2), drop + dp(1))
-            setLayerInset(4, side + dp(3), dp(2), side + dp(3), dp(if (premium) 19 else if (teclas) 24 else 20))
-        }
-    }
-
-    private fun themedGoKeyBackground(fillColor: Int, pressed: Boolean): Drawable {
-        val skirt = GradientDrawable().apply {
-            shape = GradientDrawable.OVAL
-            setColor(0xFF050609.toInt())
-        }
-        val face = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(fillColor), fillColor, darken(fillColor))).apply {
-            shape = GradientDrawable.OVAL
-            setStroke(dp(1), brighten(fillColor))
-        }
-        val glint = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x55FFFFFF, 0x00FFFFFF)).apply {
-            shape = GradientDrawable.OVAL
-        }
-        return LayerDrawable(arrayOf(skirt, face, glint)).apply {
-            val drop = if (pressed) dp(1) else dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 6 else 4)
-            setLayerInset(0, dp(1), drop, dp(1), 0)
-            setLayerInset(1, dp(2), 0, dp(2), drop)
-            setLayerInset(2, dp(8), dp(5), dp(8), dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 18 else 20))
         }
     }
 
@@ -20372,13 +19925,6 @@ $emailText"""
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(accent), accent)).apply {
             cornerRadius = dp(10).toFloat()
             setStroke(dp(1), brighten(accent))
-        }
-    }
-
-    private fun goKeyBackground(fillColor: Int): GradientDrawable {
-        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(fillColor), fillColor)).apply {
-            shape = GradientDrawable.OVAL
-            setStroke(dp(1), brighten(fillColor))
         }
     }
 
@@ -20643,15 +20189,6 @@ $emailText"""
         }
     }
 
-    private fun blendColors(from: Int, to: Int, amount: Float): Int {
-        val t = amount.coerceIn(0f, 1f)
-        return Color.rgb(
-            (Color.red(from) + (Color.red(to) - Color.red(from)) * t).toInt().coerceIn(0, 255),
-            (Color.green(from) + (Color.green(to) - Color.green(from)) * t).toInt().coerceIn(0, 255),
-            (Color.blue(from) + (Color.blue(to) - Color.blue(from)) * t).toInt().coerceIn(0, 255)
-        )
-    }
-
     private fun isSystemDarkMode(): Boolean {
         return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     }
@@ -20699,26 +20236,6 @@ $emailText"""
             view.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
         }
     }
-
-    private fun brighten(color: Int) = Color.rgb(
-        (Color.red(color) + 36).coerceAtMost(255),
-        (Color.green(color) + 36).coerceAtMost(255),
-        (Color.blue(color) + 36).coerceAtMost(255)
-    )
-
-    private fun adjustAlpha(color: Int, alpha: Float): Int {
-        return adjustAlpha(color, (255 * alpha).toInt().coerceIn(0, 255))
-    }
-
-    private fun adjustAlpha(color: Int, alpha: Int): Int {
-        return Color.argb(alpha.coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
-    }
-
-    private fun darken(color: Int) = Color.rgb(
-        (Color.red(color) - 34).coerceAtLeast(0),
-        (Color.green(color) - 34).coerceAtLeast(0),
-        (Color.blue(color) - 34).coerceAtLeast(0)
-    )
 
     private inner class ThemeSplashView(
         context: Context,
@@ -21378,14 +20895,6 @@ $emailText"""
         else -> 3.6f
     }
 
-    private fun livePhotoFade(elapsedMs: Long, durationMs: Long): Float {
-        val p = (elapsedMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
-        if (p < 0.68f) return 1f
-        val tail = ((p - 0.68f) / 0.32f).coerceIn(0f, 1f)
-        val smooth = tail * tail * (3f - 2f * tail)
-        return (1f - smooth).coerceIn(0f, 1f)
-    }
-
     private class DripDrop(var x: Float, var edgeY: Float, var y: Float, var grow: Float,
                            var r: Float, var vy: Float, var released: Boolean, var a: Float)
 
@@ -21692,17 +21201,7 @@ $emailText"""
         }
     }
 
-    private fun Drawable.toBitmap(width: Int, height: Int): Bitmap {
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap); setBounds(0, 0, canvas.width, canvas.height); draw(canvas); return bitmap
-    }
-
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
-
-    private fun systemStatusBarHeight(): Int {
-        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
-        return if (id > 0) resources.getDimensionPixelSize(id) else 0
-    }
 
     // ── Types ────────────────────────────────────────────────────────────────
 
@@ -21873,6 +21372,4 @@ $emailText"""
             ColorOption("LILAC", 0xFFC4B5FF.toInt()), ColorOption("GREEN", 0xFF8FD694.toInt())
         )
     }
-
-    private data class ColorOption(val name: String, val color: Int)
 }
