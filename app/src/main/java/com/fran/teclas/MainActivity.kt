@@ -47,8 +47,6 @@ import com.fran.teclas.hardware.ParallaxSensorEngine
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
-import android.app.PendingIntent
-import android.app.RemoteInput
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.os.Handler
@@ -129,10 +127,6 @@ import com.fran.teclas.brief.BriefCollector
 import com.fran.teclas.brief.BriefGenerator
 import com.fran.teclas.brief.BriefItem
 import com.fran.teclas.brief.BriefRepository
-import com.fran.teclas.brief.Fire
-import com.fran.teclas.brief.Launch
-import com.fran.teclas.brief.NotificationSignal
-import com.fran.teclas.brief.TodayAlert
 import com.fran.teclas.brief.TodayKeyboardMode
 import com.fran.teclas.brief.TodayPage
 import androidx.compose.ui.platform.ComposeView
@@ -238,23 +232,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
 
     private val collator = Collator.getInstance()
-    private var query = ""
+    internal var query = ""
     private var apps: List<AppEntry> = emptyList()
     private var keyboardSize = 0
     private var appIconSize = 0
     private var keyboardTheme = KEYBOARD_THEME_DEFAULT
-    private var keyboardPlacement = KEYBOARD_PLACEMENT_DOCKED
+    internal var keyboardPlacement = KEYBOARD_PLACEMENT_DOCKED
     private var themeMode = THEME_MODE_SYSTEM
-    private var activeNeuTokens = Neu.Dark
+    internal var activeNeuTokens = Neu.Dark
     private var hapticsEnabled = true
     private var keyboardTiltLighting = true
-    private var keyboardSettingsOpen = false
+    internal var keyboardSettingsOpen = false
     private var goKeyColor = Accent
     private var messages: List<HubMessage> = emptyList()
     private var calendarEvents: List<CalendarEvent> = emptyList()
-    private var openPane: PaneTarget? = null
+    internal var openPane: PaneTarget? = null
     private var paneView: View? = null
-    private var libraryOpen = false
+    internal var libraryOpen = false
     private var libraryGridMode = true
     private var libraryView: View? = null
     private var libraryViewMode: NeuMode? = null
@@ -407,10 +401,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var spaceIconView: TextView? = null
 
     // "Today" brief — a page to the left of home, plus a teaser below the widget stack.
-    private lateinit var briefRepository: BriefRepository
+    // Pane hosting + notification action firing live in TodayPaneHost.
+    internal lateinit var briefRepository: BriefRepository
+    internal val todayPaneHost = TodayPaneHost(this)
     private var todayAlertView: ComposeView? = null
-    private var todayPageView: View? = null
-    private var todayOpen = false
+    internal var todayOpen = false
     private var billingClient: com.android.billingclient.api.BillingClient? = null
     lateinit var spotifyAuth: SpotifyAuth
     lateinit var spotifyApi: SpotifyWebApi
@@ -488,7 +483,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var parallaxEngine: ParallaxSensorEngine? = null
     private lateinit var homeGridView: FrameLayout
     private lateinit var rootView: LinearLayout
-    private lateinit var contentFrame: FrameLayout
+    internal lateinit var contentFrame: FrameLayout
+
+    // TodayPaneHost (separate class) can't check lateinit ::isInitialized across class boundaries.
+    internal fun hasContentFrame() = ::contentFrame.isInitialized
+    internal fun hasBriefRepository() = ::briefRepository.isInitialized
     private lateinit var nowPlayingCardView: ComposeView
     private lateinit var keyboardDockView: FrameLayout
     private lateinit var searchHintView: TextView
@@ -908,7 +907,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onBackPressed() {
-        if (todayOpen) { closeToday(); return }
+        if (todayOpen) { todayPaneHost.closeToday(); return }
         if (travelOverlay != null) { dismissTravelOverlay(); return }
         if (widgetPickerView != null) { closeWidgetPicker(); return }
         if (widgetBoardView != null) { closeWidgetBoard(); return }
@@ -924,7 +923,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
         imm?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
         // Dismiss overlays in order
-        if (todayOpen) closeToday()
+        if (todayOpen) todayPaneHost.closeToday()
         if (travelOverlay != null) dismissTravelOverlay()
         spotifyFullLibraryDismiss?.invoke()
         if (spotifyCompactOverlay != null) dismissCompactSpotifyLibrary()
@@ -1810,7 +1809,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun appLibraryDefaultHome(): Boolean =
         prefs().getBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, false)
 
-    private fun isUnfoldedInnerLayoutActive(): Boolean =
+    internal fun isUnfoldedInnerLayoutActive(): Boolean =
         foldPosture is FoldPosture.Inner && resources.configuration.screenWidthDp >= 600
 
     private fun innerKeyboardWidthPercent(): Int =
@@ -2040,7 +2039,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         innerWallpaperImageView?.let { applyInnerWallpaperMatrix(it) }
     }
 
-    private fun cancelWallpaperLongPress() {
+    internal fun cancelWallpaperLongPress() {
         wallpaperLongPressRunnable?.let { handler.removeCallbacks(it) }
         wallpaperLongPressRunnable = null
     }
@@ -2323,7 +2322,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 // "Today" teaser lives in the space below the widget stack; collapses to 0dp when empty.
                 todayAlertView = ComposeView(context).apply {
                     setBackgroundColor(Color.TRANSPARENT)
-                    setTodayAlertContent()
+                    todayPaneHost.setTodayAlertContent(this)
                 }
                 addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     topMargin = dp(8)
@@ -2548,7 +2547,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun refreshUnfoldedFocusContent() {
+    internal fun refreshUnfoldedFocusContent() {
         val area = unfoldedFocusContentArea ?: return
         val searching = query.isNotBlank()
         val showLibrary = libraryOpen || innerLibraryLocked()
@@ -3051,8 +3050,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     hasListenerPermission = isNotificationAccessEnabled(),
                     keyboardMode = TodayKeyboardMode.WIDGET,
                     transparentShell = true,
-                    onAction = { item, action, reply -> fireBriefAction(item, action, reply) },
-                    onDismiss = { item -> dismissBriefItem(item) },
+                    onAction = { item, action, reply -> todayPaneHost.fireBriefAction(item, action, reply) },
+                    onDismiss = { item -> todayPaneHost.dismissBriefItem(item) },
                     onGrantPermission = { openNotificationAccessSettings() }
                 )
             }
@@ -3108,7 +3107,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 sideMediaTitle = media?.sourceApp?.takeIf { it.isNotBlank() } ?: "Music",
                 sideMediaBody = media?.let { "${it.title} · ${it.artist}" } ?: "Music appears when it becomes context.",
                 actions = emptyList(),
-                run = { openToday() }
+                run = { todayPaneHost.openToday() }
             )
         }
         if (nextEvent != null) {
@@ -3458,7 +3457,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         todayAlertView = ComposeView(context).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            setTodayAlertContent()
+            todayPaneHost.setTodayAlertContent(this)
         }
         addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(10)
@@ -4990,122 +4989,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     // ── Today brief ──────────────────────────────────────────────────────────
-
-    private fun ComposeView.setTodayAlertContent() {
-        setContent {
-            if (!::briefRepository.isInitialized) return@setContent
-            val brief by briefRepository.brief.collectAsState()
-            TodayAlert(
-                tokens = activeNeuTokens,
-                brief = brief,
-                onOpen = {
-                    haptic(this@setTodayAlertContent)
-                    openToday()
-                },
-                onDismiss = { item -> dismissBriefItem(item) }
-            )
-        }
-    }
-
-    private fun openToday() {
-        if (todayOpen || libraryOpen || openPane != null || !::contentFrame.isInitialized) return
-        cancelWallpaperLongPress()
-        todayOpen = true
-        briefRepository.refresh()
-        if (isUnfoldedInnerLayoutActive()) {
-            query = ""
-            keyboardSettingsOpen = false
-            refreshUnfoldedFocusContent()
-            renderRibbon()
-            haptic(contentFrame)
-            return
-        }
-        val overlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            isClickable = true // swallow taps so they don't fall through to home
-            addView(DynamicGlassPlate(context, radiusDp = 0, strength = 1.9f, edgeInsetDp = 0).apply {
-                setGlassProgress(1f)
-            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            addView(ComposeView(context).apply {
-                setBackgroundColor(Color.TRANSPARENT)
-                setContent {
-                    val brief by briefRepository.brief.collectAsState()
-                    TodayPage(
-                        tokens = activeNeuTokens,
-                        brief = brief,
-                        hasListenerPermission = isNotificationAccessEnabled(),
-                        keyboardMode = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) TodayKeyboardMode.WIDGET else TodayKeyboardMode.DOCKED,
-                        transparentShell = true,
-                        onAction = { item, action, reply -> fireBriefAction(item, action, reply) },
-                        onDismiss = { item -> dismissBriefItem(item) },
-                        onGrantPermission = { openNotificationAccessSettings() }
-                    )
-                }
-            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        }
-        todayPageView = overlay
-        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        val w = contentFrame.width.takeIf { it > 0 }?.toFloat() ?: resources.displayMetrics.widthPixels.toFloat()
-        overlay.translationX = -w
-        overlay.animate().translationX(0f).setDuration(240).setInterpolator(DecelerateInterpolator()).start()
-        haptic(contentFrame)
-    }
-
-    private fun closeToday() {
-        todayOpen = false
-        if (isUnfoldedInnerLayoutActive()) {
-            refreshUnfoldedFocusContent()
-            renderRibbon()
-            return
-        }
-        val overlay = todayPageView ?: return
-        todayPageView = null
-        val w = contentFrame.width.takeIf { it > 0 }?.toFloat() ?: resources.displayMetrics.widthPixels.toFloat()
-        overlay.animate().translationX(-w).setDuration(200).setInterpolator(DecelerateInterpolator())
-            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
-    }
-
-    private fun fireBriefAction(item: BriefItem, action: BriefAction, replyText: String?) {
-        haptic(contentFrame)
-        val ok = when (action) {
-            is Launch -> runCatching { startActivity(action.intent) }.isSuccess
-            is Fire -> sendFire(action, replyText)
-        }
-        val isReply = action is Fire && action.isReply
-        if (!ok) {
-            // Canceled PendingIntent → fall back to the notification's contentIntent.
-            (item.signal as? NotificationSignal)?.contentIntent?.let { runCatching { it.send() } }
-        } else if (isReply) {
-            Toast.makeText(this, "Sent", Toast.LENGTH_SHORT).show()
-        }
-        // Firing resolves the card; clear it (the notification itself usually cancels too).
-        briefRepository.dismissItem(item)
-        // Opening/launching leaves the launcher — don't leave Today sitting underneath on return.
-        if (!isReply) closeToday()
-    }
-
-    private fun sendFire(action: Fire, replyText: String?): Boolean = try {
-        val ri = action.remoteInput
-        if (ri != null && !replyText.isNullOrBlank()) {
-            val fill = Intent()
-            val results = Bundle().apply { putCharSequence(ri.resultKey, replyText) }
-            RemoteInput.addResultsToIntent(arrayOf(ri) + action.extraInputs, fill, results)
-            action.pendingIntent.send(this, 0, fill)
-        } else {
-            action.pendingIntent.send()
-        }
-        true
-    } catch (_: PendingIntent.CanceledException) {
-        false
-    }
-
-    private fun dismissBriefItem(item: BriefItem) {
-        haptic(contentFrame)
-        if (item.signal is NotificationSignal) {
-            TeclasNotificationListener.dismiss(item.signalRef)
-        }
-        briefRepository.dismissItem(item)
-    }
+    // Pane hosting, teaser content, and brief action firing moved to TodayPaneHost.
 
     // Informational (non-actionable) notifications routed to the widget stack. Excludes anything the
     // dedicated news/maps widgets already show, and anything the brief classifies as actionable.
@@ -5225,7 +5109,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 MotionEvent.ACTION_UP -> {
                     val dx = event.rawX - librarySwipeStartX
                     val dy = event.rawY - librarySwipeStartY
-                    if (dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) closeToday()
+                    if (dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) todayPaneHost.closeToday()
                 }
             }
             return false
@@ -5367,7 +5251,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             // Swipe right reveals the "Today" page to the left of home. (This takes
                             // over the old swipe-right gesture binding for now, per product req.)
                             librarySwipeTriggered = true
-                            openToday()
+                            todayPaneHost.openToday()
                             return true
                         }
                     }
@@ -15599,7 +15483,7 @@ Reply format: ["word1","word2","word3"]"""
         }
     }
 
-    private fun renderRibbon() {
+    internal fun renderRibbon() {
         if (::ribbonView.isInitialized) {
             ribbonView.removeAllViews()
         }
@@ -18512,13 +18396,13 @@ $emailText"""
 
     // ── Drawing / utils ──────────────────────────────────────────────────────
 
-    private fun isNotificationAccessEnabled(): Boolean {
+    internal fun isNotificationAccessEnabled(): Boolean {
         val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
         val expected = ComponentName(this, TeclasNotificationListener::class.java).flattenToString()
         return enabled.split(":").any { it.equals(expected, ignoreCase = true) }
     }
 
-    private fun openNotificationAccessSettings() { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+    internal fun openNotificationAccessSettings() { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
 
     private fun updateClock() {
         if (!::weatherTempView.isInitialized) return
@@ -20193,7 +20077,7 @@ $emailText"""
         return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
     }
 
-    private fun haptic(view: View) {
+    internal fun haptic(view: View) {
         if (!hapticsEnabled) return
         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
     }
@@ -20480,7 +20364,7 @@ $emailText"""
         }
     }
 
-    private inner class DynamicGlassPlate(
+    internal inner class DynamicGlassPlate(
         context: Context,
         private val radiusDp: Int,
         private val strength: Float = 1f,
@@ -21231,7 +21115,7 @@ $emailText"""
         private const val KEYBOARD_PLACEMENT_PREF = "keyboard_placement"
         private const val KEYBOARD_PLACEMENT_INTRO_PREF = "keyboard_placement_intro_shown"
         private const val KEYBOARD_PLACEMENT_DOCKED = "docked"
-        private const val KEYBOARD_PLACEMENT_WIDGET = "widget"
+        internal const val KEYBOARD_PLACEMENT_WIDGET = "widget"
         private const val THEME_MODE_PREF = "theme_mode"
         private const val THEME_MODE_DARK = "dark"
         private const val THEME_MODE_LIGHT = "light"
