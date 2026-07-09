@@ -268,6 +268,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var spaceBoardOverlay: View? = null
     private var spaceBoardDragActive = false
     private var spaceBoardTitleView: TextView? = null
+    // Apple-style left widget page: swipe right pulls it in from the left, blurring home behind it.
+    private lateinit var homeLeftController: com.fran.teclas.grid.SpaceBoardController
+    private var homeLeftOverlay: View? = null
+    private var homeLeftDragActive = false
     private lateinit var widgetPersistenceRepository: WidgetPersistenceRepository
     private var widgetSpecsCache: List<WidgetSpec>? = null
     private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
@@ -569,6 +573,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         appWidgetHost.startListening()
         spaceBoardController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
+        homeLeftController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
         // One-time reset: earlier builds auto-seeded boards with predicted apps; the board now
         // seeds only the Space's pinned apps as a top strip, so clear the old layouts once.
         if (!prefs().getBoolean("space_boards_pinned_seed_v2", false)) {
@@ -880,6 +885,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             spaceBoardController.onWidgetResult(requestCode, resultCode == RESULT_OK)) {
             return
         }
+        if (::homeLeftController.isInitialized &&
+            homeLeftController.onWidgetResult(requestCode, resultCode == RESULT_OK)) {
+            return
+        }
         if (requestCode == VOICE_REQUEST_CODE && resultCode == RESULT_OK) {
             val spoken = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
                 ?.firstOrNull() ?: return
@@ -933,6 +942,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onBackPressed() {
+        if (homeLeftOverlay != null) { closeHomeLeftPage(); return }
         if (spaceBoardOverlay != null) { closeSpaceBoard(); return }
         if (todayOpen) { todayPaneHost.closeToday(); return }
         if (travelPaneHost.travelOverlay != null) { travelPaneHost.dismissTravelOverlay(); return }
@@ -5156,8 +5166,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun handleLibrarySwipe(event: MotionEvent): Boolean {
         if (innerWallpaperEditMode) return false
-        // Board is open (and not being dragged): let its own container handle scroll/tap/close.
+        // Board / left page open (and not being dragged): let its own container handle scroll/tap/close.
         if (spaceBoardOverlay != null && !spaceBoardDragActive) return false
+        if (homeLeftOverlay != null && !homeLeftDragActive) return false
         if (widgetKeyboardSwapActive()) {
             librarySwipeTriggered = false
             librarySwipeBlockedByWidget = false
@@ -5206,6 +5217,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 librarySwipeTriggered = false
                 libraryDragActive = false
                 spaceBoardDragActive = false
+                homeLeftDragActive = false
                 libraryDragVertical = false
                 libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
@@ -5240,6 +5252,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 if (spaceBoardDragActive) {
                     updateSpaceBoardDrag(dx)
+                    return true
+                }
+                if (homeLeftDragActive) {
+                    updateHomeLeftDrag(dx)
                     return true
                 }
                 if (upOpensLibrary && !librarySwipeTriggered && abs(dy) > dp(18) && abs(dy) > abs(dx) * 1.2f) {
@@ -5283,6 +5299,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             updateLibraryDrag(dx)
                             return true
                         }
+                        dx > 0 && !libraryOpen && openPane == null && spaceBoardOverlay == null -> {
+                            // Swipe right drags in the personal widget page from the left,
+                            // blurring the homescreen behind it (Apple Today-View style).
+                            librarySwipeTriggered = true
+                            if (beginHomeLeftDrag()) updateHomeLeftDrag(dx)
+                            return true
+                        }
                     }
                 }
             }
@@ -5294,6 +5317,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 if (spaceBoardDragActive) {
                     settleSpaceBoardDrag(event.rawX - librarySwipeStartX)
+                    librarySwipeTriggered = false
+                    return true
+                }
+                if (homeLeftDragActive) {
+                    settleHomeLeftDrag(event.rawX - librarySwipeStartX)
                     librarySwipeTriggered = false
                     return true
                 }
@@ -5317,11 +5345,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             closeLibrary()
                             return true
                         }
-                        dx > 0 && openPane == null -> {
-                            // Swipe right reveals the "Today" page to the left of home. (This takes
-                            // over the old swipe-right gesture binding for now, per product req.)
+                        dx > 0 && openPane == null && spaceBoardOverlay == null -> {
+                            // Swipe right opens the personal left widget page.
                             librarySwipeTriggered = true
-                            todayPaneHost.openToday()
+                            openHomeLeftPage()
                             return true
                         }
                     }
@@ -5340,6 +5367,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             MotionEvent.ACTION_CANCEL -> {
                 if (libraryDragActive) settleLibraryDrag(if (libraryDragStartedOpen) 0f else libraryDragAxisSize())
                 if (spaceBoardDragActive) settleSpaceBoardDrag(event.rawX - librarySwipeStartX)
+                if (homeLeftDragActive) settleHomeLeftDrag(event.rawX - librarySwipeStartX)
                 librarySwipeTriggered = false
                 librarySwipeBlockedByWidget = false
                 libraryDragActive = false
@@ -7538,6 +7566,133 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .setDuration(200L).setInterpolator(DecelerateInterpolator())
             .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
         return true
+    }
+
+    // ---- Apple-style left widget page ----------------------------------------------------
+
+    /**
+     * Build the personal widget page and mount it off-screen to the LEFT. It's a normal
+     * unified board (a fixed "home_left" layout, not per-Space) on the universal glass, so
+     * the homescreen behind it blurs through as it slides in.
+     */
+    private fun mountHomeLeftPage(): View? {
+        if (homeLeftOverlay != null || !::homeLeftController.isInitialized) return null
+        if (libraryOpen) closeLibrary()
+        if (openPane != null) closePane()
+        homeLeftController.open(HOME_LEFT_BOARD_ID, emptyList())
+        val container = object : FrameLayout(this) {
+            private var downX = 0f; private var downY = 0f
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
+                    MotionEvent.ACTION_UP -> {
+                        val dx = ev.x - downX; val dy = ev.y - downY
+                        // Swipe left (back the way it came) closes — never while resizing a widget.
+                        if (!homeLeftController.isEditing() && dx < -dp(70) && abs(dx) > abs(dy) * 1.3f) {
+                            closeHomeLeftPage(); return true
+                        }
+                    }
+                }
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = true
+        }
+        container.addView(
+            if (nativeGlassSurfaceActive()) NativeFoldGlassPanel(this, radiusDp = 0)
+            else DynamicGlassPlate(this, radiusDp = 0, strength = 1.72f, edgeInsetDp = 0).apply { setGlassProgress(1f) },
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
+        )
+        container.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), systemStatusBarHeight() + dp(12), dp(12), dp(14))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(mono("WIDGETS", 11f, Accent).apply { letterSpacing = 0.2f },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(mono("DONE", 11f, InkDim).apply {
+                    setPadding(dp(10), dp(6), dp(6), dp(6)); isClickable = true
+                    setOnClickListener { closeHomeLeftPage() }
+                }, LinearLayout.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)))
+            addView(mono("Your personal widgets · long-press an empty cell to add", 9f, InkDim).apply {
+                setPadding(dp(2), 0, 0, dp(8)); letterSpacing = 0.06f
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            (homeLeftController.view.parent as? ViewGroup)?.removeView(homeLeftController.view)
+            addView(homeLeftController.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        homeLeftOverlay = container
+        addContentView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        container.translationX = -resources.displayMetrics.widthPixels.toFloat()
+        return container
+    }
+
+    private fun openHomeLeftPage() {
+        val container = mountHomeLeftPage() ?: return
+        container.animate().translationX(0f).setDuration(260L).setInterpolator(DecelerateInterpolator())
+            .setUpdateListener { setLauncherBlurProgress(1f - abs(container.translationX) / resources.displayMetrics.widthPixels) }
+            .start()
+    }
+
+    private fun beginHomeLeftDrag(): Boolean {
+        if (mountHomeLeftPage() == null) return false
+        homeLeftDragActive = true
+        keyHaptic("space")
+        return true
+    }
+
+    /** [delta] is horizontal finger travel (positive as it moves right, pulling the page in). */
+    private fun updateHomeLeftDrag(delta: Float) {
+        val overlay = homeLeftOverlay ?: return
+        val width = resources.displayMetrics.widthPixels.toFloat()
+        val translation = (-width + delta).coerceIn(-width, 0f)
+        overlay.translationX = translation
+        setLauncherBlurProgress(1f + translation / width) // 0 off-screen → 1 fully in
+    }
+
+    private fun settleHomeLeftDrag(delta: Float) {
+        val overlay = homeLeftOverlay ?: run { homeLeftDragActive = false; return }
+        homeLeftDragActive = false
+        val width = resources.displayMetrics.widthPixels.toFloat()
+        val openProgress = 1f + overlay.translationX / width
+        val shouldOpen = openProgress > 0.22f || delta > dp(80)
+        overlay.animate().cancel()
+        if (shouldOpen) {
+            overlay.animate().translationX(0f).setDuration(200L).setInterpolator(DecelerateInterpolator())
+                .setUpdateListener { setLauncherBlurProgress(1f + overlay.translationX / width) }.start()
+        } else {
+            homeLeftOverlay = null
+            overlay.animate().translationX(-width).setDuration(180L).setInterpolator(DecelerateInterpolator())
+                .setUpdateListener { setLauncherBlurProgress(1f + overlay.translationX / width) }
+                .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay); setLauncherBlurProgress(0f) }.start()
+        }
+    }
+
+    private fun closeHomeLeftPage(): Boolean {
+        val overlay = homeLeftOverlay ?: return false
+        homeLeftOverlay = null
+        homeLeftDragActive = false
+        val width = resources.displayMetrics.widthPixels.toFloat()
+        overlay.animate().translationX(-width).setDuration(200L).setInterpolator(DecelerateInterpolator())
+            .setUpdateListener { setLauncherBlurProgress(1f + overlay.translationX / width) }
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay); setLauncherBlurProgress(0f) }.start()
+        return true
+    }
+
+    /** Progressive blur+fade of the homescreen behind the left page (0 = clear, 1 = full glass). */
+    private fun setLauncherBlurProgress(progress: Float) {
+        if (!::rootView.isInitialized || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val p = progress.coerceIn(0f, 1f)
+        if (p <= 0.01f) {
+            rootView.setRenderEffect(null)
+            rootView.alpha = 1f
+            return
+        }
+        val radius = (dp(22).toFloat() * p).coerceAtLeast(0.5f)
+        rootView.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
+        rootView.alpha = 1f - p * 0.4f
     }
 
     private fun updateSpaceIcon() {
@@ -19425,6 +19580,8 @@ Reply format: ["word1","word2","word3"]"""
         // still equals this, the pinned view is respected (no auto-flip to context). Cleared
         // when the Space changes, which re-arms the auto-switch-to-context behavior.
         private const val DOCK_PINNED_OVERRIDE_SPACE_PREF = "dock_pinned_override_space"
+        // Fixed layout id for the personal left widget page (not per-Space).
+        private const val HOME_LEFT_BOARD_ID = "home_left"
         private const val APP_LIBRARY_DEFAULT_HOME_PREF = "app_library_default_home"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"

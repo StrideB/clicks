@@ -137,6 +137,8 @@ class SpaceBoardController(
     fun onWidgetResult(requestCode: Int, ok: Boolean): Boolean {
         val widgetId = pendingWidgetId
         val provider = pendingProvider
+        // Not our result if we never started a bind (lets multiple board controllers coexist).
+        if (widgetId < 0) return false
         when (requestCode) {
             REQUEST_BIND -> {
                 if (ok && widgetId >= 0 && provider != null) configureOrPlace(widgetId, provider)
