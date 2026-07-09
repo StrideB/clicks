@@ -7377,6 +7377,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(mono("Pin the apps you want up top · long-press an empty cell to add apps & widgets", 9f, InkDim).apply {
                 setPadding(dp(2), 0, 0, dp(8)); letterSpacing = 0.06f
             }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            // The board view is a single reused instance; a prior container (possibly still
+            // animating out) may still hold it, so detach before re-parenting or addView throws
+            // "child already has a parent" and takes the launcher down.
+            (spaceBoardController.view.parent as? ViewGroup)?.removeView(spaceBoardController.view)
             addView(spaceBoardController.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         spaceBoardOverlay = container
