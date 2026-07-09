@@ -120,9 +120,26 @@ object SpaceManager {
     fun aiLayerEnabled(context: Context): Boolean = prefs(context).getBoolean(AI_LAYER_KEY, false)
 
     fun detect(context: Context, snapshot: ContextSnapshot): SpaceDetection {
-        val all = spaces(context).filter { it.enabled }
-        lockedSpaceId(context)?.let { lockedId ->
-            all.find { it.id == lockedId }?.let { return SpaceDetection(it, strong = true, locked = true) }
+        val result = detectIn(spaces(context), snapshot, lockedSpaceId(context), lastActiveId)
+        lastActiveId = result.space.id
+        return result
+    }
+
+    /**
+     * Pure detection core (no Android dependencies, hence unit-testable): given the full
+     * Space list, a snapshot, the manual lock and the previously active id, decide the
+     * active Space. Lock wins; else most-specific matching trigger wins with priority as
+     * tie-break; else away-from-home prefers Travel; else sticky last / Home.
+     */
+    fun detectIn(
+        allSpaces: List<Space>,
+        snapshot: ContextSnapshot,
+        lockedId: String?,
+        previousId: String?,
+    ): SpaceDetection {
+        val all = allSpaces.filter { it.enabled }
+        lockedId?.let { id ->
+            all.find { it.id == id }?.let { return SpaceDetection(it, strong = true, locked = true) }
         }
         var best: Space? = null
         var bestSpecificity = 0
@@ -141,11 +158,10 @@ object SpaceManager {
         val awayTravel = if (best == null && snapshot.awayFromHome) all.find { it.id == "travel" } else null
         val fallback = best
             ?: awayTravel
-            ?: all.find { it.id == lastActiveId }
+            ?: all.find { it.id == previousId }
             ?: all.find { it.id == "home" }
             ?: all.firstOrNull()
             ?: defaults().first { it.id == "home" }
-        lastActiveId = fallback.id
         return SpaceDetection(fallback, strong = (best != null && bestStrong) || awayTravel != null, locked = false)
     }
 

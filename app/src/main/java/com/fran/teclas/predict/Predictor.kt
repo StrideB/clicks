@@ -269,26 +269,49 @@ object Predictor {
             // what makes freshly opened apps on a trip stick instead of drowning under the
             // seeded home ranking.
             val engaged = detection.locked || detection.strong
-            val wCtx = if (engaged) 0.30f else 0.45f
-            val wSpace = if (engaged) 0.30f else 0.25f
-            val wGlobal = if (engaged) 0.10f else 0.15f
-            val wRecent = if (engaged) 0.30f else 0.15f
             val now = snapshot.timestamp
             return candidates.asSequence()
                 .filter { it !in space.excluded }
                 .map { pkg ->
-                    val lin = sigmoid(dot(weights[pkg], x))
                     val ageHours = recent[pkg]?.let { (now - it) / 3_600_000f }
-                    val recency = if (ageHours == null || ageHours < 0f) 0f else exp(-ageHours / 24f)
-                    val prior = wCtx * (ctxFreq[pkg] ?: 0f) / ctxTotal +
-                        wSpace * (spaceFreq[pkg] ?: 0f) / spaceTotal +
-                        wGlobal * (freqGlobal[pkg] ?: 0f) / globalTotal +
-                        wRecent * recency
-                    pkg to ((1f - alpha) * lin + alpha * prior)
+                    pkg to blendScore(
+                        lin = sigmoid(dot(weights[pkg], x)),
+                        ctxFreqNorm = (ctxFreq[pkg] ?: 0f) / ctxTotal,
+                        spaceFreqNorm = (spaceFreq[pkg] ?: 0f) / spaceTotal,
+                        globalFreqNorm = (freqGlobal[pkg] ?: 0f) / globalTotal,
+                        ageHours = ageHours,
+                        alpha = alpha,
+                        engaged = engaged,
+                    )
                 }
                 .sortedByDescending { it.second }
                 .toList()
         }
+    }
+
+    /**
+     * Pure per-app score blend (no engine state — unit-testable). Frequency prior + recency,
+     * mixed with the linear scorer by [alpha]. When [engaged] (Space locked or strongly
+     * detected) the global habit prior is down-weighted and recency up-weighted, so apps you
+     * actually open in this Space rise fast instead of drowning under the seeded home ranking.
+     */
+    internal fun blendScore(
+        lin: Float,
+        ctxFreqNorm: Float,
+        spaceFreqNorm: Float,
+        globalFreqNorm: Float,
+        ageHours: Float?,
+        alpha: Float,
+        engaged: Boolean,
+    ): Float {
+        val wCtx = if (engaged) 0.30f else 0.45f
+        val wSpace = if (engaged) 0.30f else 0.25f
+        val wGlobal = if (engaged) 0.10f else 0.15f
+        val wRecent = if (engaged) 0.30f else 0.15f
+        val recency = if (ageHours == null || ageHours < 0f) 0f else exp(-ageHours / 24f)
+        val prior = wCtx * ctxFreqNorm + wSpace * spaceFreqNorm +
+            wGlobal * globalFreqNorm + wRecent * recency
+        return (1f - alpha) * lin + alpha * prior
     }
 
     private fun dot(w: Map<String, Float>?, x: List<String>): Float {
