@@ -16,6 +16,8 @@ billing = "9.1.0"
 onnxruntime = "1.27.0"
 mlkitGenaiProofreading = "1.0.0-beta1"
 junit = "4.13.2"
+leakcanary = "2.14"
+profileinstaller = "1.4.1"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -41,6 +43,8 @@ billing-ktx = { group = "com.android.billingclient", name = "billing-ktx", versi
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 mlkit-genai-proofreading = { group = "com.google.mlkit", name = "genai-proofreading", version.ref = "mlkitGenaiProofreading" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+leakcanary = { group = "com.squareup.leakcanary", name = "leakcanary-android", version.ref = "leakcanary" }
+profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

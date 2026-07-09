@@ -764,8 +764,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val now = System.currentTimeMillis()
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
-        if (now - lastContactsLoadMs > 30_000) { preloadContactsCache(); lastContactsLoadMs = now }
-        if (::briefRepository.isInitialized) briefRepository.refreshDebounced(200)
+        if (now - lastContactsLoadMs > 5 * 60_000) { preloadContactsCache(); lastContactsLoadMs = now }
+        if (::briefRepository.isInitialized) {
+            briefRepository.startPeriodic()
+            briefRepository.refreshDebounced(200)
+        }
+        // Resume the music progress tick paused in onPause (no-op when the bar isn't showing).
+        musicProgressRunnable?.let { r -> musicProgressHandler?.let { h -> h.removeCallbacks(r); h.post(r) } }
         // Self-heal an empty Spotify library (e.g. connected in a previous session but never loaded).
         if (::spotifyAuth.isInitialized && spotifyAuth.isConnected &&
             spotifyCachedPlaylists.isEmpty() && spotifyCachedLikedSongs.isEmpty() && spotifyCachedRecent.isEmpty()) {
@@ -795,6 +800,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onPause() {
         cancelWidgetKeyboardSwap(resetTheme = true)
         parallaxEngine?.stop()
+        widgetCoachAnimator?.cancel()
+        // Halt periodic work while another app is in front: the 1 Hz music-progress tick and the
+        // 45-minute brief refresh both resume in onResume; nothing needs them while backgrounded.
+        musicProgressRunnable?.let { musicProgressHandler?.removeCallbacks(it) }
+        if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
             prefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
         }
@@ -3871,13 +3881,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun startWidgetCoachNudge() {
         widgetCoachAnimator?.cancel()
         val coach = widgetCoachView ?: return
+        // A few nudge cycles is enough of a hint; an INFINITE animator here kept the GPU
+        // redrawing this view for as long as the coach stayed on screen.
         widgetCoachAnimator = ValueAnimator.ofFloat(-1f, 1f).apply {
             duration = 900L
             repeatMode = ValueAnimator.REVERSE
-            repeatCount = ValueAnimator.INFINITE
+            repeatCount = 5
             addUpdateListener {
                 coach.translationX = (it.animatedValue as Float) * dp(5)
             }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    coach.animate().translationX(0f).setDuration(180L).start()
+                }
+            })
             start()
         }
     }
@@ -9356,7 +9373,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     // ── Spotify preload ───────────────────────────────────────────────────────
 
+    private var lastSpotifyPreloadMs = 0L
+
     private fun preloadSpotifyLibrary() {
+        // Full preload is 4 API pages + up to 200 art downloads; never repeat it within 10 minutes.
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastSpotifyPreloadMs < 10 * 60_000L) return
+        lastSpotifyPreloadMs = nowMs
         mediaUiScope.launch(Dispatchers.IO) {
             try {
                 coroutineScope {
@@ -9368,10 +9391,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val playlists = playlistsD.await()
                     val top = topD.await()
                     val liked = likedD.await()
-                    val recentArts = recent.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
-                    val playlistArts = playlists.map { p -> async { p.imageUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
-                    val topArts = top.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
-                    val likedArts = liked.map { t -> async { t.albumArtUrl?.let { runCatching { spotifyApi.fetchAlbumArt(it) }.getOrNull() } } }.awaitAll()
+                    // Tracks from the same album share art: fetch each distinct URL once and share
+                    // the Bitmap instance across all four caches instead of ~200 separate downloads.
+                    val artUrls = (recent.mapNotNull { it.albumArtUrl } + playlists.mapNotNull { it.imageUrl } +
+                        top.mapNotNull { it.albumArtUrl } + liked.mapNotNull { it.albumArtUrl }).distinct()
+                    val artByUrl = artUrls.map { url ->
+                        async { url to runCatching { spotifyApi.fetchAlbumArt(url) }.getOrNull() }
+                    }.awaitAll().toMap()
+                    val recentArts = recent.map { it.albumArtUrl?.let(artByUrl::get) }
+                    val playlistArts = playlists.map { it.imageUrl?.let(artByUrl::get) }
+                    val topArts = top.map { it.albumArtUrl?.let(artByUrl::get) }
+                    val likedArts = liked.map { it.albumArtUrl?.let(artByUrl::get) }
                     spotifyCachedRecent = recent
                     spotifyCachedRecentArts = recentArts
                     spotifyCachedPlaylists = playlists

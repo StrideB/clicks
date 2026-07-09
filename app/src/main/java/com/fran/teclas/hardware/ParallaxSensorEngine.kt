@@ -35,8 +35,9 @@ class ParallaxSensorEngine(
 
     fun start() {
         if (registered || rotationSensor == null) return
-        // ~30 Hz — smooth parallax without the battery cost of SENSOR_DELAY_GAME.
-        registered = sensorManager.registerListener(this, rotationSensor, 33_000)
+        // ~15 Hz — the low-pass filter smooths the motion anyway, and halving the fused
+        // rotation-vector rate (accel+gyro+mag) halves this purely cosmetic sensor's cost.
+        registered = sensorManager.registerListener(this, rotationSensor, 66_000)
     }
 
     fun stop() {

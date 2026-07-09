@@ -82,6 +82,11 @@ dependencies {
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
+    // Automatic heap-leak detection in debug builds only — zero release impact.
+    debugImplementation(libs.leakcanary)
+    // Installs bundled baseline profiles (Compose ships them) for AOT-compiled hot paths;
+    // also enables Play cloud profiles after a store release.
+    implementation(libs.profileinstaller)
     implementation(libs.coroutines.android)
     implementation(libs.coroutines.guava)
     implementation(libs.browser)

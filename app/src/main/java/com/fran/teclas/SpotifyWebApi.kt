@@ -130,7 +130,13 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 8000; conn.readTimeout = 8000
             conn.connect()
-            BitmapFactory.decodeStream(conn.inputStream).also { conn.disconnect() }
+            // Spotify serves up to 640x640; thumbnails render far smaller. Downsampling at decode
+            // time cuts each cached bitmap from ~1.6 MB to ~400 KB before it ever hits the heap.
+            val bytes = conn.inputStream.use { it.readBytes() }.also { conn.disconnect() }
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val sample = maxOf(1, minOf(bounds.outWidth, bounds.outHeight) / 320)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
         }.getOrNull()
     }
 
