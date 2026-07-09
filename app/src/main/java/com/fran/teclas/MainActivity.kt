@@ -404,6 +404,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     // "Today" brief — a page to the left of home, plus a teaser below the widget stack.
     // Pane hosting + notification action firing live in TodayPaneHost.
+    // Today is disabled for now: it drove frequent Gemini/brief generation and isn't shipping.
+    // This single flag gates every entry point (open gesture, teaser, periodic brief refresh).
+    internal val todayEnabled = false
     internal lateinit var briefRepository: BriefRepository
     internal val todayPaneHost = TodayPaneHost(this)
     // Spotify/Music library pane (compact + full library, click-wheel docks) lives in MusicPaneHost.
@@ -607,13 +610,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // refreshDebounced mutates its Job field.
         TeclasNotificationListener.onBriefChanged = {
             runOnUiThread {
-                briefRepository.refreshDebounced()
+                if (todayEnabled) briefRepository.refreshDebounced()
                 // Informational notifications feed the widget stack — refresh it too.
                 if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
             }
         }
-        briefRepository.startPeriodic()
-        briefRepository.refreshDebounced(300)
+        if (todayEnabled) {
+            briefRepository.startPeriodic()
+            briefRepository.refreshDebounced(300)
+        }
         spotifyAuth = SpotifyAuth(this)
         spotifyApi = SpotifyWebApi(spotifyAuth)
         gmailAuth = GmailAuth(this)
@@ -768,7 +773,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
         if (now - lastContactsLoadMs > 5 * 60_000) { preloadContactsCache(); lastContactsLoadMs = now }
-        if (::briefRepository.isInitialized) {
+        if (todayEnabled && ::briefRepository.isInitialized) {
             briefRepository.startPeriodic()
             briefRepository.refreshDebounced(200)
         }
@@ -2056,9 +2061,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun installWallpaperEditLongPress(surface: View) {
-        val touchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
-        val cancelSlop = maxOf(touchSlop, dp(10))
-        val holdDelay = android.view.ViewConfiguration.getLongPressTimeout().toLong() + 900L
+        // Hardened against accidental activation: a long, deliberate ~2s hold that stays put.
+        // Any drift beyond a small slop, a second finger, or a lift cancels it.
+        val cancelSlop = dp(8)
+        val holdDelay = android.view.ViewConfiguration.getLongPressTimeout().toLong() + 1700L
         var downX = 0f
         var downY = 0f
         surface.isLongClickable = false
@@ -2331,13 +2337,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     bottomMargin = dp(2)
                 })
                 // "Today" teaser lives in the space below the widget stack; collapses to 0dp when empty.
-                todayAlertView = ComposeView(context).apply {
-                    setBackgroundColor(Color.TRANSPARENT)
-                    todayPaneHost.setTodayAlertContent(this)
+                if (todayEnabled) {
+                    todayAlertView = ComposeView(context).apply {
+                        setBackgroundColor(Color.TRANSPARENT)
+                        todayPaneHost.setTodayAlertContent(this)
+                    }
+                    addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        topMargin = dp(8)
+                    })
                 }
-                addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    topMargin = dp(8)
-                })
                 addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.22f))
                 favoritesDockFrameView = favoritesDockFlipSurface(context)
                 addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
@@ -3469,13 +3477,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             elevation = dp(8).toFloat()
         }
         addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        todayAlertView = ComposeView(context).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            todayPaneHost.setTodayAlertContent(this)
+        if (todayEnabled) {
+            todayAlertView = ComposeView(context).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                todayPaneHost.setTodayAlertContent(this)
+            }
+            addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(10)
+            })
         }
-        addView(todayAlertView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(10)
-        })
     }
 
     private fun unfoldedRightPane(): View = LinearLayout(this).apply {

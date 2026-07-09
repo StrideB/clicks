@@ -48,6 +48,7 @@ internal class TodayPaneHost(private val activity: MainActivity) {
     }
 
     fun openToday() {
+        if (!activity.todayEnabled) return
         if (activity.todayOpen || activity.libraryOpen || activity.openPane != null || !activity.hasContentFrame()) return
         activity.cancelWallpaperLongPress()
         activity.todayOpen = true
