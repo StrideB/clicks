@@ -43,6 +43,13 @@ class SpaceBoardController(
     /** True while a widget is being dragged/resized — the board must not steal the gesture to close. */
     fun isEditing(): Boolean = view.isEditing()
 
+    /**
+     * Set the board's grid density. Phones/cover keep the compact default; the foldable inner
+     * canvas runs a much finer grid (open canvas) so widgets place, stretch and dual-panel freely.
+     * Call before [open] so the first-run seed lays out against the right grid.
+     */
+    fun setGridSize(cols: Int, rows: Int) = view.setGridSize(cols, rows)
+
     private var spaceId: String = "home"
     private var pendingWidgetId: Int = -1
     private var pendingProvider: AppWidgetProviderInfo? = null
@@ -53,7 +60,8 @@ class SpaceBoardController(
         val items = if (GridWorkspaceStore.hasSpaceBoard(activity, spaceId)) {
             GridWorkspaceStore.loadSpace(activity, spaceId)
         } else {
-            SpaceBoardSeed.seed(seedApps).also { GridWorkspaceStore.saveSpace(activity, spaceId, it) }
+            SpaceBoardSeed.seed(seedApps, cols = view.gridCols, rows = view.gridRows)
+                .also { GridWorkspaceStore.saveSpace(activity, spaceId, it) }
         }
         view.setItems(items)
     }
@@ -155,16 +163,19 @@ class SpaceBoardController(
     }
 
     private fun placeWidget(widgetId: Int, provider: AppWidgetProviderInfo) {
-        val spanX = spanForCells(provider.minWidth).coerceIn(1, GRID_COLS)
-        val spanY = spanForCells(provider.minHeight).coerceIn(1, GRID_ROWS)
-        val cell = firstFreeCell(spanX, spanY) ?: firstFreeCell(1, 1)
+        val spanX = spanForCells(provider.minWidth).coerceIn(1, view.gridCols)
+        val spanY = spanForCells(provider.minHeight).coerceIn(1, view.gridRows)
+        // Open canvas: drop new widgets dead-centre so they land in view, ready to place/resize.
+        // Auto-grid: flow into the first free cell as before.
+        val cell = if (view.freeCanvas) centerCell(spanX, spanY)
+                   else firstFreeCell(spanX, spanY) ?: firstFreeCell(1, 1)
         if (cell == null) {
             callbacks.deleteWidgetId(widgetId)
             Toast.makeText(activity, "No room for that widget", Toast.LENGTH_SHORT).show()
             abandonPending(); return
         }
-        val fitX = spanX.coerceAtMost(GRID_COLS - cell.first)
-        val fitY = spanY.coerceAtMost(GRID_ROWS - cell.second)
+        val fitX = spanX.coerceAtMost(view.gridCols - cell.first)
+        val fitY = spanY.coerceAtMost(view.gridRows - cell.second)
         val item = GridItem(
             id = "widget_$widgetId", type = GridItemType.WIDGET,
             cellX = cell.first, cellY = cell.second, spanX = fitX, spanY = fitY,
@@ -191,10 +202,17 @@ class SpaceBoardController(
         return (minDp / cellDp).roundToInt().coerceAtLeast(1)
     }
 
+    /** Centre a span within the grid (open-canvas default drop point). Always in-bounds. */
+    private fun centerCell(spanX: Int, spanY: Int): Pair<Int, Int> {
+        val x = ((view.gridCols - spanX) / 2).coerceIn(0, (view.gridCols - spanX).coerceAtLeast(0))
+        val y = ((view.gridRows - spanY) / 2).coerceIn(0, (view.gridRows - spanY).coerceAtLeast(0))
+        return x to y
+    }
+
     private fun firstFreeCell(spanX: Int, spanY: Int): Pair<Int, Int>? {
         val items = view.currentItems()
-        for (y in 0..(GRID_ROWS - spanY)) {
-            for (x in 0..(GRID_COLS - spanX)) {
+        for (y in 0..(view.gridRows - spanY)) {
+            for (x in 0..(view.gridCols - spanX)) {
                 val clash = items.any { cellsOverlap(x, y, spanX, spanY, it.cellX, it.cellY, it.spanX, it.spanY) }
                 if (!clash) return x to y
             }

@@ -7434,13 +7434,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     /** Build the board overlay, mount it off-screen to the right, and return it (or null). */
+    /**
+     * Pick the board canvas for the current posture and return the layout id to open under.
+     * Foldable inner display → finer/wider open-canvas grid + a "__inner" layout key; phone/cover
+     * → the compact grid + the plain key. This is why the same Space can hold two independent
+     * boards: a hand-built inner-screen page and the phone one, neither disturbing the other.
+     */
+    private fun boardCanvasId(controller: com.fran.teclas.grid.SpaceBoardController, baseId: String): String =
+        if (isUnfoldedInnerLayoutActive()) {
+            controller.view.freeCanvas = true
+            controller.setGridSize(INNER_BOARD_COLS, INNER_BOARD_ROWS)
+            baseId + INNER_BOARD_ID_SUFFIX
+        } else {
+            controller.view.freeCanvas = false
+            controller.setGridSize(com.fran.teclas.grid.GRID_COLS, com.fran.teclas.grid.GRID_ROWS)
+            baseId
+        }
+
     private fun mountSpaceBoard(): View? {
         if (spaceBoardOverlay != null || !::spaceBoardController.isInitialized) return null
         if (libraryOpen) closeLibrary()
         if (openPane != null) closePane()
         val space = activeSpaceForUi() ?: return null
         spaceBoardController.view.setLightMode(glassLightMode())
-        spaceBoardController.open(space.id, spaceBoardSeedApps(space))
+        spaceBoardController.open(boardCanvasId(spaceBoardController, space.id), spaceBoardSeedApps(space))
         val container = object : FrameLayout(this) {
             private var downX = 0f; private var downY = 0f; private var swiping = false
             override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
@@ -7518,7 +7535,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun reloadSpaceBoardForActiveSpace() {
         if (spaceBoardOverlay == null || !::spaceBoardController.isInitialized) return
         val space = activeSpaceForUi() ?: return
-        spaceBoardController.open(space.id, spaceBoardSeedApps(space))
+        spaceBoardController.open(boardCanvasId(spaceBoardController, space.id), spaceBoardSeedApps(space))
         spaceBoardTitleView?.text = "${space.emoji}  ${space.name.uppercase(Locale.US)}  ▾"
     }
 
@@ -7587,7 +7604,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (homeLeftOverlay != null || !::homeLeftController.isInitialized) return null
         if (libraryOpen) closeLibrary()
         if (openPane != null) closePane()
-        homeLeftController.open(HOME_LEFT_BOARD_ID, emptyList())
+        homeLeftController.open(boardCanvasId(homeLeftController, HOME_LEFT_BOARD_ID), emptyList())
         val container = object : FrameLayout(this) {
             private var downX = 0f; private var downY = 0f
             override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
@@ -19607,6 +19624,12 @@ Reply format: ["word1","word2","word3"]"""
         private const val DOCK_PINNED_OVERRIDE_SPACE_PREF = "dock_pinned_override_space"
         // Fixed layout id for the personal left widget page (not per-Space).
         private const val HOME_LEFT_BOARD_ID = "home_left"
+        // Foldable inner display treats the board as an open canvas: a much finer/wider grid than
+        // the phone's compact 4×6 so widgets place anywhere, stretch full-width and dual-panel.
+        // Inner layouts persist under a separate "__inner" key so folding never scrambles a board.
+        private const val INNER_BOARD_COLS = 8
+        private const val INNER_BOARD_ROWS = 8
+        private const val INNER_BOARD_ID_SUFFIX = "__inner"
         private const val APP_LIBRARY_DEFAULT_HOME_PREF = "app_library_default_home"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"

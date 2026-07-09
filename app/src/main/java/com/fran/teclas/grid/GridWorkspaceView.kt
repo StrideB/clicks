@@ -47,6 +47,50 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
     private val items = mutableListOf<GridItem>()
     private val childForId = mutableMapOf<String, View>()
 
+    // Hosted widget views are expensive (each createView inflates RemoteViews + binds any
+    // RemoteViewsService). rebuild() runs on every drag/resize/re-select, so we cache the host
+    // view per widget id and re-attach it instead of building a fresh one each time — this both
+    // stops the leak/flicker and prevents "child already has a parent" from a stale attachment.
+    private val widgetViewCache = mutableMapOf<Int, View>()
+
+    /** Reused host view for [widgetId], detached from any prior parent; created + cached on first use. */
+    private fun obtainWidgetView(widgetId: Int): View? {
+        widgetViewCache[widgetId]?.let { cached ->
+            (cached.parent as? android.view.ViewGroup)?.removeView(cached)
+            return cached
+        }
+        val created = host.createWidgetView(widgetId) ?: return null
+        widgetViewCache[widgetId] = created
+        return created
+    }
+
+    // Grid density is per-instance: the phone/cover uses the compact default, but a foldable's
+    // big inner canvas can run a much finer grid so widgets place, stretch and dual-panel freely.
+    var gridCols: Int = GRID_COLS
+        private set
+    var gridRows: Int = GRID_ROWS
+        private set
+
+    /** Resize the grid (e.g. open canvas on the fold's inner display) and relay out. */
+    fun setGridSize(cols: Int, rows: Int) {
+        if (cols == gridCols && rows == gridRows) return
+        gridCols = cols.coerceAtLeast(1)
+        gridRows = rows.coerceAtLeast(1)
+        rebuild()
+        requestLayout()
+        invalidate()
+    }
+
+    // Free-canvas mode (foldable open canvas): a single long-press *selects* a widget so its
+    // resize handles show immediately; dragging its body moves it anywhere (gaps + overlap
+    // allowed, no auto-compaction) and the handles resize it to any size. Phones/cover keep the
+    // classic auto-grid model where this is false.
+    var freeCanvas: Boolean = false
+    private var editDragArmed = false   // finger is down on the selected widget's body, may become a move
+
+    /** In free-canvas, drop the widget wherever the finger lets go — no first-free-cell reshuffle. */
+    private fun placeFreely(): Boolean = freeCanvas
+
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).roundToInt()
     private fun dpF(v: Float): Float = v * resources.displayMetrics.density
 
@@ -142,6 +186,10 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
     }
 
     fun setItems(newItems: List<GridItem>) {
+        // Drop cached host views for widgets that are no longer on the board so they can be GC'd
+        // (e.g. switching this reused view to another Space's layout).
+        val keep = newItems.flatMap { widgetIdsOf(it) }.toSet()
+        widgetViewCache.keys.retainAll(keep)
         items.clear()
         items.addAll(newItems)
         rebuild()
@@ -152,8 +200,8 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
     /** True while a widget is being dragged, resized, or selected for resize (edit mode). */
     fun isEditing(): Boolean = dragging || resizeEdge != 0 || resizeItem != null
 
-    private fun cellW(): Float = if (width == 0) 1f else width.toFloat() / GRID_COLS
-    private fun cellH(): Float = if (height == 0) 1f else height.toFloat() / GRID_ROWS
+    private fun cellW(): Float = if (width == 0) 1f else width.toFloat() / gridCols
+    private fun cellH(): Float = if (height == 0) 1f else height.toFloat() / gridRows
 
     // ------------------------------------------------------------------ build
 
@@ -187,7 +235,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
                 GridItemType.FOLDER -> AppItemView(context, item, true)
                 GridItemType.WIDGET -> FrameLayout(context).apply {
                     applyWidgetFrame(this)
-                    val inner = host.createWidgetView(item.widgetId)
+                    val inner = obtainWidgetView(item.widgetId)
                     if (inner != null) {
                         addView(inner, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
                             val m = dp(3); setMargins(m, m, m, m)
@@ -251,6 +299,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = ev.x; downY = ev.y; lastTouchX = ev.x; lastTouchY = ev.y
+                editDragArmed = false
                 if (resizeItem != null) {
                     popChipRect()?.let { chip ->
                         if (chip.contains(ev.x, ev.y)) {
@@ -260,13 +309,24 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
                     }
                     resizeEdge = hitResizeEdge(ev.x, ev.y)
                     if (resizeEdge != 0) return true
+                    val onSelected = childAt(ev.x, ev.y)?.id == resizeItem?.id
+                    // Free-canvas: pressing the selected widget's body arms a move — a drag relocates
+                    // it anywhere, a tap keeps it selected. Capture the stream so MOVE routes to us.
+                    if (freeCanvas && onSelected) { editDragArmed = true; return true }
                     // touch outside the frame exits resize mode; still let taps through
-                    if (childAt(ev.x, ev.y)?.id != resizeItem?.id) clearResize()
+                    if (!onSelected) clearResize()
                 }
                 val target = childAt(ev.x, ev.y)
                 pendingLongPress?.let { removeCallbacks(it) }
                 pendingLongPress = Runnable {
-                    if (target != null) startDrag(target, downX, downY) else host.addRequested()
+                    when {
+                        target == null -> host.addRequested()
+                        // Free-canvas: long-press a widget/stack to SELECT it (handles appear) rather
+                        // than starting a blind move — this is how resize becomes reachable.
+                        freeCanvas && (target.type == GridItemType.WIDGET || target.type == GridItemType.STACK) ->
+                            startResize(target.id)
+                        else -> startDrag(target, downX, downY)
+                    }
                     pendingLongPress = null
                 }.also { postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
             }
@@ -311,17 +371,23 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
                     invalidate()
                 } else if (resizeEdge != 0) {
                     applyResizePreview(ev.x, ev.y)
+                } else if (editDragArmed && (abs(ev.x - downX) > touchSlop || abs(ev.y - downY) > touchSlop)) {
+                    // The selected widget's body was dragged — begin moving it (free-canvas).
+                    editDragArmed = false
+                    resizeItem?.let { startDrag(it, downX, downY) }
                 } else if (abs(ev.x - downX) > touchSlop || abs(ev.y - downY) > touchSlop) {
                     cancelLongPress()
                 }
             }
             MotionEvent.ACTION_UP -> {
                 cancelLongPress()
+                editDragArmed = false
                 if (dragging) finishDrag(ev.x, ev.y)
                 else if (resizeEdge != 0) commitResize()
             }
             MotionEvent.ACTION_CANCEL -> {
                 cancelLongPress()
+                editDragArmed = false
                 if (dragging) revertDrag()
                 if (resizeEdge != 0) { resizeEdge = 0; pendingSpanX = 0; pendingSpanY = 0; requestLayout() }
             }
@@ -369,7 +435,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
 
         // Remove zone along the top edge.
         if (y < removeZoneHeight) {
-            widgetIdsOf(item).forEach { host.widgetRemoved(it) }
+            widgetIdsOf(item).forEach { host.widgetRemoved(it); widgetViewCache.remove(it) }
             items.removeAll { it.id == item.id }
             dragging = false; dragItem = null; dragView = null
             host.itemsChanged(items.toList())
@@ -439,8 +505,23 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         // Plain move: snap the dragged view's top-left to the nearest cell.
         val proposedLeft = x - dragGrabDx
         val proposedTop = y - dragGrabDy
-        val cellX = (proposedLeft / cw).roundToInt().coerceIn(0, GRID_COLS - item.spanX)
-        val cellY = (proposedTop / ch).roundToInt().coerceIn(0, GRID_ROWS - item.spanY)
+        val cellX = (proposedLeft / cw).roundToInt().coerceIn(0, gridCols - item.spanX)
+        val cellY = (proposedTop / ch).roundToInt().coerceIn(0, gridRows - item.spanY)
+
+        // Free-canvas: drop it exactly where the finger let go — gaps and overlap are allowed, so a
+        // widget can sit dead-centre — and keep it selected so the user can resize right after.
+        if (placeFreely()) {
+            val idx = items.indexOfFirst { it.id == item.id }
+            if (idx >= 0) {
+                val moved = item.copy(cellX = cellX, cellY = cellY)
+                items[idx] = moved
+                dragging = false; dragItem = null; dragView = null
+                host.itemsChanged(items.toList())
+                rebuild()
+                if (item.type == GridItemType.WIDGET || item.type == GridItemType.STACK) startResize(item.id)
+            }
+            return
+        }
 
         // Widget dropped back on its own cell = "I long-pressed to resize, not move".
         if ((item.type == GridItemType.WIDGET || item.type == GridItemType.STACK) && cellX == item.cellX && cellY == item.cellY) {
@@ -478,7 +559,8 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         resizeItem = item
         pendingSpanX = item.spanX
         pendingSpanY = item.spanY
-        invalidate()
+        performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        requestLayout(); invalidate()
     }
 
     fun clearResize() {
@@ -501,7 +583,9 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         val nearRight = abs(x - f.right) < slop && y > f.top - slop && y < f.bottom + slop
         val nearBottom = abs(y - f.bottom) < slop && x > f.left - slop && x < f.right + slop
         return when {
-            nearRight && (!nearBottom || abs(x - f.right) < abs(y - f.bottom)) -> 1
+            // The bottom-right corner resizes both axes at once — the natural "grab a corner" gesture.
+            nearRight && nearBottom -> 3
+            nearRight -> 1
             nearBottom -> 2
             else -> 0
         }
@@ -509,11 +593,12 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
 
     private fun applyResizePreview(x: Float, y: Float) {
         val item = resizeItem ?: return
-        if (resizeEdge == 1) {
-            val span = ((x - item.cellX * cellW()) / cellW()).roundToInt().coerceIn(1, GRID_COLS - item.cellX)
+        if (resizeEdge == 1 || resizeEdge == 3) {
+            val span = ((x - item.cellX * cellW()) / cellW()).roundToInt().coerceIn(1, gridCols - item.cellX)
             if (span != pendingSpanX) { pendingSpanX = span; requestLayout(); invalidate() }
-        } else if (resizeEdge == 2) {
-            val span = ((y - item.cellY * cellH()) / cellH()).roundToInt().coerceIn(1, GRID_ROWS - item.cellY)
+        }
+        if (resizeEdge == 2 || resizeEdge == 3) {
+            val span = ((y - item.cellY * cellH()) / cellH()).roundToInt().coerceIn(1, gridRows - item.cellY)
             if (span != pendingSpanY) { pendingSpanY = span; requestLayout(); invalidate() }
         }
     }
@@ -523,7 +608,8 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         resizeEdge = 0
         val sx = if (pendingSpanX > 0) pendingSpanX else item.spanX
         val sy = if (pendingSpanY > 0) pendingSpanY else item.spanY
-        val collides = items.any {
+        // Free-canvas lets a widget grow over its neighbours; the auto-grid still forbids overlap.
+        val collides = !placeFreely() && items.any {
             it.id != item.id && cellsOverlap(item.cellX, item.cellY, sx, sy, it.cellX, it.cellY, it.spanX, it.spanY)
         }
         if (!collides && (sx != item.spanX || sy != item.spanY)) {
@@ -600,8 +686,8 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         }
 
         val cw = cellW(); val ch = cellH()
-        var cellX = ((x - cw / 2f) / cw).roundToInt().coerceIn(0, GRID_COLS - 1)
-        var cellY = ((y - ch / 2f) / ch).roundToInt().coerceIn(0, GRID_ROWS - 1)
+        var cellX = ((x - cw / 2f) / cw).roundToInt().coerceIn(0, gridCols - 1)
+        var cellY = ((y - ch / 2f) / ch).roundToInt().coerceIn(0, gridRows - 1)
         val collides = items.any { cellsOverlap(cellX, cellY, 1, 1, it.cellX, it.cellY, it.spanX, it.spanY) }
         if (collides) {
             val free = firstFreeCell(items, 1, 1)
@@ -652,8 +738,8 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         } else {
             items[idx] = stack.copy(children = remaining, activeChild = 0)
         }
-        val fitX = minOf(stack.spanX, GRID_COLS - cell.first)
-        val fitY = minOf(stack.spanY, GRID_ROWS - cell.second)
+        val fitX = minOf(stack.spanX, gridCols - cell.first)
+        val fitY = minOf(stack.spanY, gridRows - cell.second)
         items.add(active.copy(cellX = cell.first, cellY = cell.second, spanX = fitX, spanY = fitY))
         clearResize()
         host.itemsChanged(items.toList())
@@ -677,7 +763,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         init {
             setWillNotDraw(false)
             item.children.forEachIndexed { i, child ->
-                val v = host.createWidgetView(child.widgetId) ?: AppItemView(context, child, false)
+                val v = obtainWidgetView(child.widgetId) ?: AppItemView(context, child, false)
                 addView(v, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
                     val m = dp(3); setMargins(m, m, m + stripW / 2, m)
                 })
@@ -731,7 +817,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         if (dragging || resizeItem != null || externalItem != null) {
             val cw = cellW(); val ch = cellH()
             val r = dpF(1.6f)
-            for (cx in 0..GRID_COLS) for (cy in 0..GRID_ROWS) {
+            for (cx in 0..gridCols) for (cy in 0..gridRows) {
                 canvas.drawCircle(cx * cw, cy * ch, r, gridPaint)
             }
         }
@@ -745,6 +831,8 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
             val hw = dpF(3f); val hl = dpF(16f)
             canvas.drawRoundRect(f.right - hw, f.centerY() - hl, f.right + hw, f.centerY() + hl, hw, hw, handlePaint)
             canvas.drawRoundRect(f.centerX() - hl, f.bottom - hw, f.centerX() + hl, f.bottom + hw, hw, hw, handlePaint)
+            // Bottom-right corner grip (diagonal resize).
+            canvas.drawCircle(f.right, f.bottom, dpF(7f), handlePaint)
             popChipRect()?.let { chip ->
                 canvas.drawRoundRect(chip, dpF(8f), dpF(8f), handlePaint)
                 val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
