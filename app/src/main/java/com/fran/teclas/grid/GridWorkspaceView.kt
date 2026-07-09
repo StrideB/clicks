@@ -50,10 +50,17 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).roundToInt()
     private fun dpF(v: Float): Float = v * resources.displayMetrics.density
 
-    private val ink = 0xFFEDEDED.toInt()
-    private val inkDim = 0x8AFFFFFF.toInt()
-    private val accent = 0xFF9CE7B4.toInt()
-    private val danger = 0xFFFF5D5D.toInt()
+    private var lightMode = false
+    private var ink = 0xFFEDEDED.toInt()
+    private var inkDim = 0x8AFFFFFF.toInt()
+    private var accent = 0xFF9CE7B4.toInt()
+    private var danger = 0xFFFF5D5D.toInt()
+    private var appPlateFill = 0x1FFFFFFF
+    private var appPlateStroke = 0x30FFFFFF
+    private var widgetFrameFill = 0x14FFFFFF
+    private var widgetFrameStroke = 0x24FFFFFF
+    private var stackDotInactive = 0x4DFFFFFF
+    private var popChipText = 0xFF10110F.toInt()
 
     // ---- drag state ----
     private var downX = 0f
@@ -90,6 +97,48 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
     init {
         setWillNotDraw(false)
         clipChildren = false
+        applyThemeColors()
+    }
+
+    fun setLightMode(light: Boolean) {
+        if (lightMode == light) return
+        lightMode = light
+        applyThemeColors()
+        rebuild()
+        invalidate()
+    }
+
+    private fun applyThemeColors() {
+        if (lightMode) {
+            ink = 0xFF242A33.toInt()
+            inkDim = 0x8A242A33.toInt()
+            accent = 0xFF147A5C.toInt()
+            danger = 0xFFE84B4B.toInt()
+            appPlateFill = 0x2AFFFFFF
+            appPlateStroke = 0x24000000
+            widgetFrameFill = 0x26FFFFFF
+            widgetFrameStroke = 0x2EFFFFFF
+            stackDotInactive = 0x55242A33
+            popChipText = 0xFFFFFFFF.toInt()
+            gridPaint.color = 0x2A242A33
+            removeBgPaint.color = 0x18E84B4B
+        } else {
+            ink = 0xFFEDEDED.toInt()
+            inkDim = 0x8AFFFFFF.toInt()
+            accent = 0xFF9CE7B4.toInt()
+            danger = 0xFFFF5D5D.toInt()
+            appPlateFill = 0x1FFFFFFF
+            appPlateStroke = 0x30FFFFFF
+            widgetFrameFill = 0x14FFFFFF
+            widgetFrameStroke = 0x24FFFFFF
+            stackDotInactive = 0x4DFFFFFF
+            popChipText = 0xFF10110F.toInt()
+            gridPaint.color = 0x33FFFFFF
+            removeBgPaint.color = 0x22FF5D5D
+        }
+        framePaint.color = accent
+        handlePaint.color = accent
+        removePaint.color = danger
     }
 
     fun setItems(newItems: List<GridItem>) {
@@ -115,8 +164,8 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
     private fun applyWidgetFrame(frame: FrameLayout) {
         frame.background = GradientDrawable().apply {
             cornerRadius = widgetFrameRadius
-            setColor(0x14FFFFFF)                 // faint fill behind transparent widgets
-            setStroke(dp(1), 0x24FFFFFF)         // hairline edge
+            setColor(widgetFrameFill)                 // faint fill behind transparent widgets
+            setStroke(dp(1), widgetFrameStroke)       // hairline edge
         }
         frame.clipToOutline = true
         frame.outlineProvider = object : ViewOutlineProvider() {
@@ -667,7 +716,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
             val gap = dpF(10f)
             val startY = height / 2f - gap * (childCount - 1) / 2f
             for (i in 0 until childCount) {
-                dotPaint.color = if (i == active) accent else 0x4DFFFFFF
+                dotPaint.color = if (i == active) accent else stackDotInactive
                 canvas.drawCircle(cx, startY + i * gap, if (i == active) dpF(3f) else dpF(2.2f), dotPaint)
             }
         }
@@ -696,7 +745,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
             popChipRect()?.let { chip ->
                 canvas.drawRoundRect(chip, dpF(8f), dpF(8f), handlePaint)
                 val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = 0xFF10110F.toInt(); textSize = dpF(10f); typeface = Typeface.MONOSPACE
+                    color = popChipText; textSize = dpF(10f); typeface = Typeface.MONOSPACE
                     textAlign = Paint.Align.CENTER; letterSpacing = 0.1f
                 }
                 canvas.drawText("POP", chip.centerX(), chip.centerY() + dpF(3.5f), p)
@@ -712,9 +761,9 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
             color = ink; textSize = dpF(9.5f); typeface = Typeface.MONOSPACE
             textAlign = Paint.Align.CENTER; letterSpacing = 0.04f
         }
-        private val platePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x1FFFFFFF }
+        private val platePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = appPlateFill }
         private val plateStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE; strokeWidth = dpF(1f); color = 0x30FFFFFF
+            style = Paint.Style.STROKE; strokeWidth = dpF(1f); color = appPlateStroke
         }
         private var icon: Drawable? = null
         private var folderIcons: List<Drawable> = emptyList()
