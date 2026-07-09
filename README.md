@@ -115,6 +115,15 @@ The library supports:
 - Per-app icon overrides.
 - Long-press app actions, including adding/removing home dock favorites.
 
+URL queries open directly: typing a URL-shaped query ("theverge.com") surfaces
+an "Open theverge.com" card ranked first (`SearchKind.WEB`), so GO opens the
+site itself instead of a Google search about it. Tap/GO opens the in-launcher
+Custom Tab sheet (`InAppGoogleSearchEngine.launchInAppUrl`); long-press opens
+the full default browser. Detection is `InAppGoogleSearchEngine.urlFromQuery`
+(no spaces, no `@`, `Patterns.WEB_URL` full match, scheme defaulted to https).
+Opening triggers only on tap/GO — never on keystroke, since a prefix of a URL
+is itself a valid URL.
+
 ## Widget Stack
 
 The homescreen widget stack is contextual and live:

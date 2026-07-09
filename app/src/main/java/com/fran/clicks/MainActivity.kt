@@ -7703,6 +7703,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 topMargin = dp(5)
             })
             setOnClickListener { haptic(this); openSearchResult(result) }
+            result.longAction?.let { longAction ->
+                setOnLongClickListener { haptic(this); longAction(); true }
+            }
         }
     }
 
@@ -7742,6 +7745,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 marginStart = dp(8)
             })
             setOnClickListener { haptic(this); openSearchResult(result) }
+            result.longAction?.let { longAction ->
+                setOnLongClickListener { haptic(this); longAction(); true }
+            }
         }
     }
 
@@ -7819,6 +7825,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.MUSIC -> Neu.GREEN
         SearchKind.FILE -> Neu.BLUE
         SearchKind.SETTING -> goKeyColor
+        SearchKind.WEB -> Neu.BLUE
     }
 
     private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
@@ -7832,6 +7839,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.MUSIC -> "♪"
         SearchKind.FILE -> "F"
         SearchKind.SETTING -> "⚙"
+        SearchKind.WEB -> "W"
     }
 
     private data class SearchCommandPreview(val title: String, val subtitle: String, val glyph: String)
@@ -16579,6 +16587,16 @@ Reply format: ["word1","word2","word3"]"""
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
+        // A typed URL ("theverge.com") is an unambiguous intent — rank opening the site itself
+        // first, so GO fires it directly. Tap = in-launcher sheet, long-press = full browser.
+        InAppGoogleSearchEngine.urlFromQuery(q)?.let { url ->
+            val host = Uri.parse(url).host ?: q
+            results.add(0, SearchResult(
+                "Open $host", "Website · hold for browser", 0xFF4285F4.toInt(), SearchKind.WEB, null,
+                action = { openUrlDirectly(url) },
+                longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser available") }
+            ))
+        }
         if (q.length >= 2) {
             val directHits = results.isNotEmpty()
             val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) }
@@ -17339,12 +17357,26 @@ Reply format: ["word1","word2","word3"]"""
 
     private fun launchInAppGoogleSearch(rawQuery: String) {
         val search = InAppGoogleSearchEngine.stripWebVerb(rawQuery).ifBlank { return }
+        // Typed a URL → open the site itself, not a Google search about it.
+        InAppGoogleSearchEngine.urlFromQuery(search)?.let { openUrlDirectly(it); return }
         val toolbar = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.baseHi else activeNeuTokens.base
         val nav = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.base else activeNeuTokens.baseLo
         runCatching {
             InAppGoogleSearchEngine(this).launchInAppSearch(search, toolbar, nav)
         }.onFailure {
             startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(search)}")), "No browser available")
+        }
+    }
+
+    // Opens a URL in the in-launcher Custom Tab sheet (same treatment as in-app Google search),
+    // falling back to the default browser if no Custom Tabs provider is available.
+    private fun openUrlDirectly(url: String) {
+        val toolbar = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.baseHi else activeNeuTokens.base
+        val nav = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.base else activeNeuTokens.baseLo
+        runCatching {
+            InAppGoogleSearchEngine(this).launchInAppUrl(url, toolbar, nav)
+        }.onFailure {
+            startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser available")
         }
     }
 
