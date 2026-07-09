@@ -5151,13 +5151,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
                 librarySwipeFromKeyboard = isInsideKeyboard(event.rawX, event.rawY)
+                // The old right-edge fast-path began an interactive *library* drag on touch-down.
+                // The drawer surface is now the Space board (an instant open), so we let the edge
+                // swipe fall through to the MOVE handler, which opens the board once the swipe is
+                // intentional. Only reserve the disallow-intercept so the horizontal swipe wins.
                 if (rightEdgeStart && !isUnfoldedInnerLayoutActive() && !librarySwipeFromKeyboard && !libraryOpen && openPane == null) {
-                    librarySwipeTriggered = true
                     librarySwipeBlockedByWidget = false
-                    beginLibraryDrag(startedOpen = false, fastPath = true)
-                    updateLibraryDrag(0f)
                     contentFrame.parent?.requestDisallowInterceptTouchEvent(true)
-                    return true
                 }
             }
             MotionEvent.ACTION_MOVE -> {
@@ -5182,13 +5182,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (upOpensLibrary && !librarySwipeTriggered && abs(dy) > dp(18) && abs(dy) > abs(dx) * 1.2f) {
                     when {
                         dy < 0 && !libraryOpen && openPane == null -> {
+                            // Up-swipe opens the active Space's board (the drawer surface),
+                            // same as swipe-left. Search stays the way to reach anything else.
                             librarySwipeTriggered = true
-                            if (isUnfoldedInnerLayoutActive()) {
-                                openLibrary()
-                                return true
-                            }
-                            beginLibraryDrag(startedOpen = false, vertical = true)
-                            updateLibraryDrag(dy)
+                            openSpaceBoard()
                             return true
                         }
                         dy > 0 && libraryOpen -> {
@@ -5207,13 +5204,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (!librarySwipeTriggered && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f) {
                     when {
                         sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
+                            // Swipe left during a Space opens that Space's board directly — the
+                            // board is the surface now, not the app library grid.
                             librarySwipeTriggered = true
-                            if (isUnfoldedInnerLayoutActive()) {
-                                openLibrary()
-                                return true
-                            }
-                            beginLibraryDrag(startedOpen = false)
-                            updateLibraryDrag(dx)
+                            openSpaceBoard()
                             return true
                         }
                         dx > 0 && libraryOpen -> {
@@ -5247,7 +5241,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     when {
                         sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
                             librarySwipeTriggered = true
-                            openLibrary()
+                            openSpaceBoard()
                             return true
                         }
                         dx > 0 && libraryOpen -> {
@@ -5266,7 +5260,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 } else if (!libraryOpen && openPane == null && abs(dy) > dp(42) && abs(dy) > abs(dx) * 1.2f) {
                     librarySwipeTriggered = true
                     if (dy < 0 && upOpensLibrary) {
-                        openLibrary()
+                        openSpaceBoard()
                     } else if (dy < 0) {
                         performHomeGesture(gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS))
                     } else {
@@ -6875,7 +6869,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun performHomeGesture(action: String) {
         when {
             action == GESTURE_NONE -> Unit
-            action == GESTURE_LIBRARY -> openLibrary()
+            action == GESTURE_LIBRARY -> openSpaceBoard()
             action == GESTURE_WIDGETS -> openWidgetBoard()
             action == GESTURE_NOTIFICATIONS -> expandNotificationShade()
             action == GESTURE_MUSIC -> openHere(musicTarget())
@@ -7328,9 +7322,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun openSpaceBoard() {
         if (spaceBoardOverlay != null || !::spaceBoardController.isInitialized) return
+        if (libraryOpen) closeLibrary()
+        if (openPane != null) closePane()
         val space = activeSpaceForUi() ?: return
         spaceBoardController.open(space.id, spaceBoardSeedApps())
-        val container = FrameLayout(this).apply {
+        val container = object : FrameLayout(this) {
+            private var downX = 0f; private var downY = 0f; private var swiping = false
+            override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+                if (ev.actionMasked == MotionEvent.ACTION_DOWN) { downX = ev.x; downY = ev.y; swiping = false }
+                return false
+            }
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
+                    MotionEvent.ACTION_UP -> {
+                        val dx = ev.x - downX; val dy = ev.y - downY
+                        // Swipe right (back the way it came) or a firm swipe down closes the board.
+                        if ((dx > dp(70) && dx > abs(dy) * 1.3f) || (dy > dp(110) && dy > abs(dx) * 1.3f)) {
+                            closeSpaceBoard(); return true
+                        }
+                    }
+                }
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
             setBackgroundColor(0xFF0B0D10.toInt())
             isClickable = true
             setPadding(dp(12), systemStatusBarHeight() + dp(12), dp(12), dp(14))
@@ -7355,12 +7370,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         spaceBoardOverlay = container
         addContentView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        // Slide in from the right, mirroring the left-swipe that summoned it.
+        container.translationX = resources.displayMetrics.widthPixels.toFloat()
+        container.animate().translationX(0f).setDuration(260L)
+            .setInterpolator(DecelerateInterpolator()).start()
     }
 
     private fun closeSpaceBoard(): Boolean {
         val overlay = spaceBoardOverlay ?: return false
-        (overlay.parent as? ViewGroup)?.removeView(overlay)
         spaceBoardOverlay = null
+        overlay.animate().translationX(resources.displayMetrics.widthPixels.toFloat())
+            .setDuration(200L).setInterpolator(DecelerateInterpolator())
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
         return true
     }
 
