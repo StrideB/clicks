@@ -35,6 +35,8 @@ data class Space(
     val enabled: Boolean = true,
     val priority: Int = 50,                      // tie-break between equally specific matches
     val builtin: Boolean = true,
+    /** Categories this Space favors before it has learned anything (cold-start prior). */
+    val categoryAffinity: Set<AppCategory> = emptySet(),
 )
 
 data class SpaceDetection(
@@ -61,25 +63,40 @@ object SpaceManager {
     @Volatile private var lastActiveId: String? = null
 
     fun defaults(): List<Space> = listOf(
-        Space("driving", "Driving", "🚗", SpaceTriggers(driving = true), priority = 100),
-        Space("fitness", "Fitness", "💪", SpaceTriggers(placeKinds = setOf(PlaceKind.GYM)), priority = 90),
+        Space(
+            "driving", "Driving", "🚗", SpaceTriggers(driving = true), priority = 100,
+            categoryAffinity = setOf(AppCategory.MAPS, AppCategory.MUSIC),
+        ),
+        Space(
+            "fitness", "Fitness", "💪", SpaceTriggers(placeKinds = setOf(PlaceKind.GYM)), priority = 90,
+            categoryAffinity = setOf(AppCategory.HEALTH, AppCategory.MUSIC),
+        ),
         Space(
             "travel", "Travel", "✈️",
             SpaceTriggers(placeKinds = setOf(PlaceKind.AIRPORT), awayFromHome = true),
             priority = 85,
+            categoryAffinity = setOf(AppCategory.TRAVEL, AppCategory.MAPS, AppCategory.COMMUNICATION),
         ),
         Space(
             "commute", "Commute", "🚇",
             SpaceTriggers(hourBuckets = setOf(1, 2, 4, 5), weekdaysOnly = true, headphones = true),
             priority = 80,
+            categoryAffinity = setOf(AppCategory.MUSIC, AppCategory.NEWS, AppCategory.SOCIAL, AppCategory.READING),
         ),
         Space(
             "work", "Work", "💼",
             SpaceTriggers(placeKinds = setOf(PlaceKind.WORK), weekdaysOnly = true),
             priority = 70,
+            categoryAffinity = setOf(AppCategory.COMMUNICATION, AppCategory.PRODUCTIVITY, AppCategory.FINANCE),
         ),
-        Space("night", "Night", "🌙", SpaceTriggers(hourBuckets = setOf(0)), priority = 60),
-        Space("home", "Home", "🏠", SpaceTriggers(placeKinds = setOf(PlaceKind.HOME)), priority = 50),
+        Space(
+            "night", "Night", "🌙", SpaceTriggers(hourBuckets = setOf(0)), priority = 60,
+            categoryAffinity = setOf(AppCategory.VIDEO, AppCategory.SOCIAL, AppCategory.READING),
+        ),
+        Space(
+            "home", "Home", "🏠", SpaceTriggers(placeKinds = setOf(PlaceKind.HOME)), priority = 50,
+            categoryAffinity = setOf(AppCategory.VIDEO, AppCategory.SOCIAL, AppCategory.SHOPPING, AppCategory.GAMES),
+        ),
     )
 
     private fun prefs(context: Context) =
@@ -213,6 +230,7 @@ object SpaceManager {
                 put("autoSwitch", s.autoSwitch); put("enabled", s.enabled)
                 put("priority", s.priority); put("builtin", s.builtin)
                 put("pinned", JSONArray(s.pinned)); put("excluded", JSONArray(s.excluded))
+                put("categoryAffinity", JSONArray(s.categoryAffinity.map { it.name }))
                 put("triggers", JSONObject().apply {
                     put("hours", JSONArray(s.triggers.hourBuckets.toList()))
                     s.triggers.weekdaysOnly?.let { put("weekdaysOnly", it) }
@@ -242,6 +260,12 @@ object SpaceManager {
                 builtin = o.optBoolean("builtin", true),
                 pinned = strings(o.optJSONArray("pinned")),
                 excluded = strings(o.optJSONArray("excluded")),
+                // Configs saved before category priors existed inherit the built-in defaults
+                // for their id, so existing installs get sensible cold-start ranking.
+                categoryAffinity = if (o.has("categoryAffinity")) {
+                    strings(o.optJSONArray("categoryAffinity"))
+                        .mapNotNull { runCatching { AppCategory.valueOf(it) }.getOrNull() }.toSet()
+                } else defaults().find { it.id == o.optString("id") }?.categoryAffinity ?: emptySet(),
                 triggers = SpaceTriggers(
                     hourBuckets = ints(t.optJSONArray("hours")).toSet(),
                     weekdaysOnly = if (t.has("weekdaysOnly")) t.optBoolean("weekdaysOnly") else null,

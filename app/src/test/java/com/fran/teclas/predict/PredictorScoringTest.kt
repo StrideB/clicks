@@ -15,9 +15,11 @@ class PredictorScoringTest {
         ageHours: Float?,
         engaged: Boolean,
         spaceFreqNorm: Float = 0f,
+        categoryMatch: Float = 0f,
     ) = Predictor.blendScore(
         lin = 0.5f, ctxFreqNorm = 0f, spaceFreqNorm = spaceFreqNorm,
-        globalFreqNorm = globalFreqNorm, ageHours = ageHours, alpha = 0.5f, engaged = engaged,
+        globalFreqNorm = globalFreqNorm, ageHours = ageHours, categoryMatch = categoryMatch,
+        alpha = 0.5f, engaged = engaged,
     )
 
     @Test fun `a just-opened trip app beats a months-old home favorite when engaged`() {
@@ -36,13 +38,28 @@ class PredictorScoringTest {
     }
 
     @Test fun `engaged mode weights recency more than the default home mode`() {
-        val recentApp = 0.95f // ~1h old
-        val engagedGain = Predictor.blendScore(0.5f, 0f, 0f, 0f, 1f, 0.5f, engaged = true) -
-            Predictor.blendScore(0.5f, 0f, 0f, 0f, null, 0.5f, engaged = true)
-        val homeGain = Predictor.blendScore(0.5f, 0f, 0f, 0f, 1f, 0.5f, engaged = false) -
-            Predictor.blendScore(0.5f, 0f, 0f, 0f, null, 0.5f, engaged = false)
+        val engagedGain = score(globalFreqNorm = 0f, ageHours = 1f, engaged = true) -
+            score(globalFreqNorm = 0f, ageHours = null, engaged = true)
+        val homeGain = score(globalFreqNorm = 0f, ageHours = 1f, engaged = false) -
+            score(globalFreqNorm = 0f, ageHours = null, engaged = false)
         assertTrue("recency should count for more in a deliberately-engaged Space",
             engagedGain > homeGain)
+    }
+
+    @Test fun `cold start - a category-matching app outranks a bigger global favorite`() {
+        // The reported gap: brand-new Work Space, nothing learned. A work app (low global use,
+        // matches the Space's categories) should still beat a heavily-used non-work favorite.
+        val workApp = score(globalFreqNorm = 0.05f, ageHours = null, engaged = true, categoryMatch = 1f)
+        val socialFavorite = score(globalFreqNorm = 0.4f, ageHours = null, engaged = true, categoryMatch = 0f)
+        assertTrue("a category-matching app must lead an unlearned Space", workApp > socialFavorite)
+    }
+
+    @Test fun `a genuinely learned app overtakes a mere category match`() {
+        // Category is only a cold-start nudge: once you actually open an off-category app in
+        // this Space a few times, it should beat an unopened category-matching app.
+        val learned = score(globalFreqNorm = 0.1f, ageHours = 2f, engaged = true, spaceFreqNorm = 0.6f, categoryMatch = 0f)
+        val categoryOnly = score(globalFreqNorm = 0.05f, ageHours = null, engaged = true, categoryMatch = 1f)
+        assertTrue("learned launches must overtake a standing category prior", learned > categoryOnly)
     }
 
     @Test fun `never-opened app gets zero recency contribution`() {

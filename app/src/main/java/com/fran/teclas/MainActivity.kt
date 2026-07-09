@@ -576,6 +576,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         migrateWidgetGestureDefault()
         apps = loadLaunchableApps()
         lastAppsLoadMs = System.currentTimeMillis()
+        // Let the prediction engine resolve app categories for Space cold-start priors
+        // (e.g. Work leads with Gmail/Slack before any launch is learned).
+        Predictor.categoryProvider = { pkg ->
+            com.fran.teclas.predict.AppCategories.of(applicationContext, pkg)
+        }
         registerAppPackageReceiver()
         messages = loadHubMessages()
         calendarEvents = loadCalendarEvents()

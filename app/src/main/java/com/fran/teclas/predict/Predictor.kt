@@ -37,6 +37,13 @@ object Predictor {
     /** Deterministic ranking for tests when set. */
     @Volatile var randomSeed: Long? = null
 
+    /**
+     * Resolves a package to its [AppCategory] for cold-start category priors. Set once by
+     * the launcher (it owns PackageManager); null falls back to no category boost. See
+     * [AppCategories].
+     */
+    @Volatile var categoryProvider: ((String) -> AppCategory)? = null
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // ---- learned state (guarded by [lock]) --------------------------------------------
@@ -270,16 +277,21 @@ object Predictor {
             // seeded home ranking.
             val engaged = detection.locked || detection.strong
             val now = snapshot.timestamp
+            val affinity = space.categoryAffinity
+            val provider = categoryProvider
             return candidates.asSequence()
                 .filter { it !in space.excluded }
                 .map { pkg ->
                     val ageHours = recent[pkg]?.let { (now - it) / 3_600_000f }
+                    val categoryMatch = if (affinity.isNotEmpty() && provider != null &&
+                        provider(pkg) in affinity) 1f else 0f
                     pkg to blendScore(
                         lin = sigmoid(dot(weights[pkg], x)),
                         ctxFreqNorm = (ctxFreq[pkg] ?: 0f) / ctxTotal,
                         spaceFreqNorm = (spaceFreq[pkg] ?: 0f) / spaceTotal,
                         globalFreqNorm = (freqGlobal[pkg] ?: 0f) / globalTotal,
                         ageHours = ageHours,
+                        categoryMatch = categoryMatch,
                         alpha = alpha,
                         engaged = engaged,
                     )
@@ -301,16 +313,20 @@ object Predictor {
         spaceFreqNorm: Float,
         globalFreqNorm: Float,
         ageHours: Float?,
+        categoryMatch: Float = 0f,
         alpha: Float,
         engaged: Boolean,
     ): Float {
-        val wCtx = if (engaged) 0.30f else 0.45f
-        val wSpace = if (engaged) 0.30f else 0.25f
+        val wCtx = if (engaged) 0.25f else 0.40f
+        val wSpace = if (engaged) 0.25f else 0.20f
         val wGlobal = if (engaged) 0.10f else 0.15f
-        val wRecent = if (engaged) 0.30f else 0.15f
+        val wRecent = if (engaged) 0.25f else 0.10f
+        // Standing cold-start boost for category-matching apps; small enough that a few real
+        // launches (spaceFreq/recency) overtake it, big enough to lead an unlearned Space.
+        val wCategory = 0.15f
         val recency = if (ageHours == null || ageHours < 0f) 0f else exp(-ageHours / 24f)
         val prior = wCtx * ctxFreqNorm + wSpace * spaceFreqNorm +
-            wGlobal * globalFreqNorm + wRecent * recency
+            wGlobal * globalFreqNorm + wRecent * recency + wCategory * categoryMatch
         return (1f - alpha) * lin + alpha * prior
     }
 

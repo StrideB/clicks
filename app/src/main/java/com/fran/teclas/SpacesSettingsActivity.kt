@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -69,6 +71,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import com.fran.teclas.predict.AppCategory
 import com.fran.teclas.predict.Place
 import com.fran.teclas.predict.PlaceInference
 import com.fran.teclas.predict.PlaceKind
@@ -118,6 +121,14 @@ class SpacesSettingsActivity : ComponentActivity() {
         private val KIND_LABELS = mapOf(
             PlaceKind.HOME to "Home", PlaceKind.WORK to "Work", PlaceKind.GYM to "Gym",
             PlaceKind.AIRPORT to "Airport", PlaceKind.OTHER to "Other",
+        )
+        private val CATEGORY_LABELS = mapOf(
+            AppCategory.COMMUNICATION to "CHAT & MAIL", AppCategory.PRODUCTIVITY to "PRODUCTIVITY",
+            AppCategory.SOCIAL to "SOCIAL", AppCategory.MUSIC to "MUSIC", AppCategory.VIDEO to "VIDEO",
+            AppCategory.PHOTOS to "PHOTOS", AppCategory.MAPS to "MAPS", AppCategory.GAMES to "GAMES",
+            AppCategory.NEWS to "NEWS", AppCategory.HEALTH to "HEALTH", AppCategory.FINANCE to "FINANCE",
+            AppCategory.SHOPPING to "SHOPPING", AppCategory.TRAVEL to "TRAVEL", AppCategory.READING to "READING",
+            AppCategory.TOOLS to "TOOLS",
         )
     }
 
@@ -456,6 +467,15 @@ class SpacesSettingsActivity : ComponentActivity() {
             }
         }
 
+        Section("PREFERRED CATEGORIES") {
+            Label(
+                "Which kinds of apps this Space favors before it has learned your habits — the " +
+                    "cold-start ranking. Categories come from each app's manifest plus known apps.",
+                12.5.sp, t.inkDimCompose, bottomPad = 8.dp,
+            )
+            CategoryChips(space.categoryAffinity) { commit(space.copy(categoryAffinity = it)) }
+        }
+
         Section("EXCLUDED APPS") {
             Label("Never predicted in this Space.", 12.5.sp, t.inkDimCompose, bottomPad = 4.dp)
             space.excluded.forEach { pkg ->
@@ -724,6 +744,20 @@ class SpacesSettingsActivity : ComponentActivity() {
                 uncheckedBorderColor = Color.Transparent,
             ))
         }
+
+    @OptIn(ExperimentalLayoutApi::class)
+    @Composable
+    private fun CategoryChips(selected: Set<AppCategory>, onChange: (Set<AppCategory>) -> Unit) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            AppCategory.entries.forEach { cat ->
+                if (cat == AppCategory.OTHER) return@forEach
+                val on = cat in selected
+                Chip(CATEGORY_LABELS[cat] ?: cat.name, on) {
+                    onChange(if (on) selected - cat else selected + cat)
+                }
+            }
+        }
+    }
 
     @Composable
     private fun Chip(label: String, on: Boolean, modifier: Modifier = Modifier, textSize: TextUnit = 10.5.sp,
