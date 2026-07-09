@@ -2412,7 +2412,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         backPaddingVerticalDp: Int = 9,
         showAffordance: Boolean = true
     ): FavoritesDockFlipFrame {
-        favoritesDockContextShowing = favoritesDockContextPreferred
+        // Context-first by default; show pinned on launch only if the user has an active
+        // pinned override (they last swiped to their own apps and haven't left that Space).
+        favoritesDockContextShowing = dockPinnedOverrideSpace() == null
+        favoritesDockContextPreferred = favoritesDockContextShowing
         val frame = FavoritesDockFlipFrame(context).apply {
             clipChildren = false
             clipToPadding = false
@@ -2494,7 +2497,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         unfoldedLibraryContentArea = null
         unfoldedFocusContentArea = null
         unfoldedFocusDockView = null
-        favoritesDockContextShowing = false
+        favoritesDockContextShowing = dockPinnedOverrideSpace() == null
 
         val focusArea = FrameLayout(this).apply {
             clipChildren = true
@@ -3491,7 +3494,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         favoritesDockFrameView.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        favoritesDockContextShowing = false
+        favoritesDockContextShowing = dockPinnedOverrideSpace() == null
         favoritesDockContextView = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -13856,7 +13859,12 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun toggleFavoritesDockContext() {
-        setFavoritesDockContextShowing(!favoritesDockContextShowing)
+        val goingToContext = !favoritesDockContextShowing
+        // Record the user's deliberate choice: pinning overrides auto for the current Space;
+        // returning to context re-arms auto-follow.
+        setDockPinnedOverrideSpace(
+            com.fran.teclas.predict.DockContextPolicy.onUserSwipe(goingToContext, currentContextDockKey()))
+        setFavoritesDockContextShowing(goingToContext, preferContext = goingToContext)
     }
 
     private fun setFavoritesDockContextShowing(show: Boolean, preferContext: Boolean = false) {
@@ -13951,13 +13959,32 @@ Reply format: ["word1","word2","word3"]"""
             })
         }
         updateContextDockStamp()
+        val decision = com.fran.teclas.predict.DockContextPolicy.onSpaceObserved(
+            override = dockPinnedOverrideSpace(), current = nextContextKey)
+        // Drop a stale override (belongs to a Space we've left) so auto re-arms.
+        if (dockPinnedOverrideSpace() != decision.override) setDockPinnedOverrideSpace(decision.override)
+        // Only animate the face on a genuine Space change; between changes the dock stays put.
         if (contextChanged) {
-            favoritesDockContextPreferred = true
-            favoritesDockContextView.post { setFavoritesDockContextShowing(true, preferContext = true) }
+            favoritesDockContextPreferred = decision.showContext
+            favoritesDockContextView.post {
+                setFavoritesDockContextShowing(decision.showContext, preferContext = decision.showContext)
+            }
         }
     }
 
+    /**
+     * The context face: the active Space's predicted apps (this is what auto-shows on a
+     * Space change). Falls back to category-contextual apps only while the prediction engine
+     * is still warming up (no snapshot yet), so the dock is never empty.
+     */
     private fun currentContextDockApps(): List<LibraryApp> {
+        val eligible = apps.filter { it.packageName != packageName }
+        val predicted = predictedPackages(eligible.map { it.packageName }, DOCK_APP_LIMIT)
+        if (!predicted.isNullOrEmpty()) {
+            val byPackage = eligible.associateBy { it.packageName }
+            val ordered = predicted.mapNotNull { byPackage[it]?.toLibraryApp() }
+            if (ordered.isNotEmpty()) return ordered.take(DOCK_APP_LIMIT)
+        }
         val seen = linkedSetOf<String>()
         return libraryCategories()
             .flatMap { it.apps }
@@ -13979,8 +14006,11 @@ Reply format: ["word1","word2","word3"]"""
         ).joinToString("::")
     }
 
+    // Keyed on the active Space only. Deliberately NOT the time-of-day category bucket:
+    // the dock should auto-flip to context when the *Space* changes, not every few hours,
+    // which would otherwise stomp on a user who swiped back to their pinned apps.
     private fun currentContextDockKey(): String =
-        activeSpaceForUi()?.id ?: categoryContextBucket()
+        activeSpaceForUi()?.id ?: "home"
 
     private fun currentContextDockLabel(): String {
         val space = activeSpaceForUi()
@@ -15858,6 +15888,12 @@ Reply format: ["word1","word2","word3"]"""
             }
     }
 
+    /**
+     * The pinned face: the user's own apps, kept deliberately stable — favorites first, then
+     * most-used to fill. Predictions are NOT blended in here; they live on the context face
+     * (which auto-shows on a Space change). This is the page the user swipes back to and
+     * expects to stay put.
+     */
     private fun homeDockApps(): List<AppEntry> {
         val hidden = hiddenHomePackages()
         val favorites = apps
@@ -15865,22 +15901,26 @@ Reply format: ["word1","word2","word3"]"""
             .take(DOCK_APP_LIMIT)
         if (favorites.size >= DOCK_APP_LIMIT) return favorites
         val favoritePackages = favorites.map { it.packageName }.toSet()
-        val candidates = apps.filter { it.packageName !in favoritePackages && it.packageName !in hidden }
-        // User-pinned favorites always keep their slots; free slots go to the prediction
-        // engine's ranking for the active Space, with plain usage order as cold-start fallback.
-        val predicted = predictedPackages(candidates.map { it.packageName }, DOCK_APP_LIMIT - favorites.size)
         val usage = appUsageCounts()
-        val oftenUsed = candidates
+        val oftenUsed = apps
+            .filter { it.packageName !in favoritePackages && it.packageName !in hidden }
             .sortedWith { left, right ->
                 val usageCompare = (usage[right.packageName] ?: 0).compareTo(usage[left.packageName] ?: 0)
                 if (usageCompare != 0) usageCompare else collator.compare(left.label, right.label)
             }
             .filter { (usage[it.packageName] ?: 0) > 0 }
-        val fill = if (predicted.isNullOrEmpty()) oftenUsed else {
-            val byPackage = candidates.associateBy { it.packageName }
-            (predicted.mapNotNull { byPackage[it] } + oftenUsed).distinctBy { it.packageName }
-        }
-        return (favorites + fill).take(DOCK_APP_LIMIT)
+        return (favorites + oftenUsed).take(DOCK_APP_LIMIT)
+    }
+
+    /** The Space id the user pinned the dock to, or null when the dock auto-follows context. */
+    private fun dockPinnedOverrideSpace(): String? =
+        prefs().getString(DOCK_PINNED_OVERRIDE_SPACE_PREF, null)
+
+    private fun setDockPinnedOverrideSpace(spaceId: String?) {
+        prefs().edit().apply {
+            if (spaceId == null) remove(DOCK_PINNED_OVERRIDE_SPACE_PREF)
+            else putString(DOCK_PINNED_OVERRIDE_SPACE_PREF, spaceId)
+        }.apply()
     }
 
     private fun favoritePackages(): Set<String> = prefs().getStringSet(FAVORITE_APPS_PREF, emptySet()) ?: emptySet()
@@ -19032,6 +19072,10 @@ Reply format: ["word1","word2","word3"]"""
         private const val FAVORITE_APPS_PREF = "favorite_apps"
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
         private const val DOCK_LABELS_PREF = "dock_labels"
+        // Space id the user last swiped the dock back to Pinned in. While the active Space
+        // still equals this, the pinned view is respected (no auto-flip to context). Cleared
+        // when the Space changes, which re-arms the auto-switch-to-context behavior.
+        private const val DOCK_PINNED_OVERRIDE_SPACE_PREF = "dock_pinned_override_space"
         private const val APP_LIBRARY_DEFAULT_HOME_PREF = "app_library_default_home"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"
