@@ -266,6 +266,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var appWidgetHost: AppWidgetHost
     private lateinit var spaceBoardController: com.fran.teclas.grid.SpaceBoardController
     private var spaceBoardOverlay: View? = null
+    private var spaceBoardDragActive = false
     private lateinit var widgetPersistenceRepository: WidgetPersistenceRepository
     private var widgetSpecsCache: List<WidgetSpec>? = null
     private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
@@ -2859,8 +2860,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         override fun onDraw(canvas: Canvas) {
             if (width <= 0 || height <= 0) return
-            val forceUniversalDarkDock = compactDockGlass && activeHomeWallpaperUri() != null && !honorGlass
-            val light = glassLightMode() && !forceUniversalDarkDock
+            val light = glassLightMode()
             rect.set(0f, 0f, width.toFloat(), height.toFloat())
             paint.style = Paint.Style.FILL
             paint.shader = android.graphics.LinearGradient(
@@ -5116,6 +5116,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun handleLibrarySwipe(event: MotionEvent): Boolean {
         if (innerWallpaperEditMode) return false
+        // Board is open (and not being dragged): let its own container handle scroll/tap/close.
+        if (spaceBoardOverlay != null && !spaceBoardDragActive) return false
         if (widgetKeyboardSwapActive()) {
             librarySwipeTriggered = false
             librarySwipeBlockedByWidget = false
@@ -5163,6 +5165,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 librarySwipeStartY = event.rawY
                 librarySwipeTriggered = false
                 libraryDragActive = false
+                spaceBoardDragActive = false
                 libraryDragVertical = false
                 libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
@@ -5195,6 +5198,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     updateLibraryDrag(if (libraryDragVertical) dy else dx)
                     return true
                 }
+                if (spaceBoardDragActive) {
+                    updateSpaceBoardDrag(dx)
+                    return true
+                }
                 if (upOpensLibrary && !librarySwipeTriggered && abs(dy) > dp(18) && abs(dy) > abs(dx) * 1.2f) {
                     when {
                         dy < 0 && !libraryOpen && openPane == null -> {
@@ -5220,10 +5227,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (!librarySwipeTriggered && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f) {
                     when {
                         sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
-                            // Swipe left during a Space opens that Space's board directly — the
-                            // board is the surface now, not the app library grid.
+                            // Swipe left during a Space drags that Space's board in from the
+                            // right, following the finger like the old app library did.
                             librarySwipeTriggered = true
-                            openSpaceBoard()
+                            if (beginSpaceBoardDrag()) updateSpaceBoardDrag(dx)
                             return true
                         }
                         dx > 0 && libraryOpen -> {
@@ -5243,6 +5250,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (libraryDragActive) {
                     val delta = if (libraryDragVertical) event.rawY - librarySwipeStartY else event.rawX - librarySwipeStartX
                     settleLibraryDrag(delta)
+                    return true
+                }
+                if (spaceBoardDragActive) {
+                    settleSpaceBoardDrag(event.rawX - librarySwipeStartX)
+                    librarySwipeTriggered = false
                     return true
                 }
                 if (librarySwipeBlockedByWidget) {
@@ -5287,6 +5299,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             MotionEvent.ACTION_CANCEL -> {
                 if (libraryDragActive) settleLibraryDrag(if (libraryDragStartedOpen) 0f else libraryDragAxisSize())
+                if (spaceBoardDragActive) settleSpaceBoardDrag(event.rawX - librarySwipeStartX)
                 librarySwipeTriggered = false
                 librarySwipeBlockedByWidget = false
                 libraryDragActive = false
@@ -7331,11 +7344,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun openSpaceBoard() {
-        if (spaceBoardOverlay != null || !::spaceBoardController.isInitialized) return
+    /** Build the board overlay, mount it off-screen to the right, and return it (or null). */
+    private fun mountSpaceBoard(): View? {
+        if (spaceBoardOverlay != null || !::spaceBoardController.isInitialized) return null
         if (libraryOpen) closeLibrary()
         if (openPane != null) closePane()
-        val space = activeSpaceForUi() ?: return
+        val space = activeSpaceForUi() ?: return null
+        spaceBoardController.view.setLightMode(glassLightMode())
         spaceBoardController.open(space.id, spaceBoardSeedApps(space))
         val container = object : FrameLayout(this) {
             private var downX = 0f; private var downY = 0f; private var swiping = false
@@ -7357,12 +7372,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
-            setBackgroundColor(0xFF0B0D10.toInt())
+            setBackgroundColor(Color.TRANSPARENT)
             isClickable = true
-            setPadding(dp(12), systemStatusBarHeight() + dp(12), dp(12), dp(14))
+            setPadding(0, 0, 0, 0)
         }
+        container.addView(
+            if (nativeGlassSurfaceActive()) {
+                NativeFoldGlassPanel(this, radiusDp = 0)
+            } else {
+                DynamicGlassPlate(this, radiusDp = 0, strength = 1.72f, edgeInsetDp = 0).apply {
+                    setGlassProgress(1f)
+                }
+            },
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
         container.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), systemStatusBarHeight() + dp(12), dp(12), dp(14))
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -7385,15 +7412,58 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         spaceBoardOverlay = container
         addContentView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        // Slide in from the right, mirroring the left-swipe that summoned it.
         container.translationX = resources.displayMetrics.widthPixels.toFloat()
+        return container
+    }
+
+    /** Instant open with a slide-in animation (up-swipe / gesture-action paths). */
+    private fun openSpaceBoard() {
+        val container = mountSpaceBoard() ?: return
         container.animate().translationX(0f).setDuration(260L)
             .setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    // --- interactive drag: the board follows the finger in from the right, like the old library ---
+
+    private fun beginSpaceBoardDrag(): Boolean {
+        // No hardware layer: the board's glass panel blur must keep updating live as it slides in.
+        if (mountSpaceBoard() == null) return false
+        spaceBoardDragActive = true
+        keyHaptic("space")
+        return true
+    }
+
+    /** [delta] is the horizontal finger travel (negative as it moves left). */
+    private fun updateSpaceBoardDrag(delta: Float) {
+        val overlay = spaceBoardOverlay ?: return
+        val width = resources.displayMetrics.widthPixels.toFloat()
+        overlay.translationX = (width + delta).coerceIn(0f, width)
+    }
+
+    private fun settleSpaceBoardDrag(delta: Float) {
+        val overlay = spaceBoardOverlay ?: run { spaceBoardDragActive = false; return }
+        spaceBoardDragActive = false
+        val width = resources.displayMetrics.widthPixels.toFloat()
+        val translation = overlay.translationX.coerceIn(0f, width)
+        val openProgress = 1f - translation / width
+        // Open if dragged in past ~22% or flicked left hard; otherwise slide back out and remove.
+        val shouldOpen = openProgress > 0.22f || delta < -dp(80)
+        overlay.animate().cancel()
+        if (shouldOpen) {
+            overlay.animate().translationX(0f).setDuration(200L)
+                .setInterpolator(DecelerateInterpolator()).start()
+        } else {
+            spaceBoardOverlay = null
+            overlay.animate().translationX(width).setDuration(180L)
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
+        }
     }
 
     private fun closeSpaceBoard(): Boolean {
         val overlay = spaceBoardOverlay ?: return false
         spaceBoardOverlay = null
+        spaceBoardDragActive = false
         overlay.animate().translationX(resources.displayMetrics.widthPixels.toFloat())
             .setDuration(200L).setInterpolator(DecelerateInterpolator())
             .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
