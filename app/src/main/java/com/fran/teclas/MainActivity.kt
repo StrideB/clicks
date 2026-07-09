@@ -7830,10 +7830,54 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 topMargin = dp(5)
             })
             setOnClickListener { haptic(this); openSearchResult(result) }
-            result.longAction?.let { longAction ->
+            if (result.kind == SearchKind.APP && result.target?.packageName != null) {
+                setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
+            } else result.longAction?.let { longAction ->
                 setOnLongClickListener { haptic(this); longAction(); true }
             }
         }
+    }
+
+    /**
+     * Long-press menu for an app in search results: pin it straight to the favorites dock (the
+     * fixed "your apps" dock, not the context one) — so searching "instagram" lets you pin it
+     * without leaving search. Also offers pinning to the active Space's board.
+     */
+    private fun showSearchAppMenu(anchor: View, result: SearchResult) {
+        val pkg = result.target?.packageName ?: return
+        val onDock = pkg in favoritePackages()
+        val space = activeSpaceForUi()
+        val pinned = space != null && pkg in space.pinned
+        val popup = android.widget.PopupMenu(this, anchor)
+        popup.menu.add(0, 1, 0, if (onDock) "Remove from dock" else "Pin to dock")
+        if (space != null) {
+            popup.menu.add(0, 2, 1,
+                if (pinned) "Unpin from ${space.emoji} ${space.name} board" else "Pin to ${space.emoji} ${space.name} board")
+        }
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> {
+                    setHomePresence(pkg, !onDock)
+                    Toast.makeText(
+                        this,
+                        if (onDock) "Removed from dock" else "Pinned ${result.title} to dock",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                2 -> if (space != null) {
+                    val next = if (pinned) space.pinned - pkg else space.pinned + pkg
+                    SpaceManager.update(this, space.copy(pinned = next))
+                    Toast.makeText(
+                        this,
+                        if (pinned) "Unpinned from ${space.name}" else "Pinned ${result.title} to ${space.name}",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    if (spaceBoardOverlay != null) reloadSpaceBoardForActiveSpace()
+                }
+            }
+            true
+        }
+        popup.show()
     }
 
     private fun searchResultRow(result: SearchResult, isBest: Boolean, index: Int): View {
@@ -7872,7 +7916,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 marginStart = dp(8)
             })
             setOnClickListener { haptic(this); openSearchResult(result) }
-            result.longAction?.let { longAction ->
+            if (result.kind == SearchKind.APP && result.target?.packageName != null) {
+                setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
+            } else result.longAction?.let { longAction ->
                 setOnLongClickListener { haptic(this); longAction(); true }
             }
         }
