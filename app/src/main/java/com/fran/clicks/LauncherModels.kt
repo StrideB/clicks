@@ -24,8 +24,8 @@ internal data class ContactMatch(val name: String, val value: String)
 internal data class ContactCommand(val contact: ContactMatch, val message: String)
 internal data class CalendarCommand(val title: String, val startMs: Long, val endMs: Long)
 internal data class AiAnswerState(val prompt: String, val answer: String, val loading: Boolean)
-internal data class SearchResult(val title: String, val subtitle: String, val accent: Int, val kind: SearchKind, val target: PaneTarget?, val action: (() -> Unit)? = null)
-internal enum class SearchKind { APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI, TRAVEL, MUSIC, FILE, SETTING }
+internal data class SearchResult(val title: String, val subtitle: String, val accent: Int, val kind: SearchKind, val target: PaneTarget?, val action: (() -> Unit)? = null, val longAction: (() -> Unit)? = null)
+internal enum class SearchKind { APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI, TRAVEL, MUSIC, FILE, SETTING, WEB }
 
 internal data class FlightSegment(
     val airline: String, val flightNumber: String,
