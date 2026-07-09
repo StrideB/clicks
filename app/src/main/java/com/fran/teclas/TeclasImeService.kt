@@ -207,11 +207,40 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         attachOverlay = null
         shareCardOverlay = null
         val deck = buildKeyboard().also { deckView = it }
-        return android.widget.FrameLayout(this).apply {
-            addView(deck, android.widget.FrameLayout.LayoutParams(
+        // On a wide canvas, don't stretch across the whole inner display — pin a narrower, centered
+        // panel (matching the launcher keyboard); on phones keep the full-width keyboard.
+        val deckParams = if (imeIsWideCanvas()) {
+            android.widget.FrameLayout.LayoutParams(
+                imeKeyboardPanelWidth(),
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        } else {
+            android.widget.FrameLayout.LayoutParams(
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT))
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+        return android.widget.FrameLayout(this).apply {
+            addView(deck, deckParams)
         }.also { imeRoot = it }
+    }
+
+    /**
+     * With a centered, narrower panel on a wide canvas, the window still spans the full width — so
+     * restrict the touchable region to the actual keyboard panel, letting taps in the side gaps fall
+     * through to the app. Skipped when an overlay (attach picker / share card) is up or the panel
+     * hasn't been measured yet, to avoid making the keyboard untouchable.
+     */
+    override fun onComputeInsets(outInsets: android.inputmethodservice.InputMethodService.Insets?) {
+        super.onComputeInsets(outInsets)
+        outInsets ?: return
+        if (!imeIsWideCanvas()) return
+        if (attachOverlay != null || shareCardOverlay != null) return
+        val deck = deckView ?: return
+        if (deck.width == 0 || deck.height == 0) return
+        val loc = IntArray(2)
+        deck.getLocationInWindow(loc)
+        outInsets.touchableInsets = android.inputmethodservice.InputMethodService.Insets.TOUCHABLE_INSETS_REGION
+        outInsets.touchableRegion.set(loc[0], loc[1], loc[0] + deck.width, loc[1] + deck.height)
     }
 
     // System spellchecker — real correction candidates for hard misspellings (parity with launcher).
@@ -2816,24 +2845,56 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
     }
 
+    /**
+     * A wide canvas (foldable inner display, tablet, big landscape) where a full-width keyboard
+     * stretches the keys unpleasantly. Same >=600dp breakpoint the launcher uses for its inner UI.
+     */
+    private fun imeIsWideCanvas(): Boolean = resources.configuration.screenWidthDp >= 600
+
+    /**
+     * The size the key metrics scale from. On a wide canvas we add the SAME inner-screen boost the
+     * launcher keyboard applies (shared `inner_keyboard_size_boost` pref, +12) so the IME keys grow
+     * taller to match — otherwise the keyboard reads short and wide on the fold's inner screen.
+     */
+    private fun effectiveKeyboardSize(): Int {
+        val base = KeyboardSettings.keyboardSize(this)
+        if (!imeIsWideCanvas()) return base
+        val boost = imePrefs().getInt("inner_keyboard_size_boost", 52).coerceIn(-20, 150)
+        return (base + boost + 12).coerceIn(0, 190)
+    }
+
+    /**
+     * Centered panel width on a wide canvas — mirrors the launcher's `unfoldedKeyboardPanelWidth`
+     * (shared `inner_keyboard_width_percent` pref) so the IME is the same narrower, centered block
+     * instead of spanning the whole inner display.
+     */
+    private fun imeKeyboardPanelWidth(): Int {
+        val maxWidth = resources.displayMetrics.widthPixels
+        val ceiling = maxWidth - dp(36)
+        val pct = imePrefs().getInt("inner_keyboard_width_percent", 68).coerceIn(48, 100)
+        // Honour the user's width percent so the panel is genuinely narrower + centered; keep only a
+        // small absolute floor so tiny percents can't make it unusably narrow.
+        val floor = dp(440).coerceAtMost(ceiling)
+        return (maxWidth * pct / 100f).toInt().coerceIn(floor, ceiling)
+    }
+
     private fun imeKeyboardHeight(): Int {
-        val size = KeyboardSettings.keyboardSize(this)
         val rowCount = 4
         return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6) + dp(38)
     }
 
     private fun keyRowHeight(): Int {
-        val size = KeyboardSettings.keyboardSize(this)
+        val size = effectiveKeyboardSize()
         return dp(56 + (size * 20 / 100))
     }
 
     private fun keyRowOverlap(): Int {
-        val size = KeyboardSettings.keyboardSize(this)
+        val size = effectiveKeyboardSize()
         return dp(12 + size * 3 / 100)
     }
 
     private fun keyVerticalInset(): Int {
-        val size = KeyboardSettings.keyboardSize(this)
+        val size = effectiveKeyboardSize()
         val theme = keyboardVisualTheme()
         if (theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             return dp(10 + size * 5 / 100)
@@ -2842,12 +2903,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun themedGoKeySize(): Int {
-        val size = KeyboardSettings.keyboardSize(this)
+        val size = effectiveKeyboardSize()
         return dp(39 + (size * 6 / 100))
     }
 
     private fun keyTextSize(label: String): Float {
-        val size = KeyboardSettings.keyboardSize(this)
+        val size = effectiveKeyboardSize()
         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
             val brushedBase = when (label) {
                 "shift", "." -> 22f
