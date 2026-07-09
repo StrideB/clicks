@@ -822,22 +822,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun ensureBillingConnected() {
-        val bc = billingClient ?: ProManager.buildBillingClient(this) { token ->
+        // The billing library posts delayed reconnect Messages on the main looper that keep the
+        // state listener alive past endConnection(); capture only the app context and a weak
+        // activity reference so a queued retry can't pin a destroyed MainActivity (LeakCanary
+        // measured 17.8 MB retained exactly this way).
+        val appCtx = applicationContext
+        val self = java.lang.ref.WeakReference(this)
+        val bc = billingClient ?: ProManager.buildBillingClient(appCtx) { token ->
             // Purchase verified — refresh any gated UI
-            Toast.makeText(this, "Teclas Pro unlocked. Welcome!", Toast.LENGTH_SHORT).show()
-            renderRibbon()
+            Toast.makeText(appCtx, "Teclas Pro unlocked. Welcome!", Toast.LENGTH_SHORT).show()
+            self.get()?.takeIf { !it.isDestroyed }?.renderRibbon()
         }.also { billingClient = it }
 
         if (!bc.isReady) {
             bc.startConnection(object : com.android.billingclient.api.BillingClientStateListener {
                 override fun onBillingSetupFinished(result: com.android.billingclient.api.BillingResult) {
                     if (result.responseCode == com.android.billingclient.api.BillingClient.BillingResponseCode.OK) {
-                        mediaUiScope.launch(Dispatchers.IO) {
-                            ProManager.restorePurchases(bc, this@MainActivity)
+                        val act = self.get()?.takeIf { !it.isDestroyed } ?: return
+                        act.mediaUiScope.launch(Dispatchers.IO) {
+                            ProManager.restorePurchases(bc, appCtx)
                         }
                     }
                 }
-                override fun onBillingServiceDisconnected() { billingClient = null }
+                override fun onBillingServiceDisconnected() { self.get()?.billingClient = null }
             })
         }
     }
