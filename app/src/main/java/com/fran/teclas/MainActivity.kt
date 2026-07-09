@@ -364,6 +364,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetKeyboardSliderAnimating = false
     private var widgetKeyboardHandleDownY = 0f
     private var widgetKeyboardHandleDragging = false
+    private var widgetKeyboardTapDownX = 0f
+    private var widgetKeyboardTapDownY = 0f
+    private var widgetKeyboardMaybeTap = false
     private var widgetKeyboardHostTwoFingerStartY = 0f
     private var widgetKeyboardHostTwoFingerStartX = 0f
     private var widgetKeyboardHostTwoFingerActive = false
@@ -4608,7 +4611,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return false
         }
         when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                // Arm a possible tap-to-reveal if the touch starts on the handle pill.
+                widgetKeyboardTapDownX = event.rawX
+                widgetKeyboardTapDownY = event.rawY
+                widgetKeyboardMaybeTap = isInsideKeyboardHandle(event.rawX, event.rawY)
+            }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                widgetKeyboardMaybeTap = false
                 if (event.pointerCount >= 2) {
                     widgetKeyboardHostTwoFingerActive = true
                     widgetKeyboardHostTwoFingerStartX = (event.getX(0) + event.getX(1)) / 2f
@@ -4617,6 +4627,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             MotionEvent.ACTION_MOVE -> {
+                if (widgetKeyboardMaybeTap &&
+                    (abs(event.rawX - widgetKeyboardTapDownX) > dp(16) || abs(event.rawY - widgetKeyboardTapDownY) > dp(16))) {
+                    widgetKeyboardMaybeTap = false
+                }
                 if (widgetKeyboardHostTwoFingerActive && event.pointerCount >= 2) {
                     val midX = (event.getX(0) + event.getX(1)) / 2f
                     val midY = (event.getY(0) + event.getY(1)) / 2f
@@ -4629,13 +4643,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     return true
                 }
             }
-            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_UP -> {
+                // A clean tap on the handle brings the keyboard back up.
+                if (widgetKeyboardMaybeTap && isInsideKeyboardHandle(event.rawX, event.rawY)) {
+                    widgetKeyboardMaybeTap = false
+                    widgetKeyboardHostTwoFingerActive = false
+                    showWidgetKeyboardSlider()
+                    return true
+                }
+                widgetKeyboardMaybeTap = false
+                val consumed = widgetKeyboardHostTwoFingerActive
+                widgetKeyboardHostTwoFingerActive = false
+                return consumed
+            }
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                widgetKeyboardMaybeTap = false
                 val consumed = widgetKeyboardHostTwoFingerActive
                 widgetKeyboardHostTwoFingerActive = false
                 return consumed
             }
         }
         return false
+    }
+
+    /** Screen-space hit-test for the keyboard handle pill, with a generous touch pad. */
+    private fun isInsideKeyboardHandle(rawX: Float, rawY: Float): Boolean {
+        val handle = widgetKeyboardSliderHandleView ?: return false
+        if (handle.visibility != View.VISIBLE || handle.width == 0) return false
+        val loc = IntArray(2)
+        handle.getLocationOnScreen(loc)
+        val pad = dp(14)
+        return rawX >= loc[0] - pad && rawX <= loc[0] + handle.width + pad &&
+            rawY >= loc[1] - pad && rawY <= loc[1] + handle.height + pad
     }
 
     private fun swapPillBackground(fill: Int, stroke: Int): Drawable {
@@ -7377,8 +7416,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     MotionEvent.ACTION_DOWN -> { downX = ev.x; downY = ev.y }
                     MotionEvent.ACTION_UP -> {
                         val dx = ev.x - downX; val dy = ev.y - downY
-                        // Swipe right (back the way it came) or a firm swipe down closes the board.
-                        if ((dx > dp(70) && dx > abs(dy) * 1.3f) || (dy > dp(110) && dy > abs(dx) * 1.3f)) {
+                        // Swipe right (back the way it came) or a firm swipe down closes the board —
+                        // but never while a widget is being dragged/resized, or the resize gesture
+                        // gets stolen and the board closes instead.
+                        if (!spaceBoardController.isEditing() &&
+                            ((dx > dp(70) && dx > abs(dy) * 1.3f) || (dy > dp(110) && dy > abs(dx) * 1.3f))) {
                             closeSpaceBoard(); return true
                         }
                     }

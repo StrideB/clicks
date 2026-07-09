@@ -149,6 +149,9 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
 
     fun currentItems(): List<GridItem> = items.toList()
 
+    /** True while a widget is being dragged, resized, or selected for resize (edit mode). */
+    fun isEditing(): Boolean = dragging || resizeEdge != 0 || resizeItem != null
+
     private fun cellW(): Float = if (width == 0) 1f else width.toFloat() / GRID_COLS
     private fun cellH(): Float = if (height == 0) 1f else height.toFloat() / GRID_ROWS
 

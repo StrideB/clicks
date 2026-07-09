@@ -40,6 +40,9 @@ class SpaceBoardController(
 
     val view: GridWorkspaceView = GridWorkspaceView(activity, this)
 
+    /** True while a widget is being dragged/resized — the board must not steal the gesture to close. */
+    fun isEditing(): Boolean = view.isEditing()
+
     private var spaceId: String = "home"
     private var pendingWidgetId: Int = -1
     private var pendingProvider: AppWidgetProviderInfo? = null
