@@ -1,13 +1,13 @@
-# Clicks — Widget Mode: hold-DOCK to detach, swipe to browse, snap to seat
+# Teclas — Widget Mode: hold-DOCK to detach, swipe to browse, snap to seat
 
-Implement a new keyboard-swap interaction in the `com.fran.clicks` Android launcher, **Widget placement mode only**. The keyboard should feel like a physical accessory you unclip from the phone, browse, and snap back on. This spec matches an approved interactive prototype exactly — follow the phases and motion below.
+Implement a new keyboard-swap interaction in the `com.fran.teclas` Android launcher, **Widget placement mode only**. The keyboard should feel like a physical accessory you unclip from the phone, browse, and snap back on. This spec matches an approved interactive prototype exactly — follow the phases and motion below.
 
 ## Context (existing code — do not break it)
 - `MainActivity.kt` (~10k lines). Relevant existing pieces:
   - `keyboardPlacement` (`KEYBOARD_PLACEMENT_DOCKED` / `KEYBOARD_PLACEMENT_WIDGET`), persisted in prefs under `KEYBOARD_PLACEMENT_PREF`.
-  - `keyboardTheme` (`default` / `clicks` / `skeuo` / `gokeys`), persisted under `KEYBOARD_THEME_PREF`. Constants: `KEYBOARD_THEME_DEFAULT`, and the theme ids used in `keyLabel()`.
+  - `keyboardTheme` (`default` / `teclas` / `skeuo` / `gokeys`), persisted under `KEYBOARD_THEME_PREF`. Constants: `KEYBOARD_THEME_DEFAULT`, and the theme ids used in `keyLabel()`.
   - `render()` builds the layout; in Widget mode the keyboard lives inside `home()` via `homeKeyboardWidget()` (a `LinearLayout` containing `typingStripView()` + `keyboard()`), seated above the favorites dock.
-  - `keyLabel()` already renders the `clicks` key as `"DOCK"` when `keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET`. A short **tap** on DOCK currently switches back to Docked mode via `setKeyboardPlacement(...)` — KEEP that behavior for a tap.
+  - `keyLabel()` already renders the `teclas` key as `"DOCK"` when `keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET`. A short **tap** on DOCK currently switches back to Docked mode via `setKeyboardPlacement(...)` — KEEP that behavior for a tap.
   - `keyboard()` builds key `TextView`s into `keyViews`; keys use an `OnTouchListener` with existing long-press handling (`longPressRunnable`, `cancelLongPress()`, `longPressFired`).
   - `haptic(view)` / `keyHaptic(label)` for haptics. `dp(int)` for density. `setKeyboardTheme(...)`/theme apply path already exists (find how theme changes currently re-render the keyboard).
 - **Do not change Docked mode at all.** This entire feature is gated on `keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET`.
@@ -16,7 +16,7 @@ Implement a new keyboard-swap interaction in the `com.fran.clicks` Android launc
 ## The interaction (4 phases)
 
 ### Phase 1 — Hold DOCK to detach
-- In Widget mode, **long-pressing the `DOCK` key** (the `clicks` key) detaches the keyboard. Use a hold threshold of **~650ms**.
+- In Widget mode, **long-pressing the `DOCK` key** (the `teclas` key) detaches the keyboard. Use a hold threshold of **~650ms**.
   - A **short tap** on DOCK must still switch to Docked mode (existing behavior). Only a completed hold triggers detach. Reuse/extend the existing long-press machinery on that key rather than adding a competing listener.
   - While holding, show a **radial fill progress** on the DOCK key (a conic/sweep progress from 0→360° over the hold duration) and a green glow ring. If the finger lifts or moves past touch-slop before threshold, cancel cleanly (reset the fill, no detach).
   - On threshold reached: fire `haptic()`, then animate detach.
@@ -31,7 +31,7 @@ Implement a new keyboard-swap interaction in the `com.fran.clicks` Android launc
 - Dismiss the coach hint once the user performs their first swipe (and never auto-show it again in the same detached session).
 
 ### Phase 3 — Swipe to browse themes
-- While detached, a **horizontal swipe** on the keyboard body cycles themes in order `[default, clicks, skeuo, gokeys]` (wrap around). Left swipe = next, right = previous. Threshold ~`dp(42)` and horizontal-dominant (`|dx| > |dy|`).
+- While detached, a **horizontal swipe** on the keyboard body cycles themes in order `[default, teclas, skeuo, gokeys]` (wrap around). Left swipe = next, right = previous. Threshold ~`dp(42)` and horizontal-dominant (`|dx| > |dy|`).
   - During the drag, translate/rotate the module slightly to follow the finger (`translationX = dx*0.5`, `rotationZ ≈ dx*0.03`) for tactility; snap back to the hover pose on release.
   - On a committed swipe: slide the current skin out sideways + fade, rebuild the keyboard view with the new theme's skin, and bring it in from the opposite edge (~300ms, overshoot). Update the active theme dot.
   - Tapping a theme dot jumps directly to that theme (same transition).
@@ -64,7 +64,7 @@ Implement an explicit small state enum for the widget keyboard: `SEATED → (hol
 - Note anything you had to change in shared code (e.g., the DOCK key touch handling) and why.
 
 ## Reference
-The approved visual/interaction prototype (HTML) is at `work/artifacts/clicks_keyboard_swap/index.html` — match its phases, motion feel (lift → hover-tilt → sideways card-swap browse → drop-and-snap), and the "accessory" tells (gold prongs, empty socket ports, socket glow, LOCKED IN pill). Timings there are the target: hold ~650ms, detach ~460ms, browse ~300ms, seat ~440ms.
+The approved visual/interaction prototype (HTML) is at `work/artifacts/teclas_keyboard_swap/index.html` — match its phases, motion feel (lift → hover-tilt → sideways card-swap browse → drop-and-snap), and the "accessory" tells (gold prongs, empty socket ports, socket glow, LOCKED IN pill). Timings there are the target: hold ~650ms, detach ~460ms, browse ~300ms, seat ~440ms.
 
 ## Acceptance checklist (self-verify before declaring done)
 Do not report the task complete until every item passes. For each, state PASS/FAIL and how you verified it.
@@ -77,7 +77,7 @@ Do not report the task complete until every item passes. For each, state PASS/FA
 - [ ] While detached, a **tap** (movement < ~dp(8)) seats/selects; a **horizontal drag** (> ~dp(42)) browses — a sloppy swipe never accidentally seats the wrong theme, and a still tap never registers as a browse.
 
 **Theme correctness**
-- [ ] Browsing cycles `default → clicks → skeuo → gokeys → default` (and reverse) with wraparound.
+- [ ] Browsing cycles `default → teclas → skeuo → gokeys → default` (and reverse) with wraparound.
 - [ ] Browsing is **preview-only**: `KEYBOARD_THEME_PREF` is unchanged until seat.
 - [ ] After seating, the selected theme is persisted and **survives an app restart / device reboot**.
 - [ ] If detached and then the activity is paused/backgrounded (or a safe cancel occurs), the keyboard returns to the **previously committed** theme — no preview leaks into prefs.

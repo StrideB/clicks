@@ -1,6 +1,6 @@
-# Clicks — design & build docs
+# Teclas — design & build docs
 
-Everything from the Clicks design/redesign work, ready to hand to a coding agent (Codex/Claude Code)
+Everything from the Teclas design/redesign work, ready to hand to a coding agent (Codex/Claude Code)
 or to pick back up later. Three independent workstreams live here.
 
 _Last updated: 2026-07-03._
@@ -68,7 +68,7 @@ Kickoff line for round 2 (run Codex in the repo):
 > and the final checklist.
 
 ## Files each workstream touches (for conflict awareness)
-- **hardening:** `db/NgramDatabase.kt`, `db/NgramDao.kt`, `db/NgramEntry.kt`, `ClicksNotificationListener.kt`, `MainActivity.kt` (Gemini fns + extraction), `app/build.gradle.kts`.
+- **hardening:** `db/NgramDatabase.kt`, `db/NgramDao.kt`, `db/NgramEntry.kt`, `TeclasNotificationListener.kt`, `MainActivity.kt` (Gemini fns + extraction), `app/build.gradle.kts`.
 - **neumorphic-redesign (r1 + r2):** `Neu.kt`, `LauncherModels.kt`, `MainActivity.kt` (home chrome, keyboard, dock, settings selector, bottom-gap fix), `HomeWidgetStack.kt` (all cards), prefs (`THEME_MODE_PREF`).
 - **keyboard-swap:** `MainActivity.kt` (DOCK key handling, `homeKeyboardWidget()`), new `WidgetKeyboardSwapController`, prefs (`KEYBOARD_THEME_PREF` commit-on-seat).
 

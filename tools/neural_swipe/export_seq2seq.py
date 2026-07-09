@@ -1,8 +1,8 @@
 """
-Train + export the ENCODER-DECODER neural swipe model (Track C) for the Clicks keyboard.
+Train + export the ENCODER-DECODER neural swipe model (Track C) for the Teclas keyboard.
 
 This is separate from the legacy encoder-only pipeline (synth.py / train.py, Track B). It produces the
-two ONNX graphs that `app/src/main/java/com/fran/clicks/keyboard/neural/` loads:
+two ONNX graphs that `app/src/main/java/com/fran/teclas/keyboard/neural/` loads:
 
     swipe_encoder.onnx   encoder(features, src_mask) -> memory
     swipe_decoder.onnx   decoder(memory, src_mask, tgt) -> logits   (autoregressive; beam search on device)

@@ -1,6 +1,6 @@
-# Clicks launcher — hardening pass (fixes & improvements only)
+# Teclas launcher — hardening pass (fixes & improvements only)
 
-You are working on the `StrideB/clicks` repository: a native Android launcher (Kotlin, `com.fran.clicks`, minSdk 31 / targetSdk 35, classic Views + some Jetpack Compose surfaces).
+You are working on the `StrideB/teclas` repository: a native Android launcher (Kotlin, `com.fran.teclas`, minSdk 31 / targetSdk 35, classic Views + some Jetpack Compose surfaces).
 
 ## Ground rules — READ FIRST
 - **Do not change product behavior, UX, layout, visuals, or feature set.** No redesigns, no new features, no removed features.
@@ -14,7 +14,7 @@ You are working on the `StrideB/clicks` repository: a native Android launcher (K
 ## Fixes to apply, in priority order
 
 ### 1. Room: replace destructive migration with real migrations (data-loss risk — highest priority)
-- In `app/src/main/java/com/fran/clicks/db/NgramDatabase.kt`, the database currently uses `.fallbackToDestructiveMigration()` with `exportSchema = false`. This means **any future schema change silently wipes everything the keyboard has learned about the user.**
+- In `app/src/main/java/com/fran/teclas/db/NgramDatabase.kt`, the database currently uses `.fallbackToDestructiveMigration()` with `exportSchema = false`. This means **any future schema change silently wipes everything the keyboard has learned about the user.**
 - Change `exportSchema = false` → `exportSchema = true` and configure the Room schema export directory in `app/build.gradle.kts` (KSP `arg("room.schemaLocation", "$projectDir/schemas")`), so schema versions are tracked in source control.
 - Remove `.fallbackToDestructiveMigration()`. Since the current schema is version 1 with no prior released migrations, no `Migration` objects are needed yet — but the builder must be set up so that **future** version bumps require an explicit migration rather than a silent wipe.
 - Do not change the current schema shape (`NgramEntry`) or table name. This is purely about making future upgrades non-destructive.
@@ -29,7 +29,7 @@ You are working on the `StrideB/clicks` repository: a native Android launcher (K
 - Call the prune opportunistically off the main thread (the repository already has an IO `CoroutineScope`). Do not block typing.
 
 ### 3. NotificationListener: remove static mutable state as the activity↔service bridge
-- In `app/src/main/java/com/fran/clicks/ClicksNotificationListener.kt`, `notificationIntents` and `notificationAvatars` are `companion object` mutable maps shared between the service and `MainActivity`. This is a leak vector (static `Bitmap` maps) and has no synchronization.
+- In `app/src/main/java/com/fran/teclas/TeclasNotificationListener.kt`, `notificationIntents` and `notificationAvatars` are `companion object` mutable maps shared between the service and `MainActivity`. This is a leak vector (static `Bitmap` maps) and has no synchronization.
 - Make these thread-safe without changing behavior: at minimum wrap them in a synchronized/concurrent structure so concurrent notification callbacks and UI reads cannot corrupt them or throw `ConcurrentModificationException`.
 - Keep the existing `MAX_AVATARS` FIFO eviction and `recycle()` hygiene. Ensure eviction and access are consistent under the new synchronization.
 - **Do not change** which notifications are captured, how they're classified, or how the widgets read them. Callers in `MainActivity` must keep working with identical results.

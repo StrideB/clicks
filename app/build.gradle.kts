@@ -1,20 +1,25 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
-    id("com.google.devtools.ksp") version "2.0.21-1.0.25"
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
 }
 
 android {
-    namespace = "com.fran.clicks"
-    compileSdk = 35
+    namespace = "com.fran.teclas"
+    compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.fran.clicks"
+        applicationId = "com.fran.teclas"
         minSdk = 31
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
+
+        // Personal sideload app: every target device (Honor fold, Pixel, Apple-Silicon emulator)
+        // is arm64-v8a. Shipping the other three ABIs tripled the APK's native-lib payload.
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     // Shared debug signing: a committed keystore so every build (any machine / any session) signs
@@ -23,10 +28,20 @@ android {
     // and required a data-wiping uninstall. Standard debug credentials — safe to commit.
     signingConfigs {
         getByName("debug") {
-            storeFile = file("clicks-debug.keystore")
+            storeFile = file("teclas-debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Same shared debug key so release builds install over debug ones on any machine.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
@@ -35,16 +50,19 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-        // Generate lambdas/SAM conversions as classes instead of invokedynamic. Works around a
-        // Kotlin JVM backend crash ("Exception during IR lowering") when codegen'ing some Compose
-        // (Composer, Int) -> Unit lambdas in HomeWidgetStack.kt on a full build.
-        freeCompilerArgs = freeCompilerArgs + listOf("-Xlambdas=class", "-Xsam-conversions=class")
-    }
-
     buildFeatures {
         compose = true
+    }
+
+    lint {
+        // Pre-modernization findings are frozen in the baseline; lint fails only on NEW issues.
+        baseline = file("lint-baseline.xml")
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -56,34 +74,38 @@ ksp {
 }
 
 dependencies {
-    implementation(platform("androidx.compose:compose-bom:2024.10.01"))
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation("androidx.compose.foundation:foundation")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation("androidx.browser:browser:1.8.0")
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.autofill:autofill:1.1.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.window:window:1.5.1")
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    implementation(platform(libs.compose.bom))
+    implementation(libs.activity.compose)
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui)
+    implementation(libs.compose.ui.graphics)
+    implementation(libs.compose.ui.tooling.preview)
+    debugImplementation(libs.compose.ui.tooling)
+    // Automatic heap-leak detection in debug builds only — zero release impact.
+    debugImplementation(libs.leakcanary)
+    // Installs bundled baseline profiles (Compose ships them) for AOT-compiled hot paths;
+    // also enables Play cloud profiles after a store release.
+    implementation(libs.profileinstaller)
+    implementation(libs.coroutines.android)
+    implementation(libs.coroutines.guava)
+    implementation(libs.browser)
+    implementation(libs.core.ktx)
+    implementation(libs.autofill)
+    implementation(libs.lifecycle.runtime.ktx)
+    implementation(libs.window)
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
     // Prediction engine at-rest encryption: EncryptedSharedPreferences for model weights,
     // Keystore-backed AES/GCM for transition-log rows. Nothing leaves the device.
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
-    implementation("androidx.dynamicanimation:dynamicanimation-ktx:1.0.0-alpha03")
-    implementation("com.android.billingclient:billing-ktx:7.1.1")
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    implementation(libs.security.crypto)
+    implementation(libs.billing.ktx)
+    implementation(libs.onnxruntime.android)
     // On-device Gemini Nano (AICore) proofreading via ML Kit GenAI — free, offline, no model to train.
     // No-op on devices without AICore (the engine checks feature status and hides the UI).
-    implementation("com.google.mlkit:genai-proofreading:1.0.0-beta1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.8.1")
+    implementation(libs.mlkit.genai.proofreading)
 
     // Unit tests for the shared keyboard core (pure-JVM logic: word placement, prediction/autocorrect).
-    testImplementation("junit:junit:4.13.2")
+    testImplementation(libs.junit)
 }

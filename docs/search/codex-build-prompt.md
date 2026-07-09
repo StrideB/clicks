@@ -1,4 +1,4 @@
-# Clicks — Universal Search reskin (docked + widget), neumorphic
+# Teclas — Universal Search reskin (docked + widget), neumorphic
 
 Reskin the launcher's **universal search** surface in the neumorphic language, for BOTH docked and widget
 placement. This is the search that opens when you type on the homescreen — it is NOT app-only. Visual +
@@ -55,7 +55,7 @@ visibly tuck under it.
 - **Type-to-do command:** a prominent RAISED card, green ring, green action glyph, "DO THIS" style
   subtitle (e.g. "SEND … · MESSAGES") — ranked at top when the query is a command.
 - **Gemini (AI) answer:** full-width RAISED card — carved "asked"/answer bubbles, inline command chips
-  (carved, green mono), RAISED action buttons (primary = green). Purple "GEMINI" label + Clicks-C mark.
+  (carved, green mono), RAISED action buttons (primary = green). Purple "GEMINI" label + Teclas-C mark.
 - Chip glyph text: dark ink in dark mode, `Neu.LIGHT_CHIP_TEXT` in light.
 
 ## Kind accent map (use `Neu.*`)

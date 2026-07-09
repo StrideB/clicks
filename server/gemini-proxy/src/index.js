@@ -1,5 +1,5 @@
 /**
- * Clicks AI proxy — a Cloudflare Worker that lets the app use Gemini WITHOUT any user ever seeing or
+ * Teclas AI proxy — a Cloudflare Worker that lets the app use Gemini WITHOUT any user ever seeing or
  * pasting an API key. The one Gemini key lives here as a server secret; the app authenticates each
  * request with the signed-in user's Google ID token, and this Worker verifies it, meters per-user
  * usage (free daily quota, higher for Pro), and forwards the prompt to Gemini.

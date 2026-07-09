@@ -16,11 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -37,14 +37,16 @@ jobs:
       - name: Run unit tests
         run: ./gradlew --no-daemon testDebugUnitTest
 
-      - name: Build debug APK
-        run: ./gradlew --no-daemon assembleDebug
+      - name: Build APKs
+        run: ./gradlew --no-daemon assembleDebug assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: clicks-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: teclas-apks
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
       # On main, also publish the APK to a rolling "debug-latest" Release so there's a stable,
@@ -54,8 +56,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: debug-latest
-          name: Latest debug APK
-          body: Auto-published debug build of the latest main. Install on Android (allow unknown sources).
+          name: Latest APK
+          body: Auto-published build of the latest main. app-release.apk is the small R8-minified build (recommended); app-debug.apk is the debuggable one. Install on Android (allow unknown sources).
           prerelease: true
           make_latest: true
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk

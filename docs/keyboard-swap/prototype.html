@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Clicks Widget Mode, Hold to Detach and Swap</title>
+<title>Teclas Widget Mode, Hold to Detach and Swap</title>
 <style>
   :root {
     --screen: #0A0B0E;
@@ -136,9 +136,9 @@
 
   /* theme skins */
   .theme-default { --key-bg:linear-gradient(180deg,#2a2e37,#1a1d24); --key-bd:#12151b; --key-sh:0 2px 0 rgba(0,0,0,.5);}
-  .theme-clicks { background:linear-gradient(180deg,#121317,#08090c 100%); --key-bg:linear-gradient(180deg,#1d2027,#101319); --key-bd:#0c0f15; --key-sh:0 2px 0 rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.03);}
-  .theme-clicks .key { border-radius:7px;}
-  .theme-clicks .strip { background:linear-gradient(180deg,#1a0e0e,#08090C 60%,#000);}
+  .theme-teclas { background:linear-gradient(180deg,#121317,#08090c 100%); --key-bg:linear-gradient(180deg,#1d2027,#101319); --key-bd:#0c0f15; --key-sh:0 2px 0 rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.03);}
+  .theme-teclas .key { border-radius:7px;}
+  .theme-teclas .strip { background:linear-gradient(180deg,#1a0e0e,#08090C 60%,#000);}
   .theme-skeuo { background:linear-gradient(180deg,#3a3f47,#23272e);}
   .theme-skeuo .strip { background:linear-gradient(180deg,#2b2f36,#1c1f25);border-bottom-color:#151820;}
   .theme-skeuo .key { border-radius:9px;color:#eef1f5;background:linear-gradient(180deg,#5b616c 0%,#464b55 48%,#363b44 52%,#2c313a 100%);border:1px solid #1c2027;box-shadow:0 2px 3px rgba(0,0,0,.5),inset 0 1px 1px rgba(255,255,255,.4),inset 0 -2px 3px rgba(0,0,0,.35);text-shadow:0 1px 1px rgba(0,0,0,.5);}
@@ -213,7 +213,7 @@
 <script>
 const THEMES = [
   { id:'default', name:'Default', klass:'theme-default', accentKey:'GO' },
-  { id:'clicks',  name:'Clicks',  klass:'theme-clicks',  accentKey:'GO' },
+  { id:'teclas',  name:'Teclas',  klass:'theme-teclas',  accentKey:'GO' },
   { id:'skeuo',   name:'Skeuo',   klass:'theme-skeuo',   accentKey:'GO' },
   { id:'gokeys',  name:'GoKeys',  klass:'theme-gokeys',  accentKey:'go' },
 ];

@@ -1,4 +1,4 @@
-# Clicks AI proxy (Cloudflare Worker)
+# Teclas AI proxy (Cloudflare Worker)
 
 Lets the app use Gemini **without any user ever seeing or pasting an API key**. Your one Gemini key
 lives here as a server secret. The app signs the user in with Google and sends that Google **ID
@@ -36,7 +36,7 @@ You need a (free) Cloudflare account and Node installed.
    ```bash
    npx wrangler deploy
    ```
-   Wrangler prints your Worker URL, e.g. `https://clicks-gemini.<your-subdomain>.workers.dev`.
+   Wrangler prints your Worker URL, e.g. `https://teclas-gemini.<your-subdomain>.workers.dev`.
    Put that URL in the app as `GeminiProxy.DEFAULT_PROXY_URL` (in `AccountAuth.kt`) — it is **not** a
    secret and is safe to ship in the app.
 

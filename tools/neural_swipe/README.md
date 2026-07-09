@@ -1,6 +1,6 @@
 # Neural Swipe — training pipeline (Track B)
 
-Trains the on-device neural glide decoder for `clicks`. The device side
+Trains the on-device neural glide decoder for `teclas`. The device side
 (`NeuralSwipeEngine.kt`) is already wired and falls back to the geometric decoder until the two
 output files below exist in `app/src/main/assets/`.
 
@@ -47,7 +47,7 @@ routes through the model (with the statistical decoder still as fallback).
 
 # Track C — encoder-decoder + beam search (`export_seq2seq.py`)
 
-This is the newer engine consumed by `app/src/main/java/com/fran/clicks/keyboard/neural/`
+This is the newer engine consumed by `app/src/main/java/com/fran/teclas/keyboard/neural/`
 (`NeuralGlideEngine` and friends). It is an **encoder-decoder** transformer that emits the word one
 character at a time, decoded on-device with a **dictionary-constrained beam search** — a different,
 richer contract than Track B's single-shot word classifier. Both engines coexist; the device prefers

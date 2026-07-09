@@ -1,6 +1,6 @@
-# Clicks Universal Search — code-level design spec
+# Teclas Universal Search — code-level design spec
 
-Companion to `clicks-search-codex-prompt.md`. Exact layout/measurements for the neumorphic search
+Companion to `teclas-search-codex-prompt.md`. Exact layout/measurements for the neumorphic search
 surface. Tokens, shadow presets, and the `Neu` helpers come from `../neumorphic-redesign/design-spec.md`
 — this file only covers the search-specific structures. Reference: `prototype-universal-search.html`.
 
@@ -37,11 +37,11 @@ TRAVEL `#A071FF` · AI `#A071FF`. Query-highlight span = GREEN `#28E06A`.
 
 ## Gemini (AI) answer card
 - Full-width RAISED card, radius 16, padding 12.
-- Header: 28dp RAISED_SM well with Clicks "C" mark in PURPLE; "Clicks AI" (12sp, 600) + "GEMINI"
+- Header: 28dp RAISED_SM well with Teclas "C" mark in PURPLE; "Teclas AI" (12sp, 600) + "GEMINI"
   (8sp mono, PURPLE).
 - Answer bubble: carved PRESSED_SM, radius 11, padding 10, 12sp ink, line-height 1.55. Inline commands
   wrapped in a carved PRESSED_SM chip, mono 10.5sp GREEN.
-- Optional "asked" bubble above the answer (carved, ink-dim) mirroring the Clicks AI pane.
+- Optional "asked" bubble above the answer (carved, ink-dim) mirroring the Teclas AI pane.
 - Action buttons row: RAISED_SM pills, 10.5sp, last button primary (GREEN text). Tap → existing actions.
 
 ## Layout — docked
