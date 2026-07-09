@@ -267,6 +267,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var spaceBoardController: com.fran.teclas.grid.SpaceBoardController
     private var spaceBoardOverlay: View? = null
     private var spaceBoardDragActive = false
+    private var spaceBoardTitleView: TextView? = null
     private lateinit var widgetPersistenceRepository: WidgetPersistenceRepository
     private var widgetSpecsCache: List<WidgetSpec>? = null
     private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
@@ -7243,31 +7244,44 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spaceIconView = this
         updateSpaceIcon()
         setOnClickListener { view ->
-            haptic(view)
-            val spaces = SpaceManager.spaces(this@MainActivity).filter { it.enabled }
-            val lockedId = SpaceManager.lockedSpaceId(this@MainActivity)
-            val detected = predictContext?.let { SpaceManager.detect(this@MainActivity, it).space }
-            val popup = android.widget.PopupMenu(this@MainActivity, view)
-            popup.menu.add(0, -1, 0, "Auto" + (detected?.let { "  ·  ${it.emoji} ${it.name}" } ?: ""))
-                .isCheckable = true
-            popup.menu.getItem(0).isChecked = lockedId == null
-            spaces.forEachIndexed { i, space ->
-                popup.menu.add(0, i, i + 1, "${space.emoji}  ${space.name}").isCheckable = true
-                popup.menu.getItem(i + 1).isChecked = lockedId == space.id
-            }
-            popup.setOnMenuItemClickListener { item ->
-                SpaceManager.lock(this@MainActivity, if (item.itemId < 0) null else spaces[item.itemId].id)
+            showSpaceSwitcher(view) {
                 updateSpaceIcon()
                 libraryViewDirty = true
                 libraryContentReady = false
                 if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent() else showLibrary(animate = false)
                 renderFavoritesDock()
-                true
             }
-            popup.show()
         }
         // Long-press opens this Space's unified board (its apps + widgets in one canvas).
         setOnLongClickListener { view -> haptic(view); openSpaceBoard(); true }
+    }
+
+    /**
+     * Shows the Space chooser anchored to [anchor]: "Auto" (follow detection) plus every Space,
+     * with the current lock checked. Picking one locks the launcher to that Space (or clears the
+     * lock for Auto), then runs [onChanged] so the caller can refresh its surface. This is how
+     * you correct a bad detection — e.g. it says Home but you're travelling.
+     */
+    private fun showSpaceSwitcher(anchor: View, onChanged: () -> Unit) {
+        haptic(anchor)
+        val spaces = SpaceManager.spaces(this).filter { it.enabled }
+        val lockedId = SpaceManager.lockedSpaceId(this)
+        val detected = predictContext?.let { SpaceManager.detect(this, it).space }
+        val popup = android.widget.PopupMenu(this, anchor)
+        popup.menu.add(0, -1, 0, "Auto" + (detected?.let { "  ·  ${it.emoji} ${it.name}" } ?: ""))
+            .isCheckable = true
+        popup.menu.getItem(0).isChecked = lockedId == null
+        spaces.forEachIndexed { i, space ->
+            popup.menu.add(0, i, i + 1, "${space.emoji}  ${space.name}").isCheckable = true
+            popup.menu.getItem(i + 1).isChecked = lockedId == space.id
+        }
+        popup.setOnMenuItemClickListener { item ->
+            SpaceManager.lock(this, if (item.itemId < 0) null else spaces[item.itemId].id)
+            refreshPredictContext(rerender = true)
+            onChanged()
+            true
+        }
+        popup.show()
     }
 
     // ---- per-Space unified board (apps + widgets in one canvas) --------------------------
@@ -7393,8 +7407,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                addView(mono("${space.emoji}  ${space.name.uppercase(Locale.US)}  ·  BOARD", 11f, Accent).apply {
+                // Tappable Space label = the switcher. Tap to jump to another Space (e.g. Travel
+                // when detection wrongly says Home); the board reloads for it. "▾" hints it's a menu.
+                addView(mono("${space.emoji}  ${space.name.uppercase(Locale.US)}  ▾", 11f, Accent).apply {
                     letterSpacing = 0.2f
+                    isClickable = true
+                    setPadding(dp(2), dp(6), dp(10), dp(6))
+                    spaceBoardTitleView = this
+                    setOnClickListener { anchor -> showSpaceSwitcher(anchor) { reloadSpaceBoardForActiveSpace() } }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
                 addView(mono("DONE", 11f, InkDim).apply {
                     setPadding(dp(10), dp(6), dp(6), dp(6)); isClickable = true
@@ -7414,6 +7434,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addContentView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         container.translationX = resources.displayMetrics.widthPixels.toFloat()
         return container
+    }
+
+    /** Reload the open board's apps/widgets + title for the (newly picked) active Space. */
+    private fun reloadSpaceBoardForActiveSpace() {
+        if (spaceBoardOverlay == null || !::spaceBoardController.isInitialized) return
+        val space = activeSpaceForUi() ?: return
+        spaceBoardController.open(space.id, spaceBoardSeedApps(space))
+        spaceBoardTitleView?.text = "${space.emoji}  ${space.name.uppercase(Locale.US)}  ▾"
     }
 
     /** Instant open with a slide-in animation (up-swipe / gesture-action paths). */
