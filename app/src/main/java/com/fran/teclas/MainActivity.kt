@@ -264,6 +264,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val widgetPickerExpandedApps = mutableSetOf<String>()
     private lateinit var appWidgetManager: AppWidgetManager
     private lateinit var appWidgetHost: AppWidgetHost
+    private lateinit var spaceBoardController: com.fran.teclas.grid.SpaceBoardController
+    private var spaceBoardOverlay: View? = null
     private lateinit var widgetPersistenceRepository: WidgetPersistenceRepository
     private var widgetSpecsCache: List<WidgetSpec>? = null
     private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
@@ -558,6 +560,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         appWidgetHost.startListening()
+        spaceBoardController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
         widgetPersistenceRepository = WidgetPersistenceRepository(this)
         widgetSpecsCache = loadWidgetSpecsFromStore()
         keyboardSize = prefs().getInt(KEYBOARD_SIZE_PREF, 28)
@@ -857,6 +860,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (::spaceBoardController.isInitialized &&
+            spaceBoardController.onWidgetResult(requestCode, resultCode == RESULT_OK)) {
+            return
+        }
         if (requestCode == VOICE_REQUEST_CODE && resultCode == RESULT_OK) {
             val spoken = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
                 ?.firstOrNull() ?: return
@@ -910,6 +917,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onBackPressed() {
+        if (spaceBoardOverlay != null) { closeSpaceBoard(); return }
         if (todayOpen) { todayPaneHost.closeToday(); return }
         if (travelPaneHost.travelOverlay != null) { travelPaneHost.dismissTravelOverlay(); return }
         if (widgetPickerView != null) { closeWidgetPicker(); return }
@@ -7235,6 +7243,125 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             popup.show()
         }
+        // Long-press opens this Space's unified board (its apps + widgets in one canvas).
+        setOnLongClickListener { view -> haptic(view); openSpaceBoard(); true }
+    }
+
+    // ---- per-Space unified board (apps + widgets in one canvas) --------------------------
+
+    private inner class SpaceBoardCallbacks : com.fran.teclas.grid.SpaceBoardController.Callbacks {
+        override fun launchAppFromBoard(packageName: String, className: String?, label: String?) {
+            val entry = apps.firstOrNull { it.packageName == packageName }
+            pendingLaunchSource = LaunchSource.DRAWER
+            if (entry != null) openExternal(entry.toPaneTarget())
+            else runCatching {
+                packageManager.getLaunchIntentForPackage(packageName)?.let { launchExternalIntent(it, packageName) }
+            }
+        }
+        override fun loadIcon(packageName: String?, className: String?): Drawable? =
+            com.fran.teclas.grid.GridIcons.resolve(this@MainActivity, packageName, className)
+        override fun createWidgetHostView(widgetId: Int): View? {
+            val info = appWidgetManager.getAppWidgetInfo(widgetId) ?: return null
+            return runCatching {
+                appWidgetHost.createView(this@MainActivity, widgetId, info).apply { setAppWidget(widgetId, info) }
+            }.getOrNull()
+        }
+        override fun allocateWidgetId(): Int = appWidgetHost.allocateAppWidgetId()
+        override fun bindWidgetIfAllowed(widgetId: Int, provider: AppWidgetProviderInfo): Boolean =
+            runCatching { appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, provider.provider) }.getOrDefault(false)
+        override fun deleteWidgetId(widgetId: Int) { runCatching { appWidgetHost.deleteAppWidgetId(widgetId) } }
+        override fun updateWidgetSize(widgetId: Int, widthDp: Int, heightDp: Int) {
+            val options = Bundle().apply {
+                putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
+                putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
+                putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
+                putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
+            }
+            runCatching { appWidgetManager.updateAppWidgetOptions(widgetId, options) }
+        }
+        @Suppress("DEPRECATION")
+        override fun startWidgetResultIntent(intent: Intent, requestCode: Int) {
+            runCatching { startActivityForResult(intent, requestCode) }
+        }
+        override fun showAddChooser(onAddApp: () -> Unit, onAddWidget: () -> Unit) {
+            AlertDialog.Builder(this@MainActivity)
+                .setItems(arrayOf("Add app", "Add widget")) { _, which -> if (which == 0) onAddApp() else onAddWidget() }
+                .show()
+        }
+        override fun showWidgetPicker(onPick: (AppWidgetProviderInfo) -> Unit) {
+            val providers = appWidgetManager.installedProviders
+                .sortedBy { it.loadLabel(packageManager).lowercase(Locale.US) }
+            val labels = providers.map { it.loadLabel(packageManager).toString() }.toTypedArray()
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Add widget")
+                .setItems(labels) { _, which -> onPick(providers[which]) }
+                .show()
+        }
+        override fun showAppPicker(onPick: (String, String?, String?) -> Unit) {
+            val choices = apps.filter { it.packageName != packageName }
+            val labels = choices.map { it.label }.toTypedArray()
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("Add app")
+                .setItems(labels) { _, which ->
+                    val a = choices[which]; onPick(a.packageName, a.componentName.className, a.label)
+                }
+                .show()
+        }
+    }
+
+    /** The active Space's apps, ranked, to seed a fresh board. */
+    private fun spaceBoardSeedApps(): List<com.fran.teclas.grid.SpaceBoardSeed.SeedApp> {
+        val eligible = apps.filter { it.packageName != packageName }
+        val predicted = predictedPackages(eligible.map { it.packageName }, 12) ?: emptyList()
+        val usage = appUsageCounts()
+        // Prefer the prediction ranking; when it isn't warm yet, fall back to most-used
+        // (not alphabetical) so a fresh board still leads with apps that make sense.
+        val usageOrdered = eligible.sortedWith(
+            compareByDescending<AppEntry> { usage[it.packageName] ?: 0 }.thenBy { collator.compare(it.label, it.label) }
+        )
+        val byPkg = eligible.associateBy { it.packageName }
+        val ordered = (predicted.mapNotNull { byPkg[it] } + usageOrdered).distinctBy { it.packageName }
+        return ordered.take(12).map {
+            com.fran.teclas.grid.SpaceBoardSeed.SeedApp(it.packageName, it.componentName.className, it.shortName)
+        }
+    }
+
+    private fun openSpaceBoard() {
+        if (spaceBoardOverlay != null || !::spaceBoardController.isInitialized) return
+        val space = activeSpaceForUi() ?: return
+        spaceBoardController.open(space.id, spaceBoardSeedApps())
+        val container = FrameLayout(this).apply {
+            setBackgroundColor(0xFF0B0D10.toInt())
+            isClickable = true
+            setPadding(dp(12), systemStatusBarHeight() + dp(12), dp(12), dp(14))
+        }
+        container.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(mono("${space.emoji}  ${space.name.uppercase(Locale.US)}  ·  BOARD", 11f, Accent).apply {
+                    letterSpacing = 0.2f
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(mono("DONE", 11f, InkDim).apply {
+                    setPadding(dp(10), dp(6), dp(6), dp(6)); isClickable = true
+                    setOnClickListener { closeSpaceBoard() }
+                }, LinearLayout.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)))
+            addView(mono("Tap to open · long-press an empty cell to add apps & widgets", 9f, InkDim).apply {
+                setPadding(dp(2), 0, 0, dp(8)); letterSpacing = 0.06f
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(spaceBoardController.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        spaceBoardOverlay = container
+        addContentView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun closeSpaceBoard(): Boolean {
+        val overlay = spaceBoardOverlay ?: return false
+        (overlay.parent as? ViewGroup)?.removeView(overlay)
+        spaceBoardOverlay = null
+        return true
     }
 
     private fun updateSpaceIcon() {

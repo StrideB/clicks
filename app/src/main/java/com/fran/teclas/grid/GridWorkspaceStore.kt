@@ -89,21 +89,38 @@ data class GridItem(
 
 object GridWorkspaceStore {
     private const val PREFS = "grid_workspace"
-    private const val KEY_LAYOUT = "layout_v1"
+    private const val KEY_LAYOUT = "layout_v1"          // the standalone Grid Workspace Lab
+    private const val KEY_SPACE_PREFIX = "layout_space_" // per-Space unified boards
 
-    fun load(context: Context): List<GridItem> {
+    /** The standalone lab board (no Space). */
+    fun load(context: Context): List<GridItem> = loadKey(context, KEY_LAYOUT)
+
+    fun save(context: Context, items: List<GridItem>) = saveKey(context, KEY_LAYOUT, items)
+
+    /** A Space's unified board. Each Space keeps its own apps+widgets layout. */
+    fun loadSpace(context: Context, spaceId: String): List<GridItem> =
+        loadKey(context, KEY_SPACE_PREFIX + spaceId)
+
+    fun saveSpace(context: Context, spaceId: String, items: List<GridItem>) =
+        saveKey(context, KEY_SPACE_PREFIX + spaceId, items)
+
+    /** True once the Space board has been created (so we seed apps only on first open). */
+    fun hasSpaceBoard(context: Context, spaceId: String): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY_SPACE_PREFIX + spaceId)
+
+    private fun loadKey(context: Context, key: String): List<GridItem> {
         val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_LAYOUT, null) ?: return emptyList()
+            .getString(key, null) ?: return emptyList()
         return runCatching {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { GridItem.fromJson(arr.getJSONObject(it)) }
         }.getOrDefault(emptyList())
     }
 
-    fun save(context: Context, items: List<GridItem>) {
+    private fun saveKey(context: Context, key: String, items: List<GridItem>) {
         val arr = JSONArray().apply { items.forEach { put(it.toJson()) } }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString(KEY_LAYOUT, arr.toString()).apply()
+            .edit().putString(key, arr.toString()).apply()
     }
 }
 
