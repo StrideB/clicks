@@ -2433,13 +2433,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 runCatching { nanoRewrite.rewrite(text) }
                     .getOrDefault(com.fran.teclas.keyboard.NanoRewriteEngine.Result.Error)
             }
-            // On-device model still downloading and no cloud auth → say so honestly instead of
-            // letting the keyless cloud fallback die with "couldn't reach the AI".
+            // No cloud auth and on-device can't serve → say WHY honestly instead of letting the
+            // keyless cloud fallback die with "couldn't reach the AI".
             val cloudless = key.isBlank() && GeminiClient.proxy?.idTokenProvider?.invoke() == null
-            if (nanoResult == com.fran.teclas.keyboard.NanoRewriteEngine.Result.Downloading && cloudless) {
+            if (cloudless && nanoResult == com.fran.teclas.keyboard.NanoRewriteEngine.Result.Downloading) {
                 handler.post {
                     polishing = false
                     flashStatus("Preparing on-device AI — try again in a minute…", 2600)
+                    onTextChanged()
+                }
+                return@Thread
+            }
+            if (cloudless && nanoResult == com.fran.teclas.keyboard.NanoRewriteEngine.Result.Blocked) {
+                handler.post {
+                    polishing = false
+                    flashStatus("Android blocks on-device AI inside other apps — polish works on the Teclas home screen, or add a key for cloud.", 3400)
                     onTextChanged()
                 }
                 return@Thread

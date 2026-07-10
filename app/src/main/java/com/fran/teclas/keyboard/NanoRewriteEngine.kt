@@ -34,6 +34,7 @@ class NanoRewriteEngine(context: Context) {
         object Unchanged : Result()
         object Downloading : Result()   // model is fetching; try again shortly
         object Unsupported : Result()   // device has no AICore / not eligible
+        object Blocked : Result()       // AICore refused: app not foreground (typing in another app)
         object Error : Result()
     }
 
@@ -61,11 +62,16 @@ class NanoRewriteEngine(context: Context) {
                 else -> {
                     val out = client.runInference(RewritingRequest.builder(text).build())
                         .await().results.firstOrNull()?.text?.trim()
+                    logStatus("rewrite result: ${if (out.isNullOrEmpty()) "EMPTY" else "ok len=${out.length} changed=${out != text.trim()}"}")
                     if (out.isNullOrEmpty() || out == text.trim()) Result.Unchanged
                     else Result.Rewritten(out)
                 }
             }
-        }.getOrElse { Log.w(TAG, "rewrite failed: ${it.message}"); Result.Error }
+        }.getOrElse {
+            logStatus("rewrite failed: ${it.javaClass.simpleName}: ${it.message}")
+            if (it.message?.contains("Background usage", ignoreCase = true) == true) Result.Blocked
+            else Result.Error
+        }
     }
 
     private fun startDownload() {
