@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
@@ -103,13 +104,21 @@ fun WeatherStylePickerSheet(
                     Text("✕", color = InkBright, fontSize = 13.sp)
                 }
             }
+            // Sections in WEATHER_CATEGORY_ORDER; any style whose family isn't listed there
+            // still shows, under a trailing section — so a new family is never silently dropped.
+            val grouped = WEATHER_STYLES.groupBy { it.category }
+            val orderedCategories = WEATHER_CATEGORY_ORDER.filter { grouped.containsKey(it) } +
+                grouped.keys.filter { it !in WEATHER_CATEGORY_ORDER }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                item {
+                item(span = { GridItemSpan(maxLineSpan) }, key = "hdr_classic") {
+                    CategoryHeader("Classic", 1, accent)
+                }
+                item(key = WEATHER_STYLE_CLASSIC_ID) {
                     PickerCell(
                         name = "Classic",
                         selected = currentStyleId == WEATHER_STYLE_CLASSIC_ID,
@@ -117,16 +126,46 @@ fun WeatherStylePickerSheet(
                         onClick = { onSelect(WEATHER_STYLE_CLASSIC_ID) }
                     ) { ClassicHeaderPreview(data) }
                 }
-                items(WEATHER_STYLES, key = { it.id }) { style ->
-                    PickerCell(
-                        name = style.name,
-                        selected = currentStyleId == style.id,
-                        accent = accent,
-                        onClick = { onSelect(style.id) }
-                    ) { style.render(data, accent, Modifier) }
+                orderedCategories.forEach { category ->
+                    val styles = grouped[category].orEmpty()
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "hdr_$category") {
+                        CategoryHeader(category, styles.size, accent)
+                    }
+                    items(styles, key = { it.id }) { style ->
+                        PickerCell(
+                            name = style.name,
+                            selected = currentStyleId == style.id,
+                            accent = accent,
+                            onClick = { onSelect(style.id) }
+                        ) { style.render(data, accent, Modifier) }
+                    }
                 }
             }
         }
+    }
+}
+
+// Full-width section divider between families. Accent spine + label + count, matching the
+// launcher's glass language.
+@Composable
+private fun CategoryHeader(title: String, count: Int, accent: Color) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .width(3.dp)
+                .height(12.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(accent)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(title.uppercase(), color = InkBright, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+        Spacer(Modifier.width(8.dp))
+        Text(count.toString(), color = InkMuted, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

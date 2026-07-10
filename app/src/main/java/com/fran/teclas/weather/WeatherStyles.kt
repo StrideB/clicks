@@ -63,8 +63,13 @@ data class WeatherData(
 data class WeatherStyle(
     val id: String,               // persisted in prefs: weather_widget_style
     val name: String,
+    val category: String,         // picker section, e.g. "Animated" / "Simple" / "Dot Matrix"
     val render: @Composable (WeatherData, Color, Modifier) -> Unit
 )
+
+// Category section order for the picker gallery (Classic is rendered as its own lead section).
+// Add a new family's name here to give it a section; unknown families fall to the end.
+val WEATHER_CATEGORY_ORDER = listOf("Simple", "Dot Matrix", "Animated")
 
 // The built-in native header keeps this id; only non-classic ids resolve through WEATHER_STYLES.
 const val WEATHER_STYLE_CLASSIC_ID = "header"
@@ -95,8 +100,11 @@ fun parseHourlyJson(raw: String?): List<HourSlot> {
 
 private val glyphColor = Color.White
 
-// Boxless styles float straight on the wallpaper, so every glyph carries its own
-// soft shadow for legibility; this file-local Text bakes it in for all 20 styles.
+// Boxless styles float straight on the wallpaper — every glyph across all families carries
+// this shadow so it stays legible on any photo. Shared with the Simple/Dot Matrix file.
+internal val WeatherTextShadow = Shadow(Color.Black.copy(alpha = 0.55f), Offset(0f, 3f), 7f)
+
+// File-local Text that bakes the shadow in for all 20 animated styles below.
 @Composable
 private fun Text(
     text: String,
@@ -117,9 +125,7 @@ private fun Text(
     fontFamily = fontFamily,
     letterSpacing = letterSpacing,
     textAlign = textAlign,
-    style = style.merge(
-        TextStyle(shadow = Shadow(Color.Black.copy(alpha = 0.55f), Offset(0f, 3f), 7f))
-    )
+    style = style.merge(TextStyle(shadow = WeatherTextShadow))
 )
 
 // ---------- Animated condition icon (Canvas, no external assets) ----------
@@ -377,28 +383,37 @@ private val serif = FontFamily.Serif
 }
 
 // ============================ REGISTRY ============================
-val WEATHER_STYLES: List<WeatherStyle> = listOf(
-    WeatherStyle("aurora", "Aurora") { d, a, m -> Aurora(d, a, m) },
-    WeatherStyle("halo", "Halo") { d, a, m -> Halo(d, a, m) },
-    WeatherStyle("ledger", "Ledger") { d, a, m -> Ledger(d, a, m) },
-    WeatherStyle("broadsheet", "Broadsheet") { d, a, m -> Broadsheet(d, a, m) },
-    WeatherStyle("almanac", "Almanac") { d, a, m -> Almanac(d, a, m) },
-    WeatherStyle("console", "Console") { d, a, m -> Console(d, a, m) },
-    WeatherStyle("orbit", "Orbit") { d, a, m -> Orbit(d, a, m) },
-    WeatherStyle("duo", "Duo") { d, a, m -> Duo(d, a, m) },
-    WeatherStyle("whisper", "Whisper") { d, a, m -> Whisper(d, a, m) },
-    WeatherStyle("tally", "Tally") { d, a, m -> Tally(d, a, m) },
-    WeatherStyle("impact", "Impact") { d, a, m -> Impact(d, a, m) },
-    WeatherStyle("lozenge", "Lozenge") { d, a, m -> Lozenge(d, a, m) },
-    WeatherStyle("marker", "Marker") { d, a, m -> Marker(d, a, m) },
-    WeatherStyle("accent", "Accent") { d, a, m -> Accent(d, a, m) },
-    WeatherStyle("margin", "Margin") { d, a, m -> Margin(d, a, m) },
-    WeatherStyle("timeline", "Timeline") { d, a, m -> Timeline(d, a, m) },
-    WeatherStyle("prism", "Prism") { d, a, m -> Prism(d, a, m) },
-    WeatherStyle("docket", "Docket") { d, a, m -> Docket(d, a, m) },
-    WeatherStyle("beacon", "Beacon") { d, a, m -> Beacon(d, a, m) },
-    WeatherStyle("dossier", "Dossier") { d, a, m -> Dossier(d, a, m) },
+// The animated family (each renders WeatherGlyph). Simple + Dot Matrix families live in
+// WeatherStylesSimpleMatrix.kt and are folded into WEATHER_STYLES below.
+private const val ANIMATED = "Animated"
+val ANIMATED_STYLES: List<WeatherStyle> = listOf(
+    WeatherStyle("aurora", "Aurora", ANIMATED) { d, a, m -> Aurora(d, a, m) },
+    WeatherStyle("halo", "Halo", ANIMATED) { d, a, m -> Halo(d, a, m) },
+    WeatherStyle("ledger", "Ledger", ANIMATED) { d, a, m -> Ledger(d, a, m) },
+    WeatherStyle("broadsheet", "Broadsheet", ANIMATED) { d, a, m -> Broadsheet(d, a, m) },
+    WeatherStyle("almanac", "Almanac", ANIMATED) { d, a, m -> Almanac(d, a, m) },
+    WeatherStyle("console", "Console", ANIMATED) { d, a, m -> Console(d, a, m) },
+    WeatherStyle("orbit", "Orbit", ANIMATED) { d, a, m -> Orbit(d, a, m) },
+    WeatherStyle("duo", "Duo", ANIMATED) { d, a, m -> Duo(d, a, m) },
+    WeatherStyle("whisper", "Whisper", ANIMATED) { d, a, m -> Whisper(d, a, m) },
+    WeatherStyle("tally", "Tally", ANIMATED) { d, a, m -> Tally(d, a, m) },
+    WeatherStyle("impact", "Impact", ANIMATED) { d, a, m -> Impact(d, a, m) },
+    WeatherStyle("lozenge", "Lozenge", ANIMATED) { d, a, m -> Lozenge(d, a, m) },
+    WeatherStyle("marker", "Marker", ANIMATED) { d, a, m -> Marker(d, a, m) },
+    WeatherStyle("accent", "Accent", ANIMATED) { d, a, m -> Accent(d, a, m) },
+    WeatherStyle("margin", "Margin", ANIMATED) { d, a, m -> Margin(d, a, m) },
+    WeatherStyle("timeline", "Timeline", ANIMATED) { d, a, m -> Timeline(d, a, m) },
+    WeatherStyle("prism", "Prism", ANIMATED) { d, a, m -> Prism(d, a, m) },
+    WeatherStyle("docket", "Docket", ANIMATED) { d, a, m -> Docket(d, a, m) },
+    WeatherStyle("beacon", "Beacon", ANIMATED) { d, a, m -> Beacon(d, a, m) },
+    WeatherStyle("dossier", "Dossier", ANIMATED) { d, a, m -> Dossier(d, a, m) },
 )
+
+// Master registry the picker, placement flow and persistence all read. `by lazy` so it is
+// robust to cross-file top-level init order (SIMPLE/DOT_MATRIX_STYLES live in another file).
+val WEATHER_STYLES: List<WeatherStyle> by lazy {
+    ANIMATED_STYLES + SIMPLE_STYLES + DOT_MATRIX_STYLES
+}
 
 fun weatherStyleById(id: String?): WeatherStyle =
     WEATHER_STYLES.firstOrNull { it.id == id } ?: WEATHER_STYLES.first()
