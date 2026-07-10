@@ -47,7 +47,7 @@ object GeminiClient {
      * context-agnostic. Tried after Nano, before any network.
      */
     @Volatile
-    var local: ((prompt: String, maxTokens: Int, temperature: Double) -> String?)? = null
+    var local: ((prompt: String, maxTokens: Int, temperature: Double, json: Boolean, grammar: String?) -> String?)? = null
     @Volatile
     var localReady: () -> Boolean = { false }
 
@@ -125,13 +125,14 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
      */
     fun generate(
         apiKey: String, model: String, prompt: String,
-        maxTokens: Int = 512, temperature: Double = 0.2, json: Boolean = false
-    ): String? = call(apiKey, model, prompt, maxTokens, temperature, json)
+        maxTokens: Int = 512, temperature: Double = 0.2, json: Boolean = false,
+        grammar: String? = null,
+    ): String? = call(apiKey, model, prompt, maxTokens, temperature, json, grammar)
 
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
     private fun call(
         apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double,
-        json: Boolean = false
+        json: Boolean = false, grammar: String? = null,
     ): String? {
         // On-device first: Gemini Nano costs nothing and sends nothing. Any failure (device
         // unsupported, model still downloading, inference error) falls through to the cloud paths.
@@ -141,7 +142,7 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
         }
         // Second on-device tier: in-process Bonsai via llama.cpp — serves the IME inside other
         // apps where AICore's foreground policy blocks Nano.
-        local?.invoke(prompt, maxTokens, temperature)?.let { out ->
+        local?.invoke(prompt, maxTokens, temperature, json, grammar)?.let { out ->
             lastErrorMessage = null
             return out
         }

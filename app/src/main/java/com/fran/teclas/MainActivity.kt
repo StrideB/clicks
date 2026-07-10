@@ -21,6 +21,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.location.Location
 import android.location.LocationManager
+import android.media.AudioManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -285,6 +286,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetSpecsCache: List<WidgetSpec>? = null
     private var pendingWidgetId: Int = AppWidgetManager.INVALID_APPWIDGET_ID
     private var pendingWidgetProvider: AppWidgetProviderInfo? = null
+    private var pendingDockWidgetKey: String? = null
+    private var pendingDockWidgetProvider: AppWidgetProviderInfo? = null
     private var librarySwipeStartX = 0f
     private var librarySwipeStartY = 0f
     private var librarySwipeTriggered = false
@@ -475,6 +478,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             refreshAppsForPackageChange()
+        }
+    }
+    private val configurationChangeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_CONFIGURATION_CHANGED) {
+                refreshSystemThemeIfNeeded(animated = true, forceRender = false)
+            }
         }
     }
 
@@ -685,6 +695,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             com.fran.teclas.predict.AppCategories.of(applicationContext, pkg)
         }
         registerAppPackageReceiver()
+        registerConfigurationChangeReceiver()
         messages = loadHubMessages()
         calendarEvents = loadCalendarEvents()
         prefs().registerOnSharedPreferenceChangeListener(prefsListener)
@@ -720,7 +731,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext)
         GeminiClient.nano?.warmUp()
         // Second on-device tier (llama.cpp/Bonsai): serves the IME where AICore refuses.
-        GeminiClient.local = { p, mt, t -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t) }
+        GeminiClient.local = { p, mt, t, j, g -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t, json = j, grammar = g) }
         GeminiClient.localReady = { com.fran.teclas.llm.LocalLlmEngine.ready(applicationContext) }
         travelRepo = TravelRepository(gmailApi)
         if (spotifyAuth.isConnected) musicPaneHost.preloadSpotifyLibrary()
@@ -766,6 +777,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val playChanged = (info?.isPlaying == true) != lastMusicPlaying
                 lastMusicSourcePackage = src
                 lastMusicPlaying = info?.isPlaying == true
+                if (sourceChanged || playChanged) refreshDockMusicNotes()
                 if (openPane?.kind == PaneKind.MUSIC) {
                     // Source change can flip wheel↔simple; play-state change updates the
                     // play/pause glyph on the simple / black transport docks.
@@ -877,6 +889,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val now = System.currentTimeMillis()
         if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now; scheduleSemanticIndexRefresh() }
         if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now; scheduleSemanticIndexRefresh() }
+        // LLM scene fusion: precompute a Space verdict from the fresh signal bundle (debounced +
+        // gated internally; the result is read lock-free by SpaceManager.detect).
+        predictContext?.let { snap ->
+            com.fran.teclas.predict.SceneFusion.maybeRefresh(
+                this, snap,
+                calendarEvents.take(3).map { "${it.title} ${it.dayLabel} ${it.timeLabel}".trim() },
+                messages.take(5).map { "${it.sender}: ${it.preview.take(60)}" },
+            )
+        }
         if (now - lastContactsLoadMs > 5 * 60_000) { preloadContactsCache(); lastContactsLoadMs = now }
         if (todayEnabled && ::briefRepository.isInitialized) {
             briefRepository.startPeriodic()
@@ -927,13 +948,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        updateLauncherTheme(animated = true)
+        refreshSystemThemeIfNeeded(animated = true, forceRender = true)
     }
 
     override fun onDestroy() {
         super.onDestroy()
         prefs().unregisterOnSharedPreferenceChangeListener(prefsListener)
         runCatching { unregisterReceiver(packageChangeReceiver) }
+        runCatching { unregisterReceiver(configurationChangeReceiver) }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
         TeclasNotificationListener.onBriefChanged = null
@@ -1008,22 +1030,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val widgetId = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
             val provider = pendingWidgetProvider
             if (resultCode == RESULT_OK && provider != null && widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
-                configureOrSaveWidget(widgetId, provider)
+                if (pendingDockWidgetKey != null) configureOrSaveDockWidget(widgetId, provider) else configureOrSaveWidget(widgetId, provider)
             } else {
                 runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
             }
             pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
             pendingWidgetProvider = null
+            pendingDockWidgetKey = null
+            pendingDockWidgetProvider = null
         } else if (requestCode == WIDGET_CONFIGURE_REQUEST_CODE) {
             val widgetId = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
             if (resultCode == RESULT_OK && widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
-                saveWidgetId(widgetId)
-                refreshWidgetBoard()
+                val dockKey = pendingDockWidgetKey
+                if (dockKey != null) {
+                    saveDockWidgetId(dockKey, widgetId)
+                } else {
+                    saveWidgetId(widgetId)
+                    refreshWidgetBoard()
+                }
             } else {
                 runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
             }
             pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
             pendingWidgetProvider = null
+            pendingDockWidgetKey = null
+            pendingDockWidgetProvider = null
         }
     }
 
@@ -2254,61 +2285,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun installWallpaperEditLongPress(surface: View) {
-        // Hardened against accidental activation: a long, deliberate ~2s hold that stays put.
-        // Any drift beyond a small slop, a second finger, or a lift cancels it.
-        val cancelSlop = dp(8)
-        val holdDelay = android.view.ViewConfiguration.getLongPressTimeout().toLong() + 1700L
-        var downX = 0f
-        var downY = 0f
+        // Disabled for now: home-surface wallpaper long-press was ghost-triggering during
+        // navigation gestures and could leave the launcher in edit mode. Wallpaper controls
+        // remain available from settings/search; this hook should not arm any gesture.
+        cancelWallpaperLongPress()
         surface.isLongClickable = false
-        surface.setOnTouchListener { view, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    cancelWallpaperLongPress()
-                    if (keyboardGestureLockActive() ||
-                        event.pointerCount != 1 ||
-                        isInsideKeyboard(event.rawX, event.rawY) ||
-                        isInsideKeyboardRevealZone(event.rawX, event.rawY) ||
-                        widgetKeyboardSwapActive() ||
-                        widgetKeyboardSliderAnimating ||
-                        todayOpen ||
-                        libraryOpen ||
-                        libraryDragActive ||
-                        spaceBoardOverlay != null ||
-                        homeLeftOverlay != null ||
-                        widgetBoardView != null ||
-                        openPane != null
-                    ) {
-                        return@setOnTouchListener false
-                    }
-                    downX = event.rawX
-                    downY = event.rawY
-                    val runnable = Runnable {
-                        wallpaperLongPressRunnable = null
-                        if (!keyboardGestureLockActive() &&
-                            !todayOpen && !libraryOpen && !libraryDragActive &&
-                            spaceBoardOverlay == null && homeLeftOverlay == null &&
-                            widgetBoardView == null && openPane == null
-                        ) {
-                            haptic(view)
-                            openDeviceWallpaperPicker(view)
-                        }
-                    }
-                    wallpaperLongPressRunnable = runnable
-                    handler.postDelayed(runnable, holdDelay)
-                }
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    cancelWallpaperLongPress()
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (event.pointerCount > 1 || abs(event.rawX - downX) > cancelSlop || abs(event.rawY - downY) > cancelSlop) {
-                        cancelWallpaperLongPress()
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> cancelWallpaperLongPress()
-            }
-            false
-        }
+        surface.setOnLongClickListener(null)
+        surface.setOnTouchListener(null)
     }
 
     private fun innerWallpaperEditOverlay(): View = FrameLayout(this).apply {
@@ -6921,7 +6904,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else null
         return ResizableWidgetContainer(this, spec).apply {
             if (hostView != null) {
-                addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                addView(RoundedWidgetHostFrame(context).apply {
+                    addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             } else {
                 addView(mono("WIDGET UNAVAILABLE", 9f, InkDim).apply { gravity = Gravity.CENTER },
                     FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -6994,6 +6979,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun ViewGroup.childrenList(): List<View> = (0 until childCount).map { getChildAt(it) }.filterIsInstance<TextView>()
 
+    private fun View.findHostedWidgetView(): AppWidgetHostView? {
+        if (this is AppWidgetHostView) return this
+        val group = this as? ViewGroup ?: return null
+        for (index in 0 until group.childCount) {
+            val found = group.getChildAt(index).findHostedWidgetView()
+            if (found != null) return found
+        }
+        return null
+    }
+
     private fun applyHighContrastTextProtection(widgetContainer: ViewGroup, textViews: List<TextView>) {
         val blurSupported = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {
@@ -7011,6 +7006,80 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         textViews.forEach { text ->
             text.setShadowLayer(dp(6).toFloat(), 0f, dp(2).toFloat(), 0x80000000.toInt())
+        }
+    }
+
+    private inner class RoundedWidgetHostFrame(context: Context) : FrameLayout(context) {
+        private val clipPath = Path()
+        private val bounds = RectF()
+        private val overlayPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val radius = dp(26).toFloat()
+        private val inset = dp(1) / 2f
+
+        init {
+            setWillNotDraw(false)
+            clipChildren = true
+            clipToPadding = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, radius)
+                }
+            }
+            clipToOutline = true
+            background = null
+            foreground = null
+            isClickable = false
+            isFocusable = false
+        }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            bounds.set(0f, 0f, width.toFloat(), height.toFloat())
+            clipPath.reset()
+            clipPath.addRoundRect(bounds, radius, radius, Path.Direction.CW)
+            val save = canvas.save()
+            canvas.clipPath(clipPath)
+            super.dispatchDraw(canvas)
+            canvas.restoreToCount(save)
+
+            val lightMode = activeNeuTokens.mode == NeuMode.LIGHT
+            overlayPaint.shader = null
+            overlayPaint.style = Paint.Style.STROKE
+            overlayPaint.strokeWidth = 1f
+            overlayPaint.color = adjustAlpha(if (lightMode) Color.BLACK else Color.WHITE, if (lightMode) 0.055f else 0.075f)
+            canvas.drawRoundRect(
+                inset,
+                inset,
+                width - inset,
+                height - inset,
+                radius,
+                radius,
+                overlayPaint
+            )
+
+            overlayPaint.strokeWidth = 0.8f
+            overlayPaint.color = adjustAlpha(Color.WHITE, if (lightMode) 0.20f else 0.10f)
+            canvas.drawArc(
+                inset + dp(1),
+                inset + dp(1),
+                width - inset - dp(1),
+                height - inset - dp(1),
+                200f,
+                112f,
+                false,
+                overlayPaint
+            )
+
+            overlayPaint.color = adjustAlpha(Color.BLACK, if (lightMode) 0.06f else 0.14f)
+            canvas.drawArc(
+                inset + dp(1),
+                inset + dp(1),
+                width - inset - dp(1),
+                height - inset - dp(1),
+                20f,
+                112f,
+                false,
+                overlayPaint
+            )
         }
     }
 
@@ -7199,7 +7268,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         private fun updateHostedWidgetSize() {
-            val hostView = (0 until childCount).map { getChildAt(it) }.firstOrNull { it is AppWidgetHostView } as? AppWidgetHostView ?: return
+            val hostView = findHostedWidgetView() ?: return
             hostView.updateAppWidgetSize(null, widgetMinWidthDp(spec), widgetMinHeightDp(spec), widgetMaxWidthDp(spec), widgetMaxHeightDp(spec))
             trackWidgetInteractionSafe(hostView, spec, if (resizing) "resize" else "move")
         }
@@ -7473,6 +7542,91 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else {
             saveWidgetId(widgetId)
             refreshWidgetBoard()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun configureOrSaveDockWidget(widgetId: Int, provider: AppWidgetProviderInfo) {
+        val dockKey = pendingDockWidgetKey ?: return
+        if (provider.configure != null) {
+            runCatching {
+                startActivityForResult(Intent(AppWidgetManager.ACTION_APPWIDGET_CONFIGURE).apply {
+                    component = provider.configure
+                    putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+                }, WIDGET_CONFIGURE_REQUEST_CODE)
+            }.onFailure {
+                saveDockWidgetId(dockKey, widgetId)
+            }
+        } else {
+            saveDockWidgetId(dockKey, widgetId)
+        }
+    }
+
+    private fun dockWidgetId(dockKey: String): Int {
+        val raw = prefs().getString(DOCK_WIDGET_IDS_PREF, "{}") ?: "{}"
+        return runCatching { org.json.JSONObject(raw).optInt(dockKey, AppWidgetManager.INVALID_APPWIDGET_ID) }
+            .getOrDefault(AppWidgetManager.INVALID_APPWIDGET_ID)
+    }
+
+    private fun saveDockWidgetId(dockKey: String, widgetId: Int) {
+        val raw = prefs().getString(DOCK_WIDGET_IDS_PREF, "{}") ?: "{}"
+        val json = runCatching { org.json.JSONObject(raw) }.getOrDefault(org.json.JSONObject())
+        json.put(dockKey, widgetId)
+        prefs().edit().putString(DOCK_WIDGET_IDS_PREF, json.toString()).apply()
+        Toast.makeText(this, "Dock widget pinned.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun removeDockWidget(dockKey: String) {
+        val id = dockWidgetId(dockKey)
+        if (id != AppWidgetManager.INVALID_APPWIDGET_ID) runCatching { appWidgetHost.deleteAppWidgetId(id) }
+        val raw = prefs().getString(DOCK_WIDGET_IDS_PREF, "{}") ?: "{}"
+        val json = runCatching { org.json.JSONObject(raw) }.getOrDefault(org.json.JSONObject())
+        json.remove(dockKey)
+        prefs().edit().putString(DOCK_WIDGET_IDS_PREF, json.toString()).apply()
+    }
+
+    private fun dockWidgetKeyForTarget(target: PaneTarget): String? {
+        target.packageName?.let { return "pkg:$it" }
+        if (target.kind == PaneKind.MUSIC) {
+            val src = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value?.sourcePackage else null
+            if (!src.isNullOrBlank()) return "pkg:$src"
+        }
+        return null
+    }
+
+    private fun dockWidgetProvidersForKey(dockKey: String): List<AppWidgetProviderInfo> {
+        val pkg = dockKey.removePrefix("pkg:").takeIf { it.isNotBlank() } ?: return emptyList()
+        return installedWidgetProviders().filter { it.provider.packageName == pkg }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun addDockWidgetProvider(dockKey: String, provider: AppWidgetProviderInfo) {
+        val oldId = dockWidgetId(dockKey)
+        if (oldId != AppWidgetManager.INVALID_APPWIDGET_ID) runCatching { appWidgetHost.deleteAppWidgetId(oldId) }
+        val widgetId = appWidgetHost.allocateAppWidgetId()
+        pendingWidgetId = widgetId
+        pendingWidgetProvider = provider
+        pendingDockWidgetKey = dockKey
+        pendingDockWidgetProvider = provider
+        val bound = runCatching {
+            appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, provider.provider)
+        }.getOrDefault(false)
+        if (bound) {
+            configureOrSaveDockWidget(widgetId, provider)
+        } else {
+            val intent = Intent(AppWidgetManager.ACTION_APPWIDGET_BIND).apply {
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_PROVIDER, provider.provider)
+            }
+            runCatching { startActivityForResult(intent, WIDGET_BIND_REQUEST_CODE) }
+                .onFailure {
+                    runCatching { appWidgetHost.deleteAppWidgetId(widgetId) }
+                    pendingWidgetId = AppWidgetManager.INVALID_APPWIDGET_ID
+                    pendingWidgetProvider = null
+                    pendingDockWidgetKey = null
+                    pendingDockWidgetProvider = null
+                    Toast.makeText(this, "Widget permission is needed.", Toast.LENGTH_SHORT).show()
+                }
         }
     }
 
@@ -10929,21 +11083,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             if (showKeyboardTypingWell()) {
-                addView(typingStripView(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyboardTypingWellHeight()).apply {
+                addView(keyboardTopShelf(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyboardTopShelfHeight()).apply {
                     marginStart = dp(8)
                     marginEnd = dp(8)
                     topMargin = dp(8)
                     bottomMargin = dp(1)
-                })
-            }
-            // Suggestion strip at the TOP of the keyboard (Gboard-style), above all key rows.
-            if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen) {
-                val stripHeight = launcherSuggestionStripLayoutHeight()
-                addView(suggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, stripHeight).apply {
-                    marginStart = dp(8)
-                    marginEnd = dp(8)
-                    topMargin = if (stripHeight > 0) dp(2) else 0
-                    bottomMargin = 0
                 })
             }
             if (symbolsOpen) {
@@ -11701,6 +11845,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Suggestions ──────────────────────────────────────────────────────────
 
     private var suggestionStripView: LinearLayout? = null
+    private var keyboardTopShelfView: View? = null
+    private var typingStripWellView: View? = null
     private var launcherSuggestionStripExpanded = false
     private var launcherSuggestionStripAnimatedHeight = 0
     private var launcherSuggestionStripAnimator: ValueAnimator? = null
@@ -11717,6 +11863,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
     private fun keyboardTypingWellHeight() = dp(36)
     private fun keyboardSuggestionStripHeight() = dp(28)
+    private fun keyboardSuggestionGap() = dp(2)
+    private fun keyboardTopShelfHeight(): Int {
+        if (!showKeyboardTypingWell()) return 0
+        val suggestionHeight = launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+        val suggestionSpace = if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen && suggestionHeight > 0) {
+            suggestionHeight + keyboardSuggestionGap()
+        } else {
+            0
+        }
+        return keyboardTypingWellHeight() + suggestionSpace
+    }
     private fun launcherSuggestionText(): String = when (openPane?.kind) {
         PaneKind.CHAT -> composeText
         PaneKind.AI -> aiDraftText
@@ -11735,20 +11892,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         launcherSuggestionStripAnimatedHeight = target
     }
 
-    private fun launcherSuggestionStripOuterHeight(): Int {
-        val h = launcherSuggestionStripLayoutHeight()
-        return if (h > 0) h + dp(2) else 0
-    }
-    private fun suggestionStripHeight() = if (showKeyboardTypingWell()) keyboardTypingWellHeight() + dp(9) else 0
+    private fun launcherSuggestionStripOuterHeight(): Int = 0
+    private fun suggestionStripHeight() = keyboardTopShelfHeight() + if (showKeyboardTypingWell()) dp(9) else 0
     private fun launcherSuggestionStripReservesSpace(): Boolean =
-        keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET || isUnfoldedInnerLayoutActive()
+        false
 
     private fun launcherSuggestionStripLayoutHeight(): Int {
-        return if (launcherSuggestionStripReservesSpace()) {
-            keyboardSuggestionStripHeight()
-        } else {
-            launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+        return launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
+    }
+
+    private fun keyboardTopShelf(): View {
+        val shelf = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
         }
+        keyboardTopShelfView = shelf
+        val typing = typingStripView().also { typingStripWellView = it }
+        shelf.addView(typing, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            keyboardTypingWellHeight(),
+            Gravity.TOP
+        ))
+        if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen) {
+            shelf.addView(suggestionStrip(), FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                launcherSuggestionStripLayoutHeight(),
+                Gravity.BOTTOM
+            ))
+        } else {
+            suggestionStripView = null
+        }
+        applyLauncherSuggestionStripHeight(launcherSuggestionStripAnimatedHeight)
+        return shelf
     }
 
     private fun suggestionStrip(): View {
@@ -11793,20 +11968,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val lp = (strip.layoutParams as? LinearLayout.LayoutParams)
             if (lp != null) {
                 lp.height = layoutHeight
-                lp.topMargin = if (layoutHeight > 0) dp(2) else 0
                 strip.layoutParams = lp
             }
             strip.visibility = if (layoutHeight > 0) View.VISIBLE else View.GONE
             strip.alpha = if (layoutHeight > 0) h / keyboardSuggestionStripHeight().toFloat() else 0f
         }
-        if (!launcherSuggestionStripReservesSpace() && ::keyboardDockView.isInitialized && keyboardDockView.parent != null) {
+        val progress = if (keyboardSuggestionStripHeight() > 0) h / keyboardSuggestionStripHeight().toFloat() else 0f
+        typingStripWellView?.translationY = 0f
+        keyboardTopShelfView?.let { shelf ->
+            val lp = shelf.layoutParams
+            if (lp != null) {
+                lp.height = keyboardTopShelfHeight()
+                shelf.layoutParams = lp
+            }
+        }
+        if (::keyboardDockView.isInitialized && keyboardDockView.parent != null) {
             val lp = keyboardDockView.layoutParams
             if (lp != null && !widgetPaneUsesRootDock()) {
                 lp.height = activeRootDockHeight()
                 keyboardDockView.layoutParams = lp
             }
         }
-        if (!launcherSuggestionStripReservesSpace()) widgetKeyboardHost?.let { host ->
+        widgetKeyboardHost?.let { host ->
             val lp = host.layoutParams
             if (lp != null && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && !widgetPaneUsesRootDock()) {
                 lp.height = widgetKeyboardHeight()
@@ -12298,24 +12481,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         val cmd = AgenticRouter.classify(raw)
         if (cmd != null) { pendingLauncherCommand = cmd; updateSuggestionBar(); return }
-        val geminiReady = raw.isNotBlank() && ProManager.isUnlocked(this) && geminiConfigured()
-        // A real message (not a command): offer inline AI actions — fix, translate — on it.
-        if (geminiReady && raw.trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3) {
-            pendingLauncherActions = buildLauncherMessageActions()
-            updateSuggestionBar()
-            return
-        }
-        // Free-form fallback: Gemini ranks the typed line onto a real skill (Pro + configured).
+        // Free-form fallback: the planner interprets the line first — commands (single or
+        // multi-step) win; only text that maps to NO skill falls back to message actions.
         if (raw.isNotBlank() && ProManager.isUnlocked(this) && geminiConfigured()) {
             val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
             val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
             val names = AgenticRouter.catalogNames()
             android.widget.Toast.makeText(this, "\uD83E\uDD16 Thinking\u2026", android.widget.Toast.LENGTH_SHORT).show()
             mediaUiScope.launch {
-                val match = withContext(Dispatchers.IO) { GeminiClient.fetchSkillMatch(key, model, raw, names) }
-                val c = match?.let { AgenticRouter.commandForSkill(it.first, it.second) }
-                if (c != null) { pendingLauncherCommand = c; updateSuggestionBar() }
-                else android.widget.Toast.makeText(this@MainActivity, "No command matched", android.widget.Toast.LENGTH_SHORT).show()
+                // Multi-step planner (grammar-locked to the catalog on the local tier):
+                // "text ana i'm late and timer 20" → two steps, run in order.
+                val steps = withContext(Dispatchers.IO) { AgenticPlanner.plan(prefs(), raw, names) }
+                val commands = steps.orEmpty().mapNotNull { AgenticRouter.commandForSkill(it.skill, it.arg) }
+                when {
+                    commands.size > 1 -> commands.forEachIndexed { i, c ->
+                        handler.postDelayed({
+                            val status = AgenticRouter.execute(this@MainActivity, c)
+                            android.widget.Toast.makeText(this@MainActivity, status ?: c.label, android.widget.Toast.LENGTH_SHORT).show()
+                        }, i * 900L)
+                    }
+                    commands.size == 1 -> { pendingLauncherCommand = commands[0]; updateSuggestionBar() }
+                    // No skill matched: treat it as a message → inline AI actions (fix, translate).
+                    raw.trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3 -> {
+                        pendingLauncherActions = buildLauncherMessageActions()
+                        updateSuggestionBar()
+                    }
+                    else -> android.widget.Toast.makeText(this@MainActivity, "No command matched", android.widget.Toast.LENGTH_SHORT).show()
+                }
             }
             return
         }
@@ -14173,6 +14365,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaUiScope.launch {
             withContext(Dispatchers.IO) {
                 runCatching { com.fran.teclas.semantic.SemanticSearchEngine.ensureIndex(this@MainActivity, items) }
+                // Space cold-start priors ride on the same vectors — recompute after the index.
+                runCatching {
+                    com.fran.teclas.predict.SemanticPriors.rebuild(
+                        this@MainActivity, com.fran.teclas.predict.SpaceManager.spaces(this@MainActivity)
+                    )
+                }
             }
         }
     }
@@ -15022,6 +15220,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             libraryContentReady = false
             render()
             openHere(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingAction("LAUNCHER LOOK   ${themeModeName().uppercase(Locale.US)}") {
+            haptic(this)
+            showLauncherLookMenu(this)
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingToggle("GRID WORKSPACE LAB", gridWorkspaceLabEnabled()) {
             val next = !gridWorkspaceLabEnabled()
@@ -16162,6 +16364,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun contextDockAppButton(app: LibraryApp, index: Int): View = FrameLayout(this).apply {
         isClickable = true
+        clipChildren = false
+        clipToPadding = false
         setPadding(dp(3), 0, dp(3), 0)
         alpha = 0f
         scaleX = 0.92f
@@ -16177,6 +16381,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, (index * 24L).coerceAtMost(120L))
         val iconFrameSize = if (isUnfoldedInnerLayoutActive()) dp(58) else dockIconFrameSize(showDockLabels())
         addView(FrameLayout(context).apply {
+            clipChildren = false
+            clipToPadding = false
             elevation = dp(2).toFloat()
             background = dockIconButtonBackground(activeNeuTokens)
             addView(ImageView(context).apply {
@@ -16185,6 +16391,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 adjustViewBounds = true
                 setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(DockMusicNotesView(context).apply {
+                setTarget(app.target)
+                setAccent(app.accent)
+                refreshActive()
+            }, FrameLayout.LayoutParams((iconFrameSize * 1.45f).toInt(), (iconFrameSize * 1.75f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
+                bottomMargin = -dp(4)
+            })
         }, FrameLayout.LayoutParams(iconFrameSize, iconFrameSize, Gravity.CENTER))
         setOnTouchListener { v, event ->
             when (event.actionMasked) {
@@ -16220,6 +16433,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
             isClickable = true
             setPadding(dp(2), 0, dp(2), 0)
             alpha = 0f
@@ -16236,6 +16451,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, (index * 24L).coerceAtMost(120L))
             val iconFrame = if (isUnfoldedInnerLayoutActive()) dp(58) else dockIconFrameSize(showLabel)
             addView(FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
                 elevation = dp(2).toFloat()
                 background = dockIconButtonBackground(activeNeuTokens)
                 if (libraryApp != null) {
@@ -16256,6 +16473,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         includeFontPadding = false
                     }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 }
+                addView(DockMusicNotesView(context).apply {
+                    setTarget(target)
+                    setAccent(item.accent)
+                    refreshActive()
+                }, FrameLayout.LayoutParams((iconFrame * 1.45f).toInt(), (iconFrame * 1.75f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
+                    bottomMargin = -dp(4)
+                })
             }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             if (showLabel) {
                 addView(TextView(context).apply {
@@ -16281,7 +16505,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target)
                 else { pendingLaunchSource = LaunchSource.DOCK; openExternal(target) }
             }
-            setOnLongClickListener { haptic(this); showOpenMenu(this, target); true }
+            setOnLongClickListener { haptic(this); showDockPeekMenu(this, item); true }
         }
     }
 
@@ -16355,12 +16579,277 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     // ── Menus ────────────────────────────────────────────────────────────────
 
-    private fun showOpenMenu(anchor: View, target: PaneTarget) {
-        val menu = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6))
-            background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
+    private fun dockMusicNotesActive(target: PaneTarget): Boolean {
+        val targetPackage = target.packageName?.takeIf { it.isNotBlank() }
+        val info = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+        if (info?.isPlaying == true) {
+            if (target.kind == PaneKind.MUSIC) return true
+            if (targetPackage == null) return false
+            return sameMusicSourcePackage(targetPackage, info.sourcePackage) ||
+                target.name.equals(info.sourceApp, ignoreCase = true) ||
+                (target.name.contains("spotify", ignoreCase = true) && info.sourcePackage.contains("spotify", ignoreCase = true))
         }
-        val popup = PopupWindow(menu, dp(204), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true }
+        return isMusicAudiblyActive() && isKnownMusicTarget(target)
+    }
+
+    private fun sameMusicSourcePackage(left: String, right: String): Boolean {
+        if (left.equals(right, ignoreCase = true)) return true
+        val l = left.lowercase(Locale.US)
+        val r = right.lowercase(Locale.US)
+        return l.contains(r) || r.contains(l)
+    }
+
+    private fun isMusicAudiblyActive(): Boolean =
+        runCatching { getSystemService(AudioManager::class.java)?.isMusicActive == true }.getOrDefault(false)
+
+    private fun isKnownMusicTarget(target: PaneTarget): Boolean {
+        if (target.kind == PaneKind.MUSIC) return true
+        val text = "${target.name} ${target.packageName.orEmpty()}".lowercase(Locale.US)
+        return listOf("spotify", "music", "youtube", "tidal", "deezer", "pandora", "soundcloud", "amazon.mp3").any { text.contains(it) }
+    }
+
+    private fun refreshDockMusicNotes() {
+        if (::favoritesDockFrameView.isInitialized) refreshDockMusicNotes(favoritesDockFrameView)
+        else if (::favoritesDockView.isInitialized) refreshDockMusicNotes(favoritesDockView)
+    }
+
+    private fun refreshDockMusicNotes(view: View) {
+        if (view is DockMusicNotesView) {
+            view.refreshActive()
+            return
+        }
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) refreshDockMusicNotes(view.getChildAt(i))
+        }
+    }
+
+    private inner class DockMusicNotesView(context: Context) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        }
+        private var accent = 0xFF57C98A.toInt()
+        private var target: PaneTarget? = null
+        private val notes = charArrayOf('♪', '♫', '♩')
+
+        fun setTarget(value: PaneTarget) {
+            target = value
+        }
+
+        fun setAccent(color: Int) {
+            accent = color
+            invalidate()
+        }
+
+        override fun onAttachedToWindow() {
+            super.onAttachedToWindow()
+            refreshActive()
+        }
+
+        fun refreshActive() {
+            val active = target?.let { dockMusicNotesActive(it) } ?: false
+            visibility = if (active) View.VISIBLE else View.GONE
+            alpha = if (active) 1f else 0f
+            if (active) postInvalidateOnAnimation()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (visibility != View.VISIBLE) return
+            val now = android.os.SystemClock.uptimeMillis()
+            val w = width.toFloat().coerceAtLeast(1f)
+            val h = height.toFloat().coerceAtLeast(1f)
+            paint.textSize = h * 0.22f
+            for (i in 0 until 3) {
+                val phase = ((now + i * 520L) % 1800L) / 1800f
+                val alpha = (kotlin.math.sin(phase * Math.PI).toFloat() * 0.58f).coerceIn(0f, 0.58f)
+                val x = w * (0.30f + i * 0.19f) + kotlin.math.sin((phase * 6.283f) + i).toFloat() * w * 0.055f
+                val y = h * (0.84f - phase * 0.62f)
+                paint.color = adjustAlpha(accent, alpha)
+                canvas.drawText(notes[i % notes.size].toString(), x, y, paint)
+            }
+            val active = target?.let { dockMusicNotesActive(it) } ?: dockMusicNotesActive(musicTarget())
+            if (isShown && active) postInvalidateOnAnimation() else refreshActive()
+        }
+    }
+
+    private fun showDockPeekMenu(anchor: View, item: HomeDockItem) {
+        val target = item.target
+        val dockKey = dockWidgetKeyForTarget(target)
+        val providers = dockKey?.let { dockWidgetProvidersForKey(it) }.orEmpty()
+        val existingWidgetId = dockKey?.let { dockWidgetId(it) } ?: AppWidgetManager.INVALID_APPWIDGET_ID
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = Neu.drawable(activeNeuTokens, dp(20).toFloat(), NeuLevel.RAISED)
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(20).toFloat())
+                }
+            }
+            addView(LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                orientation = LinearLayout.HORIZONTAL
+                addView(ImageView(context).apply {
+                    val app = item.app?.toLibraryApp() ?: if (target.kind == PaneKind.MUSIC) musicLibraryApp() else null
+                    if (app != null) setImageDrawable(iconFor(app))
+                    setPadding(dp(4), dp(4), dp(4), dp(4))
+                }, LinearLayout.LayoutParams(dp(34), dp(34)))
+                addView(TextView(context).apply {
+                    text = item.label
+                    textSize = 16f
+                    typeface = Typeface.DEFAULT_BOLD
+                    includeFontPadding = false
+                    setTextColor(activeNeuTokens.ink)
+                    setPadding(dp(8), 0, 0, 0)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+        }
+        val popupWidth = dp(330)
+        val scroller = ScrollView(this).apply {
+            isFillViewport = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            addView(menu, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        val popup = PopupWindow(scroller, popupWidth, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+            elevation = dp(18).toFloat()
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
+
+        if (existingWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            val info = runCatching { appWidgetManager.getAppWidgetInfo(existingWidgetId) }.getOrNull()
+            val hostView = if (info != null) runCatching {
+                appWidgetHost.createView(this, existingWidgetId, info).apply {
+                    setAppWidget(existingWidgetId, info)
+                    optimizeWidgetHostView(this)
+                    updateAppWidgetSize(null, 240, 96, 320, 160)
+                }
+            }.getOrNull() else null
+            if (hostView != null) {
+                menu.addView(RoundedWidgetHostFrame(this).apply {
+                    addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(150)).apply {
+                    topMargin = dp(8)
+                    bottomMargin = dp(8)
+                })
+            } else if (dockKey != null) {
+                removeDockWidget(dockKey)
+            }
+        }
+
+        if (dockKey != null && providers.isNotEmpty()) {
+            val label = if (existingWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) "Change dock widget" else "Pin dock widget"
+            menu.addView(dockPeekSectionLabel(label), LinearLayout.LayoutParams.MATCH_PARENT, dp(24))
+            providers.take(4).forEach { provider ->
+                menu.addView(dockWidgetProviderRow(provider) {
+                    popup.dismiss()
+                    addDockWidgetProvider(dockKey, provider)
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(44))
+            }
+        } else {
+            menu.addView(dockPeekSectionLabel("No widgets for this app"), LinearLayout.LayoutParams.MATCH_PARENT, dp(26))
+        }
+
+        if (dockKey != null && existingWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
+            menu.addView(menuItem("Remove dock widget", true) {
+                popup.dismiss()
+                removeDockWidget(dockKey)
+            })
+        }
+        addDockActionRows(menu, popup, anchor, target)
+        showSmartDockPopup(anchor, popup, scroller, popupWidth)
+    }
+
+    private fun showSmartDockPopup(anchor: View, popup: PopupWindow, content: View, requestedPopupWidth: Int) {
+        val visible = Rect()
+        anchor.getWindowVisibleDisplayFrame(visible)
+        val anchorLocation = IntArray(2)
+        anchor.getLocationOnScreen(anchorLocation)
+
+        val margin = dp(10)
+        val visibleWidth = visible.width().coerceAtLeast(dp(120))
+        val popupWidth = requestedPopupWidth.coerceAtMost((visibleWidth - margin * 2).coerceAtLeast(dp(120)))
+        if (popup.width != popupWidth) popup.width = popupWidth
+        val screenTop = visible.top
+        val screenBottom = visible.bottom
+        val screenLeft = visible.left
+        val screenRight = visible.right
+        val anchorLeft = anchorLocation[0]
+        val anchorTop = anchorLocation[1]
+        val anchorBottom = anchorTop + anchor.height
+        val spaceAbove = (anchorTop - screenTop).coerceAtLeast(0)
+        val spaceBelow = (screenBottom - anchorBottom).coerceAtLeast(0)
+
+        content.measure(
+            View.MeasureSpec.makeMeasureSpec(popupWidth, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        val naturalHeight = content.measuredHeight.takeIf { it > 0 } ?: dp(220)
+        val maxAvailableHeight = (maxOf(spaceAbove, spaceBelow) - margin * 2).coerceAtLeast(dp(180))
+        val popupHeight = naturalHeight.coerceAtMost(maxAvailableHeight)
+        if (naturalHeight > maxAvailableHeight) popup.height = popupHeight
+
+        val centeredOffset = ((anchor.width - popupWidth) / 2f).toInt()
+        val desiredLeft = anchorLeft + centeredOffset
+        val minLeft = screenLeft + margin
+        val maxLeft = screenRight - margin - popupWidth
+        val clampedLeft = if (maxLeft >= minLeft) desiredLeft.coerceIn(minLeft, maxLeft) else minLeft
+        val xOffset = clampedLeft - anchorLeft
+
+        val canFitBelow = spaceBelow >= popupHeight + margin
+        val showBelow = canFitBelow || spaceBelow > spaceAbove
+        val yOffset = if (showBelow) {
+            margin
+        } else {
+            -anchor.height - popupHeight - margin
+        }
+        popup.showAsDropDown(anchor, xOffset, yOffset, Gravity.NO_GRAVITY)
+    }
+
+    private fun dockPeekSectionLabel(label: String): TextView =
+        mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            letterSpacing = 0.14f
+            setPadding(dp(4), dp(5), dp(4), 0)
+        }
+
+    private fun dockWidgetProviderRow(provider: AppWidgetProviderInfo, onClick: () -> Unit): View {
+        val label = provider.loadLabel(packageManager).ifBlank { "Widget" }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, dp(8), 0)
+            background = Neu.drawable(activeNeuTokens, dp(13).toFloat(), NeuLevel.PRESSED_SM)
+            isClickable = true
+            setOnClickListener { haptic(this); onClick() }
+            addView(ImageView(context).apply {
+                setImageDrawable(
+                    runCatching { provider.loadPreviewImage(this@MainActivity, resources.displayMetrics.densityDpi) }.getOrNull()
+                        ?: runCatching { packageManager.getApplicationIcon(provider.provider.packageName) }.getOrNull()
+                )
+                scaleType = ImageView.ScaleType.CENTER_CROP
+            }, LinearLayout.LayoutParams(dp(28), dp(28)))
+            addView(TextView(context).apply {
+                text = label
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(activeNeuTokens.ink)
+                setPadding(dp(9), 0, 0, 0)
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+    }
+
+    private fun addDockActionRows(menu: LinearLayout, popup: PopupWindow, anchor: View, target: PaneTarget) {
+        val divider = View(this).apply { setBackgroundColor(adjustAlpha(activeNeuTokens.inkFaint, 0.18f)) }
+        menu.addView(divider, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+            topMargin = dp(8)
+            bottomMargin = dp(4)
+        })
         val canOpenHere = target.kind != PaneKind.LIST || target.packageName == null
         menu.addView(menuItem("Open here", canOpenHere) { popup.dismiss(); openHere(target) })
         menu.addView(menuItem("Open app", target.packageName != null) { popup.dismiss(); openExternal(target) })
@@ -16390,7 +16879,48 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 })
             }
         }
-        popup.showAsDropDown(anchor, -dp(82), -anchor.height)
+    }
+
+    private fun showOpenMenu(anchor: View, target: PaneTarget) {
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
+        }
+        val popupWidth = dp(204)
+        val popup = PopupWindow(menu, popupWidth, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
+        val canOpenHere = target.kind != PaneKind.LIST || target.packageName == null
+        menu.addView(menuItem("Open here", canOpenHere) { popup.dismiss(); openHere(target) })
+        menu.addView(menuItem("Open app", target.packageName != null) { popup.dismiss(); openExternal(target) })
+        if (target.kind == PaneKind.MUSIC) {
+            menu.addView(menuItem("Change icon", true) {
+                popup.dismiss()
+                showIconMenu(anchor, musicLibraryApp())
+            })
+        }
+        dockPresenceKey(target)?.takeIf { target.packageName == null }?.let {
+            val onHome = isDockTargetOnHome(target)
+            menu.addView(menuItem(if (onHome) "Remove from dock" else "Add to dock", true) {
+                setDockTargetHomePresence(target, !onHome)
+                popup.dismiss()
+            })
+        }
+        target.packageName?.let { packageName ->
+            val onHome = isOnHome(packageName)
+            menu.addView(menuItem(if (onHome) "Remove from dock" else "Add to dock", true) {
+                setHomePresence(packageName, !onHome)
+                popup.dismiss()
+            })
+            apps.firstOrNull { it.packageName == packageName }?.let { app ->
+                menu.addView(menuItem("Change icon", true) {
+                    popup.dismiss()
+                    showIconMenu(anchor, app.toLibraryApp())
+                })
+            }
+        }
+        showSmartDockPopup(anchor, popup, menu, popupWidth)
     }
 
     private fun menuItem(label: String, enabled: Boolean, onClick: () -> Unit): View {
@@ -16797,10 +17327,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
+        // Intent-aware shaping: a recognized command ("play jazz", "timer 5") means the user
+        // wants an ACTION — surface the apps that can serve it, drop the web noise.
+        val commandIntent = AgenticRouter.classify(q) != null
+        if (q.lowercase(Locale.US).startsWith("play ")) {
+            apps.filter {
+                com.fran.teclas.predict.AppCategories.of(this, it.packageName) == com.fran.teclas.predict.AppCategory.MUSIC
+            }.take(3).forEachIndexed { i, app ->
+                results.add(minOf(1 + i, results.size), SearchResult(
+                    app.label, "Play “${q.removePrefix("play ").removePrefix("Play ").trim()}” here",
+                    app.brandColor, SearchKind.APP, app.toPaneTarget()
+                ))
+            }
+        }
         // Inline Brave web results — the launcher is the search page. Ranked after everything
         // local (apps, people, events win), tap opens the page in the in-launcher sheet.
         // When a rich answer card is showing it IS the answer — web rows would be noise.
-        if (braveWebQuery == q && searchRichAnswer() == null) results.addAll(braveWebResults)
+        // A command intent suppresses them entirely: "play jazz" wants music, not links.
+        if (braveWebQuery == q && searchRichAnswer() == null && !commandIntent) results.addAll(braveWebResults)
         // A typed URL ("theverge.com") is an unambiguous intent — rank opening the site itself
         // first, so GO fires it directly. Tap = in-launcher sheet, long-press = full browser.
         InAppGoogleSearchEngine.urlFromQuery(q)?.let { url ->
@@ -16975,10 +17519,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
-            "Launcher look", "${themeModeName()} · tap for next",
+            "Launcher look", launcherLookSearchState(),
             listOf("dark", "light", "look", "mode", "theme", "dark mode", "light mode")
         ) {
-            cycleThemeMode()
+            setThemeMode(THEME_MODE_SYSTEM, animated = true)
+            Toast.makeText(this, "Launcher follows system theme", Toast.LENGTH_SHORT).show()
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
@@ -17107,11 +17652,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         else -> "System"
     }
 
+    private fun launcherLookSearchState(): String =
+        if (themeMode == THEME_MODE_SYSTEM) {
+            "System · follows device"
+        } else {
+            "${themeModeName()} · tap to follow system"
+        }
+
+    private fun setThemeMode(mode: String, animated: Boolean) {
+        themeMode = mode
+        prefs().edit().putString(THEME_MODE_PREF, themeMode).apply()
+        updateLauncherTheme(animated = animated, forceRender = true)
+    }
+
+    private fun showLauncherLookMenu(anchor: View) {
+        val labels = arrayOf("System", "Dark", "Light")
+        val values = arrayOf(THEME_MODE_SYSTEM, THEME_MODE_DARK, THEME_MODE_LIGHT)
+        val current = values.indexOf(themeMode).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Launcher look")
+            .setSingleChoiceItems(labels, current) { dialog, which ->
+                setThemeMode(values[which], animated = true)
+                dialog.dismiss()
+                haptic(anchor)
+                if (openPane?.kind == PaneKind.SETTINGS) {
+                    renderPaneContent(teclasSettingsTarget())
+                }
+            }
+            .show()
+    }
+
     private fun cycleThemeMode() {
         val order = listOf(THEME_MODE_SYSTEM, THEME_MODE_DARK, THEME_MODE_LIGHT)
-        themeMode = order[(order.indexOf(themeMode) + 1).mod(order.size)]
-        prefs().edit().putString(THEME_MODE_PREF, themeMode).apply()
-        updateLauncherTheme(animated = true, forceRender = true)
+        setThemeMode(order[(order.indexOf(themeMode) + 1).mod(order.size)], animated = true)
     }
 
     private fun cycleKeyboardTheme() {
@@ -18038,6 +18611,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             } else {
                 @Suppress("DEPRECATION")
                 registerReceiver(packageChangeReceiver, filter)
+            }
+        }
+    }
+
+    private fun registerConfigurationChangeReceiver() {
+        val filter = IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(configurationChangeReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(configurationChangeReceiver, filter)
             }
         }
     }
@@ -20080,6 +20665,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    private fun refreshSystemThemeIfNeeded(animated: Boolean, forceRender: Boolean) {
+        if (prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) != THEME_MODE_SYSTEM) return
+        updateLauncherTheme(animated = animated, forceRender = forceRender)
+    }
+
     private fun showThemeSplash(fromColor: Int, toColor: Int, accentColor: Int) {
         themeSplashAnimator?.cancel()
         themeSplashView?.let { old ->
@@ -21263,6 +21853,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val WIDGET_BIND_REQUEST_CODE = 501
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502
         private const val WIDGET_IDS_PREF = "widget_board_ids"
+        private const val DOCK_WIDGET_IDS_PREF = "dock_widget_ids"
         private const val WIDGET_STACK_MODE_PREF_PREFIX = "widget_stack_mode_"
         private const val WIDGET_BOARD_COLUMNS = 4
         private const val WIDGET_BOARD_MIN_ROWS = 8

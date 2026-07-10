@@ -154,6 +154,30 @@ internal object SemanticSearchEngine {
         indexMutex.withLock { loadIndexLocked(context) }
     }
 
+    /**
+     * Cosine affinity of every indexed item under [keyPrefix] (e.g. "app:") to a free-text
+     * [description]. Powers Space cold-start priors: "Fitness. workouts, running, health"
+     * ↔ each installed app's vector. One query embedding per call — cheap; cache results.
+     */
+    suspend fun affinity(context: Context, description: String, keyPrefix: String, minScore: Float): Map<String, Float> =
+        withContext(Dispatchers.IO) {
+            val snapshot = vectors
+            if (snapshot.isEmpty()) return@withContext emptyMap()
+            val model = embedderOrNull(context) ?: return@withContext emptyMap()
+            val request = EmbeddingRequest.create(
+                listOf(EmbedData.create(description, EmbedData.TaskType.RETRIEVAL_QUERY, true))
+            )
+            val raw = runCatching { model.getEmbeddings(request).await() }.getOrNull() ?: return@withContext emptyMap()
+            val q = normalized(raw.toFloatArray())
+            buildMap {
+                snapshot.forEach { (key, entry) ->
+                    if (!key.startsWith(keyPrefix)) return@forEach
+                    val score = dot(q, entry.second)
+                    if (score >= minScore) put(key.removePrefix(keyPrefix), score)
+                }
+            }
+        }
+
     private fun normalized(v: FloatArray): FloatArray {
         var sum = 0f
         for (x in v) sum += x * x

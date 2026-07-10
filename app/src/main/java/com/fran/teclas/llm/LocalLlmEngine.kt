@@ -82,13 +82,33 @@ object LocalLlmEngine {
         }
     }
 
+    /**
+     * A permissive JSON GBNF: any object/array, used when callers ask for JSON output. The
+     * grammar masks logits during sampling, so malformed JSON is impossible — stronger than
+     * cloud "JSON mode", which merely asks nicely.
+     */
+    private val JSON_GRAMMAR = """
+        root ::= object | array
+        value ::= object | array | string | number | ("true" | "false" | "null") ws
+        object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
+        array ::= "[" ws ( value ("," ws value)* )? "]" ws
+        string ::= "\"" ( [^"\\\x7F\x00-\x1F] | "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4}) )* "\"" ws
+        number ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [0-9]{1,3})? ws
+        ws ::= [ \t\n]{0,20}
+    """.trimIndent()
+
     /** One prompt → the local model's reply, or null (model missing / load failed / error).
+     *  [json] constrains sampling with the JSON grammar; [grammar] overrides with a custom GBNF.
      *  Blocking and serialized; call from a background thread. */
-    fun generateBlocking(context: Context, prompt: String, maxTokens: Int, temperature: Double): String? {
+    fun generateBlocking(
+        context: Context, prompt: String, maxTokens: Int, temperature: Double,
+        json: Boolean = false, grammar: String? = null,
+    ): String? {
         val h = loadedHandle(context) ?: return null
         val t0 = System.currentTimeMillis()
         return runCatching {
-            val out = nativeGenerate(h, prompt, maxTokens.coerceIn(1, 512), temperature.toFloat())
+            val gbnf = grammar ?: if (json) JSON_GRAMMAR else null
+            val out = nativeGenerate(h, prompt, maxTokens.coerceIn(1, 512), temperature.toFloat(), gbnf)
                 ?.trim()?.ifBlank { null }
             diag(context, "local generate: ${if (out == null) "EMPTY" else "ok len=${out.length}"} in ${System.currentTimeMillis() - t0}ms")
             out
@@ -129,6 +149,6 @@ object LocalLlmEngine {
     }
 
     @JvmStatic private external fun nativeLoad(path: String, nCtx: Int, nThreads: Int): Long
-    @JvmStatic private external fun nativeGenerate(handle: Long, prompt: String, maxTokens: Int, temperature: Float): String?
+    @JvmStatic private external fun nativeGenerate(handle: Long, prompt: String, maxTokens: Int, temperature: Float, grammar: String?): String?
     @JvmStatic private external fun nativeFree(handle: Long)
 }

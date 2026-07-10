@@ -17,21 +17,24 @@ fun Context.teclasSystemDarkMode(): Boolean {
     if (configNight == Configuration.UI_MODE_NIGHT_YES) return true
     val systemNight = Resources.getSystem().configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
     if (systemNight == Configuration.UI_MODE_NIGHT_YES) return true
+    val secureNight = runCatching {
+        Settings.Secure.getInt(contentResolver, "ui_night_mode", -1)
+    }.getOrDefault(-1)
+    if (secureNight == UiModeManager.MODE_NIGHT_YES) return true
+    if (secureNight == UiModeManager.MODE_NIGHT_NO) return false
     val vendorNight = runCatching {
-        Settings.System.getInt(contentResolver, "vos_nightmode_state", 0) == 1 ||
-            Settings.System.getInt(contentResolver, "vivo_nightmode_level", 0) > 0
+        Settings.System.getInt(contentResolver, "vos_nightmode_state", 0) == 1
     }.getOrDefault(false)
     if (vendorNight) return true
-    val uiMode = getSystemService(UiModeManager::class.java)
-    return when (uiMode?.nightMode) {
-        UiModeManager.MODE_NIGHT_YES -> true
-        UiModeManager.MODE_NIGHT_NO -> false
+    when (getSystemService(UiModeManager::class.java)?.nightMode) {
+        UiModeManager.MODE_NIGHT_YES -> return true
+        UiModeManager.MODE_NIGHT_NO -> return false
         UiModeManager.MODE_NIGHT_AUTO -> {
             val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-            hour >= 18 || hour < 6
+            return hour >= 18 || hour < 6
         }
-        else -> configNight != Configuration.UI_MODE_NIGHT_NO && systemNight != Configuration.UI_MODE_NIGHT_NO
     }
+    return false
 }
 
 fun Context.resolveTeclasNeuTokens(mode: String?): NeuTokens {

@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.LauncherApps
+import android.content.res.Configuration
 import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
@@ -35,7 +36,12 @@ import android.widget.TextView
 import android.widget.Toast
 import com.fran.teclas.DockedKeyboardService
 import com.fran.teclas.KeyboardSettings
+import com.fran.teclas.NeuMode
+import com.fran.teclas.TECLAS_THEME_MODE_PREF
+import com.fran.teclas.TECLAS_THEME_MODE_SYSTEM
 import com.fran.teclas.VivoDockedExperiment
+import com.fran.teclas.resolveTeclasNeuTokens
+import com.fran.teclas.teclasSystemDarkMode
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
@@ -143,6 +149,7 @@ class GridWorkspaceActivity : Activity(), GridWorkspaceView.Host {
         setContentView(root)
 
         applyMode(animated = false)
+        syncGridThemeFromPrefs()
         grid.setItems(GridWorkspaceStore.load(this))
         getSharedPreferences("teclas", Context.MODE_PRIVATE)
             .registerOnSharedPreferenceChangeListener(prefListener)
@@ -155,6 +162,20 @@ class GridWorkspaceActivity : Activity(), GridWorkspaceView.Host {
         super.onDestroy()
         getSharedPreferences("teclas", Context.MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(prefListener)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val prefs = getSharedPreferences("teclas", Context.MODE_PRIVATE)
+        if (prefs.getString(TECLAS_THEME_MODE_PREF, TECLAS_THEME_MODE_SYSTEM) == TECLAS_THEME_MODE_SYSTEM) {
+            grid.setLightMode(!teclasSystemDarkMode())
+        }
+    }
+
+    private fun syncGridThemeFromPrefs() {
+        val mode = getSharedPreferences("teclas", Context.MODE_PRIVATE)
+            .getString(TECLAS_THEME_MODE_PREF, TECLAS_THEME_MODE_SYSTEM)
+        grid.setLightMode(resolveTeclasNeuTokens(mode).mode == NeuMode.LIGHT)
     }
 
     // -------------------------------------------------------------------- chrome

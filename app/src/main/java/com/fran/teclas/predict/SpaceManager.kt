@@ -137,7 +137,17 @@ object SpaceManager {
     fun aiLayerEnabled(context: Context): Boolean = prefs(context).getBoolean(AI_LAYER_KEY, false)
 
     fun detect(context: Context, snapshot: ContextSnapshot): SpaceDetection {
-        val result = detectIn(spaces(context), snapshot, lockedSpaceId(context), lastActiveId)
+        var result = detectIn(spaces(context), snapshot, lockedSpaceId(context), lastActiveId)
+        // Rules couldn't find a strong signal → let the cached LLM scene verdict promote a
+        // Space (never overrides a lock or a strong trigger; SceneFusion is precomputed and
+        // this read is lock-free, so the hot path stays hot).
+        if (!result.strong && !result.locked) {
+            SceneFusion.current()?.let { v ->
+                spaces(context).find { it.id == v.spaceId && it.enabled && it.autoSwitch }?.let {
+                    result = SpaceDetection(it, strong = true, locked = false)
+                }
+            }
+        }
         lastActiveId = result.space.id
         return result
     }

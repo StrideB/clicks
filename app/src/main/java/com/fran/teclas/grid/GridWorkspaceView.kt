@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
@@ -205,19 +206,15 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
 
     // ------------------------------------------------------------------ build
 
-    private val widgetFrameRadius: Float get() = dpF(20f)
+    private val widgetFrameRadius: Float get() = dpF(26f)
 
     /**
-     * Uniform widget overlay: clip every hosted widget to the same rounded rectangle and sit
-     * it on the same faint backing, so a square widget and a round-cornered one read as one
-     * consistent set of cards instead of a jumble of shapes.
+     * Uniform widget overlay: clip every hosted widget to the same rounded rectangle and draw
+     * only a tiny rim. The provider keeps its own design, but the board gives every widget the
+     * same clean silhouette instead of adding another visible card behind it.
      */
-    private fun applyWidgetFrame(frame: FrameLayout) {
-        frame.background = GradientDrawable().apply {
-            cornerRadius = widgetFrameRadius
-            setColor(widgetFrameFill)                 // faint fill behind transparent widgets
-            setStroke(dp(1), widgetFrameStroke)       // hairline edge
-        }
+    private fun applyWidgetFrame(frame: UniformWidgetHostFrame) {
+        frame.setFrameStyle(widgetFrameRadius, lightMode)
         frame.clipToOutline = true
         frame.outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(view: View, outline: Outline) {
@@ -233,13 +230,11 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
             val child: View = when (item.type) {
                 GridItemType.APP -> AppItemView(context, item, false)
                 GridItemType.FOLDER -> AppItemView(context, item, true)
-                GridItemType.WIDGET -> FrameLayout(context).apply {
+                GridItemType.WIDGET -> UniformWidgetHostFrame(context).apply {
                     applyWidgetFrame(this)
                     val inner = obtainWidgetView(item.widgetId)
                     if (inner != null) {
-                        addView(inner, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT).apply {
-                            val m = dp(3); setMargins(m, m, m, m)
-                        })
+                        addView(inner, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
                     } else {
                         addView(AppItemView(context, item, false), LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
                     }
@@ -261,6 +256,68 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         }
         requestLayout()
         invalidate()
+    }
+
+    private inner class UniformWidgetHostFrame(context: Context) : FrameLayout(context) {
+        private val clipPath = Path()
+        private val bounds = RectF()
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var frameRadius = dpF(26f)
+        private var frameLightMode = lightMode
+        private val inset = dpF(0.5f)
+
+        init {
+            setWillNotDraw(false)
+            background = null
+            foreground = null
+            clipChildren = true
+            clipToPadding = true
+            isClickable = false
+            isFocusable = false
+        }
+
+        fun setFrameStyle(radius: Float, light: Boolean) {
+            frameRadius = radius
+            frameLightMode = light
+            invalidate()
+        }
+
+        override fun dispatchDraw(canvas: Canvas) {
+            bounds.set(0f, 0f, width.toFloat(), height.toFloat())
+            clipPath.reset()
+            clipPath.addRoundRect(bounds, frameRadius, frameRadius, Path.Direction.CW)
+            val save = canvas.save()
+            canvas.clipPath(clipPath)
+            super.dispatchDraw(canvas)
+            canvas.restoreToCount(save)
+
+            paint.shader = null
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f
+            paint.color = if (frameLightMode) 0x14000000 else 0x16FFFFFF
+            canvas.drawRoundRect(
+                inset,
+                inset,
+                width - inset,
+                height - inset,
+                frameRadius,
+                frameRadius,
+                paint
+            )
+
+            paint.strokeWidth = 0.8f
+            paint.color = if (frameLightMode) 0x30FFFFFF else 0x18FFFFFF
+            canvas.drawArc(
+                inset + dpF(1f),
+                inset + dpF(1f),
+                width - inset - dpF(1f),
+                height - inset - dpF(1f),
+                205f,
+                105f,
+                false,
+                paint
+            )
+        }
     }
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {

@@ -283,8 +283,11 @@ object Predictor {
                 .filter { it !in space.excluded }
                 .map { pkg ->
                     val ageHours = recent[pkg]?.let { (now - it) / 3_600_000f }
-                    val categoryMatch = if (affinity.isNotEmpty() && provider != null &&
+                    // Cold-start prior: binary category hit, upgraded by the continuous
+                    // embedding affinity when the semantic index is available.
+                    val categoryBinary = if (affinity.isNotEmpty() && provider != null &&
                         provider(pkg) in affinity) 1f else 0f
+                    val categoryMatch = maxOf(categoryBinary, SemanticPriors.score(space.id, pkg))
                     pkg to blendScore(
                         lin = sigmoid(dot(weights[pkg], x)),
                         ctxFreqNorm = (ctxFreq[pkg] ?: 0f) / ctxTotal,

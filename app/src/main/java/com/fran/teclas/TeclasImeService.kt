@@ -250,7 +250,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext).also { it.warmUp() }
         // llama.cpp tier: the only on-device path AICore can't block while we serve another app.
         if (GeminiClient.local == null) {
-            GeminiClient.local = { p, mt, t -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t) }
+            GeminiClient.local = { p, mt, t, j, g -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t, json = j, grammar = g) }
             GeminiClient.localReady = { com.fran.teclas.llm.LocalLlmEngine.ready(applicationContext) }
         }
         ensureGlideClassifier()
@@ -418,6 +418,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun buildKeyboard(): SwipeImeKeyboardLayout {
         keyViews.clear()
         lastBuiltTheme = keyboardTheme()
+        lastBuiltMode = selectedNeuTokens().mode
         return SwipeImeKeyboardLayout().apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -452,9 +453,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private var lastBuiltTheme: String? = null
+    private var lastBuiltMode: NeuMode? = null
 
     private fun rebuildDeck() {
         lastBuiltTheme = keyboardTheme()
+        lastBuiltMode = selectedNeuTokens().mode
         hideAttachPicker()
         hideShareCard()
         setInputView(buildInputView())
@@ -463,7 +466,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // On focus, rebuild the whole deck (fresh cached backgrounds) only if the theme changed;
     // otherwise a light text-only chrome refresh — keeps the cached key backgrounds valid.
     private fun refreshChromeOrRebuild() {
-        if (keyboardTheme() != lastBuiltTheme) rebuildDeck() else refreshKeyboardChrome()
+        if (keyboardTheme() != lastBuiltTheme || selectedNeuTokens().mode != lastBuiltMode) rebuildDeck() else refreshKeyboardChrome()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (themeMode() == THEME_MODE_SYSTEM && selectedNeuTokens().mode != lastBuiltMode) {
+            rebuildDeck()
+        }
     }
 
     private fun keyRow(labels: List<String>, rowIndex: Int): LinearLayout {
@@ -1870,17 +1880,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             updateStrip()
             return
         }
-        // A real message (not a command): offer inline AI actions on it — fix, translate — right in
-        // the field, before trying to interpret it as a command.
-        if (raw.isNotBlank() && ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs()) &&
-            raw.trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3) {
-            pendingCommandText = raw
-            pendingActions = buildMessageActions()
-            updateStrip()
-            return
-        }
-        // Free-form fallback: let Gemini pick a skill (Pro + configured). It only ranks among real
-        // skills, so "I wanna hear jazz" routes to Play music without inventing an action.
+        // Free-form fallback: the planner interprets the line first — commands (single or
+        // multi-step) win; text that maps to NO skill falls back to message actions below.
         if (raw.isNotBlank() && ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs())) {
             pendingCommandText = raw
             agenticStatus = "\uD83E\uDD16 Thinking\u2026"
@@ -1888,12 +1889,27 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
             val names = AgenticRouter.catalogNames()
             Thread {
-                val match = GeminiClient.fetchSkillMatch(key, model, raw, names)
+                // Multi-step planner (grammar-locked to the catalog on the local tier).
+                val steps = AgenticPlanner.plan(imePrefs(), raw, names)
                 handler.post {
                     agenticStatus = null
-                    val c = match?.let { AgenticRouter.commandForSkill(it.first, it.second) }
-                    if (c != null) { pendingCommand = c; updateStrip() }
-                    else flashAgenticStatus("No command matched", 1800)
+                    val commands = steps.orEmpty().mapNotNull { AgenticRouter.commandForSkill(it.skill, it.arg) }
+                    when {
+                        commands.size > 1 -> commands.forEachIndexed { i, c ->
+                            handler.postDelayed({
+                                val status = AgenticRouter.execute(this@TeclasImeService, c)
+                                flashAgenticStatus(status ?: c.label, 1400)
+                            }, i * 900L)
+                        }
+                        commands.size == 1 -> { pendingCommand = commands[0]; updateStrip() }
+                        // No skill matched: treat it as a message → inline AI actions (fix, translate).
+                        raw.trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3 -> {
+                            pendingCommandText = raw
+                            pendingActions = buildMessageActions()
+                            updateStrip()
+                        }
+                        else -> flashAgenticStatus("No command matched", 1800)
+                    }
                 }
             }.start()
             return

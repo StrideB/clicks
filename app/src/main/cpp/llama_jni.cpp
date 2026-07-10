@@ -57,12 +57,14 @@ Java_com_fran_teclas_llm_LocalLlmEngine_nativeLoad(JNIEnv *env, jclass, jstring 
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_fran_teclas_llm_LocalLlmEngine_nativeGenerate(
-        JNIEnv *env, jclass, jlong handle, jstring jprompt, jint maxTokens, jfloat temperature) {
+        JNIEnv *env, jclass, jlong handle, jstring jprompt, jint maxTokens, jfloat temperature,
+        jstring jgrammar) {
     std::lock_guard<std::mutex> lock(g_mutex);
     auto *e = (Engine *) handle;
     if (!e || !e->ctx) return nullptr;
 
     const std::string user = jstr(env, jprompt);
+    const std::string grammar = jgrammar ? jstr(env, jgrammar) : "";
     const llama_vocab *vocab = llama_model_get_vocab(e->model);
 
     // Wrap the request in the model's chat template (embedded in the GGUF) so an
@@ -108,6 +110,13 @@ Java_com_fran_teclas_llm_LocalLlmEngine_nativeGenerate(
     }
 
     llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    // Grammar first in the chain: masks logits so the output CANNOT violate the GBNF —
+    // this is what makes local structured JSON more reliable than any cloud "JSON mode".
+    if (!grammar.empty()) {
+        llama_sampler *g = llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+        if (g) llama_sampler_chain_add(smpl, g);
+        else LOGW("grammar parse failed — generating unconstrained");
+    }
     if (temperature <= 0.05f) {
         llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
     } else {

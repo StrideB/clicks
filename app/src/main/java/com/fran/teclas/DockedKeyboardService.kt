@@ -33,6 +33,7 @@ class DockedKeyboardService : Service() {
     private var overlayParams: WindowManager.LayoutParams? = null
     private var shifted = false
     private var overlayVisible = true
+    private var lastBuiltMode: NeuMode? = null
 
     private val overlayVisibilityReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -64,6 +65,7 @@ class DockedKeyboardService : Service() {
 
     private fun showDeck() {
         if (deckView != null) return
+        lastBuiltMode = selectedNeuTokens().mode
         val deck = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -97,6 +99,18 @@ class DockedKeyboardService : Service() {
         windowManager?.addView(deck, lp)
         overlayParams = lp
         deckView = deck
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (themeMode() != THEME_MODE_SYSTEM || selectedNeuTokens().mode == lastBuiltMode) return
+        val wasVisible = overlayVisible
+        deckView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        deckView = null
+        overlayParams = null
+        overlayVisible = true
+        showDeck()
+        if (!wasVisible) setOverlayVisible(false)
     }
 
     private fun setOverlayVisible(visible: Boolean) {

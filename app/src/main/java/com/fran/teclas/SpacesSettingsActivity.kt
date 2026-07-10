@@ -310,15 +310,19 @@ class SpacesSettingsActivity : ComponentActivity() {
             }
         }
 
-        Section("PREDICTION AI") {
+        Section("AI LAYER") {
             var aiOn by remember { mutableStateOf(prefs().getBoolean(SpaceManager.AI_LAYER_KEY, false)) }
-            SwitchRow("Gemini re-ranking", "Let Gemini re-order predictions using coarse context labels", aiOn) {
+            SwitchRow(
+                "On-device AI layer",
+                "Smarter Space detection (scene fusion from calendar + notifications) and AI re-ranked predictions",
+                aiOn
+            ) {
                 aiOn = it
                 prefs().edit().putBoolean(SpaceManager.AI_LAYER_KEY, it).apply()
             }
-            Label("Privacy: all learning happens on this phone and is stored encrypted. Nothing leaves " +
-                "the device unless this AI layer is on — and even then only app names and coarse labels " +
-                "like “driving” are sent, never your location, calendar or history.",
+            Label("Privacy: everything runs on this phone — the AI layer reads context locally " +
+                "(Gemini Nano or the local model) and nothing is sent anywhere. Cloud is only used " +
+                "if you added your own API key.",
                 12.sp, t.inkDimCompose, topPad = 6.dp)
         }
 
