@@ -229,6 +229,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // tap-to-correct alternatives. Any physical key press clears it (back to normal typing/next-word).
     private var glideJustCommitted = false
     private var suggestDebounce: Runnable? = null
+    private var chipsDebounce: Runnable? = null      // emoji chips + spellcheck on a slower cadence
     private var liveCorrectDebounce: Runnable? = null
     private var geminiDebounce: Runnable? = null
     private var lastSpaceMs = 0L
@@ -1034,7 +1035,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun scheduleGemini() {
         geminiDebounce?.let { handler.removeCallbacks(it) }
         if (!ProManager.isUnlocked(this) || !GeminiClient.configured(imePrefs())) return
-        val ctx = currentInputConnection?.getTextBeforeCursor(80, 0)?.toString()?.trim().orEmpty()
+        val ctx = shadowBeforeCursor(80).trim()
         if (ctx.length < 2) return
         val key = GeminiClient.apiKey(imePrefs())
         val model = GeminiClient.model(imePrefs())
@@ -1053,20 +1054,31 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun scheduleSuggestions() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
+        chipsDebounce?.let { handler.removeCallbacks(it) }
+        // No strip to populate (view not built / not shown) → skip all per-keystroke prediction work.
+        if (suggestionStrip == null) return
+        // Base prediction strip — fast (70ms). Reads go through the shadow mirror (no cross-process
+        // getText* IPC when the mirror is valid, which is the common case mid-word).
         val r = Runnable {
-            val word = currentWord()
             // Re-evaluate the active language every keystroke (not only on space) so mid-word
             // suggestions/corrections use the right dictionary while typing a secondary language.
             updateActiveLanguage()
-            computeSmartChips(word)
             val base = predictionCore.computeSuggestions()
             suggestions = if (base.isEmpty()) {
                 // IME extra: notification quick-replies when the field is empty.
-                val ic = currentInputConnection
-                val before = ic?.getTextBeforeCursor(2, 0)?.toString().orEmpty()
-                val fieldEmpty = before.isEmpty() && (ic?.getTextAfterCursor(1, 0)?.isEmpty() != false)
+                val before = shadowBeforeCursor(2)
+                val fieldEmpty = before.isEmpty() && shadowAfterCursor(1).isEmpty()
                 if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
             } else base
+            updateStrip()
+        }
+        suggestDebounce = r
+        handler.postDelayed(r, 70L)
+        // Emoji chips + system spellcheck are heavier and less time-critical — run them on a slower
+        // cadence (180ms) so fast typing doesn't fire them every keystroke. Output is unchanged.
+        val cs = Runnable {
+            val word = currentWord()
+            computeSmartChips(word)
             updateStrip()
             // System spellchecker fills real corrections for hard misspellings the on-device engine
             // can't reach (parity with the launcher). Merges in via onGetSuggestions.
@@ -1075,8 +1087,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 runCatching { spellChecker?.getSuggestions(android.view.textservice.TextInfo(word), 5) }
             }
         }
-        suggestDebounce = r
-        handler.postDelayed(r, 70L)
+        chipsDebounce = cs
+        handler.postDelayed(cs, 180L)
     }
 
     // Build emoji + smart-symbol chips for the current word/context. Emoji lead; symbols fill in.
@@ -1087,7 +1099,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             emojiTriggerWord = word.lowercase()
             SmartChips.emojiFor(imePrefs(), emojiTriggerWord).take(4).forEach { chips.add(Triple(it, it, true)) }
         }
-        val before = currentInputConnection?.getTextBeforeCursor(24, 0)?.toString().orEmpty()
+        val before = shadowBeforeCursor(24)
         SmartChips.symbolsFor(before, word).forEach { s -> if (chips.none { it.first == s }) chips.add(Triple(s, s, false)) }
         smartChips = chips.take(5)
     }
@@ -1198,7 +1210,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // state (hysteresis) so a lone shared/borrowed word doesn't flip the engine mid-sentence.
     private fun updateActiveLanguage() {
         if (!hasLatentLanguages) return
-        val before = currentInputConnection?.getTextBeforeCursor(96, 0)?.toString()?.lowercase().orEmpty()
+        val before = shadowBeforeCursor(96).lowercase()
         val words = before.split(Regex("[^\\p{L}]+")).filter { it.length >= 2 }.takeLast(4)
         if (words.isEmpty()) return
         val latentHits = words.count { predictionEngineExtended.isDictWord(it) && !predictionEnginePrimary.isDictWord(it) }
@@ -1611,7 +1623,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // full field is only read (fieldTextForPolish) when a polish actually fires.
     private fun polishAvailable(): Boolean =
         ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs()) &&
-            (currentInputConnection?.getTextBeforeCursor(200, 0)?.toString().orEmpty())
+            shadowBeforeCursor(200)
                 .trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
 
     private fun updateStrip() {
@@ -1716,7 +1728,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val chips = smartChips
         // Offer on-device Nano proofreading once there's a sentence to check (Nano-capable devices only).
         val showFix = nanoSupported && run {
-            val b = currentInputConnection?.getTextBeforeCursor(60, 0)?.toString().orEmpty()
+            val b = shadowBeforeCursor(60)
             b.trim().length >= 6 && b.contains(' ')
         }
         if (shown.isEmpty() && !canPolish && chips.isEmpty() && !showFix) {
@@ -1726,8 +1738,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // reappears as you type. onTextChanged -> scheduleSuggestions -> updateStrip resurfaces it.
             if (agenticHud == null && agenticStatus == null && pendingCommand == null &&
                 inlineScroll?.visibility != View.VISIBLE) {
-                val fieldEmpty = currentInputConnection?.getTextBeforeCursor(1, 0).isNullOrEmpty() &&
-                    currentInputConnection?.getTextAfterCursor(1, 0).isNullOrEmpty()
+                val fieldEmpty = shadowBeforeCursor(1).isEmpty() && shadowAfterCursor(1).isEmpty()
                 suggestionStrip?.visibility = if (fieldEmpty) View.GONE else View.VISIBLE
             }
             return

@@ -341,6 +341,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var spellChecker: SpellCheckerSession? = null
     private val handler = Handler(Looper.getMainLooper())
     private var suggestDebounce: Runnable? = null
+    // System spellchecker is a cross-process (IPC) call even for the in-launcher keyboard — run it on
+    // a slower cadence than the base prediction strip so fast typing doesn't fire it every keystroke.
+    private var launcherSpellDebounce: Runnable? = null
     private var libraryRefreshDebounce: Runnable? = null
     private var libraryPopulateRunnable: Runnable? = null
     // In-launcher Spotify music search: cached results for the current query so typing a song/artist
@@ -11672,6 +11675,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun scheduleSpellCheck() {
         suggestDebounce?.let { handler.removeCallbacks(it) }
+        launcherSpellDebounce?.let { handler.removeCallbacks(it) }
         scheduleLiveAutocorrect()
         val word = currentWordInCompose()
         if (word.length < 2) {
@@ -11683,14 +11687,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         liveRouter.onTextChanged(word)
         computeLauncherEmojiChips(word)
         val prev = previousWordInCompose()
+        // Base strip (in-memory candidate computation) stays snappy at 80ms.
         val r = Runnable {
             lastSuggestWord = word
             suggestions = predictionCore.computeSuggestions()   // shared candidate computation
             updateSuggestionBar()
-            spellChecker?.getSuggestions(TextInfo(word), 5)
         }
         suggestDebounce = r
         handler.postDelayed(r, 80)
+        // Spellchecker is a cross-process call — defer it to a slower cadence so it doesn't fire on
+        // every keystroke during fast typing (its async result merges into the strip when it lands).
+        val sc = Runnable { spellChecker?.getSuggestions(TextInfo(word), 5) }
+        launcherSpellDebounce = sc
+        handler.postDelayed(sc, 180)
     }
 
     private fun currentWordInCompose(): String {
