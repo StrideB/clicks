@@ -373,6 +373,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var braveWebDebounce: Runnable? = null
     private var braveWebQuery: String = ""
     private var braveWebResults: List<SearchResult> = emptyList()
+
+    private var sportsDebounce: Runnable? = null
+    private var sportsQuery: String = ""
+    private var sportsCard: SportsApi.ScoreCard? = null
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -8043,10 +8047,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val command = searchCommandPreview()
         val aiInline = searchAiInlineState()
         val rich = searchRichAnswer()
+        val sports = searchSportsCard()
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(4), 0, dp(18))
-            if (results.isEmpty() && command == null && aiInline == null && rich == null) {
+            if (results.isEmpty() && command == null && aiInline == null && rich == null && sports == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
                     textSize = 14f
@@ -8058,6 +8063,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             command?.let {
                 addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply {
+                    bottomMargin = dp(8)
+                })
+            }
+            sports?.let {
+                addView(sportsScoreCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(8)
                 })
             }
@@ -8078,7 +8088,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     gravity = Gravity.CENTER_VERTICAL
                     rowItems.forEachIndexed { columnIndex, result ->
                         val index = rowIndex * 2 + columnIndex
-                        addView(unfoldedSearchResultTile(result, index == 0 && command == null && aiInline == null && rich == null, index), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        addView(unfoldedSearchResultTile(result, index == 0 && command == null && aiInline == null && rich == null && sports == null, index), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                             if (columnIndex > 0) marginStart = dp(10)
                         })
                     }
@@ -8143,7 +8153,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val command = searchCommandPreview()
         val aiInline = searchAiInlineState()
         val rich = searchRichAnswer()
-        if (results.isEmpty() && command == null && aiInline == null && rich == null) {
+        val sports = searchSportsCard()
+        if (results.isEmpty() && command == null && aiInline == null && rich == null && sports == null) {
             addView(TextView(context).apply {
                 text = "No results for \"$query\""
                 textSize = 13f
@@ -8158,6 +8169,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(0, dp(12), 0, dp(10))
             command?.let {
                 addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
+                    bottomMargin = dp(10)
+                })
+            }
+            sports?.let {
+                addView(sportsScoreCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(10)
                 })
             }
@@ -8177,7 +8193,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     gravity = Gravity.CENTER_VERTICAL
                     rowItems.forEachIndexed { columnIndex, result ->
                         val index = rowIndex * 2 + columnIndex
-                        addView(searchResultBentoCard(result, index == 0 && rich == null, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                        addView(searchResultBentoCard(result, index == 0 && rich == null && sports == null, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
                             if (columnIndex > 0) marginStart = dp(10)
                         })
                     }
@@ -8219,6 +8235,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val command = searchCommandPreview()
         val aiInline = searchAiInlineState()
         val rich = searchRichAnswer()
+        val sports = searchSportsCard()
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, if (widgetMode) dp(10) else dp(12), 0, if (widgetMode) dp(18) else dp(10))
@@ -8228,6 +8245,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
             command?.let {
                 addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
+                    bottomMargin = dp(9)
+                })
+            }
+            sports?.let {
+                addView(sportsScoreCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(9)
                 })
             }
@@ -8242,7 +8264,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 })
             }
             val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
-            if (visibleResults.isEmpty() && command == null && aiInline == null && rich == null) {
+            if (visibleResults.isEmpty() && command == null && aiInline == null && rich == null && sports == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
                     textSize = 13f
@@ -8252,7 +8274,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
             }
             visibleResults.forEachIndexed { index, result ->
-                addView(searchResultRow(result, index == 0 && command == null && aiInline == null && rich == null, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
+                addView(searchResultRow(result, index == 0 && command == null && aiInline == null && rich == null && sports == null, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
                     bottomMargin = dp(8)
                 })
             }
@@ -8592,6 +8614,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun searchRichAnswer(): BraveSearchApi.RichAnswer? =
         braveRichAnswer?.takeIf { braveRichQuery == query.trim() }
 
+    private fun searchSportsCard(): SportsApi.ScoreCard? =
+        sportsCard?.takeIf { sportsQuery == query.trim() }
+
     /** Widget-style instant-answer card (Brave rich data): header label, big value, change chip,
      *  sparkline from the payload timeseries, provider credit. Tap opens the full Brave page. */
     private fun braveRichCard(rich: BraveSearchApi.RichAnswer): View {
@@ -8711,6 +8736,112 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
     }
+
+    /** Widget-style live-scores card (ESPN): league header, one row per game with team lines and
+     *  a status chip — green while the game is live. Tap opens the game or scoreboard on ESPN. */
+    private fun sportsScoreCard(card: SportsApi.ScoreCard): View {
+        val accent = 0xFFCC0000.toInt()   // ESPN red
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(dp(14), dp(12), dp(14), dp(11))
+            background = searchCardBackground(SearchKind.ANSWER, true, 16)
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = card.glyph
+                    gravity = Gravity.CENTER
+                    textSize = 13f
+                    setTextColor(accent)
+                    includeFontPadding = false
+                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.RAISED_SM)
+                }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(9) })
+                addView(mono(card.label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkDim).apply {
+                    letterSpacing = 0.12f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(searchKindTag(SearchKind.ANSWER))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)))
+            val single = card.games.size == 1
+            card.games.forEachIndexed { index, game ->
+                addView(sportsGameRow(game, single), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(if (index == 0) 7 else 10) })
+            }
+            if (single && card.detail.isNotBlank()) {
+                addView(TextView(context).apply {
+                    text = card.detail
+                    textSize = 11.5f
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(6)
+                })
+            }
+            addView(mono("DATA · ESPN", 7.5f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.1f
+                setPadding(0, dp(8), 0, 0)
+            })
+            setOnClickListener {
+                haptic(this)
+                openUrlDirectly(card.link)
+            }
+        }
+    }
+
+    /** One game inside the scores card: away over home with right-aligned scores (leader bold),
+     *  status chip at the end — clock while live, date/time before tip-off, "Final" after. */
+    private fun sportsGameRow(game: SportsApi.Game, single: Boolean): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(sportsTeamLine(game.awayName, game.awayScore, game.awayBold, single))
+                addView(sportsTeamLine(game.homeName, game.homeScore, game.homeBold, single).apply {
+                    setPadding(0, dp(if (single) 4 else 2), 0, 0)
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (game.status.isNotBlank()) {
+                val chipColor = if (game.live) 0xFF43B97F.toInt() else activeNeuTokens.inkDim
+                addView(mono(game.status.uppercase(Locale.US), if (single) 9f else 8f, chipColor).apply {
+                    letterSpacing = 0.06f
+                    maxLines = 1
+                    setPadding(dp(8), dp(4), dp(8), dp(4))
+                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.PRESSED_SM)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginStart = dp(10)
+                })
+            }
+        }
+
+    private fun sportsTeamLine(name: String, score: String, bold: Boolean, single: Boolean): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(context).apply {
+                text = name
+                textSize = if (single) 16f else 13f
+                typeface = Typeface.create("sans-serif-medium", if (bold) Typeface.BOLD else Typeface.NORMAL)
+                setTextColor(if (bold) activeNeuTokens.ink else activeNeuTokens.inkDim)
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(TextView(context).apply {
+                text = score.ifBlank { "–" }
+                textSize = if (single) 20f else 14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(if (bold) activeNeuTokens.ink else activeNeuTokens.inkDim)
+                includeFontPadding = false
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = dp(8)
+            })
+        }
 
     /** Minimal sparkline: normalized line over a soft fill, no axes or labels. */
     private fun sparklineView(points: List<Float>, color: Int): View = object : View(this) {
@@ -13275,6 +13406,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         scheduleSemanticSearch()
         scheduleBraveRichSearch()
         scheduleBraveWebSearch()
+        scheduleSportsSearch()
     }
 
     /** Re-render whichever surface is currently showing search results — async quick-source
@@ -13591,7 +13723,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     // "…news" queries pull Brave's news vertical in the same request — the
                     // stories lead the list, followed by web results.
                     val news = q.lowercase(Locale.US).contains("news")
-                    runCatching { BraveSearchApi.search(q, key, count = 4, includeNews = news) }.getOrDefault(emptyList())
+                    // Curated verticals: sports queries pin the rows to one trusted brand
+                    // instead of a mixed page of aggregators. The score card carries the
+                    // numbers; these rows carry ESPN's stories around them.
+                    val curated = if (SportsApi.hasSportsIntent(q)) "$q site:espn.com" else q
+                    runCatching { BraveSearchApi.search(curated, key, count = 4, includeNews = news) }.getOrDefault(emptyList())
                 }
                 if (query.trim() != q) return@launch   // query moved on
                 braveWebQuery = q
@@ -13611,6 +13747,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         braveWebDebounce = r
         handler.postDelayed(r, 600L)
+    }
+
+    /** Debounced ESPN scores lookup. Populates [sportsCard] for the current query so the search
+     *  surfaces can pin a live-score card on top ("miami heat", "nba scores", "world cup").
+     *  ESPN's site API is free and unmetered, so this fires on any sports-shaped query. */
+    private fun scheduleSportsSearch() {
+        sportsDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        if (q.length < 3 || !SportsApi.hasSportsIntent(q)) {
+            if (sportsCard != null || sportsQuery.isNotEmpty()) { sportsCard = null; sportsQuery = "" }
+            return
+        }
+        if (q == sportsQuery) return
+        val r = Runnable {
+            sportsDebounce = null
+            mediaUiScope.launch {
+                val card = withContext(Dispatchers.IO) {
+                    runCatching { SportsApi.lookup(q) }.getOrNull()
+                }
+                if (query.trim() != q) return@launch   // query moved on
+                sportsQuery = q
+                sportsCard = card
+                if (card != null) refreshSearchResultsUi()
+            }
+        }
+        sportsDebounce = r
+        handler.postDelayed(r, 300L)
     }
 
     /** Does [q] look like it wants an instant answer (Brave rich vertical) rather than an app,
