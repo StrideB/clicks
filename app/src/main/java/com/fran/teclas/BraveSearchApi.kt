@@ -29,48 +29,87 @@ object BraveSearchApi {
 
     data class Result(val title: String, val snippet: String, val link: String, val display: String)
 
+    /** One day in the weather card's forecast strip. Temps are short-form ("82°"). */
+    data class DayForecast(val day: String, val glyph: String, val hi: String, val lo: String)
+
     /** One instant answer, structured for a widget-style card in search results.
      *  [provider] must stay visible somewhere on the card — Brave's data partners require credit. */
     data class RichAnswer(
         val vertical: String,
         val headline: String,        // the answer itself, rendered big: "64,061 USD" / "61° Clear sky"
-        val label: String,           // card header: "Bitcoin · BTC" / "Weather · San Jose, CA"
+        val label: String,           // card header: "Bitcoin · BTC" / "Weather · Bogotá"
         val detail: String,          // secondary line: "H:82° L:57°" / "Rate 0.874" / definition text
         val delta: String?,          // change chip: "▲2.48% · 24h"; null when not applicable
         val deltaUp: Boolean,        // colors the chip and sparkline (gain vs loss)
         val provider: String,        // attribution: "CoinGecko", "OpenWeatherMap", …
-        val spark: List<Float>       // timeseries for the sparkline; empty = no chart
+        val spark: List<Float>,      // timeseries for the sparkline; empty = no chart
+        val glyph: String = "✦",     // header icon: condition emoji for weather, ✦ otherwise
+        val forecast: List<DayForecast> = emptyList()   // weather only: next-days strip
     )
 
     fun isConfigured(prefs: SharedPreferences): Boolean =
         !prefs.getString(KEY_PREF, null).isNullOrBlank()
 
-    /** Standard web results — title/snippet/URL, safe to render natively in the launcher. */
-    fun search(query: String, apiKey: String, count: Int = 6): List<Result> {
+    // Bare terms that deserve a rich card without qualifier words: callers rewrite "bitcoin" →
+    // "bitcoin price" / "tsla" → "tsla stock" so Brave's intent detector reliably hints.
+    // Conservative on purpose — common English words as tickers ("coin", "dis") stay out.
+    val CRYPTO_TERMS = setOf(
+        "bitcoin", "btc", "ethereum", "eth", "solana", "dogecoin", "doge", "xrp", "ripple",
+        "litecoin", "ltc", "bnb", "cardano", "avax", "avalanche", "monero", "xmr", "tron",
+        "shiba", "pepe", "tether", "usdt"
+    )
+    val STOCK_TERMS = setOf(
+        "aapl", "tsla", "nvda", "msft", "googl", "goog", "amzn", "meta", "nflx", "amd", "intc",
+        "spy", "qqq", "uber", "abnb", "pltr", "gme", "amc", "hood", "sofi", "jpm", "baba",
+        "orcl", "crm", "avgo", "smci", "mstr", "nke",
+        "apple", "tesla", "nvidia", "microsoft", "google", "alphabet", "amazon", "netflix",
+        "intel", "oracle", "palantir", "gamestop", "robinhood", "broadcom", "alibaba",
+        "coinbase", "disney", "nike"
+    )
+
+    /** Standard web results — title/snippet/URL, safe to render natively in the launcher.
+     *  [includeNews] adds Brave's news vertical to the same request (no extra cost) and
+     *  prepends those results — for "…news" queries the stories ARE the answer. */
+    fun search(query: String, apiKey: String, count: Int = 6, includeNews: Boolean = false): List<Result> {
         if (query.isBlank() || apiKey.isBlank()) return emptyList()
         val body = get(
             "https://api.search.brave.com/res/v1/web/search?q=${URLEncoder.encode(query, "UTF-8")}" +
-                "&count=${count.coerceIn(1, 20)}&result_filter=web",
+                "&count=${count.coerceIn(1, 20)}&result_filter=${if (includeNews) "web,news" else "web"}",
             apiKey
         ) ?: return emptyList()
-        val items = runCatching {
-            JSONObject(body).optJSONObject("web")?.optJSONArray("results")
-        }.getOrNull() ?: return emptyList()
-        val out = ArrayList<Result>(items.length())
-        for (i in 0 until items.length()) {
-            val it = items.optJSONObject(i) ?: continue
-            val title = it.optString("title").trim()
-            val link = it.optString("url").trim()
-            if (title.isBlank() || link.isBlank()) continue
-            out.add(
-                Result(
-                    title = title,
-                    snippet = it.optString("description").trim(),
-                    link = link,
-                    display = it.optJSONObject("meta_url")?.optString("hostname")?.trim()
-                        .orEmpty().ifBlank { link }
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+        val out = ArrayList<Result>()
+        if (includeNews) {
+            root.optJSONObject("news")?.optJSONArray("results")?.let { items ->
+                for (i in 0 until minOf(items.length(), 4)) {
+                    val it = items.optJSONObject(i) ?: continue
+                    val title = it.optString("title").trim()
+                    val link = it.optString("url").trim()
+                    if (title.isBlank() || link.isBlank()) continue
+                    val host = it.optJSONObject("meta_url")?.optString("hostname")?.trim().orEmpty()
+                    val age = it.optString("age").trim()
+                    out.add(Result(title, it.optString("description").trim(), link,
+                        listOf(host, age).filter { s -> s.isNotBlank() }.joinToString(" · ").ifBlank { link }))
+                }
+            }
+        }
+        root.optJSONObject("web")?.optJSONArray("results")?.let { items ->
+            for (i in 0 until items.length()) {
+                val it = items.optJSONObject(i) ?: continue
+                val title = it.optString("title").trim()
+                val link = it.optString("url").trim()
+                if (title.isBlank() || link.isBlank()) continue
+                if (out.any { r -> r.link == link }) continue
+                out.add(
+                    Result(
+                        title = title,
+                        snippet = it.optString("description").trim(),
+                        link = link,
+                        display = it.optJSONObject("meta_url")?.optString("hostname")?.trim()
+                            .orEmpty().ifBlank { link }
+                    )
                 )
-            )
+            }
         }
         return out
     }
@@ -110,7 +149,8 @@ object BraveSearchApi {
                 val w = item.optJSONObject("weather") ?: return null
                 val current = w.optJSONObject("current_weather") ?: return null
                 val temp = current.optString("temp").toDoubleOrNull() ?: return null
-                val sky = current.optJSONObject("weather")?.optString("description").orEmpty()
+                val condition = current.optJSONObject("weather")
+                val sky = condition?.optString("description").orEmpty()
                     .replaceFirstChar { it.uppercase() }
                 val today = w.optJSONArray("daily")?.optJSONObject(0)?.optJSONObject("temperature")
                 val hiLo = today?.let { t ->
@@ -124,6 +164,7 @@ object BraveSearchApi {
                 val place = listOfNotNull(
                     loc?.optString("name")?.takeIf { it.isNotBlank() },
                     loc?.optString("state")?.takeIf { it.isNotBlank() }
+                        ?: loc?.optString("country")?.takeIf { it.isNotBlank() }
                 ).joinToString(", ")
                 // Next ~24h temperature curve from the 3-hourly forecast.
                 val curve = w.optJSONArray("hours3")?.let { hours ->
@@ -131,10 +172,25 @@ object BraveSearchApi {
                         hours.optJSONObject(it)?.optJSONObject("temperature")?.optString("temp")?.toFloatOrNull()
                     }
                 }.orEmpty()
+                // Forecast strip: today + next days, each with day label, condition glyph, hi/lo.
+                val days = w.optJSONArray("daily")?.let { daily ->
+                    (0 until minOf(daily.length(), 5)).mapNotNull { i ->
+                        val d = daily.optJSONObject(i) ?: return@mapNotNull null
+                        val t = d.optJSONObject("temperature") ?: return@mapNotNull null
+                        val hi = t.optString("max").toDoubleOrNull() ?: return@mapNotNull null
+                        val lo = t.optString("min").toDoubleOrNull() ?: return@mapNotNull null
+                        DayForecast(
+                            day = if (i == 0) "NOW" else d.optString("date_i18n").take(3).uppercase(java.util.Locale.US),
+                            glyph = weatherGlyph(d.optJSONObject("weather")?.optString("main").orEmpty()),
+                            hi = shortTemp(hi), lo = shortTemp(lo)
+                        )
+                    }
+                }.orEmpty()
                 RichAnswer(subtype, "${localTemp(temp)} $sky",
                     listOfNotNull("Weather", place.takeIf { it.isNotBlank() }).joinToString(" · "),
                     listOfNotNull(hiLo, feels, humidity).joinToString("  ·  "),
-                    null, true, provider, curve)
+                    null, true, provider, curve,
+                    glyph = weatherGlyph(condition?.optString("main").orEmpty()), forecast = days)
             }
             "stocks", "stock" -> {
                 val s = item.optJSONObject("stock") ?: return null
@@ -244,6 +300,21 @@ object BraveSearchApi {
         val country = java.util.Locale.getDefault().country
         return if (country in setOf("US", "BS", "BZ", "KY", "PW", "LR", "MM"))
             "${(celsius * 9 / 5 + 32).toInt()}°F" else "${celsius.toInt()}°C"
+    }
+
+    /** Unit-less variant for the tight forecast cells: "82°". */
+    private fun shortTemp(celsius: Double): String = localTemp(celsius).dropLast(1)
+
+    /** OpenWeatherMap condition group → glyph for the card header and forecast strip. */
+    private fun weatherGlyph(main: String): String = when (main.lowercase(java.util.Locale.US)) {
+        "clear" -> "☀️"
+        "clouds" -> "☁️"
+        "rain" -> "🌧️"
+        "drizzle" -> "🌦️"
+        "thunderstorm" -> "⛈️"
+        "snow" -> "❄️"
+        "" -> "✦"
+        else -> "🌫️"   // mist, fog, haze, smoke, dust…
     }
 
     /** Depth-limited search for the first non-blank scalar under any of [keys] — the payload

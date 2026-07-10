@@ -846,7 +846,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         updateLauncherTheme(animated = true)
         // Reload when we're mirroring the device wallpaper (no launcher-picked override), so a
         // wallpaper the user changes device-side shows up here on the next resume.
-        if (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive() || activeHomeWallpaperUri() == null) {
+        if (!useSystemWallpaperOnHome() && (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive() || activeHomeWallpaperUri() == null)) {
             homeWallpaperDrawable = loadHomeWallpaperDrawable()
             if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
         }
@@ -1355,6 +1355,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val unfolded = isUnfoldedInnerLayoutActive()
         val phoneWidgetCanvas = !unfolded && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET
         val wallpaperCanvas = launcherWallpaperCanvasActive()
+        if (useSystemWallpaperOnHome()) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+            window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window.decorView.setBackgroundColor(Color.TRANSPARENT)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+            window.setBackgroundDrawable(ColorDrawable(activeNeuTokens.base))
+            window.decorView.setBackgroundColor(activeNeuTokens.base)
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -1391,9 +1400,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         if (wallpaperCanvas) {
             val shell = FrameLayout(this).apply {
-                setBackgroundColor(activeNeuTokens.base)
-                homeWallpaperLayer()?.let {
-                    addView(it, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                setBackgroundColor(if (useSystemWallpaperOnHome()) Color.TRANSPARENT else activeNeuTokens.base)
+                if (!useSystemWallpaperOnHome()) {
+                    homeWallpaperLayer()?.let {
+                        addView(it, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                    }
                 }
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                 if (innerWallpaperEditMode) {
@@ -1886,6 +1897,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun useLockscreenWallpaperOnHome(): Boolean =
         prefs().getBoolean(HOME_LOCK_WALLPAPER_PREF, false)
 
+    private fun useSystemWallpaperOnHome(): Boolean =
+        prefs().getBoolean(HOME_SYSTEM_WALLPAPER_PREF, true)
+
     private fun innerHomeWallpaperUri(): Uri? =
         prefs().getString(HOME_INNER_WALLPAPER_URI_PREF, null)
             ?.takeIf { it.isNotBlank() }
@@ -1896,12 +1910,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             ?.takeIf { it.isNotBlank() }
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
-    private fun activeHomeWallpaperUri(): Uri? =
+    private fun activeHomeWallpaperUri(): Uri? {
+        if (useSystemWallpaperOnHome()) return null
         if (isUnfoldedInnerLayoutActive()) {
-            innerHomeWallpaperUri()
+            return innerHomeWallpaperUri()
         } else {
-            coverHomeWallpaperUri() ?: innerHomeWallpaperUri()
+            return coverHomeWallpaperUri() ?: innerHomeWallpaperUri()
         }
+    }
 
     private fun activeWallpaperUriPref(inner: Boolean = isUnfoldedInnerLayoutActive()): String =
         if (inner) HOME_INNER_WALLPAPER_URI_PREF else HOME_COVER_WALLPAPER_URI_PREF
@@ -1928,7 +1944,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         prefs().getBoolean(HOME_LIVE_WALLPAPER_MOTION_PREF, true)
 
     private fun innerWallpaperModeActive(): Boolean =
-        openPane == null && activeHomeWallpaperUri() != null
+        openPane == null && (useSystemWallpaperOnHome() || activeHomeWallpaperUri() != null)
 
     private fun launcherWallpaperCanvasActive(): Boolean = true
 
@@ -8587,10 +8603,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(context).apply {
-                    text = "✦"
+                    text = rich.glyph
                     gravity = Gravity.CENTER
-                    textSize = 12f
+                    textSize = if (rich.glyph == "✦") 12f else 13f
                     setTextColor(accent)
+                    includeFontPadding = false
                     background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.RAISED_SM)
                 }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(9) })
                 addView(mono(rich.label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkDim).apply {
@@ -8639,6 +8656,47 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (rich.spark.size >= 2) {
                 addView(sparklineView(rich.spark, if (rich.delta == null) accent else deltaColor),
                     LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(9) })
+            }
+            if (rich.forecast.isNotEmpty()) {
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    rich.forecast.forEach { day ->
+                        addView(LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            gravity = Gravity.CENTER_HORIZONTAL
+                            setPadding(0, dp(7), 0, dp(7))
+                            background = Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
+                            addView(mono(day.day, 7.5f, activeNeuTokens.inkFaint).apply { letterSpacing = 0.08f })
+                            addView(TextView(context).apply {
+                                text = day.glyph
+                                gravity = Gravity.CENTER
+                                textSize = 15f
+                                includeFontPadding = false
+                                setPadding(0, dp(4), 0, dp(4))
+                            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                            addView(TextView(context).apply {
+                                text = day.hi
+                                gravity = Gravity.CENTER
+                                textSize = 11f
+                                typeface = Typeface.DEFAULT_BOLD
+                                setTextColor(activeNeuTokens.ink)
+                                includeFontPadding = false
+                            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                            addView(TextView(context).apply {
+                                text = day.lo
+                                gravity = Gravity.CENTER
+                                textSize = 10f
+                                setTextColor(activeNeuTokens.inkDim)
+                                includeFontPadding = false
+                                setPadding(0, dp(1), 0, 0)
+                            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                            if (day !== rich.forecast.first()) marginStart = dp(7)
+                        })
+                    }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(10)
+                })
             }
             addView(mono("DATA · ${rich.provider.ifBlank { "BRAVE" }.uppercase(Locale.US)} · BRAVE SEARCH", 7.5f, activeNeuTokens.inkFaint).apply {
                 letterSpacing = 0.1f
@@ -13447,7 +13505,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         braveRichDebounce?.let { handler.removeCallbacks(it) }
         val q = query.trim()
         val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
-        if (q.length < 2 || key.isBlank() || !looksLikeRichIntent(q)) {
+        if (q.length < 2 || key.isBlank() || !mayHaveRichIntent(q)) {
             if (braveRichAnswer != null || braveRichQuery.isNotEmpty()) { braveRichAnswer = null; braveRichQuery = "" }
             return
         }
@@ -13456,7 +13514,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             braveRichDebounce = null
             mediaUiScope.launch {
                 val answer = withContext(Dispatchers.IO) {
-                    runCatching { BraveSearchApi.fetchRich(q, key) }.getOrNull()
+                    // Resolved off the main thread: bare "weather" may need a geocoder round-trip.
+                    val effective = resolveBraveRichQuery(q) ?: return@withContext null
+                    runCatching { BraveSearchApi.fetchRich(effective, key) }.getOrNull()
                 }
                 if (query.trim() != q) return@launch   // query moved on
                 braveRichQuery = q
@@ -13466,6 +13526,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         braveRichDebounce = r
         handler.postDelayed(r, 450L)
+    }
+
+    /** Cheap main-thread pre-gate: could [q] resolve to a rich lookup at all? */
+    private fun mayHaveRichIntent(q: String): Boolean {
+        val lower = q.lowercase(Locale.US)
+        return lower in BraveSearchApi.CRYPTO_TERMS || lower in BraveSearchApi.STOCK_TERMS ||
+            ((lower == "weather" || lower == "forecast") && AgenticLocation.hasPermission(this)) ||
+            looksLikeRichIntent(q)
+    }
+
+    private var richWeatherCity: String? = null
+
+    /** The query actually sent to Brave's rich lookup. Bare names get the phrasing the intent
+     *  detector reliably hints on ("bitcoin" → "bitcoin price", "tsla" → "tsla stock"); bare
+     *  "weather" gets the city from the last known location, since Brave won't hint weather
+     *  without a place. Blocking (geocoder) — call off the main thread. */
+    private fun resolveBraveRichQuery(q: String): String? {
+        val lower = q.lowercase(Locale.US)
+        return when {
+            lower in BraveSearchApi.CRYPTO_TERMS -> "$lower price"
+            lower in BraveSearchApi.STOCK_TERMS -> "$lower stock"
+            lower == "weather" || lower == "forecast" -> {
+                val city = richWeatherCity ?: AgenticLocation.lastKnown(this)?.let { loc ->
+                    runCatching {
+                        @Suppress("DEPRECATION")
+                        android.location.Geocoder(this, Locale.getDefault())
+                            .getFromLocation(loc.latitude, loc.longitude, 1)
+                            ?.firstOrNull()?.locality
+                    }.getOrNull()
+                }?.also { richWeatherCity = it }
+                city?.let { "weather $it" }
+            }
+            looksLikeRichIntent(q) -> q
+            else -> null
+        }
     }
 
     /** Debounced inline Brave web search. Populates [braveWebResults] so universalSearchResults()
@@ -13484,11 +13579,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             braveWebDebounce = null
             mediaUiScope.launch {
                 val hits = withContext(Dispatchers.IO) {
-                    runCatching { BraveSearchApi.search(q, key, count = 4) }.getOrDefault(emptyList())
+                    // "…news" queries pull Brave's news vertical in the same request — the
+                    // stories lead the list, followed by web results.
+                    val news = q.lowercase(Locale.US).contains("news")
+                    runCatching { BraveSearchApi.search(q, key, count = 4, includeNews = news) }.getOrDefault(emptyList())
                 }
                 if (query.trim() != q) return@launch   // query moved on
                 braveWebQuery = q
-                braveWebResults = hits.map { hit ->
+                braveWebResults = hits.take(5).map { hit ->
                     SearchResult(
                         title = hit.title,
                         subtitle = hit.display,
@@ -14185,23 +14283,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 renderPaneContent(teclasSettingsTarget())
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         }
-        if (activeHomeWallpaperUri() != null) {
-            parent.addView(settingAction("USE DEVICE WALLPAPER") {
-                // Clear the launcher-picked image so it mirrors whatever wallpaper the device is set to.
-                prefs().edit()
-                    .remove(HOME_COVER_WALLPAPER_URI_PREF)
-                    .remove(HOME_INNER_WALLPAPER_URI_PREF)
-                    .apply()
-                homeWallpaperDrawable = loadHomeWallpaperDrawable()
-                haptic(this)
-                // Android 13+ only lets the default home app read the user's wallpaper.
-                val msg = if (homeWallpaperDrawable != null) "Using your device wallpaper"
-                else "Set Teclas as your default launcher to read the device wallpaper"
-                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-                render()
-                openHere(teclasSettingsTarget())
-            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-        }
+        parent.addView(settingAction(if (useSystemWallpaperOnHome()) "SYSTEM WALLPAPER   ON" else "USE SYSTEM WALLPAPER") {
+            // Let Android draw the actual system/live wallpaper behind Teclas. Custom launcher
+            // image URIs are cleared so stale uploaded wallpapers cannot cover the live wallpaper.
+            prefs().edit()
+                .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, true)
+                .remove(HOME_COVER_WALLPAPER_URI_PREF)
+                .remove(HOME_INNER_WALLPAPER_URI_PREF)
+                .apply()
+            homeWallpaperDrawable = null
+            haptic(this)
+            Toast.makeText(this@MainActivity, "Using Android system wallpaper", Toast.LENGTH_LONG).show()
+            render()
+            openHere(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingToggle("LOCKSCREEN WALLPAPER HOME", useLockscreenWallpaperOnHome()) {
             val next = !useLockscreenWallpaperOnHome()
             prefs().edit().putBoolean(HOME_LOCK_WALLPAPER_PREF, next).apply()
@@ -20271,6 +20366,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val APP_LIBRARY_DEFAULT_HOME_PREF = "app_library_default_home"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"
+        private const val HOME_SYSTEM_WALLPAPER_PREF = "home_system_wallpaper"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
         private const val HOME_LIVE_WALLPAPER_MOTION_PREF = "home_live_wallpaper_motion"
         private const val HOME_COVER_WALLPAPER_URI_PREF = "home_cover_wallpaper_uri"

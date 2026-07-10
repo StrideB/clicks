@@ -9,4 +9,9 @@
         <item name="android:forceDarkAllowed">false</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+
+    <style name="TeclasHomeTheme" parent="@style/AppTheme">
+        <item name="android:windowShowWallpaper">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
 </resources>

@@ -9,6 +9,11 @@
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 
+    <style name="TeclasHomeTheme" parent="@style/AppTheme">
+        <item name="android:windowShowWallpaper">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+
     <!-- Grid workspace home surface: system wallpaper shows through, edge-to-edge dark chrome. -->
     <style name="GridHomeTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
