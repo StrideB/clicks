@@ -365,6 +365,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var braveRichDebounce: Runnable? = null
     private var braveRichQuery: String = ""
     private var braveRichAnswer: BraveSearchApi.RichAnswer? = null
+    // Inline Brave web results: real search results as native rows in universal search, so the
+    // launcher is the search page — no pane, no Custom Tab detour.
+    private var braveWebDebounce: Runnable? = null
+    private var braveWebQuery: String = ""
+    private var braveWebResults: List<SearchResult> = emptyList()
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -484,6 +489,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var weatherDripView: WeatherDripView? = null
     private var homeWallpaperDrawable: Drawable? = null
     private var innerWallpaperImageView: ImageView? = null
+    private var wallpaperMotionController: LiveWallpaperMotionController? = null
+    private var wallpaperParallaxX = 0f
+    private var wallpaperParallaxY = 0f
     private var innerWallpaperEditMode = false
     private var pendingWallpaperInnerScope: Boolean? = null
     private var wallpaperLongPressRunnable: Runnable? = null
@@ -686,6 +694,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         hapticEngine = CustomHapticEngine(this)
         spatialScorer = SpatialScorer()
         parallaxEngine = ParallaxSensorEngine(this) { pitch, roll -> applyDockParallax(pitch, roll) }
+        wallpaperMotionController = LiveWallpaperMotionController(this) { x, y ->
+            wallpaperParallaxX = x
+            wallpaperParallaxY = y
+            innerWallpaperImageView?.let { image -> applyInnerWallpaperMatrix(image) }
+        }
         spatialScorer.importState(prefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
@@ -816,6 +829,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onResume() {
         super.onResume()
         syncDockParallax()
+        syncWallpaperMotion()
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
@@ -865,6 +879,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onPause() {
         cancelWidgetKeyboardSwap(resetTheme = true)
         parallaxEngine?.stop()
+        wallpaperMotionController?.stop()
         widgetCoachAnimator?.cancel()
         // Halt periodic work while another app is in front: the 1 Hz music-progress tick and the
         // 45-minute brief refresh both resume in onResume; nothing needs them while backgrounded.
@@ -1255,6 +1270,36 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    // LiveSlider-inspired wallpaper motion. It is intentionally scoped to the home wallpaper
+    // canvas and pauses under overlays/edit mode so gesture-heavy surfaces stay deterministic.
+    private fun syncWallpaperMotion() {
+        val controller = wallpaperMotionController ?: return
+        val shouldRun = controller.isSupported &&
+            liveWallpaperMotionEnabled() &&
+            launcherWallpaperCanvasActive() &&
+            innerWallpaperImageView != null &&
+            !innerWallpaperEditMode &&
+            openPane == null &&
+            !libraryOpen &&
+            !todayOpen &&
+            !libraryDragActive &&
+            spaceBoardOverlay == null &&
+            homeLeftOverlay == null &&
+            widgetBoardView == null
+        if (shouldRun) {
+            controller.start()
+        } else {
+            controller.stop()
+            resetWallpaperMotion()
+        }
+    }
+
+    private fun resetWallpaperMotion() {
+        wallpaperParallaxX = 0f
+        wallpaperParallaxY = 0f
+        innerWallpaperImageView?.let { applyInnerWallpaperMatrix(it) }
+    }
+
     private fun resetDockParallax() {
         if (!::favoritesDockView.isInitialized) return
         val dock = favoritesDockView
@@ -1352,6 +1397,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         renderHub()
         renderFavoritesDock()
         syncDockParallax()
+        syncWallpaperMotion()
         renderRibbon()
         if (!unfolded) {
             openPane?.let { showPane(it, animate = false) }
@@ -1867,6 +1913,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun innerWallpaperOffsetY(): Float =
         prefs().getInt(activeWallpaperOffsetYPref(), 0).coerceIn(-100, 100) / 100f
 
+    private fun liveWallpaperMotionEnabled(): Boolean =
+        prefs().getBoolean(HOME_LIVE_WALLPAPER_MOTION_PREF, true)
+
     private fun innerWallpaperModeActive(): Boolean =
         openPane == null && activeHomeWallpaperUri() != null
 
@@ -2059,23 +2108,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun homeWallpaperLayer(): View? {
         val wallpaper = homeWallpaperDrawable ?: loadHomeWallpaperDrawable()?.also { homeWallpaperDrawable = it }
         if (wallpaper == null && !launcherWallpaperCanvasActive()) return null
+        innerWallpaperImageView = null
         return FrameLayout(this).apply {
             if (wallpaper != null) {
-                if (activeHomeWallpaperUri() != null) {
-                    addView(ImageView(context).apply {
-                        setImageDrawable(wallpaper.constantState?.newDrawable(resources)?.mutate() ?: wallpaper)
-                        scaleType = ImageView.ScaleType.MATRIX
-                        alpha = 1f
-                        innerWallpaperImageView = this
-                        post { applyInnerWallpaperMatrix(this) }
-                    }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-                } else {
-                    addView(ImageView(context).apply {
-                        setImageDrawable(wallpaper.constantState?.newDrawable(resources)?.mutate() ?: wallpaper)
-                        scaleType = ImageView.ScaleType.CENTER_CROP
-                        alpha = 1f
-                    }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-                }
+                addView(ImageView(context).apply {
+                    setImageDrawable(wallpaper.constantState?.newDrawable(resources)?.mutate() ?: wallpaper)
+                    scaleType = ImageView.ScaleType.MATRIX
+                    alpha = 1f
+                    innerWallpaperImageView = this
+                    post {
+                        applyInnerWallpaperMatrix(this)
+                        syncWallpaperMotion()
+                    }
+                }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             } else {
                 addView(View(context).apply {
                     background = GradientDrawable(
@@ -2111,16 +2156,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val drawH = drawable.intrinsicHeight.takeIf { it > 0 }?.toFloat() ?: return
         if (viewW <= 0f || viewH <= 0f) return
         val fillScale = maxOf(viewW / drawW, viewH / drawH)
-        val baseScale = fillScale * innerWallpaperZoom()
+        val motionActive = liveWallpaperMotionEnabled() && !innerWallpaperEditMode
+        val motionBoost = if (motionActive) 1.08f else 1f
+        val baseScale = fillScale * innerWallpaperZoom() * motionBoost
         val scaledW = drawW * baseScale
         val scaledH = drawH * baseScale
         val maxX = ((scaledW - viewW) / 2f).coerceAtLeast(0f)
         val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
+        val offsetX = (innerWallpaperOffsetX() + if (motionActive) wallpaperParallaxX * 0.26f else 0f).coerceIn(-1f, 1f)
+        val offsetY = (innerWallpaperOffsetY() + if (motionActive) wallpaperParallaxY * 0.26f else 0f).coerceIn(-1f, 1f)
         image.imageMatrix = Matrix().apply {
             postScale(baseScale, baseScale)
             postTranslate(
-                (viewW - scaledW) / 2f + maxX * innerWallpaperOffsetX(),
-                (viewH - scaledH) / 2f + maxY * innerWallpaperOffsetY()
+                (viewW - scaledW) / 2f + maxX * offsetX,
+                (viewH - scaledH) / 2f + maxY * offsetY
             )
         }
     }
@@ -2293,10 +2342,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(chip("CHANGE") {
                 innerWallpaperEditMode = false
+                syncWallpaperMotion()
                 openInnerWallpaperPicker()
             }, LinearLayout.LayoutParams(dp(78), dp(30)).apply { marginStart = dp(8) })
             addView(chip("DONE") {
                 innerWallpaperEditMode = false
+                syncWallpaperMotion()
                 render()
             }, LinearLayout.LayoutParams(dp(66), dp(30)).apply { marginStart = dp(8) })
         }, FrameLayout.LayoutParams(
@@ -2318,6 +2369,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openDeviceWallpaperPicker(anchor: View) {
         haptic(anchor)
         innerWallpaperEditMode = true
+        syncWallpaperMotion()
         homeWallpaperDrawable = loadHomeWallpaperDrawable()
         if (homeWallpaperDrawable == null) openInnerWallpaperPicker() else render()
     }
@@ -5625,6 +5677,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openLibrary() {
         if (libraryOpen || openPane != null) return
         libraryOpen = true
+        syncWallpaperMotion()
         query = ""
         keyboardSettingsOpen = false
         if (isUnfoldedInnerLayoutActive()) {
@@ -5644,6 +5697,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun beginLibraryDrag(startedOpen: Boolean, vertical: Boolean = false, fastPath: Boolean = false) {
         if (openPane != null && !startedOpen) return
         libraryDragActive = true
+        syncWallpaperMotion()
         libraryDragStartedOpen = startedOpen
         libraryDragVertical = vertical
         libraryDragHapticStage = 0
@@ -5729,6 +5783,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         if (shouldOpen) {
             libraryOpen = true
+            syncWallpaperMotion()
             val animation = overlay.animate()
                 .alpha(1f)
                 .setDuration(librarySettleDuration(translation, if (vertical) contentFrame.height else contentFrame.width))
@@ -5748,6 +5803,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             animation.start()
         } else {
             libraryOpen = false
+            syncWallpaperMotion()
             libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
             libraryPopulateRunnable = null
             val animation = overlay.animate()
@@ -7117,6 +7173,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun showLibrary(animate: Boolean) {
+        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         categoryFolderView = null
         val overlay = appLibrary()
@@ -7917,10 +7974,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val results = universalSearchResults()
         val command = searchCommandPreview()
         val aiInline = searchAiInlineState()
+        val rich = searchRichAnswer()
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(4), 0, dp(18))
-            if (results.isEmpty() && command == null && aiInline == null) {
+            if (results.isEmpty() && command == null && aiInline == null && rich == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
                     textSize = 14f
@@ -7932,6 +7990,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             command?.let {
                 addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply {
+                    bottomMargin = dp(8)
+                })
+            }
+            rich?.let {
+                addView(braveRichCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(8)
                 })
             }
@@ -7947,7 +8010,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     gravity = Gravity.CENTER_VERTICAL
                     rowItems.forEachIndexed { columnIndex, result ->
                         val index = rowIndex * 2 + columnIndex
-                        addView(unfoldedSearchResultTile(result, index == 0 && command == null && aiInline == null, index), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                        addView(unfoldedSearchResultTile(result, index == 0 && command == null && aiInline == null && rich == null, index), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                             if (columnIndex > 0) marginStart = dp(10)
                         })
                     }
@@ -8011,7 +8074,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val results = universalSearchResults()
         val command = searchCommandPreview()
         val aiInline = searchAiInlineState()
-        if (results.isEmpty() && command == null && aiInline == null) {
+        val rich = searchRichAnswer()
+        if (results.isEmpty() && command == null && aiInline == null && rich == null) {
             addView(TextView(context).apply {
                 text = "No results for \"$query\""
                 textSize = 13f
@@ -8029,6 +8093,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     bottomMargin = dp(10)
                 })
             }
+            rich?.let {
+                addView(braveRichCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(10)
+                })
+            }
             aiInline?.let {
                 addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(10)
@@ -8040,7 +8109,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     gravity = Gravity.CENTER_VERTICAL
                     rowItems.forEachIndexed { columnIndex, result ->
                         val index = rowIndex * 2 + columnIndex
-                        addView(searchResultBentoCard(result, index == 0, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                        addView(searchResultBentoCard(result, index == 0 && rich == null, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
                             if (columnIndex > 0) marginStart = dp(10)
                         })
                     }
@@ -8081,6 +8150,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val results = universalSearchResults()
         val command = searchCommandPreview()
         val aiInline = searchAiInlineState()
+        val rich = searchRichAnswer()
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, if (widgetMode) dp(10) else dp(12), 0, if (widgetMode) dp(18) else dp(10))
@@ -8093,13 +8163,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     bottomMargin = dp(9)
                 })
             }
+            rich?.let {
+                addView(braveRichCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(9)
+                })
+            }
             aiInline?.let {
                 addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(9)
                 })
             }
             val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
-            if (visibleResults.isEmpty() && command == null && aiInline == null) {
+            if (visibleResults.isEmpty() && command == null && aiInline == null && rich == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
                     textSize = 13f
@@ -8109,7 +8184,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
             }
             visibleResults.forEachIndexed { index, result ->
-                addView(searchResultRow(result, index == 0 && command == null && aiInline == null, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
+                addView(searchResultRow(result, index == 0 && command == null && aiInline == null && rich == null, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
                     bottomMargin = dp(8)
                 })
             }
@@ -8443,6 +8518,120 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setStroke(dp(1), Neu.GREEN)
         }
         return LayerDrawable(arrayOf(solid, base, ring))
+    }
+
+    /** The Brave rich answer for the live query, or null once the query moves on. */
+    private fun searchRichAnswer(): BraveSearchApi.RichAnswer? =
+        braveRichAnswer?.takeIf { braveRichQuery == query.trim() }
+
+    /** Widget-style instant-answer card (Brave rich data): header label, big value, change chip,
+     *  sparkline from the payload timeseries, provider credit. Tap opens the full Brave page. */
+    private fun braveRichCard(rich: BraveSearchApi.RichAnswer): View {
+        val accent = 0xFFFB542B.toInt()   // Brave orange
+        val deltaColor = if (rich.deltaUp) 0xFF43B97F.toInt() else 0xFFE45B5B.toInt()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(dp(14), dp(12), dp(14), dp(11))
+            background = searchCardBackground(SearchKind.ANSWER, true, 16)
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = "✦"
+                    gravity = Gravity.CENTER
+                    textSize = 12f
+                    setTextColor(accent)
+                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.RAISED_SM)
+                }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(9) })
+                addView(mono(rich.label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkDim).apply {
+                    letterSpacing = 0.12f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(searchKindTag(SearchKind.ANSWER))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.BOTTOM
+                addView(TextView(context).apply {
+                    text = rich.headline
+                    textSize = 25f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    includeFontPadding = false
+                    maxLines = 2
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                rich.delta?.let { delta ->
+                    addView(mono(delta, 10f, deltaColor).apply {
+                        letterSpacing = 0.04f
+                        setPadding(dp(8), dp(4), dp(8), dp(4))
+                        background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.PRESSED_SM)
+                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        marginStart = dp(8); bottomMargin = dp(3)
+                    })
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(4)
+            })
+            if (rich.detail.isNotBlank()) {
+                addView(TextView(context).apply {
+                    text = rich.detail
+                    textSize = 11.5f
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                    setLineSpacing(dp(2).toFloat(), 1f)
+                    maxLines = 3
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(5)
+                })
+            }
+            if (rich.spark.size >= 2) {
+                addView(sparklineView(rich.spark, if (rich.delta == null) accent else deltaColor),
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(9) })
+            }
+            addView(mono("DATA · ${rich.provider.ifBlank { "BRAVE" }.uppercase(Locale.US)} · BRAVE SEARCH", 7.5f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.1f
+                setPadding(0, dp(8), 0, 0)
+            })
+            setOnClickListener {
+                haptic(this)
+                openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(query.trim())}")
+            }
+        }
+    }
+
+    /** Minimal sparkline: normalized line over a soft fill, no axes or labels. */
+    private fun sparklineView(points: List<Float>, color: Int): View = object : View(this) {
+        private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(2).toFloat()
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            this.color = color
+        }
+        private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            this.color = adjustAlpha(color, 0.13f)
+        }
+        override fun onDraw(canvas: Canvas) {
+            val min = points.min()
+            val span = (points.max() - min).takeIf { it > 0f } ?: 1f
+            val inset = dp(2).toFloat()
+            val w = width - 2 * inset
+            val h = height - 2 * inset
+            val path = Path()
+            points.forEachIndexed { i, v ->
+                val x = inset + w * i / (points.size - 1)
+                val y = inset + h * (1f - (v - min) / span)
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            canvas.drawPath(Path(path).apply {
+                lineTo(inset + w, height.toFloat()); lineTo(inset, height.toFloat()); close()
+            }, fill)
+            canvas.drawPath(path, line)
+        }
     }
 
     private fun searchAiInlineState(): AiAnswerState? {
@@ -12862,6 +13051,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         if (libraryOpen && !isUnfoldedInnerLayoutActive()) scheduleLibraryRefresh()
+        else scheduleQuickSearches()   // widget + unfolded search surfaces need the async sources too
         if (isUnfoldedInnerLayoutActive() && openPane == null) refreshUnfoldedFocusContent()
         renderRibbon()
     }
@@ -12957,11 +13147,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         libraryRefreshDebounce = r
         // Instant refresh for ≤2 chars (first letters feel snappy), debounce longer queries
         handler.postDelayed(r, if (query.length <= 2) 0L else 120L)
+        scheduleQuickSearches()
+    }
+
+    // Async result sources feeding universalSearchResults(). Independent of the library: widget
+    // and unfolded search surfaces need them too.
+    private fun scheduleQuickSearches() {
         scheduleMusicSearch()
         scheduleEmailSearch()
         scheduleFileSearch()
         scheduleSemanticSearch()
         scheduleBraveRichSearch()
+        scheduleBraveWebSearch()
+    }
+
+    /** Re-render whichever surface is currently showing search results — async quick-source
+     *  completions call this so results land no matter where the user is searching from. */
+    private fun refreshSearchResultsUi() {
+        when {
+            libraryOpen -> refreshLibraryContent()
+            isUnfoldedInnerLayoutActive() && openPane == null -> refreshUnfoldedFocusContent()
+            else -> renderRibbon()   // widget-mode search list renders from the ribbon pass
+        }
     }
 
     /** Debounced in-launcher Spotify search. Populates [spotifyQuickResults] for the current query so
@@ -12989,7 +13196,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         target = null
                     ) { playSpotifyTrackFromSearch(track) }
                 }
-                if (libraryOpen) refreshLibraryContent()
+                refreshSearchResultsUi()
             }
         }
         musicSearchDebounce = r
@@ -13028,7 +13235,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         target = null
                     ) { travelPaneHost.openEmail(msg) }
                 }
-                if (libraryOpen) refreshLibraryContent()
+                refreshSearchResultsUi()
             }
         }
         gmailSearchDebounce = r
@@ -13058,7 +13265,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         target = null
                     ) { openLocalFile(file) }
                 }
-                if (libraryOpen) refreshLibraryContent()
+                refreshSearchResultsUi()
             }
         }
         fileSearchDebounce = r
@@ -13168,7 +13375,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         else -> null
                     }
                 }
-                if (libraryOpen) refreshLibraryContent()
+                refreshSearchResultsUi()
             }
         }
         semanticSearchDebounce = r
@@ -13197,11 +13404,49 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (query.trim() != q) return@launch   // query moved on
                 braveRichQuery = q
                 braveRichAnswer = answer
-                if (answer != null && libraryOpen) refreshLibraryContent()
+                if (answer != null) refreshSearchResultsUi()
             }
         }
         braveRichDebounce = r
         handler.postDelayed(r, 450L)
+    }
+
+    /** Debounced inline Brave web search. Populates [braveWebResults] so universalSearchResults()
+     *  renders real web results as native rows — tap opens the page in the in-launcher sheet.
+     *  Longest debounce of the quick sources: each fire is one paid request (~1,000/month). */
+    private fun scheduleBraveWebSearch() {
+        braveWebDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
+        if (q.length < 3 || key.isBlank()) {
+            if (braveWebResults.isNotEmpty()) { braveWebResults = emptyList(); braveWebQuery = "" }
+            return
+        }
+        if (q == braveWebQuery) return
+        val r = Runnable {
+            braveWebDebounce = null
+            mediaUiScope.launch {
+                val hits = withContext(Dispatchers.IO) {
+                    runCatching { BraveSearchApi.search(q, key, count = 4) }.getOrDefault(emptyList())
+                }
+                if (query.trim() != q) return@launch   // query moved on
+                braveWebQuery = q
+                braveWebResults = hits.map { hit ->
+                    SearchResult(
+                        title = hit.title,
+                        subtitle = hit.display,
+                        accent = 0xFFFB542B.toInt(),   // Brave orange
+                        kind = SearchKind.WEB,
+                        target = null,
+                        action = { openUrlDirectly(hit.link) },
+                        longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(hit.link)), "No browser available") }
+                    )
+                }
+                refreshSearchResultsUi()
+            }
+        }
+        braveWebDebounce = r
+        handler.postDelayed(r, 600L)
     }
 
     /** Does [q] look like it wants an instant answer (Brave rich vertical) rather than an app,
@@ -13399,11 +13644,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!target.id.startsWith("reply:")) replyingToKey = null
         closeCategoryFolder()
         libraryOpen = false
+        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         keyboardSettingsOpen = false; query = ""; composeText = ""
         shiftState = ShiftState.ONCE; suggestions = emptyList()
         updateKeyLabels(); updateSuggestionBar()
         openPane = target
+        syncWallpaperMotion()
         if (target.kind == PaneKind.SETTINGS) {
             render()
             return
@@ -13421,6 +13668,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openLibraryResult(target: PaneTarget) {
         closeCategoryFolder()
         libraryOpen = false
+        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         renderRibbon()
         syncNowPlayingCardVisibility()
@@ -13905,6 +14153,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("LIVE WALLPAPER MOTION", liveWallpaperMotionEnabled()) {
+            val next = !liveWallpaperMotionEnabled()
+            prefs().edit().putBoolean(HOME_LIVE_WALLPAPER_MOTION_PREF, next).apply()
+            haptic(this)
+            if (next) syncWallpaperMotion() else wallpaperMotionController?.stop()
+            render()
+            openHere(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(keyboardSwapAnimationSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
         if (devExperimentsEnabled() && VivoDockedExperiment.isAvailable(this)) {
             parent.addView(vivoDockedExperimentSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
@@ -13926,6 +14182,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         parent.addView(integrationRow("Spotify", "com.spotify.music", SPOTIFY_INTEGRATION_PREF))
         parent.addView(integrationRow("Apple Music", "com.apple.android.music", APPLE_MUSIC_INTEGRATION_PREF))
         parent.addView(geminiIntegrationRow())
+        parent.addView(braveIntegrationRow())
         parent.addView(gmailIntegrationRow())
         parent.addView(nativeIntegrationRow("Notifications", isNotificationAccessEnabled(), "MESSAGE, EMAIL, NEWS, MAPS WIDGETS") {
             openNotificationAccessSettings()
@@ -13939,6 +14196,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         parent.addView(nativeIntegrationRow("Weather", hasWeatherPermission(), "LOCAL WEATHER HOME MODULE") {
             weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
         })
+        parent.addView(settingAction("KEYBOARD & SKILL SETTINGS →") {
+            haptic(this)
+            startActivity(Intent(this@MainActivity, ImeSettingsActivity::class.java))
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(mono("PLAYING MEDIA IS THE FAST PATH: TECLAS CAN READ THE PHONE'S ACTIVE MEDIA SESSION, THEN API CONNECTORS CAN ADD LIBRARY/PLAYLIST SYNC LATER.", 8.5f, InkDim).apply {
             setPadding(0, dp(14), 0, 0)
             letterSpacing = 0.08f
@@ -14040,6 +14301,46 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return integrationLikeRow("Gemini AI", state, if (enabled && reachable) 0xFF8AB4F8.toInt() else InkDim) { anchor ->
             showGeminiMenu(anchor)
         }
+    }
+
+    private fun braveIntegrationRow(): View {
+        val connected = BraveSearchApi.isConfigured(prefs())
+        return integrationLikeRow("Brave Search", if (connected) "CONNECTED" else "SET UP",
+            if (connected) 0xFFFB542B.toInt() else InkDim) {
+            promptBraveApiKey()
+        }
+    }
+
+    private fun promptBraveApiKey() {
+        val connected = BraveSearchApi.isConfigured(prefs())
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+            hint = "Subscription token"
+            setTextColor(Ink)
+            setHintTextColor(InkDim)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Brave Search API key")
+            .setMessage("Web results and instant answers (weather, stocks, conversions) right in launcher search. " +
+                "Get a key at api-dashboard.search.brave.com — the $5/month free credit covers ~1,000 searches. Stored on this device.")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val key = input.text?.toString()?.trim().orEmpty()
+                if (key.isNotBlank()) {
+                    prefs().edit().putString(BraveSearchApi.KEY_PREF, key).apply()
+                    Toast.makeText(this, "Brave Search is ready.", Toast.LENGTH_SHORT).show()
+                    if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(teclasSettingsTarget())
+                }
+            }
+            .apply {
+                if (connected) setNeutralButton("Remove key") { _, _ ->
+                    prefs().edit().remove(BraveSearchApi.KEY_PREF).apply()
+                    if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(teclasSettingsTarget())
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun gmailIntegrationRow(): View {
@@ -15579,16 +15880,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 "From your Gmail", 0xFF5FD0C4.toInt(), SearchKind.TRAVEL, null
             ) { travelPaneHost.openTravelOverlay(startOnBoardingPasses = boarding) })
         }
-        // Brave rich answer (weather, stock quote, conversion…) — an instant answer beats every
-        // navigational result, so pin it on top. Tap opens the full result page on Brave.
-        if (braveRichQuery == q) braveRichAnswer?.let { rich ->
-            results.add(0, SearchResult(rich.title, rich.subtitle, 0xFFFB542B.toInt(), SearchKind.ANSWER, null) {
-                openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(q)}")
-            })
-        }
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
+        // Inline Brave web results — the launcher is the search page. Ranked after everything
+        // local (apps, people, events win), tap opens the page in the in-launcher sheet.
+        // When a rich answer card is showing it IS the answer — web rows would be noise.
+        if (braveWebQuery == q && searchRichAnswer() == null) results.addAll(braveWebResults)
         // A typed URL ("theverge.com") is an unambiguous intent — rank opening the site itself
         // first, so GO fires it directly. Tap = in-launcher sheet, long-press = full browser.
         InAppGoogleSearchEngine.urlFromQuery(q)?.let { url ->
@@ -15601,7 +15899,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         if (q.length >= 2) {
             val directHits = results.isNotEmpty()
-            val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.AI, aiTarget("web:$q")) { webSearch(q) }
+            // Full results page in the in-launcher sheet (Brave when connected) — the old AI-pane
+            // text list felt like a popup, not search.
+            val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.WEB, null) { launchInAppGoogleSearch(q) }
             val ai = SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) }
             when {
                 !directHits && looksLikeWebSearch(q) -> {
@@ -16068,8 +16368,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun launchInAppGoogleSearch(rawQuery: String) {
         val search = InAppGoogleSearchEngine.stripWebVerb(rawQuery).ifBlank { return }
-        // Typed a URL → open the site itself, not a Google search about it.
+        // Typed a URL → open the site itself, not a web search about it.
         InAppGoogleSearchEngine.urlFromQuery(search)?.let { openUrlDirectly(it); return }
+        // Brave connected → Brave is the search engine, sheet included.
+        if (BraveSearchApi.isConfigured(prefs())) {
+            openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(search)}")
+            return
+        }
         val toolbar = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.baseHi else activeNeuTokens.base
         val nav = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.base else activeNeuTokens.baseLo
         runCatching {
@@ -16337,50 +16642,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     .getOrElse { "I couldn't reach Gemini: ${it.message ?: "network unavailable"}" }
             runOnUiThread {
                 aiAnswersById[target.id] = AiAnswerState(prompt, answer, false)
-                if (openPane?.id == target.id) renderPaneContent(target)
-            }
-        }
-    }
-
-    // Native Google results inside the launcher (Custom Search JSON API), rendered in the AI pane as
-    // a markdown answer — real result links, no Custom Tab, no leaving. Needs a key + engine id set
-    // in Settings; otherwise the pane explains how to connect.
-    // Brave first: its index is licensed for in-launcher display (Google's isn't), so it's the
-    // primary backend; Google Custom Search stays as fallback for keys people already have.
-    private fun webSearch(rawQuery: String) {
-        val q = InAppGoogleSearchEngine.stripWebVerb(rawQuery).trim().ifBlank { return }
-        val target = aiTarget("web:$q")
-        aiDraftText = ""; aiDraftActive = false
-        val brave = BraveSearchApi.isConfigured(prefs())
-        val google = GoogleSearchApi.isConfigured(prefs())
-        aiAnswersById[target.id] = AiAnswerState(
-            "🔍 $q",
-            when {
-                brave -> "Searching Brave…"
-                google -> "Searching Google…"
-                else -> "Add a **Brave Search API key** in Teclas Settings to see results here. (A Google Custom Search key + engine ID works too.)"
-            },
-            brave || google
-        )
-        openHere(target)
-        if (!brave && !google) return
-        mediaUiScope.launch(Dispatchers.IO) {
-            val results = if (brave) {
-                val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
-                runCatching { BraveSearchApi.search(q, key) }.getOrDefault(emptyList())
-                    .map { GoogleSearchApi.Result(it.title, it.snippet, it.link, it.display) }
-            } else {
-                val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
-                val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
-                runCatching { GoogleSearchApi.search(q, key, cx) }.getOrDefault(emptyList())
-            }
-            val answer = if (results.isEmpty()) "No results for “$q”."
-            else results.joinToString("\n\n") { r ->
-                val snip = if (r.snippet.isNotBlank()) "\n${r.snippet}" else ""
-                "**${r.title}**\n${r.link}$snip"
-            } + if (brave) "\n\n${BraveSearchApi.ATTRIBUTION}" else ""
-            runOnUiThread {
-                aiAnswersById[target.id] = AiAnswerState("🔍 $q", answer, false)
                 if (openPane?.id == target.id) renderPaneContent(target)
             }
         }
@@ -19954,6 +20215,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
+        private const val HOME_LIVE_WALLPAPER_MOTION_PREF = "home_live_wallpaper_motion"
         private const val HOME_COVER_WALLPAPER_URI_PREF = "home_cover_wallpaper_uri"
         private const val HOME_COVER_WALLPAPER_ZOOM_PREF = "home_cover_wallpaper_zoom"
         private const val HOME_COVER_WALLPAPER_OFFSET_X_PREF = "home_cover_wallpaper_offset_x"

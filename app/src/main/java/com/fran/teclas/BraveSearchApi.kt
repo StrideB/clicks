@@ -29,9 +29,18 @@ object BraveSearchApi {
 
     data class Result(val title: String, val snippet: String, val link: String, val display: String)
 
-    /** One instant answer, flattened for a search-result row. [subtitle] carries the provider
-     *  attribution when the payload includes one — some of Brave's data providers require it. */
-    data class RichAnswer(val vertical: String, val title: String, val subtitle: String)
+    /** One instant answer, structured for a widget-style card in search results.
+     *  [provider] must stay visible somewhere on the card — Brave's data partners require credit. */
+    data class RichAnswer(
+        val vertical: String,
+        val headline: String,        // the answer itself, rendered big: "64,061 USD" / "61° Clear sky"
+        val label: String,           // card header: "Bitcoin · BTC" / "Weather · San Jose, CA"
+        val detail: String,          // secondary line: "H:82° L:57°" / "Rate 0.874" / definition text
+        val delta: String?,          // change chip: "▲2.48% · 24h"; null when not applicable
+        val deltaUp: Boolean,        // colors the chip and sparkline (gain vs loss)
+        val provider: String,        // attribution: "CoinGecko", "OpenWeatherMap", …
+        val spark: List<Float>       // timeseries for the sparkline; empty = no chart
+    )
 
     fun isConfigured(prefs: SharedPreferences): Boolean =
         !prefs.getString(KEY_PREF, null).isNullOrBlank()
@@ -91,51 +100,151 @@ object BraveSearchApi {
         return null
     }
 
+    // Field paths verified against live responses (July 2026): each result carries
+    // {subtype, provider: {name}, <payload key named after the vertical>: {...}}.
     private fun parse(item: JSONObject, hintVertical: String): RichAnswer? {
         val subtype = item.optString("subtype").trim().ifBlank { hintVertical }.ifBlank { "answer" }
-        val attribution = find(item, "attribution", "provider", "source")
-        val answer = when (subtype) {
+        val provider = item.optJSONObject("provider")?.optString("name")?.trim().orEmpty()
+        return when (subtype) {
             "weather" -> {
-                val temp = find(item, "temperature", "temp", "current_temperature") ?: return null
-                val condition = find(item, "condition", "summary", "description", "weather")
-                val place = find(item, "location", "city", "place", "name")
-                RichAnswer(subtype, listOfNotNull(formatTemp(temp), condition).joinToString(" · "),
-                    listOfNotNull("Weather", place).joinToString(" · "))
+                val w = item.optJSONObject("weather") ?: return null
+                val current = w.optJSONObject("current_weather") ?: return null
+                val temp = current.optString("temp").toDoubleOrNull() ?: return null
+                val sky = current.optJSONObject("weather")?.optString("description").orEmpty()
+                    .replaceFirstChar { it.uppercase() }
+                val today = w.optJSONArray("daily")?.optJSONObject(0)?.optJSONObject("temperature")
+                val hiLo = today?.let { t ->
+                    val hi = t.optString("max").toDoubleOrNull()
+                    val lo = t.optString("min").toDoubleOrNull()
+                    if (hi != null && lo != null) "H:${localTemp(hi)}  L:${localTemp(lo)}" else null
+                }
+                val feels = current.optString("feels_like").toDoubleOrNull()?.let { "Feels ${localTemp(it)}" }
+                val humidity = current.optString("humidity").takeIf { it.isNotBlank() }?.let { "Humidity $it%" }
+                val loc = w.optJSONObject("location")
+                val place = listOfNotNull(
+                    loc?.optString("name")?.takeIf { it.isNotBlank() },
+                    loc?.optString("state")?.takeIf { it.isNotBlank() }
+                ).joinToString(", ")
+                // Next ~24h temperature curve from the 3-hourly forecast.
+                val curve = w.optJSONArray("hours3")?.let { hours ->
+                    (0 until minOf(hours.length(), 9)).mapNotNull {
+                        hours.optJSONObject(it)?.optJSONObject("temperature")?.optString("temp")?.toFloatOrNull()
+                    }
+                }.orEmpty()
+                RichAnswer(subtype, "${localTemp(temp)} $sky",
+                    listOfNotNull("Weather", place.takeIf { it.isNotBlank() }).joinToString(" · "),
+                    listOfNotNull(hiLo, feels, humidity).joinToString("  ·  "),
+                    null, true, provider, curve)
             }
-            "stock", "cryptocurrency", "currency" -> {
-                val price = find(item, "price", "last_price", "rate", "value", "amount") ?: return null
-                val symbol = find(item, "symbol", "ticker", "code", "name") ?: return null
-                val change = find(item, "change_percent", "price_change_percent", "change")
-                RichAnswer(subtype, "$symbol  $price${change?.let { "  ($it)" } ?: ""}",
-                    subtype.replaceFirstChar { it.uppercase() })
+            "stocks", "stock" -> {
+                val s = item.optJSONObject("stock") ?: return null
+                val quote = s.optJSONObject("quote") ?: return null
+                val price = quote.optString("latest_price").toDoubleOrNull() ?: return null
+                val symbol = quote.optString("symbol").ifBlank { return null }
+                val changePct = quote.optString("change_percent").toDoubleOrNull()
+                val range = s.optString("time_range").ifBlank { "1d" }
+                val spark = s.optJSONObject("timeseries")?.optJSONArray("timeseries")?.let { ts ->
+                    (0 until ts.length()).mapNotNull { ts.optJSONObject(it)?.optString("close")?.toFloatOrNull() }
+                }.orEmpty()
+                RichAnswer(subtype, "${num(price)} ${quote.optString("currency").ifBlank { "USD" }}",
+                    listOfNotNull(quote.optString("company_name").takeIf { it.isNotBlank() } ?: symbol,
+                        symbol.takeIf { quote.optString("company_name").isNotBlank() }).joinToString(" · "),
+                    listOfNotNull(quote.optString("primary_exchange").takeIf { it.isNotBlank() },
+                        quote.optString("week_52_low").toDoubleOrNull()?.let { lo ->
+                            quote.optString("week_52_high").toDoubleOrNull()?.let { hi -> "52w ${num(lo)}–${num(hi)}" }
+                        }).joinToString("  ·  "),
+                    changePct?.let { "${if (it >= 0) "▲" else "▼"}${num(kotlin.math.abs(it))}% · $range" },
+                    (changePct ?: 0.0) >= 0, provider, sample(spark))
             }
-            "calculator", "unit_conversion", "unix_timestamp" -> {
-                val result = find(item, "answer", "result", "value", "output") ?: return null
-                val expression = find(item, "expression", "input", "from", "query")
-                RichAnswer(subtype, expression?.let { "$it = $result" } ?: result,
-                    if (subtype == "calculator") "Calculator" else "Conversion")
+            "cryptocurrency" -> {
+                val c = item.optJSONObject("cryptocurrency") ?: return null
+                val quote = c.optJSONObject("quote") ?: return null
+                val price = quote.optString("current_price").toDoubleOrNull() ?: return null
+                val unit = c.optString("vs_currency").uppercase(java.util.Locale.US).ifBlank { "USD" }
+                val changePct = quote.optString("price_change_percentage_24h").toDoubleOrNull()
+                val spark = c.optJSONObject("timeseries")?.optJSONArray("ts_price")?.let { ts ->
+                    (0 until ts.length()).mapNotNull { ts.optJSONArray(it)?.optString(1)?.toFloatOrNull() }
+                }.orEmpty()
+                RichAnswer(subtype, "${num(price)} $unit",
+                    listOfNotNull(quote.optString("name").takeIf { it.isNotBlank() },
+                        quote.optString("symbol").uppercase(java.util.Locale.US).takeIf { it.isNotBlank() })
+                        .joinToString(" · "),
+                    listOfNotNull(quote.optString("high_24h").toDoubleOrNull()?.let { hi ->
+                        quote.optString("low_24h").toDoubleOrNull()?.let { lo -> "24h ${num(lo)}–${num(hi)}" }
+                    }, quote.optString("market_cap_rank").takeIf { it.isNotBlank() }?.let { "Rank #$it" })
+                        .joinToString("  ·  "),
+                    changePct?.let { "${if (it >= 0) "▲" else "▼"}${num(kotlin.math.abs(it))}% · 24h" },
+                    (changePct ?: 0.0) >= 0, provider, sample(spark))
+            }
+            "currency" -> {
+                val cur = item.optJSONObject("currency") ?: return null
+                val conv = cur.optJSONObject("conversion") ?: return null
+                val result = conv.optString("result").toDoubleOrNull() ?: return null
+                val query = conv.optJSONObject("query")
+                val from = query?.optJSONObject("from_currency")?.optString("code").orEmpty()
+                val to = query?.optJSONObject("to_currency")?.optString("code").orEmpty()
+                val amount = conv.optString("amount").toDoubleOrNull()
+                val spark = cur.optJSONObject("timeseries")?.optJSONArray("ts_exchange_rate")?.let { ts ->
+                    (0 until ts.length()).mapNotNull { ts.optJSONArray(it)?.optString(1)?.toFloatOrNull() }
+                }.orEmpty()
+                RichAnswer(subtype, "${num(result)} $to",
+                    "${amount?.let { num(it) } ?: ""} $from → $to".trim(),
+                    conv.optJSONObject("info")?.optString("rate")?.toDoubleOrNull()
+                        ?.let { "Rate ${num(it, 4)}" }.orEmpty(),
+                    null, (spark.size < 2 || spark.last() >= spark.first()), provider, sample(spark))
             }
             "definitions" -> {
-                val word = find(item, "word", "term", "title") ?: return null
-                val definition = find(item, "definition", "text", "meaning") ?: return null
-                RichAnswer(subtype, word, definition)
+                val d = item.optJSONObject("definitions") ?: return null
+                val word = d.optString("word").ifBlank { return null }
+                val group = d.optJSONArray("definitions")?.optJSONObject(0)
+                val text = group?.optJSONArray("definitions")?.opt(0)?.let { first ->
+                    when (first) {
+                        is String -> first
+                        is JSONObject -> find(first, "definition", "text", "meaning")
+                        else -> null
+                    }
+                } ?: return null
+                RichAnswer(subtype, word,
+                    listOfNotNull("Definition", group?.optString("part_of_speech")?.takeIf { it.isNotBlank() })
+                        .joinToString(" · "),
+                    text, null, true, provider, emptyList())
+            }
+            "calculator", "unit_conversion", "unix_timestamp" -> {
+                val payload = item.optJSONObject(subtype) ?: item
+                val result = find(payload, "answer", "result", "value", "output") ?: return null
+                val expression = find(payload, "expression", "input", "query")
+                RichAnswer(subtype, num(result.toDoubleOrNull()) ?: result,
+                    if (subtype == "calculator") "Calculator" else "Conversion",
+                    expression?.let { "$it =" }.orEmpty(), null, true, provider, emptyList())
             }
             else -> {
                 // Sports and anything Brave adds later: surface whatever headline the payload has.
                 val title = find(item, "title", "answer", "result", "name", "text") ?: return null
-                RichAnswer(subtype, title,
-                    find(item, "description", "subtitle", "summary", "status") ?: subtype)
+                RichAnswer(subtype, title, subtype.replaceFirstChar { it.uppercase() },
+                    find(item, "description", "subtitle", "summary", "status").orEmpty(),
+                    null, true, provider, emptyList())
             }
         }
-        val credit = attribution?.takeIf { it.isNotBlank() && !answer.subtitle.contains(it) }
-        return answer.copy(
-            title = answer.title.take(80),
-            subtitle = (credit?.let { "${answer.subtitle} · $it" } ?: answer.subtitle).take(90)
-        )
     }
 
-    private fun formatTemp(raw: String): String =
-        if (raw.toDoubleOrNull() != null) "$raw°" else raw
+    /** Downsample a timeseries to ≤48 points — plenty for a card-width sparkline. */
+    private fun sample(points: List<Float>, max: Int = 48): List<Float> {
+        if (points.size <= max) return points
+        val step = points.size.toFloat() / max
+        return (0 until max).map { points[(it * step).toInt().coerceAtMost(points.size - 1)] }
+    }
+
+    private fun num(value: Double?, decimals: Int = 2): String? = value?.let {
+        val s = String.format(java.util.Locale.US, "%,.${decimals}f", it)
+        s.trimEnd('0').trimEnd('.').ifBlank { "0" }
+    }
+
+    /** Brave's weather payload is metric; show °F in Fahrenheit locales (US &c.), °C elsewhere. */
+    private fun localTemp(celsius: Double): String {
+        val country = java.util.Locale.getDefault().country
+        return if (country in setOf("US", "BS", "BZ", "KY", "PW", "LR", "MM"))
+            "${(celsius * 9 / 5 + 32).toInt()}°F" else "${celsius.toInt()}°C"
+    }
 
     /** Depth-limited search for the first non-blank scalar under any of [keys] — the payload
      *  schemas are undocumented, so values may sit at the top level or one object down. */
