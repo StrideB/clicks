@@ -52,7 +52,9 @@ class NanoRewriteEngine(context: Context) {
     suspend fun rewrite(text: String): Result {
         if (text.isBlank()) return Result.Unchanged
         return runCatching {
-            when (client.checkFeatureStatus().await()) {
+            val status = client.checkFeatureStatus().await()
+            logStatus("rewrite status=$status (0=unavailable 1=downloadable 2=downloading 3=available)")
+            when (status) {
                 FeatureStatus.UNAVAILABLE -> { supported = false; Result.Unsupported }
                 FeatureStatus.DOWNLOADABLE -> { startDownload(); Result.Downloading }
                 FeatureStatus.DOWNLOADING -> Result.Downloading
@@ -80,6 +82,16 @@ class NanoRewriteEngine(context: Context) {
     }
 
     fun close() { runCatching { client.close() } }
+
+    /** Some OEMs (Vivo) suppress app logcat — mirror status into the shared diagnostic file. */
+    private fun logStatus(line: String) {
+        Log.i(TAG, line)
+        runCatching {
+            val f = java.io.File(appContext.filesDir, "nano_status.txt")
+            if (f.length() > 16_384) f.delete()
+            f.appendText("$line at ${System.currentTimeMillis()}\n")
+        }
+    }
 
     private companion object { const val TAG = "NanoRewrite" }
 }

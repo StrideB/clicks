@@ -187,6 +187,10 @@ class ImeSettingsActivity : ComponentActivity() {
                 InputRow(t, "Google Search API key", GoogleSearchApi.KEY_PREF, "Custom Search JSON API (free 100/day)", secret = true)
                 Div(t)
                 InputRow(t, "Google Search engine ID (cx)", GoogleSearchApi.CX_PREF, "programmablesearchengine.google.com", secret = false)
+                Div(t)
+                InputRow(t, "Brave Search key — web search", BraveSearchApi.KEY_PREF, "api-dashboard.search.brave.com ($5/mo free credit)", secret = true)
+                Text("Real web results inside the launcher, plus instant answers — weather, stocks, conversions, definitions, scores. ~1,000 free searches/month.",
+                    Modifier.padding(top = 4.dp), color = t.inkDimCompose, fontSize = 12.sp)
                 Text("Google Meet uses your Google connection — connect Google in the Teclas app, then type “meet” and hold go.",
                     Modifier.padding(top = 10.dp), color = t.inkDimCompose, fontSize = 12.sp)
             }

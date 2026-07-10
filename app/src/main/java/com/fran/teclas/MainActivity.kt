@@ -360,6 +360,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var semanticIndexDebounce: Runnable? = null
     private var semanticQuickQuery: String = ""
     private var semanticQuickResults: List<SearchResult> = emptyList()
+    // Brave rich answers (weather, stocks, conversions…): one instant answer for the current
+    // query via the Rich Data Enrichments API, pinned on top of universal search results.
+    private var braveRichDebounce: Runnable? = null
+    private var braveRichQuery: String = ""
+    private var braveRichAnswer: BraveSearchApi.RichAnswer? = null
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -380,6 +385,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetKeyboardHostTwoFingerStartY = 0f
     private var widgetKeyboardHostTwoFingerStartX = 0f
     private var widgetKeyboardHostTwoFingerActive = false
+    private var widgetKeyboardSlideGestureActive = false
+    private var gestureLockUntilMs = 0L
     private var widgetKeyboardDockHeightAnimator: ValueAnimator? = null
     private var widgetKeyboardHostHeightAnimator: ValueAnimator? = null
     private var pendingWidgetKeyboardPopIn = false
@@ -1154,6 +1161,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
         if (handleVisibleWidgetKeyboardGlobalGesture(event)) return true
         if (handleHiddenWidgetKeyboardGlobalGesture(event)) return true
+        if (keyboardGestureLockActive()) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                widgetKeyboardSlideGestureActive = false
+            }
+            return super.dispatchTouchEvent(event)
+        }
         // While a glide/swipe-type gesture is in progress the keyboard owns the touch — suppress
         // launcher gestures (library, widget board, home swipes) so they don't fire mid-swipe.
         if (glideGestureActive) return super.dispatchTouchEvent(event)
@@ -1168,6 +1181,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return true
         }
         return super.dispatchTouchEvent(event)
+    }
+
+    private fun keyboardGestureLockActive(): Boolean =
+        widgetKeyboardSlideGestureActive || android.os.SystemClock.uptimeMillis() < gestureLockUntilMs
+
+    private fun reserveKeyboardSlideGesture(event: MotionEvent) {
+        widgetKeyboardSlideGestureActive = true
+        gestureLockUntilMs = android.os.SystemClock.uptimeMillis() + 420L
+        cancelWallpaperLongPress()
+        librarySwipeTriggered = false
+        librarySwipeBlockedByWidget = false
+        libraryDragActive = false
+        spaceBoardDragActive = false
+        homeLeftDragActive = false
+        paneSwipeTriggered = false
+        val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+        super.dispatchTouchEvent(cancel)
+        cancel.recycle()
     }
 
     override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {
@@ -2133,11 +2164,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     cancelWallpaperLongPress()
+                    if (keyboardGestureLockActive() ||
+                        event.pointerCount != 1 ||
+                        isInsideKeyboard(event.rawX, event.rawY) ||
+                        isInsideKeyboardRevealZone(event.rawX, event.rawY) ||
+                        widgetKeyboardSwapActive() ||
+                        widgetKeyboardSliderAnimating ||
+                        todayOpen ||
+                        libraryOpen ||
+                        libraryDragActive ||
+                        spaceBoardOverlay != null ||
+                        homeLeftOverlay != null ||
+                        widgetBoardView != null ||
+                        openPane != null
+                    ) {
+                        return@setOnTouchListener false
+                    }
                     downX = event.rawX
                     downY = event.rawY
                     val runnable = Runnable {
                         wallpaperLongPressRunnable = null
-                        if (!todayOpen && !libraryOpen && !libraryDragActive && widgetBoardView == null && openPane == null) {
+                        if (!keyboardGestureLockActive() &&
+                            !todayOpen && !libraryOpen && !libraryDragActive &&
+                            spaceBoardOverlay == null && homeLeftOverlay == null &&
+                            widgetBoardView == null && openPane == null
+                        ) {
                             haptic(view)
                             openDeviceWallpaperPicker(view)
                         }
@@ -4596,6 +4647,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         when (event.actionMasked) {
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (event.pointerCount >= 2) {
+                    reserveKeyboardSlideGesture(event)
                     widgetKeyboardHostTwoFingerActive = true
                     widgetKeyboardHostTwoFingerStartX = (event.getX(0) + event.getX(1)) / 2f
                     widgetKeyboardHostTwoFingerStartY = (event.getY(0) + event.getY(1)) / 2f
@@ -4610,6 +4662,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val dy = midY - widgetKeyboardHostTwoFingerStartY
                     if (dy < -dp(42) && abs(dy) > abs(dx) * 1.25f) {
                         widgetKeyboardHostTwoFingerActive = false
+                        widgetKeyboardSlideGestureActive = false
                         showWidgetKeyboardSlider()
                         return true
                     }
@@ -4617,6 +4670,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 widgetKeyboardHostTwoFingerActive = false
+                widgetKeyboardSlideGestureActive = false
             }
         }
         return widgetKeyboardHidden
@@ -4633,7 +4687,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         when (event.actionMasked) {
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (event.pointerCount >= 2) {
-                    cancelWallpaperLongPress()
+                    reserveKeyboardSlideGesture(event)
                     widgetKeyboardHostTwoFingerActive = true
                     widgetKeyboardHostTwoFingerStartX = (event.getX(0) + event.getX(1)) / 2f
                     widgetKeyboardHostTwoFingerStartY = (event.getY(0) + event.getY(1)) / 2f
@@ -4649,6 +4703,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val dy = midY - widgetKeyboardHostTwoFingerStartY
                     if (dy > dp(42) && abs(dy) > abs(dx) * 1.18f) {
                         widgetKeyboardHostTwoFingerActive = false
+                        widgetKeyboardSlideGestureActive = false
                         hideWidgetKeyboardSlider()
                     }
                     return true
@@ -4657,6 +4712,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val consumed = widgetKeyboardHostTwoFingerActive
                 widgetKeyboardHostTwoFingerActive = false
+                widgetKeyboardSlideGestureActive = false
                 return consumed
             }
         }
@@ -4678,6 +4734,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             MotionEvent.ACTION_POINTER_DOWN -> {
                 widgetKeyboardMaybeTap = false
                 if (event.pointerCount >= 2) {
+                    reserveKeyboardSlideGesture(event)
                     widgetKeyboardHostTwoFingerActive = true
                     widgetKeyboardHostTwoFingerStartX = (event.getX(0) + event.getX(1)) / 2f
                     widgetKeyboardHostTwoFingerStartY = (event.getY(0) + event.getY(1)) / 2f
@@ -4696,6 +4753,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val dy = midY - widgetKeyboardHostTwoFingerStartY
                     if (dy < -dp(34) && abs(dy) > abs(dx) * 1.15f) {
                         widgetKeyboardHostTwoFingerActive = false
+                        widgetKeyboardSlideGestureActive = false
                         showWidgetKeyboardSlider()
                     }
                     return true
@@ -4712,12 +4770,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 widgetKeyboardMaybeTap = false
                 val consumed = widgetKeyboardHostTwoFingerActive
                 widgetKeyboardHostTwoFingerActive = false
+                widgetKeyboardSlideGestureActive = false
                 return consumed
             }
             MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
                 widgetKeyboardMaybeTap = false
                 val consumed = widgetKeyboardHostTwoFingerActive
                 widgetKeyboardHostTwoFingerActive = false
+                widgetKeyboardSlideGestureActive = false
                 return consumed
             }
         }
@@ -4733,6 +4793,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val pad = dp(14)
         return rawX >= loc[0] - pad && rawX <= loc[0] + handle.width + pad &&
             rawY >= loc[1] - pad && rawY <= loc[1] + handle.height + pad
+    }
+
+    private fun isInsideKeyboardRevealZone(rawX: Float, rawY: Float): Boolean {
+        if (!widgetKeyboardHidden || !widgetKeyboardSliderAvailable()) return false
+        if (isInsideKeyboardHandle(rawX, rawY)) return true
+        val screenH = rootViewHeightOrScreen()
+        return rawY >= screenH - dp(220)
     }
 
     private fun swapPillBackground(fill: Int, stroke: Int): Drawable {
@@ -5214,6 +5281,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun handleLibrarySwipe(event: MotionEvent): Boolean {
         if (innerWallpaperEditMode) return false
+        if (keyboardGestureLockActive()) return false
         // Board / left page open (and not being dragged): let its own container handle scroll/tap/close.
         if (spaceBoardOverlay != null && !spaceBoardDragActive) return false
         if (homeLeftOverlay != null && !homeLeftDragActive) return false
@@ -5269,7 +5337,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 libraryDragVertical = false
                 libraryDragHapticStage = 0
                 librarySwipeBlockedByWidget = isInsideHomeWidget(event.rawX, event.rawY)
-                librarySwipeFromKeyboard = isInsideKeyboard(event.rawX, event.rawY)
+                librarySwipeFromKeyboard = isInsideKeyboard(event.rawX, event.rawY) || isInsideKeyboardRevealZone(event.rawX, event.rawY)
                 // The old right-edge fast-path began an interactive *library* drag on touch-down.
                 // The drawer surface is now the Space board (an instant open), so we let the edge
                 // swipe fall through to the MOVE handler, which opens the board once the swipe is
@@ -5306,7 +5374,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     updateHomeLeftDrag(dx)
                     return true
                 }
-                if (upOpensLibrary && !librarySwipeTriggered && abs(dy) > dp(18) && abs(dy) > abs(dx) * 1.2f) {
+                val verticalOpenThreshold = if (widgetKeyboardHidden) dp(54) else dp(24)
+                val horizontalOpenThreshold = if (widgetKeyboardHidden) dp(38) else dp(22)
+                val axisDominance = if (widgetKeyboardHidden) 1.55f else 1.25f
+                if (upOpensLibrary && !librarySwipeTriggered && abs(dy) > verticalOpenThreshold && abs(dy) > abs(dx) * axisDominance) {
                     when {
                         dy < 0 && !libraryOpen && openPane == null -> {
                             // Up-swipe opens the active Space's board (the drawer surface),
@@ -5328,7 +5399,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                 }
                 // Start horizontal library motion as soon as the swipe is intentional, not on finger-up.
-                if (!librarySwipeTriggered && abs(dx) > dp(18) && abs(dx) > abs(dy) * 1.2f) {
+                if (!librarySwipeTriggered && abs(dx) > horizontalOpenThreshold && abs(dx) > abs(dy) * axisDominance) {
                     when {
                         sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
                             // Swipe left during a Space drags that Space's board in from the
@@ -5381,7 +5452,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val dx = event.rawX - librarySwipeStartX
                 val dy = event.rawY - librarySwipeStartY
                 // Deliberate horizontal threshold keeps vertical library scrolls and keyboard swipes separate.
-                if (abs(dx) > dp(24) && abs(dx) > abs(dy) * 1.2f) {
+                val horizontalReleaseThreshold = if (widgetKeyboardHidden) dp(64) else dp(30)
+                val verticalReleaseThreshold = if (widgetKeyboardHidden) dp(76) else dp(48)
+                val releaseDominance = if (widgetKeyboardHidden) 1.55f else 1.25f
+                if (abs(dx) > horizontalReleaseThreshold && abs(dx) > abs(dy) * releaseDominance) {
                     when {
                         sideLibraryEnabled && dx < 0 && !libraryOpen && openPane == null -> {
                             librarySwipeTriggered = true
@@ -5400,7 +5474,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             return true
                         }
                     }
-                } else if (!libraryOpen && openPane == null && abs(dy) > dp(42) && abs(dy) > abs(dx) * 1.2f) {
+                } else if (!libraryOpen && openPane == null && abs(dy) > verticalReleaseThreshold && abs(dy) > abs(dx) * releaseDominance) {
                     librarySwipeTriggered = true
                     if (dy < 0 && upOpensLibrary) {
                         openSpaceBoard()
@@ -5428,6 +5502,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun handlePaneSwipe(event: MotionEvent): Boolean {
         if (innerWallpaperEditMode) return false
+        if (keyboardGestureLockActive()) return false
         val paneKind = openPane?.kind
         if (!::contentFrame.isInitialized || (paneKind != PaneKind.MUSIC && paneKind != PaneKind.PHOTOS) || libraryOpen || widgetBoardView != null) return false
         when (event.actionMasked) {
@@ -8261,6 +8336,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.FILE -> Neu.BLUE
         SearchKind.SETTING -> goKeyColor
         SearchKind.WEB -> Neu.BLUE
+        SearchKind.ANSWER -> 0xFFFB542B.toInt()   // Brave orange
     }
 
     private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
@@ -8275,6 +8351,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.FILE -> "F"
         SearchKind.SETTING -> "⚙"
         SearchKind.WEB -> "W"
+        SearchKind.ANSWER -> "✦"
     }
 
     private fun searchCommandPreview(): SearchCommandPreview? {
@@ -10416,6 +10493,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             var touchDownX = 0f; var touchDownY = 0f
             var spaceCursorLastX = 0f
             var spaceCursorMoved = false
+            var keyTouchCancelledByMultiTouch = false
             val cursorStepPx = dp(6).toFloat()
             // Manual long-press: the OnTouchListener consumes events (returns true), so the
             // View's built-in long-click detection never runs. Detect it ourselves.
@@ -10453,6 +10531,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     MotionEvent.ACTION_DOWN -> {
                         touchDownX = event.x; touchDownY = event.y
                         spaceCursorLastX = event.rawX; spaceCursorMoved = false
+                        keyTouchCancelledByMultiTouch = false
                         v.background = pressedBg()
                         v.animate().translationY(dp(4).toFloat()).setDuration(35L).start()
                         keyHaptic(label)
@@ -10469,7 +10548,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                             startDeleteRepeat()
                         }
                     }
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        keyTouchCancelledByMultiTouch = true
+                        reserveKeyboardSlideGesture(event)
+                        v.background = idleBg()
+                        keyPreviewManager.dismiss()
+                        v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                        cancelLongPress()
+                        if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
+                        if (label == "back") stopDeleteRepeat(clearFired = true)
+                        return@setOnTouchListener true
+                    }
                     MotionEvent.ACTION_MOVE -> {
+                        if (keyTouchCancelledByMultiTouch) return@setOnTouchListener true
                         if (longPressRunnable != null &&
                             (Math.abs(event.x - touchDownX) > touchSlop || Math.abs(event.y - touchDownY) > touchSlop)) {
                             cancelLongPress()
@@ -10497,6 +10588,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         seemeReleaseHaptic(v)
                         v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
                         cancelLongPress()
+                        if (keyTouchCancelledByMultiTouch) {
+                            keyTouchCancelledByMultiTouch = false
+                            if (label == "back") stopDeleteRepeat(clearFired = true)
+                            spaceCursorMoved = false
+                            return@setOnTouchListener true
+                        }
                         if (longPressFired) { longPressFired = false; return@setOnTouchListener true }
                         if (label == "back") {
                             val repeated = deleteRepeatFired
@@ -10524,6 +10621,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
                         if (label == "back") stopDeleteRepeat(clearFired = true)
                         spaceCursorMoved = false
+                        keyTouchCancelledByMultiTouch = false
                         cancelLongPress(); longPressFired = false
                     }
                 }
@@ -11774,6 +11872,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // Intercept as soon as a second finger lands so we can drive the two-finger trackpad
             // (horizontal = cursor pan in any mode, vertical = scroll library results).
             if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN && ev.pointerCount == 2) {
+                reserveKeyboardSlideGesture(ev)
                 trackpadLastY = (ev.getY(0) + ev.getY(1)) / 2f
                 trackpadLastX = (ev.getX(0) + ev.getX(1)) / 2f
                 trackpadStartY = trackpadLastY
@@ -11830,6 +11929,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             when (ev.actionMasked) {
                 MotionEvent.ACTION_POINTER_DOWN -> {
                     if (ev.pointerCount == 2) {
+                        reserveKeyboardSlideGesture(ev)
                         trackpadLastY = (ev.getY(0) + ev.getY(1)) / 2f
                         trackpadLastX = (ev.getX(0) + ev.getX(1)) / 2f
                         trackpadStartY = trackpadLastY
@@ -11853,6 +11953,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         abs(totalDy) > abs(totalDx) * 1.25f
                     ) {
                         trackpadSliderTriggered = true
+                        widgetKeyboardSlideGestureActive = false
                         if (totalDy > 0f) hideWidgetKeyboardSlider() else showWidgetKeyboardSlider()
                         return true
                     }
@@ -11874,6 +11975,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     if (trackpadActive) {
                         trackpadActive = false
                         trackpadSliderTriggered = false
+                        widgetKeyboardSlideGestureActive = false
                         return true
                     }
                 }
@@ -12859,6 +12961,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         scheduleEmailSearch()
         scheduleFileSearch()
         scheduleSemanticSearch()
+        scheduleBraveRichSearch()
     }
 
     /** Debounced in-launcher Spotify search. Populates [spotifyQuickResults] for the current query so
@@ -13070,6 +13173,54 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         semanticSearchDebounce = r
         handler.postDelayed(r, 300L)
+    }
+
+    /** Debounced Brave rich-answer lookup. Populates [braveRichAnswer] for the current query so
+     *  universalSearchResults() can pin an instant answer on top. Every fire is TWO paid API
+     *  requests against a ~1,000/month credit, so it only runs when the query reads as
+     *  rich intent ("weather", "aapl stock", "3 miles in km") — casual typing stays free. */
+    private fun scheduleBraveRichSearch() {
+        braveRichDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
+        if (q.length < 2 || key.isBlank() || !looksLikeRichIntent(q)) {
+            if (braveRichAnswer != null || braveRichQuery.isNotEmpty()) { braveRichAnswer = null; braveRichQuery = "" }
+            return
+        }
+        if (q == braveRichQuery) return
+        val r = Runnable {
+            braveRichDebounce = null
+            mediaUiScope.launch {
+                val answer = withContext(Dispatchers.IO) {
+                    runCatching { BraveSearchApi.fetchRich(q, key) }.getOrNull()
+                }
+                if (query.trim() != q) return@launch   // query moved on
+                braveRichQuery = q
+                braveRichAnswer = answer
+                if (answer != null && libraryOpen) refreshLibraryContent()
+            }
+        }
+        braveRichDebounce = r
+        handler.postDelayed(r, 450L)
+    }
+
+    /** Does [q] look like it wants an instant answer (Brave rich vertical) rather than an app,
+     *  contact, or web page? Deliberately conservative — a miss still spends two API requests. */
+    private fun looksLikeRichIntent(q: String): Boolean {
+        val lower = q.lowercase(Locale.US)
+        if (lower.contains("weather") || lower.contains("forecast")) return true
+        if (lower.startsWith("define ") || lower.startsWith("meaning of ")) return true
+        // "aapl stock", "bitcoin price", "eur to usd", "100 usd in eur"
+        if (lower.endsWith(" stock") || lower.endsWith(" price") || lower.endsWith(" quote")) return true
+        val words = lower.split(' ').filter { it.isNotBlank() }
+        if (words.size in 3..5 && (words.contains("to") || words.contains("in")) &&
+            words.first().any { it.isDigit() }) return true   // conversions: "3 miles in km"
+        // arithmetic: at least one operator between digits ("12*8", "(3+4)^2")
+        if (lower.any { it.isDigit() } && lower.any { it in "+*/^%=" } &&
+            lower.all { it.isDigit() || it in "+-*/^%=(). " }) return true
+        // sports: "lakers vs celtics"
+        if (words.size >= 3 && words.contains("vs")) return true
+        return false
     }
 
     private fun openSemanticModelPicker() {
@@ -15428,6 +15579,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 "From your Gmail", 0xFF5FD0C4.toInt(), SearchKind.TRAVEL, null
             ) { travelPaneHost.openTravelOverlay(startOnBoardingPasses = boarding) })
         }
+        // Brave rich answer (weather, stock quote, conversion…) — an instant answer beats every
+        // navigational result, so pin it on top. Tap opens the full result page on Brave.
+        if (braveRichQuery == q) braveRichAnswer?.let { rich ->
+            results.add(0, SearchResult(rich.title, rich.subtitle, 0xFFFB542B.toInt(), SearchKind.ANSWER, null) {
+                openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(q)}")
+            })
+        }
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
@@ -16187,28 +16345,40 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // Native Google results inside the launcher (Custom Search JSON API), rendered in the AI pane as
     // a markdown answer — real result links, no Custom Tab, no leaving. Needs a key + engine id set
     // in Settings; otherwise the pane explains how to connect.
+    // Brave first: its index is licensed for in-launcher display (Google's isn't), so it's the
+    // primary backend; Google Custom Search stays as fallback for keys people already have.
     private fun webSearch(rawQuery: String) {
         val q = InAppGoogleSearchEngine.stripWebVerb(rawQuery).trim().ifBlank { return }
         val target = aiTarget("web:$q")
         aiDraftText = ""; aiDraftActive = false
-        val configured = GoogleSearchApi.isConfigured(prefs())
+        val brave = BraveSearchApi.isConfigured(prefs())
+        val google = GoogleSearchApi.isConfigured(prefs())
         aiAnswersById[target.id] = AiAnswerState(
             "🔍 $q",
-            if (configured) "Searching Google…"
-            else "Add a **Google Search API key** and **engine ID** in Teclas Settings to see results here.",
-            configured
+            when {
+                brave -> "Searching Brave…"
+                google -> "Searching Google…"
+                else -> "Add a **Brave Search API key** in Teclas Settings to see results here. (A Google Custom Search key + engine ID works too.)"
+            },
+            brave || google
         )
         openHere(target)
-        if (!configured) return
-        val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
-        val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
+        if (!brave && !google) return
         mediaUiScope.launch(Dispatchers.IO) {
-            val results = runCatching { GoogleSearchApi.search(q, key, cx) }.getOrDefault(emptyList())
+            val results = if (brave) {
+                val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
+                runCatching { BraveSearchApi.search(q, key) }.getOrDefault(emptyList())
+                    .map { GoogleSearchApi.Result(it.title, it.snippet, it.link, it.display) }
+            } else {
+                val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
+                val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
+                runCatching { GoogleSearchApi.search(q, key, cx) }.getOrDefault(emptyList())
+            }
             val answer = if (results.isEmpty()) "No results for “$q”."
             else results.joinToString("\n\n") { r ->
                 val snip = if (r.snippet.isNotBlank()) "\n${r.snippet}" else ""
                 "**${r.title}**\n${r.link}$snip"
-            }
+            } + if (brave) "\n\n${BraveSearchApi.ATTRIBUTION}" else ""
             runOnUiThread {
                 aiAnswersById[target.id] = AiAnswerState("🔍 $q", answer, false)
                 if (openPane?.id == target.id) renderPaneContent(target)
