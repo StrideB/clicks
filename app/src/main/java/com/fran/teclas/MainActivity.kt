@@ -520,6 +520,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var searchHintView: TextView
     private var widgetSearchRendered = false
     private var widgetSearchContentArea: FrameLayout? = null
+    // Persistent hosts for the search results surfaces: the glass plate + entrance animation live
+    // on the host, which survives refreshes — only the results list inside is swapped. Recreating
+    // the blur and replaying the animation per keystroke is what made search flicker.
+    private var widgetSearchHost: FrameLayout? = null
+    private var widgetSearchList: View? = null
+    private var librarySearchHost: FrameLayout? = null
+    private var librarySearchList: View? = null
+    private var searchUiRefreshPending: Runnable? = null
     private var zeissButtonView: ZeissCameraButtonView? = null
     private lateinit var hintBar: LinearLayout
     private var musicProgressBar: View? = null
@@ -587,7 +595,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             runCatching { contentResolver.takePersistableUriPermission(uri, readFlag) }
             val innerScope = pendingWallpaperInnerScope ?: isUnfoldedInnerLayoutActive()
             pendingWallpaperInnerScope = null
-            prefs().edit().putString(activeWallpaperUriPref(innerScope), uri.toString()).apply()
+            prefs().edit()
+                .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, false)
+                .putString(activeWallpaperUriPref(innerScope), uri.toString())
+                .apply()
             homeWallpaperDrawable = null
             Toast.makeText(this, if (innerScope) "Inner wallpaper applied." else "Cover wallpaper applied.", Toast.LENGTH_SHORT).show()
             if (::rootView.isInitialized) render()
@@ -3721,7 +3732,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val area = unfoldedLibraryContentArea ?: return
         area.removeAllViews()
         val child = if (query.isNotBlank()) {
-            if (appLibraryGlassEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
+            val glass = appLibraryGlassEnabled()
+            searchGlassHost(searchResultsGrid().also { if (glass) padSearchContentForGlass(it) }, glass)
         } else {
             if (libraryGridMode) libraryGrid() else bentoGrid()
         }
@@ -7301,17 +7313,37 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun fillLibraryContent(area: FrameLayout) {
+        if (query.isNotBlank()) {
+            libraryView?.alpha = 1f
+            val glass = appLibraryGlassEnabled()
+            val fresh = searchResultsGrid()
+            if (glass) padSearchContentForGlass(fresh)
+            librarySearchHost?.takeIf { it.parent === area }?.let { host ->
+                // In-place swap on refresh — keeps the glass plate, kills the per-keystroke flicker.
+                librarySearchList?.let { host.removeView(it) }
+                host.addView(fresh, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                librarySearchList = fresh
+                libraryContentReady = false
+                return
+            }
+            area.removeAllViews()
+            libraryGridLiquidBackdrop = null
+            libraryGridBlurView = null
+            libraryGridScrollView = null
+            val host = searchGlassHost(fresh, glass)
+            area.addView(host, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            librarySearchHost = host
+            librarySearchList = fresh
+            libraryContentReady = false
+            return
+        }
+        librarySearchHost = null
+        librarySearchList = null
         area.removeAllViews()
         libraryGridLiquidBackdrop = null
         libraryGridBlurView = null
         libraryGridScrollView = null
-        if (query.isNotBlank()) {
-            libraryView?.alpha = 1f
-        }
-        val gridChild = if (query.isNotBlank()) {
-            if (appLibraryGlassEnabled()) glassSearchBackground(searchResultsGrid()) else searchResultsGrid()
-        }
-                    else if (libraryGridMode) libraryGrid() else bentoGrid()
+        val gridChild = if (libraryGridMode) libraryGrid() else bentoGrid()
         // When the App Library IS the home surface, it has no favorites dock of its own, so mount
         // one (plus an "often used" row) above the grid. When it's just an overlay opened from the
         // real homescreen, that homescreen already shows the dock — so we skip it here.
@@ -7933,38 +7965,55 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun refreshWidgetSearchContent() {
         val area = widgetSearchContentArea ?: return
-        area.removeAllViews()
-        val content = (if (focusSurfaceGlassEnabled()) glassSearchBackground(searchResultsList(widgetMode = true)) else searchResultsList(widgetMode = true)).apply {
-            alpha = 0f
-            translationY = dp(52).toFloat()
-            animate()
-                .alpha(1f)
-                .translationY(0f)
-                .setDuration(400)
-                .setInterpolator(DecelerateInterpolator())
-                .start()
+        val glass = focusSurfaceGlassEnabled()
+        val fresh = searchResultsList(widgetMode = true)
+        if (glass) padSearchContentForGlass(fresh)
+        widgetSearchHost?.takeIf { it.parent === area }?.let { host ->
+            // In-place swap on refresh — no blur recreation, no re-entrance animation.
+            widgetSearchList?.let { host.removeView(it) }
+            host.addView(fresh, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            widgetSearchList = fresh
+            return
         }
-        area.addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        area.removeAllViews()
+        val host = searchGlassHost(fresh, glass)
+        area.addView(host, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        widgetSearchHost = host
+        widgetSearchList = fresh
+        // Entrance animation only when the search panel first appears.
+        host.alpha = 0f
+        host.translationY = dp(52).toFloat()
+        host.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(400)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
     }
 
-    private fun glassSearchBackground(content: View): View {
+    /** Host frame for a search results surface: optional glass plate below the content. Kept
+     *  across refreshes so only the content view is swapped. */
+    private fun searchGlassHost(content: View, glass: Boolean): FrameLayout {
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            addView(
+            if (glass) addView(
                 if (nativeGlassSurfaceActive()) NativeFoldGlassPanel(context, radiusDp = 24)
                 else DynamicGlassPlate(context, radiusDp = 24, strength = 1.72f, edgeInsetDp = 0).apply { setGlassProgress(1f) },
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
-            content.setPadding(
-                content.paddingLeft + dp(10),
-                content.paddingTop + dp(10),
-                content.paddingRight + dp(10),
-                content.paddingBottom + dp(10)
-            )
             addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
+    }
+
+    private fun padSearchContentForGlass(content: View) {
+        content.setPadding(
+            content.paddingLeft + dp(10),
+            content.paddingTop + dp(10),
+            content.paddingRight + dp(10),
+            content.paddingBottom + dp(10)
+        )
     }
 
     private fun unfoldedSearchResultsList(): View = ScrollView(this).apply {
@@ -13162,13 +13211,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     /** Re-render whichever surface is currently showing search results — async quick-source
-     *  completions call this so results land no matter where the user is searching from. */
+     *  completions call this so results land no matter where the user is searching from.
+     *  Coalesced: several sources land within the same beat (web, rich, semantic, Spotify…),
+     *  and one rebuild per beat instead of one per source keeps the list from flickering. */
     private fun refreshSearchResultsUi() {
-        when {
-            libraryOpen -> refreshLibraryContent()
-            isUnfoldedInnerLayoutActive() && openPane == null -> refreshUnfoldedFocusContent()
-            else -> renderRibbon()   // widget-mode search list renders from the ribbon pass
+        if (searchUiRefreshPending != null) return
+        val r = Runnable {
+            searchUiRefreshPending = null
+            when {
+                libraryOpen -> refreshLibraryContent()
+                isUnfoldedInnerLayoutActive() && openPane == null -> refreshUnfoldedFocusContent()
+                else -> renderRibbon()   // widget-mode search list renders from the ribbon pass
+            }
         }
+        searchUiRefreshPending = r
+        handler.postDelayed(r, 90L)
     }
 
     /** Debounced in-launcher Spotify search. Populates [spotifyQuickResults] for the current query so
