@@ -8783,196 +8783,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
     }
 
-    private fun unfoldedSearchResultsList(): View = ScrollView(this).apply {
-        isVerticalScrollBarEnabled = false
-        overScrollMode = View.OVER_SCROLL_NEVER
-        clipToPadding = false
-        val results = universalSearchResults()
-        val command = searchCommandPreview()
-        val aiInline = searchAiInlineState()
-        val rich = searchRichAnswer()
-        val sports = searchSportsCard()
-        addView(LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(4), 0, dp(18))
-            if (results.isEmpty() && command == null && aiInline == null && rich == null && sports == null) {
-                addView(TextView(context).apply {
-                    text = "No results for \"$query\""
-                    textSize = 14f
-                    gravity = Gravity.CENTER
-                    setTextColor(activeNeuTokens.inkDim)
-                    includeFontPadding = false
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
-                return@apply
-            }
-            command?.let {
-                addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)).apply {
-                    bottomMargin = dp(8)
-                })
-            }
-            sports?.let {
-                addView(sportsScoreCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(8)
-                })
-            }
-            rich?.let {
-                addView(braveRichCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(8)
-                })
-            }
-            aiInline?.let {
-                addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(8)
-                })
-            }
-            val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
-            visibleResults.take(6).chunked(2).forEachIndexed { rowIndex, rowItems ->
-                addView(LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    rowItems.forEachIndexed { columnIndex, result ->
-                        val index = rowIndex * 2 + columnIndex
-                        addView(unfoldedSearchResultTile(result, index == 0 && command == null && aiInline == null && rich == null && sports == null, index), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
-                            if (columnIndex > 0) marginStart = dp(10)
-                        })
-                    }
-                    repeat(2 - rowItems.size) {
-                        addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
-                    }
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(74)).apply {
-                    bottomMargin = dp(8)
-                })
-            }
-        })
-    }
+    // Unfolded/inner search panel shares the same three-zone presentation as every other surface.
+    // (Previously rendered its own 2-column tiles with kind pills via unfoldedSearchResultTile.)
+    private fun unfoldedSearchResultsList(): View = searchResultsList(widgetMode = false)
 
-    private fun unfoldedSearchResultTile(result: SearchResult, isBest: Boolean, index: Int): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            isClickable = true
-            alpha = 0f
-            translationY = dp(6).toFloat()
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            background = searchCardBackground(result.kind, isBest, 18)
-            postDelayed({
-                animate()
-                    .alpha(1f)
-                    .translationY(0f)
-                    .setDuration(180)
-                    .setInterpolator(DecelerateInterpolator())
-                    .start()
-            }, (index * 20L).coerceAtMost(160L))
-            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(38), dp(38)).apply {
-                marginEnd = dp(11)
-            })
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(TextView(context).apply {
-                    text = highlightedLabel(result.title, query)
-                    textSize = 13.8f
-                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                    setTextColor(activeNeuTokens.ink)
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    includeFontPadding = false
-                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                addView(mono(result.subtitle.uppercase(Locale.US), 8.4f, activeNeuTokens.inkFaint).apply {
-                    letterSpacing = 0.06f
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(0, dp(4), 0, 0)
-                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(searchKindTag(result.kind), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(20)).apply {
-                marginStart = dp(8)
-            })
-            setOnClickListener { haptic(this); openSearchResult(result) }
-        }
-    }
+    // Grid and list surfaces now share one presentation — the three-zone layout. (Previously this
+    // rendered 2-column "bento" cards with kind pills; unified so the redesign shows on every surface,
+    // wide/unfolded included.)
+    private fun searchResultsGrid(): View = searchResultsList(widgetMode = false)
 
-    private fun searchResultsGrid(): View = ScrollView(this).apply {
-        val results = universalSearchResults()
-        val command = searchCommandPreview()
-        val aiInline = searchAiInlineState()
-        val rich = searchRichAnswer()
-        val sports = searchSportsCard()
-        if (results.isEmpty() && command == null && aiInline == null && rich == null && sports == null) {
-            addView(TextView(context).apply {
-                text = "No results for \"$query\""
-                textSize = 13f
-                gravity = Gravity.CENTER
-                setTextColor(activeNeuTokens.inkDim)
-                includeFontPadding = false
-            }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(260)))
-            return@apply
-        }
-        addView(LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(12), 0, dp(10))
-            command?.let {
-                addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
-                    bottomMargin = dp(10)
-                })
-            }
-            sports?.let {
-                addView(sportsScoreCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(10)
-                })
-            }
-            rich?.let {
-                addView(braveRichCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(10)
-                })
-            }
-            aiInline?.let {
-                addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(10)
-                })
-            }
-            results.chunked(2).forEachIndexed { rowIndex, rowItems ->
-                addView(LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                    rowItems.forEachIndexed { columnIndex, result ->
-                        val index = rowIndex * 2 + columnIndex
-                        addView(searchResultBentoCard(result, index == 0 && rich == null && sports == null, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                            if (columnIndex > 0) marginStart = dp(10)
-                        })
-                    }
-                    repeat(2 - rowItems.size) {
-                        addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
-                    }
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(120)).apply {
-                    bottomMargin = dp(10)
-                })
-            }
-            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
-                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
-                    letterSpacing = 0.18f
-                    setPadding(dp(2), dp(6), 0, dp(8))
-                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(28))
-                items.chunked(2).forEach { rowItems ->
-                    addView(LinearLayout(context).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        rowItems.forEachIndexed { columnIndex, result ->
-                            addView(searchResultBentoCard(result, false, columnIndex), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                                if (columnIndex > 0) marginStart = dp(10)
-                            })
-                        }
-                        repeat(2 - rowItems.size) {
-                            addView(View(context), LinearLayout.LayoutParams(0, 1, 1f).apply { marginStart = dp(10) })
-                        }
-                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(120)).apply {
-                        bottomMargin = dp(10)
-                    })
-                }
-            }
-        })
-    }
-
+    // Universal search presentation — three zones, read top-down, hugging the docked search bar:
+    //   ZONE 1  one instant answer (score card > rich answer > AI), never a stack of cards
+    //   ZONE 2  matching apps as bare launcher icons (icon-pack honoured), no boxes/plates/tags
+    //   ZONE 3  everything else in one list, grouped under quiet headers, no per-row kind pills
     private fun searchResultsList(widgetMode: Boolean = false): View = ScrollView(this).apply {
         clipToPadding = false
         val results = universalSearchResults()
@@ -8983,32 +8806,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, if (widgetMode) dp(10) else dp(12), 0, if (widgetMode) dp(18) else dp(10))
-            addView(mono(if (widgetMode) "UNIVERSAL SEARCH" else "RESULTS", 8.5f, activeNeuTokens.inkFaint).apply {
-                letterSpacing = 0.18f
-                setPadding(dp(2), 0, 0, dp(8))
-            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
+
+            // Command preview ("message alex …") is an action affordance — kept above the answer.
             command?.let {
                 addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68)).apply {
-                    bottomMargin = dp(9)
+                    bottomMargin = dp(12)
                 })
             }
-            sports?.let {
-                addView(sportsScoreCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(9)
+
+            // ZONE 1 — a single instant answer. Only the strongest vertical becomes the hero.
+            val hero: View? = when {
+                sports != null -> sportsScoreCard(sports)
+                rich != null -> braveRichCard(rich)
+                aiInline != null -> searchAiAnswerCard(aiInline)
+                else -> null
+            }
+            hero?.let {
+                addView(searchZoneHeader("Answer"), zoneHeaderParams())
+                addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(14)
                 })
             }
-            rich?.let {
-                addView(braveRichCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(9)
-                })
-            }
-            aiInline?.let {
-                addView(searchAiAnswerCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    bottomMargin = dp(9)
-                })
-            }
+
             val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
-            if (visibleResults.isEmpty() && command == null && aiInline == null && rich == null && sports == null) {
+            if (visibleResults.isEmpty() && command == null && hero == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
                     textSize = 13f
@@ -9017,71 +8838,37 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     includeFontPadding = false
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
             }
-            visibleResults.forEachIndexed { index, result ->
-                addView(searchResultRow(result, index == 0 && command == null && aiInline == null && rich == null && sports == null, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
-                    bottomMargin = dp(8)
+
+            // ZONE 2 — apps as bare icons (the launcher's own icons / user's icon pack).
+            val appResults = visibleResults.filter { it.kind == SearchKind.APP }
+            if (appResults.isNotEmpty()) {
+                addView(searchZoneHeader("Apps"), zoneHeaderParams())
+                addView(searchAppIconRow(appResults), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    bottomMargin = dp(12)
                 })
             }
-            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
-                addView(mono(label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
-                    letterSpacing = 0.18f
-                    setPadding(dp(2), dp(6), 0, dp(8))
-                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(28))
-                items.forEachIndexed { index, result ->
-                    addView(searchResultRow(result, false, index), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
-                        bottomMargin = dp(8)
-                    })
+
+            // ZONE 3 — everything else, grouped, no pills. Headers carry the "kind".
+            val otherResults = visibleResults.filter { it.kind != SearchKind.APP }
+            var rowIndex = 0
+            SEARCH_GROUP_ORDER.forEach { groupName ->
+                val groupItems = otherResults.filter { searchGroupLabel(it.kind) == groupName }
+                if (groupItems.isNotEmpty()) {
+                    addView(searchZoneHeader(groupName), zoneHeaderParams())
+                    groupItems.forEach { result ->
+                        addView(searchGroupedRow(result, rowIndex++), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            bottomMargin = dp(2)
+                        })
+                    }
                 }
             }
-        })
-    }
 
-    private fun searchResultBentoCard(result: SearchResult, isBest: Boolean, index: Int): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            isClickable = true
-            alpha = 0f
-            scaleX = 0.94f
-            scaleY = 0.94f
-            translationY = dp(8).toFloat()
-            setPadding(dp(10), dp(9), dp(10), dp(8))
-            background = searchCardBackground(result.kind, isBest, 20)
-            postDelayed({
-                animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
-            }, (index * 28L).coerceAtMost(240L))
-            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(if (result.kind == SearchKind.APP) 46 else 38), dp(if (result.kind == SearchKind.APP) 46 else 38)))
-            addView(TextView(context).apply {
-                text = highlightedLabel(result.title, query)
-                textSize = if (result.kind == SearchKind.APP) 12.5f else 13f
-                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                gravity = Gravity.CENTER
-                setTextColor(activeNeuTokens.ink)
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                includeFontPadding = false
-                setPadding(0, dp(8), 0, 0)
-            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            if (result.kind != SearchKind.APP) {
-                addView(mono(result.subtitle.uppercase(Locale.US), 8f, activeNeuTokens.inkFaint).apply {
-                    letterSpacing = 0.06f
-                    gravity = Gravity.CENTER
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(0, dp(4), 0, 0)
-                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            // Context suggestions (predicted apps) — a labelled bare-icon row.
+            contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
+                addView(searchZoneHeader(label), zoneHeaderParams().apply { topMargin = dp(6) })
+                addView(searchAppIconRow(items), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
-            addView(searchKindTag(result.kind), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(19)).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-                topMargin = dp(5)
-            })
-            setOnClickListener { haptic(this); openSearchResult(result) }
-            if (result.kind == SearchKind.APP && result.target?.packageName != null) {
-                setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
-            } else result.longAction?.let { longAction ->
-                setOnLongClickListener { haptic(this); longAction(); true }
-            }
-        }
+        })
     }
 
     /**
@@ -9126,45 +8913,124 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         popup.show()
     }
 
-    private fun searchResultRow(result: SearchResult, isBest: Boolean, index: Int): View {
+    // Zone order for the grouped "everything else" list (must match searchGroupLabel outputs).
+    private val SEARCH_GROUP_ORDER = listOf("People", "Messages", "Calendar", "Files", "Music", "Travel", "Settings", "Web", "Ask AI")
+
+    private fun searchGroupLabel(kind: SearchKind): String = when (kind) {
+        SearchKind.CONTACT, SearchKind.EMAIL -> "People"
+        SearchKind.MESSAGE -> "Messages"
+        SearchKind.CALENDAR -> "Calendar"
+        SearchKind.FILE -> "Files"
+        SearchKind.MUSIC -> "Music"
+        SearchKind.TRAVEL -> "Travel"
+        SearchKind.SETTING -> "Settings"
+        SearchKind.WEB, SearchKind.ANSWER -> "Web"
+        SearchKind.AI -> "Ask AI"
+        SearchKind.APP -> "Apps"
+    }
+
+    private fun searchZoneHeader(text: String): TextView =
+        mono(text.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
+            letterSpacing = 0.18f
+            setPadding(dp(2), dp(2), 0, dp(8))
+        }
+
+    private fun zoneHeaderParams(): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+    // ZONE 2 — a horizontally scrollable row of bare app icons.
+    private fun searchAppIconRow(items: List<SearchResult>): View = HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        clipToPadding = false
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            items.forEachIndexed { index, result ->
+                addView(searchAppTile(result, index), LinearLayout.LayoutParams(dp(66), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    if (index > 0) marginStart = dp(4)
+                })
+            }
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+    }
+
+    // A single app: just the launcher's resolved icon (icon-pack honoured) + label. No box, no tag.
+    private fun searchAppTile(result: SearchResult, index: Int): View {
+        val app = result.target?.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg } }
+        val builtIn = result.target?.let { target -> builtInLauncherApps().firstOrNull { it.target.id == target.id } }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            isClickable = true
+            alpha = 0f
+            translationY = dp(8).toFloat()
+            setPadding(0, dp(2), 0, dp(2))
+            postDelayed({
+                animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+            }, (index * 28L).coerceAtMost(240L))
+            if (app != null || builtIn != null) {
+                addView(ImageView(context).apply {
+                    setImageDrawable(iconFor(app?.toLibraryApp() ?: builtIn!!))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }, LinearLayout.LayoutParams(dp(52), dp(52)))
+            } else {
+                addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(52), dp(52)))
+            }
+            addView(TextView(context).apply {
+                text = highlightedLabel(result.title, query)
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setTextColor(activeNeuTokens.inkDim)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                includeFontPadding = false
+                setPadding(0, dp(6), 0, 0)
+            }, LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT))
+            setOnClickListener { haptic(this); openSearchResult(result) }
+            if (result.target?.packageName != null) {
+                setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
+            } else result.longAction?.let { longAction ->
+                setOnLongClickListener { haptic(this); longAction(); true }
+            }
+        }
+    }
+
+    // ZONE 3 — one clean row: icon + title + secondary line. No kind pill (the header names it).
+    private fun searchGroupedRow(result: SearchResult, index: Int): View {
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             isClickable = true
             alpha = 0f
-            translationY = dp(8).toFloat()
-            setPadding(dp(9), dp(8), dp(9), dp(8))
-            background = searchCardBackground(result.kind, isBest, 15)
+            translationY = dp(6).toFloat()
+            setPadding(dp(6), dp(7), dp(6), dp(7))
             postDelayed({
-                animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
-            }, (index * 28L).coerceAtMost(240L))
-            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(11) })
+                animate().alpha(1f).translationY(0f).setDuration(200).setInterpolator(DecelerateInterpolator()).start()
+            }, (index * 24L).coerceAtMost(220L))
+            addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(12) })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(context).apply {
                     text = highlightedLabel(result.title, query)
-                    textSize = 13.5f
-                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    textSize = 14f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     setTextColor(activeNeuTokens.ink)
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     includeFontPadding = false
                 }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                addView(mono(result.subtitle.uppercase(Locale.US), 9f, activeNeuTokens.inkFaint).apply {
-                    letterSpacing = 0.06f
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setPadding(0, dp(5), 0, 0)
-                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                if (result.subtitle.isNotBlank()) {
+                    addView(TextView(context).apply {
+                        text = result.subtitle
+                        textSize = 11.5f
+                        setTextColor(activeNeuTokens.inkFaint)
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        includeFontPadding = false
+                        setPadding(0, dp(2), 0, 0)
+                    }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(searchKindTag(result.kind), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(22)).apply {
-                marginStart = dp(8)
-            })
             setOnClickListener { haptic(this); openSearchResult(result) }
-            if (result.kind == SearchKind.APP && result.target?.packageName != null) {
-                setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
-            } else result.longAction?.let { longAction ->
+            result.longAction?.let { longAction ->
                 setOnLongClickListener { haptic(this); longAction(); true }
             }
         }
