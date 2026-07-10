@@ -706,6 +706,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // On-device Gemini Nano: nano-first generation for every AI feature; cloud is the fallback.
         if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext)
         GeminiClient.nano?.warmUp()
+        // Second on-device tier (llama.cpp/Bonsai): serves the IME where AICore refuses.
+        GeminiClient.local = { p, mt, t -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t) }
+        GeminiClient.localReady = { com.fran.teclas.llm.LocalLlmEngine.ready(applicationContext) }
         travelRepo = TravelRepository(gmailApi)
         if (spotifyAuth.isConnected) musicPaneHost.preloadSpotifyLibrary()
         initSpellChecker()
@@ -16440,6 +16443,35 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             openHere(teclasSettingsTarget())
         })
         entries.add(SettingSearchEntry(
+            "Keyboard AI model",
+            when {
+                com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this) -> "On-device · ready"
+                com.fran.teclas.llm.LocalLlmEngine.downloading ->
+                    "Downloading… ${com.fran.teclas.llm.LocalLlmEngine.downloadedBytes / 1_048_576}MB of 237MB"
+                else -> "237MB download · tap to fetch"
+            },
+            listOf("keyboard ai", "bonsai", "local model", "offline ai", "llm", "download model")
+        ) {
+            when {
+                com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this) ->
+                    Toast.makeText(this, "Keyboard AI model is installed.", Toast.LENGTH_SHORT).show()
+                com.fran.teclas.llm.LocalLlmEngine.downloading ->
+                    Toast.makeText(this, "Still downloading — check back in a bit.", Toast.LENGTH_SHORT).show()
+                else -> {
+                    Toast.makeText(this, "Downloading Bonsai (237MB) in the background…", Toast.LENGTH_LONG).show()
+                    mediaUiScope.launch {
+                        val ok = withContext(Dispatchers.IO) { com.fran.teclas.llm.LocalLlmEngine.downloadModel(this@MainActivity) }
+                        Toast.makeText(
+                            this@MainActivity,
+                            if (ok) "Keyboard AI ready — works offline in any app." else "Model download failed — try again on wifi.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        refreshSearchSurfaces()
+                    }
+                }
+            }
+        })
+        entries.add(SettingSearchEntry(
             "Semantic search",
             when {
                 !com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this) -> "Needs model files · tap to import"
@@ -17093,7 +17125,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     /** True when SOME model can serve — on-device Nano, account mode (proxy), or a local key.
      *  Nano-capable devices need no key and no account. */
     private fun geminiReachable(): Boolean =
-        GeminiClient.nano?.ready == true || GeminiClient.proxy != null ||
+        GeminiClient.nano?.ready == true || GeminiClient.localReady() || GeminiClient.proxy != null ||
             !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank()
 
     internal fun geminiConfigured(): Boolean =

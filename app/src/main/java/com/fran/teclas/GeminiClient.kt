@@ -41,13 +41,23 @@ object GeminiClient {
     @Volatile
     var nano: NanoPromptEngine? = null
 
+    /**
+     * In-process llama.cpp tier (Bonsai) — the fallback that works where AICore refuses:
+     * the IME typing inside another app. Injected as lambdas so this object stays
+     * context-agnostic. Tried after Nano, before any network.
+     */
+    @Volatile
+    var local: ((prompt: String, maxTokens: Int, temperature: Double) -> String?)? = null
+    @Volatile
+    var localReady: () -> Boolean = { false }
+
     class Proxy(val url: String, val idTokenProvider: () -> String?)
 
     fun apiKey(prefs: SharedPreferences): String = prefs.getString(API_KEY_PREF, null)?.trim().orEmpty()
     fun model(prefs: SharedPreferences): String =
         prefs.getString(MODEL_PREF, DEFAULT_MODEL)?.trim().orEmpty().ifBlank { DEFAULT_MODEL }
     fun configured(prefs: SharedPreferences): Boolean =
-        nano?.ready == true || proxy != null || apiKey(prefs).isNotBlank()
+        nano?.ready == true || localReady() || proxy != null || apiKey(prefs).isNotBlank()
 
     /** Up to 3 next-word predictions for [context]. Empty on any failure. Blocking. */
     fun fetchSuggestions(apiKey: String, model: String, context: String): List<String> {
@@ -126,6 +136,12 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
         // On-device first: Gemini Nano costs nothing and sends nothing. Any failure (device
         // unsupported, model still downloading, inference error) falls through to the cloud paths.
         nano?.generateBlocking(prompt, maxTokens, temperature)?.let { out ->
+            lastErrorMessage = null
+            return out
+        }
+        // Second on-device tier: in-process Bonsai via llama.cpp — serves the IME inside other
+        // apps where AICore's foreground policy blocks Nano.
+        local?.invoke(prompt, maxTokens, temperature)?.let { out ->
             lastErrorMessage = null
             return out
         }

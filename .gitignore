@@ -11,3 +11,5 @@ tools/neural_swipe/futo_data/
 # Emulator/debug captures — 37 curated shots stay tracked; new ones need git add -f
 screenshots/
 scratch_*.png
+app/src/main/cpp/llama.cpp/
+app/.cxx/

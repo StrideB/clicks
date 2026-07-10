@@ -20,6 +20,20 @@ android {
         // Personal sideload app: every target device (Honor fold, Pixel, Apple-Silicon emulator)
         // is arm64-v8a. Shipping the other three ABIs tripled the APK's native-lib payload.
         ndk { abiFilters += "arm64-v8a" }
+
+        externalNativeBuild {
+            cmake {
+                // llama.cpp release builds even in app-debug: -O0 inference is unusably slow.
+                arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // Shared debug signing: a committed keystore so every build (any machine / any session) signs

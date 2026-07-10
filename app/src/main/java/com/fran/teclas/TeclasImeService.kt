@@ -248,6 +248,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         GeminiClient.proxy = GeminiProxy.binding(this)
         // On-device Gemini Nano first (shared with the launcher when in the same process).
         if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext).also { it.warmUp() }
+        // llama.cpp tier: the only on-device path AICore can't block while we serve another app.
+        if (GeminiClient.local == null) {
+            GeminiClient.local = { p, mt, t -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t) }
+            GeminiClient.localReady = { com.fran.teclas.llm.LocalLlmEngine.ready(applicationContext) }
+        }
         ensureGlideClassifier()
         checkNanoProofreadSupport()
         initSpellChecker()
@@ -2418,8 +2423,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Honest guard: the account-mode proxy makes Polish LOOK configured even with no key and no
         // sign-in. Without real auth, say so (and how to fix it) instead of a dead "Polishing…".
         // On-device Nano needs neither — it serves keyless and offline.
-        if (nanoSupported != true && GeminiClient.nano?.ready != true && key.isBlank() &&
-            GeminiClient.proxy?.idTokenProvider?.invoke() == null) {
+        if (nanoSupported != true && GeminiClient.nano?.ready != true && !GeminiClient.localReady() &&
+            key.isBlank() && GeminiClient.proxy?.idTokenProvider?.invoke() == null) {
             flashStatus("Add your Gemini key: tap ⚙ (the teclas key) → API key", 2800)
             return
         }
@@ -2444,10 +2449,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 return@Thread
             }
-            if (cloudless && nanoResult == com.fran.teclas.keyboard.NanoRewriteEngine.Result.Blocked) {
+            if (cloudless && nanoResult == com.fran.teclas.keyboard.NanoRewriteEngine.Result.Blocked &&
+                !com.fran.teclas.llm.LocalLlmEngine.ready(this)) {
                 handler.post {
                     polishing = false
-                    flashStatus("Android blocks on-device AI inside other apps — polish works on the Teclas home screen, or add a key for cloud.", 3400)
+                    flashStatus("Download the keyboard AI model in Teclas settings (search \"keyboard ai\") to polish offline in any app.", 3400)
                     onTextChanged()
                 }
                 return@Thread
