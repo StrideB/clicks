@@ -119,6 +119,15 @@ import com.fran.teclas.db.NgramRepository
 import com.fran.teclas.db.WidgetPersistenceRepository
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as ComposeColor
+import com.fran.teclas.weather.WEATHER_STYLE_CLASSIC_ID
+import com.fran.teclas.weather.WeatherData
+import com.fran.teclas.weather.WeatherStylePickerSheet
+import com.fran.teclas.weather.conditionForWmoCode
+import com.fran.teclas.weather.parseHourlyJson
+import com.fran.teclas.weather.weatherStyleById
 import com.fran.teclas.brief.Brief
 import com.fran.teclas.brief.BriefAction
 import com.fran.teclas.brief.BriefCategory
@@ -506,6 +515,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var weatherMetaView: TextView
     private lateinit var weatherFeelsView: TextView
     private lateinit var weatherStatsView: TextView
+    private var weatherStylePickerView: View? = null
+    private var weatherPlacementView: View? = null
+    // Snapshot of the weather prefs the Compose-rendered widget styles observe.
+    private val weatherWidgetComposeData = mutableStateOf<WeatherData?>(null)
     private lateinit var hubView: LinearLayout
     private lateinit var ribbonView: LinearLayout
     private lateinit var favoritesDockFrameView: FavoritesDockFlipFrame
@@ -1025,6 +1038,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onBackPressed() {
+        if (weatherPlacementView?.isAttachedToWindow == true) { exitWeatherPlacementMode(); return }
+        if (weatherStylePickerView?.isAttachedToWindow == true) { closeWeatherStylePicker(); return }
         if (homeLeftOverlay != null) { closeHomeLeftPage(); return }
         if (spaceBoardOverlay != null) { closeSpaceBoard(); return }
         if (todayOpen) { todayPaneHost.closeToday(); return }
@@ -2526,7 +2541,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(searchArea, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
                 favoritesDockView = LinearLayout(context)
             } else {
-                addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                // Invisible geometry keeper: the live weather widget floats above this column (see
+                // buildWeatherWidgetFrame) but the header-sized gap must survive so the widget
+                // stack / dock / keyboard never reflow when the weather widget is moved.
+                addView(homeHeader().apply { visibility = View.INVISIBLE }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.08f))
                 nowPlayingCardView = ComposeView(context).apply {
                     setBackgroundColor(Color.TRANSPARENT)
@@ -2573,6 +2591,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
+            if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
         }
     }
 
@@ -2607,7 +2626,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     addView(searchArea, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
                     favoritesDockView = LinearLayout(context)
                 } else {
-                    addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    // Invisible geometry keeper — same contract as home(): the floating weather
+                    // widget must not change where the dock / keyboard widget land.
+                    addView(homeHeader().apply { visibility = View.INVISIBLE }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                     addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
                     favoritesDockFrameView = favoritesDockFlipSurface(context)
                     addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
@@ -2624,6 +2645,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
         }
     }
 
@@ -5113,6 +5135,571 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         ))
         saveHomeTileSpec(next)
         layoutHomeGrid()
+    }
+
+    // ── Weather widget: free position + long-press style picker ──────────────
+    // The weather widget is the only freely-positioned element on the homescreen.
+    // It floats in the home FrameLayout above the content column; the column keeps
+    // an invisible header-sized slot so nothing below it ever reflows.
+
+    private fun weatherWidgetStyleId(): String =
+        prefs().getString(WEATHER_WIDGET_STYLE_PREF, WEATHER_STYLE_CLASSIC_ID) ?: WEATHER_STYLE_CLASSIC_ID
+
+    private fun weatherWidgetStyleName(): String =
+        if (weatherWidgetStyleId() == WEATHER_STYLE_CLASSIC_ID) "Classic" else weatherStyleById(weatherWidgetStyleId()).name
+
+    private fun weatherWidgetHasCustomPos(): Boolean =
+        prefs().contains(WEATHER_WIDGET_POS_X_PREF) && prefs().contains(WEATHER_WIDGET_POS_Y_PREF)
+
+    private fun saveWeatherWidgetPos(x: Int, y: Int) {
+        prefs().edit().putInt(WEATHER_WIDGET_POS_X_PREF, x).putInt(WEATHER_WIDGET_POS_Y_PREF, y).apply()
+    }
+
+    private fun buildWeatherWidgetFrame(context: Context): WeatherWidgetFrame {
+        val frame = WeatherWidgetFrame(context)
+        val styleId = weatherWidgetStyleId()
+        if (styleId == WEATHER_STYLE_CLASSIC_ID) {
+            // homeHeader() rebinds the weather lateinit views; the floating copy is built after
+            // the column's invisible keeper, so updateClock() drives this live instance.
+            frame.addView(homeHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        } else {
+            refreshWeatherWidgetComposeData()
+            frame.addView(ComposeView(context).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                setContent {
+                    val data = weatherWidgetComposeData.value
+                    if (data != null) weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+                }
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+            frame.isClickable = true
+            frame.setOnClickListener {
+                haptic(frame)
+                if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+        }
+        frame.elevation = dp(8).toFloat()
+        return frame
+    }
+
+    private fun weatherWidgetFrameLayoutParams(): FrameLayout.LayoutParams {
+        val classic = weatherWidgetStyleId() == WEATHER_STYLE_CLASSIC_ID
+        val lp = if (classic) {
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        } else {
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+        // Default = the header's flow position (content column padding), so an unset
+        // position renders pixel-identically to the old fixed top header.
+        lp.leftMargin = dp(14)
+        lp.topMargin = dp(6)
+        if (classic) lp.rightMargin = dp(14)
+        return lp
+    }
+
+    private fun applyPersistedWeatherWidgetPos(frame: WeatherWidgetFrame) {
+        if (!weatherWidgetHasCustomPos()) return
+        val parent = frame.parent as? View ?: return
+        if (parent.width <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == FrameLayout.LayoutParams.MATCH_PARENT) {
+            lp.width = frame.width
+            lp.rightMargin = 0
+        }
+        val x = prefs().getInt(WEATHER_WIDGET_POS_X_PREF, lp.leftMargin)
+        val y = prefs().getInt(WEATHER_WIDGET_POS_Y_PREF, lp.topMargin)
+        val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
+        // Placement-mode geometry can shift between sessions (keyboard mode, rotation);
+        // re-apply the soft stack-avoid so a restored position doesn't bury the stack.
+        val (rx, ry) = resolveWeatherWidgetOverlap(parent, frame.width, frame.height, cx, cy) ?: (cx to cy)
+        lp.leftMargin = rx
+        lp.topMargin = ry
+        frame.layoutParams = lp
+    }
+
+    private fun viewTopIn(ancestor: View, v: View): Int {
+        val a = IntArray(2); ancestor.getLocationInWindow(a)
+        val b = IntArray(2); v.getLocationInWindow(b)
+        return b[1] - a[1]
+    }
+
+    // Bottom edge the weather widget may not cross: the favorites dock top (the keyboard
+    // widget sits below the dock, and in docked mode the strip/keyboard live outside this
+    // frame entirely). Re-derived from live views, so a placement-mode re-render() is enough
+    // to recompute the reserved region.
+    private fun weatherWidgetBottomLimitIn(ancestor: View): Int {
+        var limit = ancestor.height
+        if (::favoritesDockFrameView.isInitialized) {
+            val dock = favoritesDockFrameView
+            if (dock.isShown && dock.height > 0) {
+                val top = viewTopIn(ancestor, dock)
+                if (top > 0) limit = minOf(limit, top - dp(4))
+            }
+        }
+        return limit
+    }
+
+    private fun clampWeatherWidgetPos(ancestor: View, w: Int, h: Int, x: Int, y: Int): Pair<Int, Int> {
+        val maxX = (ancestor.width - w).coerceAtLeast(0)
+        val maxY = (weatherWidgetBottomLimitIn(ancestor) - h).coerceAtLeast(0)
+        return x.coerceIn(0, maxX) to y.coerceIn(0, maxY)
+    }
+
+    // Soft snap: only pulls onto the nearest 4×12 grid line when already within dp(12) of it.
+    // Scoped to the weather widget — nothing else reads or reflows from this.
+    private fun softSnapWeatherWidgetPos(ancestor: View, x: Int, y: Int): Pair<Int, Int> {
+        val padL = dp(14)
+        val padT = dp(6)
+        val gap = dp(10)
+        val contentW = ancestor.width - padL * 2
+        val contentH = ancestor.height - padT
+        if (contentW <= 0 || contentH <= 0) return x to y
+        val cellW = (contentW - gap * (HOME_GRID_COLUMNS - 1)) / HOME_GRID_COLUMNS.toFloat()
+        val cellH = (contentH - gap * (HOME_GRID_ROWS - 1)) / HOME_GRID_ROWS.toFloat()
+        val threshold = dp(12)
+        var sx = x
+        var sy = y
+        for (col in 0 until HOME_GRID_COLUMNS) {
+            val gx = padL + ((cellW + gap) * col).toInt()
+            if (abs(x - gx) <= threshold) { sx = gx; break }
+        }
+        for (row in 0 until HOME_GRID_ROWS) {
+            val gy = padT + ((cellH + gap) * row).toInt()
+            if (abs(y - gy) <= threshold) { sy = gy; break }
+        }
+        return sx to sy
+    }
+
+    // Soft avoid for the contextual widget stack: nudge to the nearer clear side, or null
+    // when the widget cannot fit anywhere around it (caller rejects the drop).
+    private fun resolveWeatherWidgetOverlap(ancestor: View, w: Int, h: Int, x: Int, y: Int): Pair<Int, Int>? {
+        if (!::nowPlayingCardView.isInitialized) return x to y
+        val stack = nowPlayingCardView
+        if (!stack.isShown || stack.height <= 0) return x to y
+        val stackTop = viewTopIn(ancestor, stack)
+        val stackBottom = stackTop + stack.height
+        val overlaps = y < stackBottom && y + h > stackTop
+        if (!overlaps) return x to y
+        val above = stackTop - dp(4) - h
+        val below = stackBottom + dp(4)
+        val bottomLimit = weatherWidgetBottomLimitIn(ancestor)
+        val candidates = mutableListOf<Int>()
+        if (above >= 0) candidates.add(above)
+        if (below + h <= bottomLimit) candidates.add(below)
+        val best = candidates.minByOrNull { abs(it - y) } ?: return null
+        return x to best
+    }
+
+    private fun moveWeatherWidget(frame: View, left: Int, top: Int) {
+        val parent = frame.parent as? View ?: return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        val (x, y) = clampWeatherWidgetPos(parent, frame.width, frame.height, left, top)
+        lp.leftMargin = x
+        lp.topMargin = y
+        frame.layoutParams = lp
+    }
+
+    private fun settleWeatherWidget(frame: View, fallbackX: Int, fallbackY: Int) {
+        val parent = frame.parent as? View ?: return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, lp.leftMargin, lp.topMargin)
+        val (sx, sy) = softSnapWeatherWidgetPos(parent, cx, cy)
+        val (bx, by) = clampWeatherWidgetPos(parent, frame.width, frame.height, sx, sy)
+        val resolved = resolveWeatherWidgetOverlap(parent, frame.width, frame.height, bx, by)
+        if (resolved == null) {
+            if (hapticsEnabled) frame.performHapticFeedback(HapticFeedbackConstants.REJECT)
+            lp.leftMargin = fallbackX
+            lp.topMargin = fallbackY
+            frame.layoutParams = lp
+            return
+        }
+        lp.leftMargin = resolved.first
+        lp.topMargin = resolved.second
+        frame.layoutParams = lp
+        saveWeatherWidgetPos(resolved.first, resolved.second)
+        haptic(frame)
+    }
+
+    private fun freezeWeatherWidgetWidthForDrag(frame: View) {
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == FrameLayout.LayoutParams.MATCH_PARENT && frame.width > 0) {
+            lp.width = frame.width
+            lp.rightMargin = 0
+            frame.layoutParams = lp
+        }
+    }
+
+    // Drag/long-press host for the weather widget. Same dispatchTouchEvent pattern as
+    // HomeTileFrame, but always active: tap falls through to the header's refresh click,
+    // a dp(4) slop starts the drag, and the standard long-press timeout opens the picker.
+    private inner class WeatherWidgetFrame(context: Context) : FrameLayout(context) {
+        private var startRawX = 0f
+        private var startRawY = 0f
+        private var startLeft = 0
+        private var startTop = 0
+        private var dragging = false
+        private var longPressFired = false
+        private var longPressRunnable: Runnable? = null
+        private var persistedPosApplied = false
+
+        init {
+            clipChildren = false
+            clipToPadding = false
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!persistedPosApplied && width > 0 && ((parent as? View)?.width ?: 0) > 0) {
+                persistedPosApplied = true
+                post { applyPersistedWeatherWidgetPos(this) }
+            }
+        }
+
+        private fun cancelPendingLongPress() {
+            longPressRunnable?.let { removeCallbacks(it) }
+            longPressRunnable = null
+        }
+
+        // Synthesized rather than copied from the DOWN event: the long-press runnable fires
+        // after dispatchTouchEvent returned, when the framework may have recycled that event.
+        private fun dispatchCancelToChildren() {
+            val now = android.os.SystemClock.uptimeMillis()
+            val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+            super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+        }
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    startRawX = event.rawX
+                    startRawY = event.rawY
+                    val lp = layoutParams as FrameLayout.LayoutParams
+                    startLeft = lp.leftMargin
+                    startTop = lp.topMargin
+                    dragging = false
+                    longPressFired = false
+                    cancelPendingLongPress()
+                    val r = Runnable {
+                        longPressRunnable = null
+                        longPressFired = true
+                        dispatchCancelToChildren()
+                        if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        openWeatherStylePicker()
+                    }
+                    longPressRunnable = r
+                    postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (longPressFired) return true
+                    val dx = (event.rawX - startRawX).toInt()
+                    val dy = (event.rawY - startRawY).toInt()
+                    if (!dragging && (abs(dx) > dp(4) || abs(dy) > dp(4))) {
+                        cancelPendingLongPress()
+                        dragging = true
+                        freezeWeatherWidgetWidthForDrag(this)
+                        dispatchCancelToChildren()
+                        animate().scaleX(1.025f).scaleY(1.025f).setDuration(90).start()
+                    }
+                    if (dragging) {
+                        moveWeatherWidget(this, startLeft + dx, startTop + dy)
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    cancelPendingLongPress()
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    if (longPressFired) {
+                        longPressFired = false
+                        return true
+                    }
+                    if (dragging) {
+                        dragging = false
+                        animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                        settleWeatherWidget(this, startLeft, startTop)
+                        return true
+                    }
+                }
+            }
+            return super.dispatchTouchEvent(event)
+        }
+    }
+
+    private fun refreshWeatherWidgetComposeData() {
+        weatherWidgetComposeData.value = weatherDataFromPrefs()
+    }
+
+    private fun firstIntIn(s: String?): Int? = s?.let { Regex("-?\\d+").find(it)?.value?.toIntOrNull() }
+
+    private fun lastIntIn(s: String?): Int? = s?.let { Regex("-?\\d+").findAll(it).lastOrNull()?.value?.toIntOrNull() }
+
+    private fun weatherDataFromPrefs(): WeatherData {
+        val p = prefs()
+        val code = p.getInt(WEATHER_CODE_PREF, 0)
+        // Raw ints land with the first fetch after this feature ships; until then fall back
+        // to parsing the formatted header strings older installs already have cached.
+        val temp = if (p.contains(WEATHER_TEMP_F_PREF)) p.getInt(WEATHER_TEMP_F_PREF, 68)
+        else firstIntIn(p.getString(WEATHER_TEMP_PREF, null)) ?: 68
+        val feels = if (p.contains(WEATHER_FEELS_F_PREF)) p.getInt(WEATHER_FEELS_F_PREF, temp)
+        else firstIntIn(p.getString(WEATHER_FEELS_PREF, null)) ?: temp
+        val stats = p.getString(WEATHER_STATS_PREF, null)
+        val humidity = if (p.contains(WEATHER_HUMIDITY_PREF)) p.getInt(WEATHER_HUMIDITY_PREF, 50)
+        else firstIntIn(stats) ?: 50
+        val wind = if (p.contains(WEATHER_WIND_MPH_PREF)) p.getInt(WEATHER_WIND_MPH_PREF, 5)
+        else lastIntIn(stats) ?: 5
+        return WeatherData(
+            temp = temp,
+            feelsLike = feels,
+            humidity = humidity,
+            windMph = wind,
+            condition = conditionForWmoCode(code),
+            conditionLabel = weatherCodeLabel(code),
+            place = p.getString(WEATHER_PLACE_PREF, null).takeUnless { it.isNullOrBlank() } ?: "Local",
+            hi = p.getInt(WEATHER_HI_PREF, temp),
+            lo = p.getInt(WEATHER_LO_PREF, temp),
+            hourly = parseHourlyJson(p.getString(WEATHER_HOURLY_PREF, null))
+        )
+    }
+
+    internal fun openWeatherStylePicker() {
+        // render() swaps contentFrame out from under open overlays; a stale detached
+        // reference must not lock the picker shut, so gate on live attachment only.
+        if (weatherStylePickerView?.isAttachedToWindow == true || weatherPlacementView?.isAttachedToWindow == true) return
+        refreshWeatherWidgetComposeData()
+        val overlay = ComposeView(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setContent {
+                WeatherStylePickerSheet(
+                    data = weatherWidgetComposeData.value ?: weatherDataFromPrefs(),
+                    accent = ComposeColor(goKeyColor),
+                    currentStyleId = weatherWidgetStyleId(),
+                    onSelect = { id ->
+                        closeWeatherStylePicker()
+                        enterWeatherPlacementMode(id)
+                    },
+                    onCancel = { closeWeatherStylePicker() }
+                )
+            }
+        }
+        weatherStylePickerView = overlay
+        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        overlay.alpha = 0f
+        overlay.translationY = dp(40).toFloat()
+        overlay.animate().alpha(1f).translationY(0f).setDuration(240).setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    private fun closeWeatherStylePicker() {
+        val overlay = weatherStylePickerView ?: return
+        weatherStylePickerView = null
+        overlay.animate().alpha(0f).translationY(dp(24).toFloat()).setDuration(160)
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }
+            .start()
+    }
+
+    private fun enterWeatherPlacementMode(styleId: String) {
+        if (weatherPlacementView?.isAttachedToWindow == true) return
+        refreshWeatherWidgetComposeData()
+        val overlay = WeatherPlacementOverlay(this, styleId)
+        weatherPlacementView = overlay
+        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        overlay.alpha = 0f
+        overlay.animate().alpha(1f).setDuration(160).start()
+    }
+
+    private fun exitWeatherPlacementMode() {
+        val overlay = weatherPlacementView ?: return
+        weatherPlacementView = null
+        overlay.animate().alpha(0f).setDuration(140)
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }
+            .start()
+    }
+
+    // Visual twin of homeHeader() that deliberately does NOT rebind the weather lateinit
+    // views — placement previews must never steal updateClock()'s live targets.
+    private fun buildClassicWeatherPreview(context: Context): View {
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(28), dp(3), dp(10), dp(1))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(context).apply {
+                    text = prefs().getString(WEATHER_TEMP_PREF, "--")
+                    textSize = 34f
+                    typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.ink)
+                    includeFontPadding = false
+                })
+                addView(TextView(context).apply {
+                    text = prefs().getString(WEATHER_META_PREF, "Local weather")
+                    textSize = 9.4f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    letterSpacing = 0.10f
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                    maxLines = 1
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.18f))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+                addView(TextView(context).apply {
+                    text = prefs().getString(WEATHER_FEELS_PREF, "Feels --")
+                    textSize = 11.4f
+                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    includeFontPadding = false
+                    gravity = Gravity.RIGHT
+                })
+                addView(TextView(context).apply {
+                    text = prefs().getString(WEATHER_STATS_PREF, "Local")
+                    textSize = 9.8f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    letterSpacing = 0.05f
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                    gravity = Gravity.RIGHT
+                    maxLines = 1
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.50f).apply { marginEnd = dp(2) })
+            addView(AnimatedWeatherIconView(context).apply {
+                setWeatherCode(prefs().getInt(WEATHER_CODE_PREF, 0))
+                setAnimationEnabled(false)
+            }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        }
+    }
+
+    // Placement mode: the chosen style follows the finger; releasing on a valid spot drops
+    // it (persist + re-render), invalid spots reject with a subtle haptic, CANCEL exits
+    // without changing the current widget.
+    private inner class WeatherPlacementOverlay(context: Context, private val styleId: String) : FrameLayout(context) {
+        private val preview: View
+        private var previewShown = false
+
+        init {
+            setBackgroundColor(0x59000000)
+            isClickable = true
+            preview = if (styleId == WEATHER_STYLE_CLASSIC_ID) {
+                buildClassicWeatherPreview(context)
+            } else {
+                ComposeView(context).apply {
+                    setBackgroundColor(Color.TRANSPARENT)
+                    setContent {
+                        val data = weatherWidgetComposeData.value
+                        if (data != null) weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+                    }
+                }
+            }
+            preview.alpha = 0f
+            preview.elevation = dp(8).toFloat()
+            val lp = if (styleId == WEATHER_STYLE_CLASSIC_ID) {
+                LayoutParams((contentFrame.width - dp(28)).coerceAtLeast(dp(220)), LayoutParams.WRAP_CONTENT)
+            } else {
+                LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
+            }
+            addView(preview, lp)
+            addView(buildPlacementChrome(context))
+        }
+
+        private fun buildPlacementChrome(context: Context): View {
+            val pill = { stroke: Int ->
+                GradientDrawable().apply {
+                    setColor(0xE0181B21.toInt())
+                    cornerRadius = dp(18).toFloat()
+                    setStroke(dp(1), stroke)
+                }
+            }
+            val bar = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = "Tap where you want the weather widget"
+                    textSize = 12f
+                    setTextColor(Ink)
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    background = pill(0x22FFFFFF)
+                    setPadding(dp(14), dp(8), dp(14), dp(8))
+                })
+                addView(TextView(context).apply {
+                    text = "CANCEL"
+                    textSize = 12f
+                    letterSpacing = 0.08f
+                    setTextColor(goKeyColor)
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    background = pill((goKeyColor and 0x00FFFFFF) or 0x66000000)
+                    setPadding(dp(14), dp(8), dp(14), dp(8))
+                    setOnClickListener {
+                        haptic(this)
+                        exitWeatherPlacementMode()
+                    }
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+            }
+            return FrameLayout(context).apply {
+                addView(bar, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(18) })
+            }
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    if (!previewShown) {
+                        previewShown = true
+                        preview.animate().alpha(0.94f).setDuration(120).start()
+                    }
+                    movePreview(event.x, event.y)
+                }
+                MotionEvent.ACTION_UP -> if (previewShown) attemptDrop()
+                MotionEvent.ACTION_CANCEL -> if (previewShown) {
+                    // System stole the gesture (focus loss, notification shade): park the
+                    // preview again but stay in placement mode — CANCEL/back still exit.
+                    previewShown = false
+                    preview.animate().alpha(0f).setDuration(120).start()
+                }
+            }
+            return true
+        }
+
+        private fun movePreview(x: Float, y: Float) {
+            val w = preview.width
+            val h = preview.height
+            if (w <= 0 || h <= 0) return
+            preview.translationX = (x - w / 2f).coerceIn(0f, (width - w).toFloat().coerceAtLeast(0f))
+            preview.translationY = y - h / 2f
+        }
+
+        private fun attemptDrop() {
+            val w = preview.width
+            val h = preview.height
+            if (w <= 0 || h <= 0) return
+            // X is already clamped while following the finger (and pinned to 0 for previews
+            // wider than the screen), so only the vertical reserved regions can reject.
+            val x = preview.translationX.toInt().coerceIn(0, (width - w).coerceAtLeast(0))
+            val y = preview.translationY.toInt()
+            val bottomLimit = weatherWidgetBottomLimitIn(this)
+            if (y < 0 || y + h > bottomLimit) {
+                rejectDrop()
+                return
+            }
+            val (sx, sy) = softSnapWeatherWidgetPos(this, x, y)
+            val (bx, by) = clampWeatherWidgetPos(this, w, h, sx, sy)
+            val resolved = resolveWeatherWidgetOverlap(this, w, h, bx, by)
+            if (resolved == null) {
+                rejectDrop()
+                return
+            }
+            prefs().edit().putString(WEATHER_WIDGET_STYLE_PREF, styleId).apply()
+            saveWeatherWidgetPos(resolved.first, resolved.second)
+            haptic(this)
+            exitWeatherPlacementMode()
+            render()
+        }
+
+        private fun rejectDrop() {
+            if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.REJECT)
+            preview.animate().translationYBy(-dp(6).toFloat()).setDuration(70)
+                .withEndAction { preview.animate().translationYBy(dp(6).toFloat()).setDuration(90).start() }
+                .start()
+        }
     }
 
     private fun homeHeader(): View {
@@ -16348,6 +16935,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Weather widget", "${weatherWidgetStyleName()} · tap to restyle",
+            listOf("weather widget", "widget style", "weather style", "weather look", "move weather")
+        ) {
+            openWeatherStylePicker()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Haptic feedback", toggleStateLabel(hapticsEnabled),
             listOf("haptic", "haptics", "vibration", "feedback")
         ) {
@@ -17826,6 +18420,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
         weatherAmbientView?.setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = false)
         weatherDripView?.refresh(playMoment = false)
+        refreshWeatherWidgetComposeData()
         refreshNowPlayingCard()
     }
 
@@ -17870,6 +18465,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     .putString(WEATHER_FEELS_PREF, nextFeels)
                     .putString(WEATHER_STATS_PREF, nextStats)
                     .putInt(WEATHER_CODE_PREF, result.code)
+                    .putInt(WEATHER_TEMP_F_PREF, result.tempF)
+                    .putInt(WEATHER_FEELS_F_PREF, result.feelsLikeF)
+                    .putInt(WEATHER_HUMIDITY_PREF, result.humidity)
+                    .putInt(WEATHER_WIND_MPH_PREF, result.windMph)
+                    .putInt(WEATHER_HI_PREF, result.hiF)
+                    .putInt(WEATHER_LO_PREF, result.loF)
+                    .putString(WEATHER_HOURLY_PREF, result.hourlyJson)
+                    .putString(WEATHER_PLACE_PREF, result.place)
                     .putLong(WEATHER_FETCHED_AT_PREF, System.currentTimeMillis())
                     .apply()
                 updateClock()
@@ -17892,6 +18495,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         weatherIconView.setWeatherCode(0)
         weatherIconView.setAnimationEnabled(animatedWeatherEnabled())
         weatherAmbientView?.setWeather(0, activeNeuTokens.mode, animate = false)
+        refreshWeatherWidgetComposeData()
     }
 
     private fun hasWeatherPermission(): Boolean {
@@ -17909,7 +18513,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun fetchWeather(location: Location): WeatherSnapshot {
-        val url = "https://api.open-meteo.com/v1/forecast?latitude=${location.latitude}&longitude=${location.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
+        val url = "https://api.open-meteo.com/v1/forecast?latitude=${location.latitude}&longitude=${location.longitude}" +
+            "&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code" +
+            "&daily=temperature_2m_max,temperature_2m_min&hourly=temperature_2m,weather_code&forecast_days=1&forecast_hours=8" +
+            "&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto"
         val json = JSONObject(URL(url).readText())
         val current = json.getJSONObject("current")
         val temp = current.getDouble("temperature_2m").toInt()
@@ -17917,8 +18524,50 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val humidity = current.optInt("relative_humidity_2m", 0)
         val wind = current.optDouble("wind_speed_10m", 0.0).toInt()
         val code = current.optInt("weather_code", 0)
-        return WeatherSnapshot(temp, feels, humidity, wind, code, weatherCodeLabel(code))
+        val daily = json.optJSONObject("daily")
+        val hi = daily?.optJSONArray("temperature_2m_max")?.optDouble(0, temp.toDouble())?.toInt() ?: temp
+        val lo = daily?.optJSONArray("temperature_2m_min")?.optDouble(0, temp.toDouble())?.toInt() ?: temp
+        val hourlyJson = JSONArray().also { out ->
+            val hourly = json.optJSONObject("hourly")
+            val times = hourly?.optJSONArray("time")
+            val temps = hourly?.optJSONArray("temperature_2m")
+            val codes = hourly?.optJSONArray("weather_code")
+            if (times != null && temps != null) {
+                val nowHour = LocalTime.now().hour
+                for (i in 0 until minOf(times.length(), temps.length(), 6)) {
+                    val iso = times.optString(i)
+                    // Only call the first slot "Now" when it really is the current hour —
+                    // guards against the hourly range starting at midnight instead of now.
+                    val isNow = i == 0 && iso.substringAfter('T', "").substringBefore(':').toIntOrNull() == nowHour
+                    out.put(JSONObject()
+                        .put("h", if (isNow) "Now" else weatherHourLabel(iso))
+                        .put("t", temps.optDouble(i, temp.toDouble()).toInt())
+                        .put("c", codes?.optInt(i, code) ?: code))
+                }
+            }
+        }.toString()
+        return WeatherSnapshot(temp, feels, humidity, wind, code, weatherCodeLabel(code), hi, lo, hourlyJson, geocodedWeatherPlace(location))
     }
+
+    private fun weatherHourLabel(isoTime: String): String {
+        val hour = isoTime.substringAfter('T', "").substringBefore(':').toIntOrNull() ?: return isoTime
+        return when {
+            hour == 0 -> "12 AM"
+            hour < 12 -> "$hour AM"
+            hour == 12 -> "12 PM"
+            else -> "${hour - 12} PM"
+        }
+    }
+
+    // Best-effort locality name for the widget styles that show a place; blocking Geocoder
+    // is acceptable here because fetchWeather already runs on Dispatchers.IO.
+    private fun geocodedWeatherPlace(location: Location): String = runCatching {
+        @Suppress("DEPRECATION")
+        android.location.Geocoder(this, Locale.getDefault())
+            .getFromLocation(location.latitude, location.longitude, 1)
+            ?.firstOrNull()?.let { it.locality ?: it.subAdminArea ?: it.adminArea }
+            .orEmpty()
+    }.getOrDefault("")
 
     private fun weatherAmbientLightColor(): Int {
         val code = prefs().getInt(WEATHER_CODE_PREF, 0)
@@ -20596,6 +21245,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val WEATHER_STATS_PREF = "weather_stats"
         private const val WEATHER_CODE_PREF = "weather_code"
         private const val WEATHER_FETCHED_AT_PREF = "weather_fetched_at"
+        private const val WEATHER_WIDGET_STYLE_PREF = "weather_widget_style"
+        private const val WEATHER_WIDGET_POS_X_PREF = "weather_widget_pos_x"
+        private const val WEATHER_WIDGET_POS_Y_PREF = "weather_widget_pos_y"
+        private const val WEATHER_TEMP_F_PREF = "weather_temp_f"
+        private const val WEATHER_FEELS_F_PREF = "weather_feels_f"
+        private const val WEATHER_HUMIDITY_PREF = "weather_humidity_pct"
+        private const val WEATHER_WIND_MPH_PREF = "weather_wind_mph"
+        private const val WEATHER_HI_PREF = "weather_hi"
+        private const val WEATHER_LO_PREF = "weather_lo"
+        private const val WEATHER_HOURLY_PREF = "weather_hourly"
+        private const val WEATHER_PLACE_PREF = "weather_place"
         private const val WEATHER_ANIMATION_BURST_MS = 6500L
         private const val WEATHER_AMBIENT_BURST_MS = 6500L
         private const val WEATHER_DRIP_BURST_MS = 6500L
