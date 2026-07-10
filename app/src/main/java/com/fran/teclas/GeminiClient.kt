@@ -32,12 +32,22 @@ object GeminiClient {
     @Volatile
     var proxy: Proxy? = null
 
+    /**
+     * On-device Gemini Nano (AICore). When set, every [call] tries Nano FIRST — free, offline,
+     * nothing leaves the device — and only falls through to the cloud paths when Nano can't serve
+     * (unsupported device, model downloading, inference error). Process-global like [proxy] so the
+     * launcher and IME share one engine.
+     */
+    @Volatile
+    var nano: NanoPromptEngine? = null
+
     class Proxy(val url: String, val idTokenProvider: () -> String?)
 
     fun apiKey(prefs: SharedPreferences): String = prefs.getString(API_KEY_PREF, null)?.trim().orEmpty()
     fun model(prefs: SharedPreferences): String =
         prefs.getString(MODEL_PREF, DEFAULT_MODEL)?.trim().orEmpty().ifBlank { DEFAULT_MODEL }
-    fun configured(prefs: SharedPreferences): Boolean = proxy != null || apiKey(prefs).isNotBlank()
+    fun configured(prefs: SharedPreferences): Boolean =
+        nano?.ready == true || proxy != null || apiKey(prefs).isNotBlank()
 
     /** Up to 3 next-word predictions for [context]. Empty on any failure. Blocking. */
     fun fetchSuggestions(apiKey: String, model: String, context: String): List<String> {
@@ -103,11 +113,22 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
      * over [call] for callers (e.g. the Today brief ranker) that build their own prompt and parse
      * their own structured reply. Blocking — call off the main thread.
      */
-    fun generate(apiKey: String, model: String, prompt: String, maxTokens: Int = 512, temperature: Double = 0.2): String? =
-        call(apiKey, model, prompt, maxTokens, temperature)
+    fun generate(
+        apiKey: String, model: String, prompt: String,
+        maxTokens: Int = 512, temperature: Double = 0.2, json: Boolean = false
+    ): String? = call(apiKey, model, prompt, maxTokens, temperature, json)
 
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
-    private fun call(apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double): String? {
+    private fun call(
+        apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double,
+        json: Boolean = false
+    ): String? {
+        // On-device first: Gemini Nano costs nothing and sends nothing. Any failure (device
+        // unsupported, model still downloading, inference error) falls through to the cloud paths.
+        nano?.generateBlocking(prompt, maxTokens, temperature)?.let { out ->
+            lastErrorMessage = null
+            return out
+        }
         // Prefer the user's own API key when they've set one. The account-mode proxy is only the
         // fallback (no key on device) — trying it first let a stale/empty proxy binding hijack a
         // perfectly good key and fail silently.
@@ -125,9 +146,11 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
             "https://generativelanguage.googleapis.com/v1beta/models/" +
                 "${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(apiKey, "UTF-8")}"
         )
+        val generationConfig = JSONObject().put("temperature", temperature).put("maxOutputTokens", maxTokens)
+        if (json) generationConfig.put("responseMimeType", "application/json")
         val body = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-            .put("generationConfig", JSONObject().put("temperature", temperature).put("maxOutputTokens", maxTokens))
+            .put("generationConfig", generationConfig)
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = 6_000; readTimeout = 15_000
             setRequestProperty("Content-Type", "application/json"); doOutput = true

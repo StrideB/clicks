@@ -137,14 +137,7 @@ class SpacesSettingsActivity : ComponentActivity() {
     private fun toast(msg: String, long: Boolean = false) =
         Toast.makeText(this, msg, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
 
-    private fun tokens(): NeuTokens = when (prefs().getString("theme_mode", "system")) {
-        "dark" -> Neu.Dark
-        "light" -> Neu.Light
-        else -> {
-            val night = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
-            if (night == Configuration.UI_MODE_NIGHT_YES) Neu.Dark else Neu.Light
-        }
-    }
+    private fun tokens(): NeuTokens = resolveTeclasNeuTokens(prefs().getString("theme_mode", "system"))
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

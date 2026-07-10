@@ -54,6 +54,20 @@ android {
         compose = true
     }
 
+    packaging {
+        jniLibs {
+            // The RAG SDK bundles ~100MB of native libs; semantic search only uses the
+            // EmbeddingGemma JNI. Drop the generative LLM engine, the Gecko embedder, and
+            // the chunker/vector-store we replace with our own flat-file index.
+            excludes += listOf(
+                "lib/*/libllm_inference_engine_jni.so",
+                "lib/*/libgecko_embedding_model_jni.so",
+                "lib/*/libtext_chunker_jni.so",
+                "lib/*/libsqlite_vector_store_jni.so",
+            )
+        }
+    }
+
     lint {
         // Pre-modernization findings are frozen in the baseline; lint fails only on NEW issues.
         baseline = file("lint-baseline.xml")
@@ -105,6 +119,16 @@ dependencies {
     // On-device Gemini Nano (AICore) proofreading via ML Kit GenAI — free, offline, no model to train.
     // No-op on devices without AICore (the engine checks feature status and hides the UI).
     implementation(libs.mlkit.genai.proofreading)
+    // General-purpose on-device generation (Gemini Nano Prompt API) — the nano-first path in
+    // GeminiClient. Cloud Gemini becomes the fallback for devices without AICore.
+    implementation(libs.mlkit.genai.prompt)
+    // Keyboard-safe on-device rewriting: AICore blocks the raw Prompt API when the IME types into
+    // another app (ErrorCode 30), but the task-specific Rewriting API is built for keyboards.
+    implementation(libs.mlkit.genai.rewriting)
+    // On-device semantic search: EmbeddingGemma via the AI Edge RAG SDK (GemmaEmbeddingModel).
+    // Model + tokenizer files are user-imported into filesDir/semantic/ — nothing bundled.
+    implementation(libs.localagents.rag)
+    implementation(libs.mediapipe.tasks.genai)
 
     // Unit tests for the shared keyboard core (pure-JVM logic: word placement, prediction/autocorrect).
     testImplementation(libs.junit)

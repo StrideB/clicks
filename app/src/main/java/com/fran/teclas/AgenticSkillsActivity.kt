@@ -70,14 +70,7 @@ class AgenticSkillsActivity : ComponentActivity() {
         private const val THEME_MODE_LIGHT = "light"
     }
 
-    private fun tokens(): NeuTokens = when (prefs().getString(THEME_MODE_PREF, "system")) {
-        THEME_MODE_DARK -> Neu.Dark
-        THEME_MODE_LIGHT -> Neu.Light
-        else -> {
-            val night = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
-            if (night == android.content.res.Configuration.UI_MODE_NIGHT_YES) Neu.Dark else Neu.Light
-        }
-    }
+    private fun tokens(): NeuTokens = resolveTeclasNeuTokens(prefs().getString(THEME_MODE_PREF, "system"))
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

@@ -354,6 +354,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var fileSearchDebounce: Runnable? = null
     private var fileQuickQuery: String = ""
     private var fileQuickResults: List<SearchResult> = emptyList()
+    // On-device semantic search (EmbeddingGemma): natural-language hits for apps + settings
+    // ("make screen darker" → Launcher look) blended into universal search. Fully offline.
+    private var semanticSearchDebounce: Runnable? = null
+    private var semanticIndexDebounce: Runnable? = null
+    private var semanticQuickQuery: String = ""
+    private var semanticQuickResults: List<SearchResult> = emptyList()
     private var lastSuggestWord = ""
     private val keyViews = mutableMapOf<String, TextView>()
     private val keyBounds = mutableMapOf<String, Rect>()
@@ -451,6 +457,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var photosPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var photoTrashLauncher: ActivityResultLauncher<IntentSenderRequest>
     private lateinit var innerWallpaperPickerLauncher: ActivityResultLauncher<Intent>
+    private lateinit var semanticModelPickerLauncher: ActivityResultLauncher<Intent>
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
@@ -535,6 +542,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             calendarEvents = loadCalendarEvents()
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
+            scheduleSemanticIndexRefresh()
         }
         weatherPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) refreshWeather(force = true) else showWeatherNeedsPermission()
@@ -569,6 +577,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             Toast.makeText(this, if (innerScope) "Inner wallpaper applied." else "Cover wallpaper applied.", Toast.LENGTH_SHORT).show()
             if (::rootView.isInitialized) render()
         }
+        semanticModelPickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data ?: return@registerForActivityResult
+            val uris = mutableListOf<Uri>()
+            data.data?.let { uris.add(it) }
+            data.clipData?.let { clip -> repeat(clip.itemCount) { uris.add(clip.getItemAt(it).uri) } }
+            if (uris.isEmpty()) return@registerForActivityResult
+            mediaUiScope.launch {
+                val imported = withContext(Dispatchers.IO) {
+                    uris.mapNotNull { com.fran.teclas.semantic.SemanticSearchEngine.importModelFile(this@MainActivity, it) }
+                }
+                when {
+                    imported.isEmpty() ->
+                        Toast.makeText(this@MainActivity, "Couldn't recognize those files — need the .tflite model and sentencepiece.model.", Toast.LENGTH_LONG).show()
+                    com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this@MainActivity) -> {
+                        prefs().edit().putBoolean(SEMANTIC_SEARCH_PREF, true).apply()
+                        Toast.makeText(this@MainActivity, "Semantic search ready — building index…", Toast.LENGTH_SHORT).show()
+                        rebuildSemanticIndex()
+                    }
+                    else ->
+                        Toast.makeText(this@MainActivity, "Imported ${imported.joinToString()} — still missing ${if (imported.contains("tokenizer")) "the .tflite model" else "sentencepiece.model"}.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         appWidgetHost.startListening()
@@ -598,6 +629,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         migrateWidgetGestureDefault()
         apps = loadLaunchableApps()
         lastAppsLoadMs = System.currentTimeMillis()
+        if (semanticSearchEnabled()) {
+            mediaUiScope.launch { com.fran.teclas.semantic.SemanticSearchEngine.warmUp(this@MainActivity) }
+            handler.postDelayed({ rebuildSemanticIndex() }, 4_000L) // after first render settles
+        }
         // Let the prediction engine resolve app categories for Space cold-start priors
         // (e.g. Work leads with Gmail/Slack before any launch is learned).
         Predictor.categoryProvider = { pkg ->
@@ -635,6 +670,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         gmailApi = GmailApi(gmailAuth)
         // Account mode: route AI through the proxy with the user's Google ID token (no device key).
         GeminiClient.proxy = GeminiProxy.binding(this)
+        // On-device Gemini Nano: nano-first generation for every AI feature; cloud is the fallback.
+        if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext)
+        GeminiClient.nano?.warmUp()
         travelRepo = TravelRepository(gmailApi)
         if (spotifyAuth.isConnected) musicPaneHost.preloadSpotifyLibrary()
         initSpellChecker()
@@ -782,8 +820,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         ensureBillingConnected()
         val now = System.currentTimeMillis()
-        if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now }
-        if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now }
+        if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now; scheduleSemanticIndexRefresh() }
+        if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now; scheduleSemanticIndexRefresh() }
         if (now - lastContactsLoadMs > 5 * 60_000) { preloadContactsCache(); lastContactsLoadMs = now }
         if (todayEnabled && ::briefRepository.isInitialized) {
             briefRepository.startPeriodic()
@@ -1459,24 +1497,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 )
             } else {
                 intArrayOf(
-                    adjustAlpha(0xFF20232A.toInt(), 0.72f),
-                    adjustAlpha(0xFF181B21.toInt(), 0.54f),
-                    adjustAlpha(0xFF14161B.toInt(), 0.62f)
+                    adjustAlpha(0xFF07080B.toInt(), 0.52f),
+                    adjustAlpha(0xFF030405.toInt(), 0.40f),
+                    adjustAlpha(Color.BLACK, 0.48f)
                 )
             }
         ).apply { cornerRadius = radius }
         val topSheen = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(
-                adjustAlpha(Color.WHITE, if (light) 0.42f else 0.25f),
-                adjustAlpha(Color.WHITE, if (light) 0.10f else 0.05f),
+                adjustAlpha(Color.WHITE, if (light) 0.42f else 0.12f),
+                adjustAlpha(Color.WHITE, if (light) 0.10f else 0.025f),
                 Color.TRANSPARENT
             )
         ).apply { cornerRadius = radius }
         val rim = GradientDrawable().apply {
             cornerRadius = radius
             setColor(Color.TRANSPARENT)
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.48f else 0.30f))
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.48f else 0.16f))
         }
         val underside = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
@@ -2663,24 +2701,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 )
             } else {
                 intArrayOf(
-                    adjustAlpha(0xFF2A2F3A.toInt(), 0.54f),
-                    adjustAlpha(0xFF181B21.toInt(), 0.44f),
-                    adjustAlpha(0xFF05070A.toInt(), 0.58f)
+                    adjustAlpha(0xFF07080B.toInt(), 0.46f),
+                    adjustAlpha(0xFF030405.toInt(), 0.36f),
+                    adjustAlpha(Color.BLACK, 0.46f)
                 )
             }
         ).apply { cornerRadius = radius }
         val topBloom = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(
-                adjustAlpha(Color.WHITE, if (light) 0.30f else 0.16f),
-                adjustAlpha(Color.WHITE, if (light) 0.08f else 0.04f),
+                adjustAlpha(Color.WHITE, if (light) 0.30f else 0.08f),
+                adjustAlpha(Color.WHITE, if (light) 0.08f else 0.02f),
                 Color.TRANSPARENT
             )
         ).apply { cornerRadius = radius }
         val edge = GradientDrawable().apply {
             setColor(Color.TRANSPARENT)
             cornerRadius = radius
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.28f else 0.11f))
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.28f else 0.07f))
         }
         return LayerDrawable(arrayOf(body, topBloom, edge)).apply {
             setLayerInset(1, dp(1), dp(1), dp(1), dp(18))
@@ -2782,19 +2820,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setWillNotDraw(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val blur = when {
-                    honorGlass && compactDockGlass -> dp(92).toFloat()
-                    honorGlass -> dp(78).toFloat()
-                    compactDockGlass -> dp(48).toFloat()
-                    else -> dp(34).toFloat()
+                    honorGlass && compactDockGlass -> dp(116).toFloat()
+                    honorGlass -> dp(104).toFloat()
+                    compactDockGlass -> dp(76).toFloat()
+                    else -> dp(64).toFloat()
                 }
                 setRenderEffect(RenderEffect.createBlurEffect(blur, blur, Shader.TileMode.CLAMP))
             }
             alpha = when {
-                honorGlass && glassLightMode() -> 0.72f
-                honorGlass -> 0.84f
+                honorGlass && glassLightMode() -> 0.82f
+                honorGlass -> 0.94f
                 compactDockGlass -> 1.0f
-                glassLightMode() -> 0.92f
-                else -> 0.82f
+                glassLightMode() -> 0.96f
+                else -> 0.96f
             }
         }
 
@@ -2893,15 +2931,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (honorGlass && light) {
                     intArrayOf(0x8AF1F7FF.toInt(), 0x60D9E6F2.toInt(), 0x78CAD5E2.toInt())
                 } else if (honorGlass) {
-                    intArrayOf(0x88475568.toInt(), 0x68313C4C.toInt(), 0x861D2531.toInt())
+                    intArrayOf(0x8007080B.toInt(), 0x66030405, 0x82000000.toInt())
                 } else if (compactDockGlass && light) {
                     intArrayOf(0x86E6FAFF.toInt(), 0x5AC5EFFF, 0x78E9D8FF.toInt())
                 } else if (compactDockGlass) {
-                    intArrayOf(0x66293440, 0x46101820, 0x7A040609)
+                    intArrayOf(0x7207080B, 0x52030405, 0x78000000)
                 } else if (light) {
                     intArrayOf(0xA2F1FBFF.toInt(), 0x68D4F3FF, 0x7EECE0FF)
                 } else {
-                    intArrayOf(0xC42C3540.toInt(), 0x94141B24.toInt(), 0xD405070A.toInt())
+                    intArrayOf(0x8807080B.toInt(), 0x64030405, 0x8A000000.toInt())
                 },
                 floatArrayOf(0f, 0.42f, 1f),
                 Shader.TileMode.CLAMP
@@ -2916,19 +2954,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 intArrayOf(
                     adjustAlpha(Color.WHITE, when {
                         honorGlass && light -> 0.34f
-                        honorGlass -> 0.17f
+                        honorGlass -> 0.08f
                         compactDockGlass && light -> 0.46f
-                        compactDockGlass -> 0.22f
+                        compactDockGlass -> 0.08f
                         light -> 0.46f
-                        else -> 0.20f
+                        else -> 0.09f
                     }),
                     adjustAlpha(Color.WHITE, when {
                         honorGlass && light -> 0.12f
-                        honorGlass -> 0.06f
+                        honorGlass -> 0.025f
                         compactDockGlass && light -> 0.16f
-                        compactDockGlass -> 0.07f
+                        compactDockGlass -> 0.025f
                         light -> 0.18f
-                        else -> 0.09f
+                        else -> 0.03f
                     }),
                     Color.TRANSPARENT
                 ),
@@ -2948,19 +2986,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 intArrayOf(
                     adjustAlpha(Color.WHITE, when {
                         honorGlass && light -> 0.54f
-                        honorGlass -> 0.46f
+                        honorGlass -> 0.18f
                         compactDockGlass && light -> 0.78f
-                        compactDockGlass -> 0.62f
+                        compactDockGlass -> 0.18f
                         light -> 0.70f
-                        else -> 0.38f
+                        else -> 0.16f
                     }),
                     adjustAlpha(Color.WHITE, when {
                         honorGlass && light -> 0.16f
-                        honorGlass -> 0.10f
+                        honorGlass -> 0.035f
                         compactDockGlass && light -> 0.24f
-                        compactDockGlass -> 0.13f
+                        compactDockGlass -> 0.04f
                         light -> 0.22f
-                        else -> 0.11f
+                        else -> 0.04f
                     }),
                     adjustAlpha(Color.BLACK, when {
                         honorGlass && light -> 0.22f
@@ -4255,7 +4293,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun widgetKeyboardSliderAvailable(): Boolean =
-        keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET || isUnfoldedInnerLayoutActive()
+        keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET ||
+            isUnfoldedInnerLayoutActive() ||
+            (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && openPane == null)
 
     private fun widgetKeyboardHiddenPref(inner: Boolean = isUnfoldedInnerLayoutActive()): String =
         if (inner) INNER_WIDGET_KEYBOARD_HIDDEN_PREF else COVER_WIDGET_KEYBOARD_HIDDEN_PREF
@@ -9242,6 +9282,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         messages = loadHubMessages()
         renderHub()
         refreshNowPlayingCard()
+        scheduleSemanticIndexRefresh()
     }
 
     private fun messageRow(color: Int, who: String, preview: String, target: PaneTarget?, message: HubMessage? = null): View {
@@ -9296,7 +9337,53 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun rootDockInputView(): View =
-        if (isUnfoldedInnerLayoutActive() && openPane == null) unfoldedInnerKeyboardDock() else dockedInputView()
+        when {
+            isUnfoldedInnerLayoutActive() && openPane == null -> unfoldedInnerKeyboardDock()
+            keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && openPane == null -> dockedKeyboardSliderDock()
+            else -> dockedInputView()
+        }
+
+    private fun dockedKeyboardSliderDock(): View {
+        return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            background = ColorDrawable(Color.TRANSPARENT)
+            widgetKeyboardHost = this
+
+            widgetKeyboardSeatView = KeyboardSocketView(context).apply {
+                alpha = 0.32f
+            }
+            addView(widgetKeyboardSeatView, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+            val socket = KeyboardSocketView(context).apply {
+                alpha = 0f
+                visibility = View.GONE
+            }
+            widgetSocketView = socket
+            addView(socket, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+            val keyboardPanel = FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            }
+            widgetKeyboardModule = keyboardPanel
+            addView(keyboardPanel, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+
+            widgetKeyboardSliderHandleView = KeyboardSliderHandleView(context).apply {
+                visibility = if (widgetKeyboardHidden) View.VISIBLE else View.GONE
+                alpha = if (widgetKeyboardHidden) 1f else 0f
+                setOnTouchListener { _, event -> handleWidgetKeyboardSliderHandleTouch(event) }
+            }
+            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(dp(132), dp(34), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = dp(7)
+            })
+            setOnTouchListener { _, event ->
+                if (widgetKeyboardHidden) handleWidgetKeyboardSliderHostTouch(event) else false
+            }
+            applyWidgetKeyboardHiddenState(animate = false)
+        }
+    }
 
     private fun unfoldedInnerKeyboardDock(): View {
         val panelWidth = unfoldedKeyboardPanelWidth()
@@ -11291,51 +11378,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun fetchGeminiSuggestions(context: String): List<String> {
         val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
-        if (key.isBlank()) return emptyList()
         val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
-        val prompt = """You are a keyboard autocomplete engine. Given this text the user is typing, reply with exactly 3 next-word predictions as a JSON array of strings. Nothing else — no explanation, just the array.
-Text: "$context"
-Reply format: ["word1","word2","word3"]"""
-        val url = java.net.URL("https://generativelanguage.googleapis.com/v1beta/models/${java.net.URLEncoder.encode(model, "UTF-8")}:generateContent?key=${java.net.URLEncoder.encode(key, "UTF-8")}")
-        val body = org.json.JSONObject()
-            .put("contents", org.json.JSONArray().put(org.json.JSONObject().put("parts", org.json.JSONArray().put(org.json.JSONObject().put("text", prompt)))))
-            .put("generationConfig", org.json.JSONObject().put("temperature", 0.2).put("maxOutputTokens", 24))
-        val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 6_000; readTimeout = 8_000
-            setRequestProperty("Content-Type", "application/json"); doOutput = true
-        }
-        try {
-            java.io.OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
-            if (conn.responseCode !in 200..299) return emptyList()
-            val raw = conn.inputStream.bufferedReader().use { it.readText() }
-            val text = org.json.JSONObject(raw)
-                .optJSONArray("candidates")?.optJSONObject(0)
-                ?.optJSONObject("content")?.optJSONArray("parts")
-                ?.optJSONObject(0)?.optString("text")?.trim() ?: return emptyList()
-            return parseGeminiSuggestionArray(text)
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    /**
-     * Extract up to 3 suggestions from the model's reply. Prefers strict JSON array parsing;
-     * falls back to the original lenient regex so replies wrapped in markdown fences or extra
-     * prose (which the regex tolerates) still work exactly as before.
-     */
-    private fun parseGeminiSuggestionArray(text: String): List<String> {
-        runCatching {
-            val arr = org.json.JSONArray(text)
-            val out = ArrayList<String>(arr.length())
-            for (i in 0 until arr.length()) {
-                val s = arr.optString(i).trim()
-                if (s.isNotBlank()) out.add(s)
-            }
-            if (out.isNotEmpty()) return out.take(3)
-        }
-        // Fallback: original ["word1","word2","word3"] regex extraction.
-        return Regex(""""\s*([^"]+)\s*"""").findAll(text)
-            .map { it.groupValues[1].trim() }.filter { it.isNotBlank() }.take(3).toList()
+        return GeminiClient.fetchSuggestions(key, model, context)
     }
 
     // ── Gemini smart compose ─────────────────────────────────────────────────
@@ -12814,6 +12858,7 @@ Reply format: ["word1","word2","word3"]"""
         scheduleMusicSearch()
         scheduleEmailSearch()
         scheduleFileSearch()
+        scheduleSemanticSearch()
     }
 
     /** Debounced in-launcher Spotify search. Populates [spotifyQuickResults] for the current query so
@@ -12915,6 +12960,126 @@ Reply format: ["word1","word2","word3"]"""
         }
         fileSearchDebounce = r
         handler.postDelayed(r, 360L)
+    }
+
+    // ── On-device semantic search ────────────────────────────────────────────
+    // EmbeddingGemma cosine matches over apps + settings. The generative-free path:
+    // embeddings only, so it can run on every typing pause with no cloud and no quota.
+
+    internal fun semanticSearchEnabled(): Boolean = prefs().getBoolean(SEMANTIC_SEARCH_PREF, false)
+
+    private fun semanticIndexItems(): List<com.fran.teclas.semantic.SemanticItem> {
+        val items = mutableListOf<com.fran.teclas.semantic.SemanticItem>()
+        apps.forEach { app ->
+            val text = if (app.shortName.isNotBlank() && !app.label.contains(app.shortName, ignoreCase = true))
+                "${app.label} (${app.shortName})" else app.label
+            items.add(com.fran.teclas.semantic.SemanticItem("app:${app.packageName}", text))
+        }
+        settingSearchEntries().forEach { entry ->
+            items.add(com.fran.teclas.semantic.SemanticItem(
+                "setting:${entry.title}",
+                "Launcher setting: ${entry.title}. ${entry.keywords.joinToString(", ")}"
+            ))
+        }
+        // Personal corpus: hub messages + upcoming events. Only vectors and notification/event
+        // ids are persisted — never the text itself. Contacts stay string-matched (names are
+        // proper nouns; embeddings add nothing there).
+        messages.sortedByDescending { it.lastUpdated }.take(40).forEach { msg ->
+            items.add(com.fran.teclas.semantic.SemanticItem(
+                "msg:${msg.key}",
+                "Message from ${msg.sender} in ${appLabel(msg.packageName)}: ${msg.preview}"
+            ))
+        }
+        calendarEvents.take(20).forEach { event ->
+            val place = if (event.location.isNotBlank()) " at ${event.location}" else ""
+            items.add(com.fran.teclas.semantic.SemanticItem(
+                "cal:${event.eventId}",
+                "Calendar event: ${event.title}$place. ${event.dayLabel} ${event.timeLabel}"
+            ))
+        }
+        return items
+    }
+
+    /** Debounced incremental re-embed after hub/calendar data moves (notifications churn fast;
+     *  the hash check makes unchanged items free, so this only pays for genuinely new content). */
+    private fun scheduleSemanticIndexRefresh() {
+        if (!semanticSearchEnabled()) return
+        semanticIndexDebounce?.let { handler.removeCallbacks(it) }
+        val r = Runnable { semanticIndexDebounce = null; rebuildSemanticIndex() }
+        semanticIndexDebounce = r
+        handler.postDelayed(r, 5_000L)
+    }
+
+    /** Incrementally (re)embeds apps + settings. Cheap no-op when nothing changed. */
+    private fun rebuildSemanticIndex() {
+        if (!semanticSearchEnabled()) return
+        val items = semanticIndexItems() // built on main: reads prefs/fields, no I/O
+        mediaUiScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { com.fran.teclas.semantic.SemanticSearchEngine.ensureIndex(this@MainActivity, items) }
+            }
+        }
+    }
+
+    private fun scheduleSemanticSearch() {
+        semanticSearchDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        if (q.length < 3 || !semanticSearchEnabled()) {
+            if (semanticQuickResults.isNotEmpty()) { semanticQuickResults = emptyList(); semanticQuickQuery = "" }
+            return
+        }
+        if (q == semanticQuickQuery) return
+        val r = Runnable {
+            semanticSearchDebounce = null
+            mediaUiScope.launch {
+                val hits = withContext(Dispatchers.IO) {
+                    runCatching {
+                        com.fran.teclas.semantic.SemanticSearchEngine.search(this@MainActivity, q, topK = 6, minScore = 0.35f)
+                    }.getOrDefault(emptyList())
+                }
+                if (query.trim() != q) return@launch   // query moved on
+                val installed = apps.associateBy { it.packageName }
+                val settingsByTitle = settingSearchEntries().associateBy { it.title }
+                val messagesByKey = messages.associateBy { it.key }
+                val eventsById = calendarEvents.associateBy { it.eventId.toString() }
+                semanticQuickQuery = q
+                semanticQuickResults = hits.mapNotNull { hit ->
+                    when {
+                        hit.key.startsWith("app:") -> installed[hit.key.removePrefix("app:")]?.let { app ->
+                            SearchResult(app.label, "Open", app.brandColor, SearchKind.APP, app.toPaneTarget())
+                        }
+                        hit.key.startsWith("setting:") -> settingsByTitle[hit.key.removePrefix("setting:")]?.let { entry ->
+                            SearchResult(entry.title, entry.state, goKeyColor, SearchKind.SETTING, null) { entry.perform() }
+                        }
+                        hit.key.startsWith("msg:") -> messagesByKey[hit.key.removePrefix("msg:")]?.let { msg ->
+                            val kind = if (msg.kind == HUB_KIND_EMAIL) SearchKind.EMAIL else SearchKind.MESSAGE
+                            SearchResult(msg.sender, "${msg.preview} . ${appLabel(msg.packageName)}", contextColor(msg), kind, msg.toPaneTarget())
+                        }
+                        hit.key.startsWith("cal:") -> eventsById[hit.key.removePrefix("cal:")]?.let { event ->
+                            SearchResult(
+                                event.title,
+                                "${event.timeLabel}${if (event.location.isNotBlank()) " . ${event.location}" else ""}",
+                                0xFFFF8F8F.toInt(), SearchKind.CALENDAR, null
+                            ) { openCalendarEventOrRequest(event) }
+                        }
+                        else -> null
+                    }
+                }
+                if (libraryOpen) refreshLibraryContent()
+            }
+        }
+        semanticSearchDebounce = r
+        handler.postDelayed(r, 300L)
+    }
+
+    private fun openSemanticModelPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        runCatching { semanticModelPickerLauncher.launch(intent) }
+            .onFailure { Toast.makeText(this, "File picker isn't available here.", Toast.LENGTH_SHORT).show() }
     }
 
     private fun playSpotifyTrackFromSearch(track: SpotifyTrack) {
@@ -13713,13 +13878,15 @@ Reply format: ["word1","word2","word3"]"""
 
     private fun geminiIntegrationRow(): View {
         val enabled = prefs().getBoolean(GEMINI_ENABLED_PREF, false)
-        val configured = geminiConfigured()
+        val reachable = geminiReachable()
+        val nano = GeminiClient.nano?.ready == true
         val state = when {
-            enabled && configured -> "READY"
-            configured -> "OFF"
+            enabled && nano -> "ON-DEVICE"
+            enabled && reachable -> "READY"
+            reachable -> "OFF"
             else -> "SET UP"
         }
-        return integrationLikeRow("Gemini AI", state, if (enabled && configured) 0xFF8AB4F8.toInt() else InkDim) { anchor ->
+        return integrationLikeRow("Gemini AI", state, if (enabled && reachable) 0xFF8AB4F8.toInt() else InkDim) { anchor ->
             showGeminiMenu(anchor)
         }
     }
@@ -13999,7 +14166,9 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun showGeminiMenu(anchor: View) {
-        val configured = geminiConfigured()
+        // Reachability, not geminiConfigured(): that helper ANDs the enable toggle, which made
+        // "Enable Gemini" un-tappable until a key was pasted. Nano-ready devices need no key.
+        val configured = geminiReachable()
         val enabled = prefs().getBoolean(GEMINI_ENABLED_PREF, false)
         val menu = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -15247,6 +15416,11 @@ Reply format: ["word1","word2","word3"]"""
         if (spotifyQuickQuery == q) results.addAll(spotifyQuickResults)
         if (gmailQuickQuery == q) results.addAll(gmailQuickResults)
         if (fileQuickQuery == q) results.addAll(fileQuickResults)
+        // Semantic hits ("scan documents" → Drive) — skip anything string matching already found.
+        if (semanticQuickQuery == q) {
+            val seenTitles = results.map { it.title.lowercase(Locale.US) }.toSet()
+            results.addAll(semanticQuickResults.filter { it.title.lowercase(Locale.US) !in seenTitles })
+        }
         if (looksLikeTravelQuery(q)) {
             val boarding = q.lowercase(Locale.US).contains("boarding") || q.lowercase(Locale.US).contains("pass")
             results.add(0, SearchResult(
@@ -15482,6 +15656,23 @@ Reply format: ["word1","word2","word3"]"""
             listOf("gesture", "gestures", "swipe")
         ) {
             openHere(teclasSettingsTarget())
+        })
+        entries.add(SettingSearchEntry(
+            "Semantic search",
+            when {
+                !com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this) -> "Needs model files · tap to import"
+                else -> toggleStateLabel(semanticSearchEnabled())
+            },
+            listOf("semantic", "semantic search", "ai search", "smart search", "embedding", "natural search")
+        ) {
+            if (!com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this)) {
+                openSemanticModelPicker()
+            } else {
+                val next = !semanticSearchEnabled()
+                prefs().edit().putBoolean(SEMANTIC_SEARCH_PREF, next).apply()
+                if (next) rebuildSemanticIndex() else { semanticQuickResults = emptyList(); semanticQuickQuery = "" }
+                refreshSearchSurfaces()
+            }
         })
         return entries
     }
@@ -16025,32 +16216,13 @@ Reply format: ["word1","word2","word3"]"""
         }
     }
 
-    // Ask Gemini to classify a free-form request into a structured, executable action.
+    // Ask the model (Nano first, cloud fallback) to classify a free-form request into a
+    // structured, executable action.
     private fun fetchGeminiAction(prompt: String): GeminiAction {
         val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
-        if (key.isBlank()) return GeminiAction("answer", answer = "Gemini needs an API key first.")
         val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(key, "UTF-8")}")
-        val body = JSONObject()
-            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", geminiActionPrompt(prompt))))))
-            .put("generationConfig", JSONObject()
-                .put("temperature", 0.1)
-                .put("maxOutputTokens", 500)
-                .put("responseMimeType", "application/json"))
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 10_000; readTimeout = 15_000
-            setRequestProperty("Content-Type", "application/json"); doOutput = true
-        }
-        OutputStreamWriter(connection.outputStream).use { it.write(body.toString()) }
-        val raw = if (connection.responseCode in 200..299) {
-            connection.inputStream.bufferedReader().use { it.readText() }
-        } else {
-            val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            throw IllegalStateException(error.ifBlank { "HTTP ${connection.responseCode}" })
-        }
-        val text = JSONObject(raw).optJSONArray("candidates")
-            ?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
-            ?.optJSONObject(0)?.optString("text")?.trim().orEmpty()
+        val text = GeminiClient.generate(key, model, geminiActionPrompt(prompt), maxTokens = 500, temperature = 0.1, json = true)
+            ?: throw IllegalStateException(GeminiClient.lastErrorMessage ?: "The AI isn't reachable right now.")
         // Strip markdown fences if the model added them despite the JSON mime type.
         val clean = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
             .let { it.substring(it.indexOf('{').coerceAtLeast(0), (it.lastIndexOf('}') + 1).coerceAtLeast(1)) }
@@ -16140,32 +16312,10 @@ Reply format: ["word1","word2","word3"]"""
 
     private fun fetchGeminiAnswer(prompt: String): String {
         val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
-        if (key.isBlank()) return "Gemini needs an API key first."
         val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(key, "UTF-8")}")
-        val body = JSONObject()
-            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", geminiPrompt(prompt))))))
-            .put("generationConfig", JSONObject().put("temperature", 0.4).put("maxOutputTokens", 650))
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 10_000
-            readTimeout = 20_000
-            setRequestProperty("Content-Type", "application/json")
-            doOutput = true
-        }
-        OutputStreamWriter(connection.outputStream).use { it.write(body.toString()) }
-        val raw = if (connection.responseCode in 200..299) {
-            connection.inputStream.bufferedReader().use { it.readText() }
-        } else {
-            val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            throw IllegalStateException(error.ifBlank { "HTTP ${connection.responseCode}" })
-        }
-        val json = JSONObject(raw)
-        val candidates = json.optJSONArray("candidates")
-        val parts = candidates?.optJSONObject(0)
-            ?.optJSONObject("content")
-            ?.optJSONArray("parts")
-        return parts?.optJSONObject(0)?.optString("text")?.trim().orEmpty().ifBlank { "Gemini returned no text." }
+        return GeminiClient.generate(key, model, geminiPrompt(prompt), maxTokens = 650, temperature = 0.4)
+            ?.ifBlank { null }
+            ?: throw IllegalStateException(GeminiClient.lastErrorMessage ?: "The AI isn't reachable right now.")
     }
 
     private fun geminiPrompt(prompt: String): String {
@@ -16185,11 +16335,14 @@ Reply format: ["word1","word2","word3"]"""
         """.trimIndent()
     }
 
-    internal fun geminiConfigured(): Boolean {
-        // Enabled when AI is on AND we can reach Gemini — either account mode (proxy) or a local key.
-        return prefs().getBoolean(GEMINI_ENABLED_PREF, false) &&
-            (GeminiClient.proxy != null || !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank())
-    }
+    /** True when SOME model can serve — on-device Nano, account mode (proxy), or a local key.
+     *  Nano-capable devices need no key and no account. */
+    private fun geminiReachable(): Boolean =
+        GeminiClient.nano?.ready == true || GeminiClient.proxy != null ||
+            !prefs().getString(GEMINI_API_KEY_PREF, null).isNullOrBlank()
+
+    internal fun geminiConfigured(): Boolean =
+        prefs().getBoolean(GEMINI_ENABLED_PREF, false) && geminiReachable()
 
     internal fun startSafeIntent(intent: Intent, failureMessage: String) {
         runCatching { startActivity(intent) }
@@ -16518,6 +16671,7 @@ Reply format: ["word1","word2","word3"]"""
                 invalidateLibraryCaches()
                 renderRibbon()
                 renderFavoritesDock()
+                rebuildSemanticIndex()
             }
         }
     }
@@ -17951,7 +18105,7 @@ Reply format: ["word1","word2","word3"]"""
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val light = activeNeuTokens.mode == NeuMode.LIGHT
+            val light = selectedNeuTokens().mode == NeuMode.LIGHT
             val radius = height * 0.42f
             rect.set(dp(4).toFloat(), dp(5).toFloat(), width - dp(4).toFloat(), height - dp(5).toFloat())
 
@@ -18422,20 +18576,16 @@ Reply format: ["word1","word2","word3"]"""
     internal fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private fun selectedNeuTokens(): NeuTokens {
-        return when (themeMode) {
-            THEME_MODE_DARK -> Neu.Dark
-            THEME_MODE_LIGHT -> Neu.Light
-            else -> if (isSystemDarkMode()) Neu.Dark else Neu.Light
-        }
+        val savedMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
+        return resolveTeclasNeuTokens(savedMode)
     }
 
     private fun glassLightMode(): Boolean {
-        // Glass should follow the environment: if the device is dark, glass becomes dark-tinted
-        // even if a stale/light token is active during a phone-mode render.
-        return themeMode != THEME_MODE_DARK && !isSystemDarkMode()
+        return activeNeuTokens.mode == NeuMode.LIGHT
     }
 
     private fun applyTheme(): Boolean {
+        themeMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
         val next = selectedNeuTokens()
         val changed = activeNeuTokens.mode != next.mode || activeNeuTokens.base != next.base
         activeNeuTokens = next
@@ -18545,7 +18695,7 @@ Reply format: ["word1","word2","word3"]"""
     }
 
     private fun isSystemDarkMode(): Boolean {
-        return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        return teclasSystemDarkMode()
     }
 
     internal fun haptic(view: View) {
@@ -18859,10 +19009,10 @@ Reply format: ["word1","word2","word3"]"""
 
         override fun onDraw(canvas: Canvas) {
             if (width <= 0 || height <= 0) return
-            val light = activeNeuTokens.mode == NeuMode.LIGHT
-            val glassTop = if (light) Color.WHITE else 0xFF20232A.toInt()
-            val glassMid = if (light) 0xFFEAF0F5.toInt() else 0xFF181B21.toInt()
-            val glassBottom = if (light) 0xFFD9E0E8.toInt() else 0xFF14161B.toInt()
+            val light = glassLightMode()
+            val glassTop = if (light) Color.WHITE else 0xFF07080B.toInt()
+            val glassMid = if (light) 0xFFEAF0F5.toInt() else 0xFF030405.toInt()
+            val glassBottom = if (light) 0xFFD9E0E8.toInt() else Color.BLACK
             val radius = dp(radiusDp).toFloat()
             val alphaBoost = strength.coerceIn(0.5f, 2.25f)
             val edgeInset = dp(edgeInsetDp).toFloat()
@@ -18891,9 +19041,9 @@ Reply format: ["word1","word2","word3"]"""
                 0f,
                 rect.bottom,
                 intArrayOf(
-                    adjustAlpha(glassTop, ((if (light) 0.38f else 0.68f) * alphaBoost).coerceAtMost(if (light) 0.78f else 0.86f) * progress),
-                    adjustAlpha(glassMid, ((if (light) 0.28f else 0.50f) * alphaBoost).coerceAtMost(if (light) 0.62f else 0.78f) * progress),
-                    adjustAlpha(glassBottom, ((if (light) 0.34f else 0.70f) * alphaBoost).coerceAtMost(if (light) 0.68f else 0.90f) * progress)
+                    adjustAlpha(glassTop, ((if (light) 0.42f else 0.42f) * alphaBoost).coerceAtMost(if (light) 0.84f else 0.58f) * progress),
+                    adjustAlpha(glassMid, ((if (light) 0.32f else 0.30f) * alphaBoost).coerceAtMost(if (light) 0.68f else 0.46f) * progress),
+                    adjustAlpha(glassBottom, ((if (light) 0.38f else 0.44f) * alphaBoost).coerceAtMost(if (light) 0.74f else 0.62f) * progress)
                 ),
                 floatArrayOf(0f, 0.46f, 1f),
                 Shader.TileMode.CLAMP
@@ -18906,7 +19056,7 @@ Reply format: ["word1","word2","word3"]"""
                 height * 0.08f,
                 width * 0.88f,
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, ((if (light) 0.22f else 0.12f) * alphaBoost).coerceAtMost(if (light) 0.52f else 0.24f) * progress),
+                    adjustAlpha(Color.WHITE, ((if (light) 0.22f else 0.06f) * alphaBoost).coerceAtMost(if (light) 0.52f else 0.12f) * progress),
                     Color.TRANSPARENT
                 ),
                 floatArrayOf(0f, 1f),
@@ -18926,8 +19076,8 @@ Reply format: ["word1","word2","word3"]"""
                 0f,
                 height.toFloat(),
                 intArrayOf(
-                    adjustAlpha(Color.WHITE, ((if (light) 0.48f else 0.34f) * alphaBoost).coerceAtMost(if (light) 0.82f else 0.56f) * progress),
-                    adjustAlpha(Color.WHITE, (0.04f * alphaBoost).coerceAtMost(0.12f) * progress),
+                    adjustAlpha(Color.WHITE, ((if (light) 0.48f else 0.14f) * alphaBoost).coerceAtMost(if (light) 0.82f else 0.22f) * progress),
+                    adjustAlpha(Color.WHITE, ((if (light) 0.04f else 0.015f) * alphaBoost).coerceAtMost(if (light) 0.12f else 0.04f) * progress),
                     adjustAlpha(Color.BLACK, ((if (light) 0.12f else 0.54f) * alphaBoost).coerceAtMost(if (light) 0.24f else 0.88f) * progress)
                 ),
                 floatArrayOf(0f, 0.52f, 1f),
@@ -19693,6 +19843,7 @@ Reply format: ["word1","word2","word3"]"""
         private const val SPOTIFY_INTEGRATION_PREF = "spotify_integration"
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
         private const val GEMINI_ENABLED_PREF = "gemini_enabled"
+        private const val SEMANTIC_SEARCH_PREF = "semantic_search"
         internal const val GEMINI_API_KEY_PREF = "gemini_api_key"
         internal const val GEMINI_MODEL_PREF = "gemini_model"
         internal const val GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"

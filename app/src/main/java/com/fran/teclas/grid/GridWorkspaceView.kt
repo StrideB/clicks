@@ -171,13 +171,13 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
             inkDim = 0x8AFFFFFF.toInt()
             accent = 0xFF9CE7B4.toInt()
             danger = 0xFFFF5D5D.toInt()
-            appPlateFill = 0x1FFFFFFF
-            appPlateStroke = 0x30FFFFFF
-            widgetFrameFill = 0x14FFFFFF
-            widgetFrameStroke = 0x24FFFFFF
-            stackDotInactive = 0x4DFFFFFF
+            appPlateFill = 0x26000000
+            appPlateStroke = 0x20FFFFFF
+            widgetFrameFill = 0x30000000
+            widgetFrameStroke = 0x20FFFFFF
+            stackDotInactive = 0x38FFFFFF
             popChipText = 0xFF10110F.toInt()
-            gridPaint.color = 0x33FFFFFF
+            gridPaint.color = 0x18FFFFFF
             removeBgPaint.color = 0x22FF5D5D
         }
         framePaint.color = accent

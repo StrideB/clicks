@@ -339,12 +339,10 @@ internal class TravelPaneHost(private val activity: MainActivity) {
         }
     } }
 
-    // Extracts structured flight segments from one airline/itinerary email via Gemini.
+    // Extracts structured flight segments from one airline/itinerary email (Nano first, cloud fallback).
     private fun fetchFlightSegments(msg: GmailMessage): List<FlightSegment> { with(activity) {
         val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
-        if (key.isBlank()) return emptyList()
         val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/${URLEncoder.encode(model, "UTF-8")}:generateContent?key=${URLEncoder.encode(key, "UTF-8")}")
         val emailText = (msg.subject + "\n" + msg.bodyText).take(6000)
         val prompt = """Extract every flight segment from this airline email. Reply with ONLY a JSON array — no prose.
 Each element: {"airline","flightNumber","from","to","depart","arrive","date","confirmation","seat"}.
@@ -352,20 +350,8 @@ Use IATA airport codes for "from"/"to" when present (else city name). "depart"/"
 
 Email:
 $emailText"""
-        val body = JSONObject()
-            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
-            .put("generationConfig", JSONObject().put("temperature", 0.0).put("maxOutputTokens", 900).put("responseMimeType", "application/json"))
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"; connectTimeout = 10_000; readTimeout = 20_000
-            setRequestProperty("Content-Type", "application/json"); doOutput = true
-        }
-        OutputStreamWriter(connection.outputStream).use { it.write(body.toString()) }
-        val raw = if (connection.responseCode in 200..299) connection.inputStream.bufferedReader().use { it.readText() }
-        else { connection.disconnect(); return emptyList() }
-        connection.disconnect()
-        val text = JSONObject(raw).optJSONArray("candidates")
-            ?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
-            ?.optJSONObject(0)?.optString("text")?.trim().orEmpty()
+        val text = GeminiClient.generate(key, model, prompt, maxTokens = 900, temperature = 0.0, json = true)
+            ?: return emptyList()
         val clean = text.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
         val start = clean.indexOf('['); val end = clean.lastIndexOf(']')
         if (start < 0 || end <= start) return emptyList()

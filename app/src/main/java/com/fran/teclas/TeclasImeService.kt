@@ -60,13 +60,64 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     // ── KeyboardHost (shared-core seam) — wraps the IME's existing InputConnection behavior ──
     override fun commitText(text: String) = commitValue(text)
-    override fun deleteBeforeCursor(count: Int) { currentInputConnection?.deleteSurroundingText(count, 0) }
-    override fun textBeforeCursor(count: Int): String =
-        currentInputConnection?.getTextBeforeCursor(count, 0)?.toString().orEmpty()
-    override fun textAfterCursor(count: Int): String =
-        currentInputConnection?.getTextAfterCursor(count, 0)?.toString().orEmpty()
+    override fun deleteBeforeCursor(count: Int) {
+        currentInputConnection?.deleteSurroundingText(count, 0)
+        shadowOnDeleteBefore(count)
+    }
+    override fun textBeforeCursor(count: Int): String = shadowBeforeCursor(count)
+    override fun textAfterCursor(count: Int): String = shadowAfterCursor(count)
     override fun moveCursor(right: Boolean) =
         keyEvent(if (right) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
+
+    // ── Shadow editor ────────────────────────────────────────────────────────────────────────
+    // A local mirror of the text on either side of the caret. Hot-path reads (currentWord,
+    // textBeforeCursor, auto-cap, tap disambiguation) hit this instead of blocking on a cross-
+    // process getTextBeforeCursor() round-trip — the launcher keyboard reads its in-memory string
+    // for free, this closes most of that gap. Kept honest by tracking our own edits and reconciling
+    // against the absolute caret in onUpdateSelection; any edit we can't track locally invalidates
+    // it and the next selection callback reseeds from the editor. While invalid, reads fall back to
+    // the InputConnection, so a stale mirror can never surface — worst case is a normal IPC read.
+    private val shadowBefore = StringBuilder()
+    private val shadowAfter = StringBuilder()
+    private var shadowCaret = 0
+    private var shadowValid = false
+    private val shadowWindow = 1024
+
+    private fun seedShadow(caret: Int) {
+        val ic = currentInputConnection
+        if (ic == null) { shadowValid = false; return }
+        val before = ic.getTextBeforeCursor(shadowWindow, 0)?.toString().orEmpty()
+        val after = ic.getTextAfterCursor(shadowWindow, 0)?.toString().orEmpty()
+        shadowBefore.setLength(0); shadowBefore.append(before)
+        shadowAfter.setLength(0); shadowAfter.append(after)
+        shadowCaret = caret.coerceAtLeast(0)
+        shadowValid = true
+    }
+
+    private fun invalidateShadow() { shadowValid = false }
+
+    private fun shadowOnCommit(text: String) {
+        if (!shadowValid) return
+        shadowBefore.append(text)
+        shadowCaret += text.length
+        // Keep only a working window near the caret; reads never look back more than ~100 chars.
+        if (shadowBefore.length > shadowWindow * 2) shadowBefore.delete(0, shadowBefore.length - shadowWindow)
+    }
+
+    private fun shadowOnDeleteBefore(count: Int) {
+        if (!shadowValid) return
+        val d = count.coerceAtMost(shadowBefore.length)
+        shadowBefore.setLength(shadowBefore.length - d)
+        shadowCaret -= d
+    }
+
+    private fun shadowBeforeCursor(count: Int): String =
+        if (shadowValid) shadowBefore.substring((shadowBefore.length - count).coerceAtLeast(0))
+        else currentInputConnection?.getTextBeforeCursor(count, 0)?.toString().orEmpty()
+
+    private fun shadowAfterCursor(count: Int): String =
+        if (shadowValid) shadowAfter.substring(0, count.coerceAtMost(shadowAfter.length))
+        else currentInputConnection?.getTextAfterCursor(count, 0)?.toString().orEmpty()
     override fun editorPackage(): String? = currentEditorPackage
     override fun isPasswordField(): Boolean {
         val t = currentInputEditorInfo?.inputType ?: return false
@@ -118,6 +169,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // On-device Gemini Nano proofreading (ML Kit GenAI). nanoSupported gates the UI to devices that
     // actually have AICore; pendingProofread holds a correction awaiting the user's tap-to-apply.
     private val nanoProofread by lazy { com.fran.teclas.keyboard.NanoProofreadEngine(this) }
+    private val nanoRewrite by lazy { com.fran.teclas.keyboard.NanoRewriteEngine(this) }
     @Volatile private var nanoSupported = false
     private var pendingProofread: String? = null
     // Last committed glide (path + bounds + word), kept so that if you correct it we can re-label the
@@ -193,6 +245,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         shifted = false
         // Account mode: route AI through the proxy with the signed-in user's Google ID token.
         GeminiClient.proxy = GeminiProxy.binding(this)
+        // On-device Gemini Nano first (shared with the launcher when in the same process).
+        if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext).also { it.warmUp() }
         ensureGlideClassifier()
         checkNanoProofreadSupport()
         initSpellChecker()
@@ -275,6 +329,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             hideImeSurface()
             return
         }
+        // Seed the shadow mirror from the fresh editor so the first keystrokes read locally.
+        seedShadow(info?.initialSelStart?.takeIf { it >= 0 } ?: 0)
         refreshChromeOrRebuild()
         updateInputViewShown()
         clearInlineSuggestions()
@@ -287,6 +343,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        invalidateShadow()   // leaving the field; the mirror no longer describes anything
         // Don't let the attach sheet or a share card linger across fields or when the keyboard hides.
         hideAttachPicker()
         hideShareCard()
@@ -317,6 +374,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         candidatesEnd: Int
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        // Reconcile the shadow against the editor's ground-truth caret. A collapsed caret exactly
+        // where our own edits left it → the mirror is still correct, keep it (no IPC). Anything else
+        // — a range selection, or a caret that jumped somewhere we didn't drive (tap, autofill, the
+        // app's own edit) — reseed from the editor. This runs off the keystroke hot path.
+        if (newSelStart != newSelEnd) {
+            invalidateShadow()
+        } else if (!(shadowValid && newSelStart == shadowCaret)) {
+            seedShadow(newSelStart)
+        }
         if (!isLauncherEditorActive()) scheduleSuggestions()
     }
 
@@ -336,6 +402,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         glideScope.cancel()
         neuralGlide?.close()
         nanoProofread.close()
+        nanoRewrite.close()
         runCatching { spellChecker?.close() }
         runCatching { thumbExecutor.shutdownNow() }
         AttachBridge.pending = null
@@ -631,7 +698,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 if (input != null && autocorrect.undoOnBackspace()) { onTextChanged(); return }
                 if (input == null) {
                     VivoDockedExperiment.injectInput("⌫")
-                } else if (!input.deleteSurroundingText(1, 0)) {
+                } else if (input.deleteSurroundingText(1, 0)) {
+                    shadowOnDeleteBefore(1)
+                } else {
                     keyEvent(KeyEvent.KEYCODE_DEL)
                 }
                 onTextChanged()
@@ -696,7 +765,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun commitValue(value: String) {
         val input = currentInputConnection
-        if (input != null) input.commitText(value, 1) else VivoDockedExperiment.injectInput(value)
+        if (input != null) { input.commitText(value, 1); shadowOnCommit(value) }
+        else VivoDockedExperiment.injectInput(value)
     }
 
     private fun keyEvent(code: Int) {
@@ -707,6 +777,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         } else {
             VivoDockedExperiment.injectInput(if (code == KeyEvent.KEYCODE_ENTER) "⏎" else "")
         }
+        // Raw key events move/edit the caret in ways we don't model (ENTER, DEL, DPAD) — drop the
+        // mirror; onUpdateSelection reseeds it.
+        invalidateShadow()
     }
 
     private fun keyHaptic(label: String) {
@@ -725,6 +798,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             if (right) android.view.KeyEvent.KEYCODE_DPAD_RIGHT
             else android.view.KeyEvent.KEYCODE_DPAD_LEFT
         )
+        invalidateShadow()   // caret moved outside our model; onUpdateSelection reseeds
     }
 
     /** The keyboard's haptic engine with the user's keyboard-only intensity applied (0–100 → 0f–1f).
@@ -929,15 +1003,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun currentWord(): String =
-        currentInputConnection?.getTextBeforeCursor(48, 0)?.toString().orEmpty().takeLastWhile { it.isLetter() }
+        shadowBeforeCursor(48).takeLastWhile { it.isLetter() }
 
     private fun wordsBeforeCursor(): List<String> {
-        val before = currentInputConnection?.getTextBeforeCursor(96, 0)?.toString().orEmpty()
+        val before = shadowBeforeCursor(96)
         return Regex("[A-Za-z]+").findAll(before).map { it.value }.toList()
     }
 
     private fun previousWord(): String {
-        val before = currentInputConnection?.getTextBeforeCursor(96, 0)?.toString().orEmpty()
+        val before = shadowBeforeCursor(96)
         val tokens = Regex("[A-Za-z]+").findAll(before).map { it.value }.toList()
         val endsLetter = before.isNotEmpty() && before.last().isLetter()
         return if (endsLetter) tokens.getOrElse(tokens.size - 2) { "" } else tokens.lastOrNull().orEmpty()
@@ -1039,6 +1113,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             ic.commitText(insert, 1)
         }
         smartChips = emptyList()
+        invalidateShadow()   // chip insert edits via raw IC; reseed before the next read
         onTextChanged()
     }
 
@@ -1188,7 +1263,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 predictionCore.replaceCommittedWord(word); recordCommittedWordContext(); updateStrip(); return
             }
             // Otherwise these are next-word predictions → append.
-            else -> currentInputConnection?.commitText("$word ", 1)
+            else -> commitValue("$word ")
         }
         learnAndPredictAfterSpace()
     }
@@ -1416,7 +1491,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             if (insert != null) {
                 panel.addView(agenticCta("Insert", violet, ctaInk) {
                     keyHaptic("enter"); agenticHud = null
-                    currentInputConnection?.commitText(insert, 1); onTextChanged(); updateStrip()
+                    currentInputConnection?.commitText(insert, 1); invalidateShadow(); onTextChanged(); updateStrip()
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
             }
             // Follow-up chips: outlined mint pills that take the result somewhere next.
@@ -1750,7 +1825,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             agenticHud = Hud(result.kicker, result.body, result.insert, result.followUps.map { HudAction(it.label, it.run) })
             updateStrip()
         }
-        override fun insertText(text: String) { currentInputConnection?.commitText(text, 1); onTextChanged(); updateStrip() }
+        override fun insertText(text: String) { currentInputConnection?.commitText(text, 1); invalidateShadow(); onTextChanged(); updateStrip() }
         override fun runAttach() { showAttachPicker() }
         override fun showShareCard(card: ShareCard) { showShareCardOverlay(card) }
     }
@@ -2331,7 +2406,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val model = GeminiClient.model(imePrefs())
         // Honest guard: the account-mode proxy makes Polish LOOK configured even with no key and no
         // sign-in. Without real auth, say so (and how to fix it) instead of a dead "Polishing…".
-        if (key.isBlank() && GeminiClient.proxy?.idTokenProvider?.invoke() == null) {
+        // On-device Nano needs neither — it serves keyless and offline.
+        if (nanoSupported != true && GeminiClient.nano?.ready != true && key.isBlank() &&
+            GeminiClient.proxy?.idTokenProvider?.invoke() == null) {
             flashStatus("Add your Gemini key: tap ⚙ (the teclas key) → API key", 2800)
             return
         }
@@ -2339,7 +2416,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         keyHaptic("enter")
         updateStrip()
         Thread {
-            val result = GeminiClient.fetchRewrite(key, model, text)
+            // On-device first via the keyboard-safe Rewriting API — the raw Prompt API is blocked
+            // by AICore while the IME serves another app, but this one isn't. Cloud is the fallback.
+            val nanoResult = kotlinx.coroutines.runBlocking {
+                runCatching { nanoRewrite.rewrite(text) }
+                    .getOrDefault(com.fran.teclas.keyboard.NanoRewriteEngine.Result.Error)
+            }
+            val result = (nanoResult as? com.fran.teclas.keyboard.NanoRewriteEngine.Result.Rewritten)?.text
+                ?: if (nanoResult == com.fran.teclas.keyboard.NanoRewriteEngine.Result.Unchanged) text
+                else GeminiClient.fetchRewrite(key, model, text)
             handler.post {
                 polishing = false
                 when {
@@ -2374,7 +2459,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val wordLength = trimmed.takeLastWhile { !it.isWhitespace() }.length
             trailingSpaces + wordLength
         }
-        if (deleteCount > 0) input.deleteSurroundingText(deleteCount, 0)
+        if (deleteCount > 0) { input.deleteSurroundingText(deleteCount, 0); shadowOnDeleteBefore(deleteCount) }
     }
 
     private fun glideTrailColors(): IntArray {
@@ -3036,15 +3121,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun selectedNeuTokens(): NeuTokens {
-        return when (themeMode()) {
-            THEME_MODE_DARK -> Neu.Dark
-            THEME_MODE_LIGHT -> Neu.Light
-            else -> if (isSystemDarkMode()) Neu.Dark else Neu.Light
-        }
+        return resolveTeclasNeuTokens(themeMode())
     }
 
     private fun isSystemDarkMode(): Boolean {
-        return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        return teclasSystemDarkMode()
     }
 
     private fun keyboardLightMode(theme: String): Boolean {

@@ -690,15 +690,11 @@ class DockedKeyboardService : Service() {
     }
 
     private fun selectedNeuTokens(): NeuTokens {
-        return when (themeMode()) {
-            THEME_MODE_DARK -> Neu.Dark
-            THEME_MODE_LIGHT -> Neu.Light
-            else -> if (isSystemDarkMode()) Neu.Dark else Neu.Light
-        }
+        return resolveTeclasNeuTokens(themeMode())
     }
 
     private fun isSystemDarkMode(): Boolean {
-        return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        return teclasSystemDarkMode()
     }
 
     private fun keyboardLightMode(theme: String): Boolean {

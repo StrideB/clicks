@@ -92,14 +92,7 @@ class ImeSettingsActivity : ComponentActivity() {
 
     private fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private fun tokens(): NeuTokens = when (prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM)) {
-        THEME_MODE_DARK -> Neu.Dark
-        THEME_MODE_LIGHT -> Neu.Light
-        else -> {
-            val night = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
-            if (night == Configuration.UI_MODE_NIGHT_YES) Neu.Dark else Neu.Light
-        }
-    }
+    private fun tokens(): NeuTokens = resolveTeclasNeuTokens(prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM))
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
