@@ -264,6 +264,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var libraryViewMode: NeuMode? = null
     private var libraryViewGlass: Boolean? = null
     private var libraryContentArea: FrameLayout? = null
+    // The App Library's "App Library"/Categories header — hidden in docked mode while a query is
+    // active so docked search reads as a clean search screen, not the app-library browser.
+    private var libraryHeaderView: View? = null
     private var libraryViewDirty = true
     private var libraryContentReady = false
     private var categoryFolderView: View? = null
@@ -626,7 +629,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val innerScope = pendingWallpaperInnerScope ?: isUnfoldedInnerLayoutActive()
             pendingWallpaperInnerScope = null
             prefs().edit()
-                .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, false)
+                .putBoolean(homeScopedKey(HOME_SYSTEM_WALLPAPER_PREF), false)
                 .putString(activeWallpaperUriPref(innerScope), uri.toString())
                 .apply()
             homeWallpaperDrawable = null
@@ -1404,6 +1407,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun render() {
         stopDeleteRepeat(clearFired = true)
+        ensureDockedHomeSeed()   // one-time: copy the shared home setup into the docked namespace
         keyViews.clear()
         keyBounds.clear()
         applyTheme()
@@ -1411,6 +1415,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val unfolded = isUnfoldedInnerLayoutActive()
         val phoneWidgetCanvas = !unfolded && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET
         val wallpaperCanvas = launcherWallpaperCanvasActive()
+        // Docked phone keyboard: a full-width, full-bleed opaque deck that reaches the very bottom
+        // edge (no wallpaper sliver under it). Widget/unfolded keep the lifted floating keyboard.
+        val phoneDockedFullBleed = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !unfolded && !widgetPaneUsesRootDock()
         if (useSystemWallpaperOnHome()) {
             window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
             window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
@@ -1425,7 +1432,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             setBackgroundColor(if (wallpaperCanvas) Color.TRANSPARENT else activeNeuTokens.base)
-            setPadding(0, systemStatusBarHeight(), 0, keyboardBottomLift())
+            setPadding(0, systemStatusBarHeight(), 0, if (phoneDockedFullBleed) 0 else keyboardBottomLift())
         }
         rootView = root
         contentFrame = FrameLayout(this).apply {
@@ -1445,9 +1452,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val hideDockForPane = !unfolded && openPane?.kind == PaneKind.SETTINGS
         val showRootDock = unfolded || keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
         if (showRootDock && !hideDockForPane) {
+            // Docked mode: the keyboard is a full-width opaque deck — an opaque backdrop fills the
+            // whole dock band so the neumorphic deck's shadow inset / rounded corners never let the
+            // wallpaper bleed through at the sides or bottom. Widget/unfolded keep the floating look.
             keyboardDockView = FrameLayout(this).apply {
                 clipChildren = false
                 clipToPadding = false
+                if (phoneDockedFullBleed) setBackgroundColor(activeNeuTokens.base)
                 addView(rootDockInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
             root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, activeRootDockHeight())
@@ -1950,11 +1961,40 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         Toast.makeText(this, "Camera isn't available here", Toast.LENGTH_SHORT).show()
     }
 
+    // ---- Docked vs widget: independent phone home setups (wallpaper + weather widget) ----
+    // Docked mode ("half and half") and widget mode ("full screen") keep separate wallpaper and
+    // weather-widget prefs, so arranging one never disturbs the other. On a phone the docked
+    // namespace suffixes the shared key; widget mode and the unfolded inner display use the base key.
+    // ensureDockedHomeSeed() copies the current shared values into the docked namespace once, so both
+    // modes start identical and only diverge as each is edited.
+    private fun phoneDockedHomeScope(): Boolean =
+        !isUnfoldedInnerLayoutActive() && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
+
+    private fun homeScopedKey(base: String): String =
+        if (phoneDockedHomeScope()) base + DOCKED_HOME_SUFFIX else base
+
+    private fun ensureDockedHomeSeed() {
+        val p = prefs()
+        if (p.getBoolean(DOCKED_HOME_SEEDED_PREF, false)) return
+        val e = p.edit()
+        listOf(HOME_COVER_WALLPAPER_URI_PREF, WEATHER_WIDGET_STYLE_PREF).forEach {
+            if (p.contains(it)) e.putString(it + DOCKED_HOME_SUFFIX, p.getString(it, null))
+        }
+        listOf(HOME_COVER_WALLPAPER_ZOOM_PREF, HOME_COVER_WALLPAPER_OFFSET_X_PREF,
+            HOME_COVER_WALLPAPER_OFFSET_Y_PREF, WEATHER_WIDGET_POS_X_PREF, WEATHER_WIDGET_POS_Y_PREF).forEach {
+            if (p.contains(it)) e.putInt(it + DOCKED_HOME_SUFFIX, p.getInt(it, 0))
+        }
+        listOf(HOME_SYSTEM_WALLPAPER_PREF, HOME_LOCK_WALLPAPER_PREF).forEach {
+            if (p.contains(it)) e.putBoolean(it + DOCKED_HOME_SUFFIX, p.getBoolean(it, false))
+        }
+        e.putBoolean(DOCKED_HOME_SEEDED_PREF, true).apply()
+    }
+
     private fun useLockscreenWallpaperOnHome(): Boolean =
-        prefs().getBoolean(HOME_LOCK_WALLPAPER_PREF, false)
+        prefs().getBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), false)
 
     private fun useSystemWallpaperOnHome(): Boolean =
-        prefs().getBoolean(HOME_SYSTEM_WALLPAPER_PREF, true)
+        prefs().getBoolean(homeScopedKey(HOME_SYSTEM_WALLPAPER_PREF), true)
 
     private fun innerHomeWallpaperUri(): Uri? =
         prefs().getString(HOME_INNER_WALLPAPER_URI_PREF, null)
@@ -1962,7 +2002,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
     private fun coverHomeWallpaperUri(): Uri? =
-        prefs().getString(HOME_COVER_WALLPAPER_URI_PREF, null)
+        prefs().getString(homeScopedKey(HOME_COVER_WALLPAPER_URI_PREF), null)
             ?.takeIf { it.isNotBlank() }
             ?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
@@ -1976,16 +2016,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun activeWallpaperUriPref(inner: Boolean = isUnfoldedInnerLayoutActive()): String =
-        if (inner) HOME_INNER_WALLPAPER_URI_PREF else HOME_COVER_WALLPAPER_URI_PREF
+        if (inner) HOME_INNER_WALLPAPER_URI_PREF else homeScopedKey(HOME_COVER_WALLPAPER_URI_PREF)
 
     private fun activeWallpaperZoomPref(): String =
-        if (isUnfoldedInnerLayoutActive()) HOME_INNER_WALLPAPER_ZOOM_PREF else HOME_COVER_WALLPAPER_ZOOM_PREF
+        if (isUnfoldedInnerLayoutActive()) HOME_INNER_WALLPAPER_ZOOM_PREF else homeScopedKey(HOME_COVER_WALLPAPER_ZOOM_PREF)
 
     private fun activeWallpaperOffsetXPref(): String =
-        if (isUnfoldedInnerLayoutActive()) HOME_INNER_WALLPAPER_OFFSET_X_PREF else HOME_COVER_WALLPAPER_OFFSET_X_PREF
+        if (isUnfoldedInnerLayoutActive()) HOME_INNER_WALLPAPER_OFFSET_X_PREF else homeScopedKey(HOME_COVER_WALLPAPER_OFFSET_X_PREF)
 
     private fun activeWallpaperOffsetYPref(): String =
-        if (isUnfoldedInnerLayoutActive()) HOME_INNER_WALLPAPER_OFFSET_Y_PREF else HOME_COVER_WALLPAPER_OFFSET_Y_PREF
+        if (isUnfoldedInnerLayoutActive()) HOME_INNER_WALLPAPER_OFFSET_Y_PREF else homeScopedKey(HOME_COVER_WALLPAPER_OFFSET_Y_PREF)
 
     private fun innerWallpaperZoom(): Float =
         prefs().getInt(activeWallpaperZoomPref(), 100).coerceIn(100, 260) / 100f
@@ -2021,14 +2061,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun glassEffectsEnabled(): Boolean =
         prefs().getBoolean(GLASS_EFFECTS_PREF, true)
 
-    private fun appLibraryGlassEnabled(): Boolean =
-        isHonorDevice() || glassEffectsEnabled() || widgetModeNativeGlassActive() || innerWallpaperModeActive()
+    // The App Library uses the dark neu design (opaque neumorphic panels), never the glass sheet —
+    // so it reads as a solid, consistent surface regardless of the global glass-effects setting.
+    private fun appLibraryGlassEnabled(): Boolean = false
 
     private fun focusSurfaceGlassEnabled(): Boolean =
         isHonorDevice() || glassEffectsEnabled() || widgetModeNativeGlassActive() || innerWallpaperModeActive()
 
     private fun gridWorkspaceLabEnabled(): Boolean =
         prefs().getBoolean(GRID_WORKSPACE_LAB_PREF, false)
+
+    private fun cardsViewEnabled(): Boolean =
+        prefs().getBoolean(CARDS_VIEW_ENABLED_PREF, false)
 
     private fun gridHomeAliasComponent() =
         ComponentName(this, "com.fran.teclas.grid.GridHomeAlias")
@@ -5126,16 +5170,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // an invisible header-sized slot so nothing below it ever reflows.
 
     private fun weatherWidgetStyleId(): String =
-        prefs().getString(WEATHER_WIDGET_STYLE_PREF, WEATHER_STYLE_CLASSIC_ID) ?: WEATHER_STYLE_CLASSIC_ID
+        prefs().getString(homeScopedKey(WEATHER_WIDGET_STYLE_PREF), WEATHER_STYLE_CLASSIC_ID) ?: WEATHER_STYLE_CLASSIC_ID
 
     private fun weatherWidgetStyleName(): String =
         if (weatherWidgetStyleId() == WEATHER_STYLE_CLASSIC_ID) "Classic" else weatherStyleById(weatherWidgetStyleId()).name
 
     private fun weatherWidgetHasCustomPos(): Boolean =
-        prefs().contains(WEATHER_WIDGET_POS_X_PREF) && prefs().contains(WEATHER_WIDGET_POS_Y_PREF)
+        prefs().contains(homeScopedKey(WEATHER_WIDGET_POS_X_PREF)) && prefs().contains(homeScopedKey(WEATHER_WIDGET_POS_Y_PREF))
 
     private fun saveWeatherWidgetPos(x: Int, y: Int) {
-        prefs().edit().putInt(WEATHER_WIDGET_POS_X_PREF, x).putInt(WEATHER_WIDGET_POS_Y_PREF, y).apply()
+        prefs().edit().putInt(homeScopedKey(WEATHER_WIDGET_POS_X_PREF), x).putInt(homeScopedKey(WEATHER_WIDGET_POS_Y_PREF), y).apply()
     }
 
     private fun buildWeatherWidgetFrame(context: Context): WeatherWidgetFrame {
@@ -5188,8 +5232,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             lp.width = frame.width
             lp.rightMargin = 0
         }
-        val x = prefs().getInt(WEATHER_WIDGET_POS_X_PREF, lp.leftMargin)
-        val y = prefs().getInt(WEATHER_WIDGET_POS_Y_PREF, lp.topMargin)
+        val x = prefs().getInt(homeScopedKey(WEATHER_WIDGET_POS_X_PREF), lp.leftMargin)
+        val y = prefs().getInt(homeScopedKey(WEATHER_WIDGET_POS_Y_PREF), lp.topMargin)
         val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
         // Placement-mode geometry can shift between sessions (keyboard mode, rotation);
         // re-apply the soft stack-avoid so a restored position doesn't bury the stack.
@@ -5670,7 +5714,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rejectDrop()
                 return
             }
-            prefs().edit().putString(WEATHER_WIDGET_STYLE_PREF, styleId).apply()
+            prefs().edit().putString(homeScopedKey(WEATHER_WIDGET_STYLE_PREF), styleId).apply()
             saveWeatherWidgetPos(resolved.first, resolved.second)
             haptic(this)
             exitWeatherPlacementMode()
@@ -6040,10 +6084,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (upOpensLibrary && !librarySwipeTriggered && abs(dy) > verticalOpenThreshold && abs(dy) > abs(dx) * axisDominance) {
                     when {
                         dy < 0 && !libraryOpen && openPane == null -> {
-                            // Up-swipe opens the active Space's board (the drawer surface),
-                            // same as swipe-left. Search stays the way to reach anything else.
+                            // Docked: up-swipe brings up the opaque app library. Widget/unfolded keep
+                            // opening the active Space's board (the drawer surface).
                             librarySwipeTriggered = true
-                            openSpaceBoard()
+                            if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()) openAppLibrary()
+                            else openSpaceBoard()
                             return true
                         }
                         dy > 0 && libraryOpen -> {
@@ -6070,6 +6115,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         }
                         dx > 0 && libraryOpen -> {
                             librarySwipeTriggered = true
+                            // Pinned as home: the App Library IS the homescreen — it can't be swiped
+                            // away. Consume the gesture without dragging/closing it.
+                            if (appLibraryDefaultHome()) return true
                             if (isUnfoldedInnerLayoutActive()) {
                                 closeLibrary()
                                 return true
@@ -6124,6 +6172,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         }
                         dx > 0 && libraryOpen -> {
                             librarySwipeTriggered = true
+                            if (appLibraryDefaultHome()) return true   // pinned home: can't swipe it away
                             closeLibrary()
                             return true
                         }
@@ -6136,7 +6185,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                 } else if (!libraryOpen && openPane == null && abs(dy) > verticalReleaseThreshold && abs(dy) > abs(dx) * releaseDominance) {
                     librarySwipeTriggered = true
-                    if (dy < 0 && upOpensLibrary) {
+                    val dockedPhone = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()
+                    if (dy < 0 && dockedPhone) {
+                        openAppLibrary()   // docked: up brings up the opaque app library, not the widget board
+                    } else if (dy < 0 && upOpensLibrary) {
                         openSpaceBoard()
                     } else if (dy < 0) {
                         performHomeGesture(gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS))
@@ -6392,6 +6444,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (shouldOpen) {
             libraryOpen = true
             syncWallpaperMotion()
+            syncDockedSearchStatusBar()
             val animation = overlay.animate()
                 .alpha(1f)
                 .setDuration(librarySettleDuration(translation, if (vertical) contentFrame.height else contentFrame.width))
@@ -6412,6 +6465,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else {
             libraryOpen = false
             syncWallpaperMotion()
+            syncDockedSearchStatusBar()
             libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
             libraryPopulateRunnable = null
             val animation = overlay.animate()
@@ -6466,6 +6520,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!libraryOpen) return
         libraryOpen = false
         query = ""
+        syncDockedSearchStatusBar()   // restore the wallpaper canvas behind the status bar
         libraryDragActive = false
         libraryDragHapticStage = 0
         libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
@@ -6481,13 +6536,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return
         }
         val closing = libraryView ?: return
-        val targetX = if (slideLeft) -closing.width.toFloat() else closing.width.toFloat()
-        closing.animate().translationX(targetX).setDuration(240)
-            .setInterpolator(DecelerateInterpolator())
+        // Docked: drop back down behind the keyboard (mirror of the slide-up open). Else slide out.
+        val anim = closing.animate().setDuration(240).setInterpolator(DecelerateInterpolator())
             .withEndAction {
                 contentFrame.removeView(closing)
                 closing.setLayerType(View.LAYER_TYPE_NONE, null)
-            }.start()
+            }
+        if (dockedLibrarySlideUp()) {
+            anim.translationY((contentFrame.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat())
+        } else {
+            anim.translationX(if (slideLeft) -closing.width.toFloat() else closing.width.toFloat())
+        }
+        anim.start()
     }
 
     private fun openWidgetBoard() {
@@ -7957,7 +8017,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         categoryFolderView = null
         val overlay = appLibrary()
         libraryView = overlay
-        if (animate) overlay.translationX = resources.displayMetrics.widthPixels.toFloat()
+        // Docked: the library rises up from behind the keyboard (vertical). Elsewhere it slides in
+        // horizontally like before.
+        if (animate) {
+            if (dockedLibrarySlideUp()) {
+                overlay.translationY = (contentFrame.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
+            } else {
+                overlay.translationX = resources.displayMetrics.widthPixels.toFloat()
+            }
+        }
         // Overlay contentFrame only; the keyboard is a sibling below and stays docked.
         contentFrame.addView(overlay, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         if (animate) overlay.post {
@@ -7965,22 +8033,43 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             animateLibraryOpenSeamlessly(overlay)
         }
         scheduleLibraryPopulate(if (animate) 48L else 0L)
+        syncDockedSearchStatusBar()
     }
 
+    /**
+     * Docked search fills only [contentFrame], which sits below the status-bar inset — so the strip
+     * behind the status bar would bleed wallpaper. Paint the launcher root opaque while the docked
+     * library is open so that strip is solid too; restore the wallpaper canvas once it closes.
+     */
+    private fun syncDockedSearchStatusBar() {
+        if (!::rootView.isInitialized) return
+        val opaque = libraryOpen && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
+        rootView.setBackgroundColor(
+            if (opaque || !launcherWallpaperCanvasActive()) activeNeuTokens.base else Color.TRANSPARENT
+        )
+    }
+
+    private fun dockedLibrarySlideUp(): Boolean =
+        keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()
+
     private fun animateLibraryOpenSeamlessly(overlay: View) {
-        val axis = (contentFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+        val slideUp = dockedLibrarySlideUp()
+        val axis = if (slideUp) (contentFrame.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
+        else (contentFrame.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
         ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 500L
-            interpolator = android.view.animation.OvershootInterpolator(0.8f)
+            duration = if (slideUp) 380L else 500L
+            interpolator = if (slideUp) DecelerateInterpolator(1.6f) else android.view.animation.OvershootInterpolator(0.8f)
             addUpdateListener { animator ->
                 val progress = (animator.animatedValue as Float).coerceIn(0f, 1f)
-                overlay.translationX = axis * (1f - progress)
+                if (slideUp) overlay.translationY = axis * (1f - progress)
+                else overlay.translationX = axis * (1f - progress)
                 overlay.alpha = (0.90f + progress * 0.10f).coerceIn(0.90f, 1f)
                 updateLibraryGridDragEffects(progress, contentFrame.width * 0.5f)
             }
             addListener(object : android.animation.AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     overlay.translationX = 0f
+                    overlay.translationY = 0f
                     overlay.alpha = 1f
                     overlay.setLayerType(View.LAYER_TYPE_NONE, null)
                     updateLibraryGridDragEffects(1f, contentFrame.width * 0.5f)
@@ -7991,7 +8080,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun appLibrary(): View {
-        val glass = appLibraryGlassEnabled()
+        // Docked mode: the library IS the search surface — force it opaque (no glass bleed-through of
+        // the home) so docked search reads as a clean, solid screen above the keyboard.
+        val docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
+        val glass = appLibraryGlassEnabled() && !docked
         val nativeGlass = glass && nativeGlassSurfaceActive()
         val cached = libraryView as? FrameLayout
         if (
@@ -8003,8 +8095,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             (cached is LibraryDrawerView) == (glass && !nativeGlass)
         ) {
             libraryContentArea = cached.findViewWithTag("library_content") as? FrameLayout
+            libraryHeaderView = cached.findViewWithTag("library_header")
             (cached as? LibraryDrawerView)?.setAmbient(activeNeuTokens.baseHi, 0f, activeNeuTokens.mode)
             if (!glass) cached.setBackgroundColor(activeNeuTokens.base)
+            syncLibraryChromeForQuery()
             return cached
         }
         val shell = when {
@@ -8013,7 +8107,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             else -> FrameLayout(this).apply { setBackgroundColor(activeNeuTokens.base) }
         }
         return shell.apply {
-            setPadding(dp(14), dp(14), dp(14), dp(10))
+            // Docked: near edge-to-edge (matches the full-width keyboard) and hugs the top — it must
+            // use the whole screen, not sit in a widget-mode-sized window. Others keep the inset card.
+            if (docked) setPadding(dp(6), dp(6), dp(6), 0) else setPadding(dp(14), dp(14), dp(14), dp(10))
             (this as? LibraryDrawerView)?.setAmbient(activeNeuTokens.baseHi, 0f, activeNeuTokens.mode)
             val contentArea = FrameLayout(context).apply { tag = "library_content" }
             libraryContentArea = contentArea
@@ -8027,10 +8123,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 headerParams.leftMargin = dp(4)
                 headerParams.rightMargin = dp(4)
             }
-            addView(libraryHeader(), headerParams)
+            val header = libraryHeader().apply { tag = "library_header" }
+            libraryHeaderView = header
+            addView(header, headerParams)
             libraryViewMode = activeNeuTokens.mode
             libraryViewGlass = glass
             libraryViewDirty = false
+            syncLibraryChromeForQuery()
+        }
+    }
+
+    /**
+     * In docked mode the App Library doubles as the search surface. While a query is active, hide the
+     * "App Library"/Categories header and pull the results up so it reads as a clean search screen;
+     * with no query (browsing apps via up-swipe) the header returns. No-op on other surfaces.
+     */
+    private fun syncLibraryChromeForQuery() {
+        val docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
+        val hideHeader = docked && query.isNotBlank()
+        libraryHeaderView?.visibility = if (hideHeader) View.GONE else View.VISIBLE
+        val area = libraryContentArea ?: return
+        (area.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            val glass = appLibraryGlassEnabled() && !docked
+            val target = if (hideHeader) dp(6) else dp(if (glass) 60 else 38)
+            if (lp.topMargin != target) { lp.topMargin = target; area.layoutParams = lp }
         }
     }
 
@@ -8080,9 +8196,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun fillLibraryContent(area: FrameLayout) {
+        syncLibraryChromeForQuery()
         if (query.isNotBlank()) {
             libraryView?.alpha = 1f
-            val glass = appLibraryGlassEnabled()
+            // Docked search is a full-bleed opaque screen — no rounded glass card wrapping the
+            // results (that made it look windowed, like widget mode). Widget/unfolded keep the glass.
+            val glass = appLibraryGlassEnabled() && keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED
             val fresh = searchResultsGrid()
             if (glass) padSearchContentForGlass(fresh)
             librarySearchHost?.takeIf { it.parent === area }?.let { host ->
@@ -8111,10 +8230,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         libraryGridBlurView = null
         libraryGridScrollView = null
         val gridChild = if (libraryGridMode) libraryGrid() else bentoGrid()
-        // When the App Library IS the home surface, it has no favorites dock of its own, so mount
-        // one (plus an "often used" row) above the grid. When it's just an overlay opened from the
-        // real homescreen, that homescreen already shows the dock — so we skip it here.
-        val homeStrip = if (query.isBlank()) libraryHomeStrip() else null
+        // No separate fave-dock / "often used" strip: it was a glass overlay that showed through on
+        // scroll and clashed with the grid. Often-used apps now live in the grid itself as normal Neu
+        // tiles (predictedLibraryApps at the top), so the App Library is one consistent surface.
+        val homeStrip: View? = null
         val child = if (homeStrip == null) gridChild else LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -8251,29 +8370,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
             setTextColor(activeNeuTokens.ink); includeFontPadding = false
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        addView(spaceIcon(), LinearLayout.LayoutParams(dp(if (glass) 27 else 30), dp(if (glass) 27 else 30)).apply {
-            marginEnd = dp(8)
-        })
+        // Pin: make the App Library the homescreen (opens straight to it). Lit accent when pinned.
         addView(TextView(context).apply {
-            text = if (libraryGridMode) "Categories" else "Grid"
-            gravity = Gravity.CENTER
-            textSize = if (glass) 10.5f else 11f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(activeNeuTokens.ink)
-            includeFontPadding = false
-            background = libraryModeToggleBackground()
+            val pinned = appLibraryDefaultHome()
+            text = "📌"; textSize = 12f; gravity = Gravity.CENTER; includeFontPadding = false
+            alpha = if (pinned) 1f else 0.45f
+            setTextColor(if (pinned) Accent else activeNeuTokens.ink)
+            background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), if (pinned) NeuLevel.PRESSED_SM else NeuLevel.RAISED_SM)
             isClickable = true
             setOnClickListener {
                 haptic(this)
-                libraryGridMode = !libraryGridMode
-                prefs().edit().putBoolean(LIBRARY_GRID_MODE_PREF, libraryGridMode).apply()
+                val next = !appLibraryDefaultHome()
+                prefs().edit().putBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, next).apply()
+                Toast.makeText(this@MainActivity, if (next) "App Library pinned as home" else "App Library unpinned as home", Toast.LENGTH_SHORT).show()
                 libraryViewDirty = true
-                libraryContentReady = false
                 if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent() else showLibrary(animate = false)
             }
-        }, LinearLayout.LayoutParams(dp(if (glass) 92 else 94), dp(if (glass) 27 else 30)).apply {
-            marginEnd = dp(if (glass) 2 else 8)
+        }, LinearLayout.LayoutParams(dp(if (glass) 27 else 30), dp(if (glass) 27 else 30)).apply { marginEnd = dp(8) })
+        addView(spaceIcon(), LinearLayout.LayoutParams(dp(if (glass) 27 else 30), dp(if (glass) 27 else 30)).apply {
+            marginEnd = dp(8)
         })
+        // Categories/Grid toggle removed — the App Library shows one consistent grid.
     }
 
     /**
@@ -8427,6 +8544,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (libraryOpen) closeLibrary()
         if (openPane != null) closePane()
         val space = activeSpaceForUi() ?: return null
+        // Docked mode: the board is a solid opaque panel that fills only the area above the docked
+        // keyboard (never full-screen, never glass). Widget mode keeps the full-window glass sheet.
+        val docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
         spaceBoardController.view.setLightMode(glassLightMode())
         spaceBoardController.open(boardCanvasId(spaceBoardController, space.id), spaceBoardSeedApps(space))
         val container = object : FrameLayout(this) {
@@ -8452,11 +8572,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
-            setBackgroundColor(Color.TRANSPARENT)
+            setBackgroundColor(if (docked) activeNeuTokens.base else Color.TRANSPARENT)
             isClickable = true
             setPadding(0, 0, 0, 0)
         }
-        container.addView(
+        if (!docked) container.addView(
             if (nativeGlassSurfaceActive()) {
                 NativeFoldGlassPanel(this, radiusDp = 0)
             } else {
@@ -8497,7 +8617,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(spaceBoardController.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         spaceBoardOverlay = container
-        addContentView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        addContentView(container, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ).apply { if (docked) bottomMargin = activeRootDockHeight() })
         container.translationX = resources.displayMetrics.widthPixels.toFloat()
         return container
     }
@@ -8510,9 +8632,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spaceBoardTitleView?.text = "${space.emoji}  ${space.name.uppercase(Locale.US)}  ▾"
     }
 
+    /** Docked mode: an up-swipe on the homescreen brings up the opaque app library (apps + search). */
+    private fun openAppLibrary() {
+        if (libraryOpen || openPane != null || spaceBoardOverlay != null || homeLeftOverlay != null) return
+        libraryOpen = true
+        keyboardSettingsOpen = false
+        showLibrary(animate = true)
+        syncNowPlayingCardVisibility()
+        refreshNowPlayingCard()
+    }
+
     /** Instant open with a slide-in animation (up-swipe / gesture-action paths). */
     private fun openSpaceBoard() {
         val container = mountSpaceBoard() ?: return
+        if (cardsViewEnabled() && beginHomeCardTransition(container, -1)) {
+            settleHomeCard(open = true, exitSign = -1) { }
+            return
+        }
         container.animate().translationX(0f).setDuration(260L)
             .setInterpolator(DecelerateInterpolator()).start()
     }
@@ -8521,9 +8657,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun beginSpaceBoardDrag(): Boolean {
         // No hardware layer: the board's glass panel blur must keep updating live as it slides in.
-        if (mountSpaceBoard() == null) return false
+        val board = mountSpaceBoard() ?: return false
         spaceBoardDragActive = true
         keyHaptic("space")
+        if (cardsViewEnabled()) beginHomeCardTransition(board, -1)
         return true
     }
 
@@ -8531,13 +8668,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun updateSpaceBoardDrag(delta: Float) {
         val overlay = spaceBoardOverlay ?: return
         val width = resources.displayMetrics.widthPixels.toFloat()
-        overlay.translationX = (width + delta).coerceIn(0f, width)
+        if (cardsViewEnabled() && homeCardView != null) {
+            boardCardProgress = (-delta / width).coerceIn(0f, 1f)
+            updateHomeCardTransition(boardCardProgress, -1)
+        } else {
+            overlay.translationX = (width + delta).coerceIn(0f, width)
+        }
     }
 
     private fun settleSpaceBoardDrag(delta: Float) {
         val overlay = spaceBoardOverlay ?: run { spaceBoardDragActive = false; return }
         spaceBoardDragActive = false
         val width = resources.displayMetrics.widthPixels.toFloat()
+        if (cardsViewEnabled() && homeCardView != null) {
+            val shouldOpen = boardCardProgress > 0.30f || delta < -dp(80)
+            if (shouldOpen) settleHomeCard(open = true, exitSign = -1) { }
+            else settleHomeCard(open = false, exitSign = -1) {
+                spaceBoardOverlay = null
+                (overlay.parent as? ViewGroup)?.removeView(overlay)
+            }
+            return
+        }
         val translation = overlay.translationX.coerceIn(0f, width)
         val openProgress = 1f - translation / width
         // Open if dragged in past ~22% or flicked left hard; otherwise slide back out and remove.
@@ -8556,9 +8707,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun closeSpaceBoard(): Boolean {
         val overlay = spaceBoardOverlay ?: return false
+        val width = resources.displayMetrics.widthPixels.toFloat()
+        if (cardsViewEnabled()) {
+            spaceBoardDragActive = false
+            if (homeCardView == null) {           // closing from a fully-open board: re-mint the card
+                beginHomeCardTransition(overlay, -1)
+                boardCardProgress = 1f
+                updateHomeCardTransition(1f, -1)
+            }
+            settleHomeCard(open = false, exitSign = -1) {
+                spaceBoardOverlay = null
+                (overlay.parent as? ViewGroup)?.removeView(overlay)
+            }
+            return true
+        }
         spaceBoardOverlay = null
         spaceBoardDragActive = false
-        overlay.animate().translationX(resources.displayMetrics.widthPixels.toFloat())
+        overlay.animate().translationX(width)
             .setDuration(200L).setInterpolator(DecelerateInterpolator())
             .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
         return true
@@ -8575,6 +8740,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (homeLeftOverlay != null || !::homeLeftController.isInitialized) return null
         if (libraryOpen) closeLibrary()
         if (openPane != null) closePane()
+        // Docked mode: opaque panel above the keyboard, not a full-screen glass sheet (see space board).
+        val docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
         homeLeftController.open(boardCanvasId(homeLeftController, HOME_LEFT_BOARD_ID), emptyList())
         val container = object : FrameLayout(this) {
             private var downX = 0f; private var downY = 0f
@@ -8592,10 +8759,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
-            setBackgroundColor(Color.TRANSPARENT)
+            setBackgroundColor(if (docked) activeNeuTokens.base else Color.TRANSPARENT)
             isClickable = true
         }
-        container.addView(
+        if (!docked) container.addView(
             if (nativeGlassSurfaceActive()) NativeFoldGlassPanel(this, radiusDp = 0)
             else DynamicGlassPlate(this, radiusDp = 0, strength = 1.72f, edgeInsetDp = 0).apply { setGlassProgress(1f) },
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
@@ -8620,22 +8787,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(homeLeftController.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         homeLeftOverlay = container
-        addContentView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        addContentView(container, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ).apply { if (docked) bottomMargin = activeRootDockHeight() })
         container.translationX = -resources.displayMetrics.widthPixels.toFloat()
         return container
     }
 
     private fun openHomeLeftPage() {
         val container = mountHomeLeftPage() ?: return
+        if (cardsViewEnabled() && beginHomeCardTransition(container, +1)) {
+            settleHomeCard(open = true, exitSign = +1) { }
+            return
+        }
         container.animate().translationX(0f).setDuration(260L).setInterpolator(DecelerateInterpolator())
             .setUpdateListener { setLauncherBlurProgress(1f - abs(container.translationX) / resources.displayMetrics.widthPixels) }
             .start()
     }
 
     private fun beginHomeLeftDrag(): Boolean {
-        if (mountHomeLeftPage() == null) return false
+        val board = mountHomeLeftPage() ?: return false
         homeLeftDragActive = true
         keyHaptic("space")
+        if (cardsViewEnabled()) beginHomeCardTransition(board, +1)
         return true
     }
 
@@ -8643,15 +8817,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun updateHomeLeftDrag(delta: Float) {
         val overlay = homeLeftOverlay ?: return
         val width = resources.displayMetrics.widthPixels.toFloat()
-        val translation = (-width + delta).coerceIn(-width, 0f)
-        overlay.translationX = translation
-        setLauncherBlurProgress(1f + translation / width) // 0 off-screen → 1 fully in
+        if (cardsViewEnabled() && homeCardView != null) {
+            boardCardProgress = (delta / width).coerceIn(0f, 1f)
+            updateHomeCardTransition(boardCardProgress, +1)
+        } else {
+            val translation = (-width + delta).coerceIn(-width, 0f)
+            overlay.translationX = translation
+            setLauncherBlurProgress(1f + translation / width) // 0 off-screen → 1 fully in
+        }
     }
 
     private fun settleHomeLeftDrag(delta: Float) {
         val overlay = homeLeftOverlay ?: run { homeLeftDragActive = false; return }
         homeLeftDragActive = false
         val width = resources.displayMetrics.widthPixels.toFloat()
+        if (cardsViewEnabled() && homeCardView != null) {
+            val shouldOpen = boardCardProgress > 0.30f || delta > dp(80)
+            if (shouldOpen) settleHomeCard(open = true, exitSign = +1) { }
+            else settleHomeCard(open = false, exitSign = +1) {
+                homeLeftOverlay = null
+                (overlay.parent as? ViewGroup)?.removeView(overlay)
+            }
+            return
+        }
         val openProgress = 1f + overlay.translationX / width
         val shouldOpen = openProgress > 0.22f || delta > dp(80)
         overlay.animate().cancel()
@@ -8668,9 +8856,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun closeHomeLeftPage(): Boolean {
         val overlay = homeLeftOverlay ?: return false
+        val width = resources.displayMetrics.widthPixels.toFloat()
+        if (cardsViewEnabled()) {
+            homeLeftDragActive = false
+            if (homeCardView == null) {           // closing from a fully-open board: re-mint the card
+                beginHomeCardTransition(overlay, +1)
+                boardCardProgress = 1f
+                updateHomeCardTransition(1f, +1)
+            }
+            settleHomeCard(open = false, exitSign = +1) {
+                homeLeftOverlay = null
+                (overlay.parent as? ViewGroup)?.removeView(overlay)
+                setLauncherBlurProgress(0f)
+            }
+            return true
+        }
         homeLeftOverlay = null
         homeLeftDragActive = false
-        val width = resources.displayMetrics.widthPixels.toFloat()
         overlay.animate().translationX(-width).setDuration(200L).setInterpolator(DecelerateInterpolator())
             .setUpdateListener { setLauncherBlurProgress(1f + overlay.translationX / width) }
             .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay); setLauncherBlurProgress(0f) }.start()
@@ -8680,6 +8882,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     /** Progressive blur+fade of the homescreen behind the left page (0 = clear, 1 = full glass). */
     private fun setLauncherBlurProgress(progress: Float) {
         if (!::rootView.isInitialized || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        // Docked mode: the personal-widgets board is an opaque panel above the keyboard, and the
+        // docked keyboard must keep holding the bottom — sharp, not blurred or dimmed. Blurring the
+        // launcher root here would smear/hide the keyboard (it lives in that root), so force it off.
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+            rootView.setRenderEffect(null)
+            rootView.alpha = 1f
+            return
+        }
         val p = progress.coerceIn(0f, 1f)
         if (p <= 0.01f) {
             rootView.setRenderEffect(null)
@@ -8689,6 +8899,126 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val radius = (dp(22).toFloat() * p).coerceAtLeast(0.5f)
         rootView.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
         rootView.alpha = 1f - p * 0.4f
+    }
+
+    // ---- Cards View: the homescreen lifts into a REAL card as the board is revealed behind it ----
+    // Experimental. When enabled, a board swipe snapshots the homescreen into a card layered
+    // ABOVE the board; the board is seated full-screen (blurred + dimmed) directly behind it and
+    // sharpens into view as the card shrinks, tilts and slides toward its edge — matching the
+    // prototype. The boards themselves (Personal widgets = left, Spaces = right) are untouched.
+
+    private var homeCardView: ImageView? = null
+    private var homeCardScrim: View? = null
+    private var homeCardCorner = 0f
+    private var boardCardProgress = 0f
+
+    /** The homescreen root (child 0 of the content frame — sits below every board/overlay). */
+    private fun homeContentRoot(): View? =
+        findViewById<ViewGroup>(android.R.id.content)?.getChildAt(0)
+
+    private fun captureHomeCardBitmap(): Bitmap? {
+        val root = homeContentRoot() ?: return null
+        val w = root.width; val h = root.height
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            root.draw(Canvas(bmp))
+            bmp
+        } catch (t: Throwable) { null }
+    }
+
+    /**
+     * Begin the card transition for [board]. [exitSign] -1 = card drifts left (Spaces revealed on
+     * the right), +1 = card drifts right (Personal widgets on the left). Returns false if the
+     * snapshot could not be taken, so the caller falls back to the legacy slide.
+     */
+    private fun beginHomeCardTransition(board: View?, exitSign: Int): Boolean {
+        board ?: return false
+        val bmp = captureHomeCardBitmap() ?: return false
+        removeHomeCardView()
+        board.translationX = 0f                    // board sits full-screen behind the card
+        // A dark veil between the board and the card so the card floats over a clean backdrop
+        // instead of the board's glass-blur of the very same homescreen (which reads as a ghost).
+        val scrim = View(this).apply { setBackgroundColor(Color.BLACK); alpha = 0f }
+        homeCardScrim = scrim
+        addContentView(scrim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        val card = ImageView(this).apply {
+            setImageBitmap(bmp)
+            scaleType = ImageView.ScaleType.FIT_XY
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, homeCardCorner)
+                }
+            }
+        }
+        homeCardView = card
+        addContentView(card, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        boardCardProgress = 0f
+        updateHomeCardTransition(0f, exitSign)
+        return true
+    }
+
+    /** Drive the card + board reveal from open-progress [p] (0 = home, 1 = board fully forward). */
+    private fun updateHomeCardTransition(p: Float, exitSign: Int) {
+        val card = homeCardView ?: return
+        val prog = p.coerceIn(0f, 1f)
+        val w = (card.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).toFloat()
+        val peek = min(1f, prog / 0.42f)                    // card is fully "formed" a bit before half
+        val scale = 1f - 0.18f * peek                       // 1 → 0.82, shrinks quickly + clearly
+        card.pivotX = w / 2f
+        card.pivotY = card.height / 2f
+        card.scaleX = scale
+        card.scaleY = scale
+        card.translationX = exitSign * w * 0.50f * prog     // slides toward its edge
+        card.cameraDistance = w * 6f                        // keep the tilt subtle, not fish-eyed
+        card.rotationY = -exitSign * 6f * peek              // 3D lift toward the board
+        card.translationZ = dp(28).toFloat() * peek         // drop shadow deepens as it lifts
+        card.alpha = 1f - ((prog - 0.8f) / 0.2f).coerceIn(0f, 1f)   // fade only at the very end
+        homeCardCorner = dp(34).toFloat() * min(1f, prog / 0.18f)   // rounds fast so it reads as a card
+        card.invalidateOutline()
+        // Dark veil RISES to hide the ghost (board is a glass-blur of this same home), then FALLS
+        // as the board takes over — parabola peaking mid-drag, 0 at both ends. Keeps the card
+        // floating over a clean dark backdrop instead of a smudged duplicate of itself.
+        val t = 2f * prog - 1f
+        homeCardScrim?.alpha = ((1f - t * t) * 0.85f).coerceIn(0f, 0.85f)
+    }
+
+    private fun clearBoardCardEffects() {
+        val board = spaceBoardOverlay ?: homeLeftOverlay ?: return
+        board.scaleX = 1f; board.scaleY = 1f; board.alpha = 1f
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) board.setRenderEffect(null)
+    }
+
+    private fun removeHomeCardView() {
+        homeCardScrim?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        homeCardScrim = null
+        val card = homeCardView ?: return
+        homeCardView = null
+        (card.parent as? ViewGroup)?.removeView(card)
+        (card.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap?.recycle()
+    }
+
+    /**
+     * Animate the card transition to [open] (board takes over) or closed (back to home), then
+     * clean up. [onClosed] removes the board when the card returns home.
+     */
+    private fun settleHomeCard(open: Boolean, exitSign: Int, onClosed: () -> Unit) {
+        val start = boardCardProgress
+        ValueAnimator.ofFloat(start, if (open) 1f else 0f).apply {
+            duration = 230L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                boardCardProgress = it.animatedValue as Float
+                updateHomeCardTransition(boardCardProgress, exitSign)
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (open) { clearBoardCardEffects(); removeHomeCardView() }
+                    else { onClosed(); clearBoardCardEffects(); removeHomeCardView() }
+                }
+            })
+        }.start()
     }
 
     private fun updateSpaceIcon() {
@@ -8798,6 +9128,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     //   ZONE 3  everything else in one list, grouped under quiet headers, no per-row kind pills
     private fun searchResultsList(widgetMode: Boolean = false): View = ScrollView(this).apply {
         clipToPadding = false
+        isVerticalScrollBarEnabled = false   // search results scroll cleanly — no scrollbar track
         val results = universalSearchResults()
         val command = searchCommandPreview()
         val aiInline = searchAiInlineState()
@@ -10330,35 +10661,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             applyFishEye()
         }
 
+        // Fish-eye lens effect removed — every app tile stays flat and uniform (no scale/fade by
+        // distance from centre). Kept as a reset pass so any lingering transform is cleared on scroll.
         fun applyFishEye() {
-            val midY = height / 2f
-            val radius = (height * 0.62f).coerceAtLeast(dp(1).toFloat())
-            val loc = IntArray(2)
-            getLocationOnScreen(loc)
-            applyFishEyeToChildren(this, loc[1].toFloat(), midY, radius)
+            flattenTiles(this)
         }
 
-        private fun applyFishEyeToChildren(view: View, originY: Float, midY: Float, radius: Float) {
+        private fun flattenTiles(view: View) {
             if (view.tag == GRID_APP_TILE_TAG) {
-                val childLoc = IntArray(2)
-                view.getLocationOnScreen(childLoc)
-                val childMid = childLoc[1] - originY + view.height / 2f
-                val distance = abs(midY - childMid)
-                val wave = if (distance < radius) {
-                    cos((distance / radius) * (Math.PI / 2.0)).toFloat().coerceIn(0f, 1f)
-                } else {
-                    0f
-                }
-                val scale = 0.91f + wave * 0.105f
-                view.scaleX = scale
-                view.scaleY = scale
-                view.translationX = dp(8).toFloat() * wave
-                view.alpha = 0.74f + wave * 0.26f
-                view.translationZ = dp(4).toFloat() * wave
+                view.scaleX = 1f
+                view.scaleY = 1f
+                view.translationX = 0f
+                view.translationZ = 0f
+                view.alpha = 1f
                 return
             }
             if (view is ViewGroup) {
-                for (i in 0 until view.childCount) applyFishEyeToChildren(view.getChildAt(i), originY, midY, radius)
+                for (i in 0 until view.childCount) flattenTiles(view.getChildAt(i))
             }
         }
     }
@@ -13908,6 +14227,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             else -> {
+                // A board (space / personal widgets / widget board) is the active full-screen surface
+                // in docked mode. Typing must NOT open launcher search behind it — that left search
+                // hidden under the board and, on clearing, could fall back to the homescreen. Keep the
+                // board covering; ignore keystrokes until it's dismissed (DONE / swipe back).
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !libraryOpen &&
+                    (spaceBoardOverlay != null || homeLeftOverlay != null || widgetBoardView != null)) return
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 val insertAt = cursorPos
                 if (insertAt != null) {
@@ -15117,8 +15442,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // Let Android draw the actual system/live wallpaper behind Teclas. Custom launcher
             // image URIs are cleared so stale uploaded wallpapers cannot cover the live wallpaper.
             prefs().edit()
-                .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, true)
-                .remove(HOME_COVER_WALLPAPER_URI_PREF)
+                .putBoolean(homeScopedKey(HOME_SYSTEM_WALLPAPER_PREF), true)
+                .remove(homeScopedKey(HOME_COVER_WALLPAPER_URI_PREF))
                 .remove(HOME_INNER_WALLPAPER_URI_PREF)
                 .apply()
             homeWallpaperDrawable = null
@@ -15129,7 +15454,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingToggle("LOCKSCREEN WALLPAPER HOME", useLockscreenWallpaperOnHome()) {
             val next = !useLockscreenWallpaperOnHome()
-            prefs().edit().putBoolean(HOME_LOCK_WALLPAPER_PREF, next).apply()
+            prefs().edit().putBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), next).apply()
             homeWallpaperDrawable = loadHomeWallpaperDrawable()
             haptic(this)
             render()
@@ -17313,6 +17638,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun settingSearchEntries(): List<SettingSearchEntry> {
         val entries = mutableListOf<SettingSearchEntry>()
         entries.add(SettingSearchEntry(
+            "Cards View", toggleStateLabel(cardsViewEnabled()),
+            listOf("cards", "cards view", "card", "card view", "board animation", "experimental")
+        ) {
+            prefs().edit().putBoolean(CARDS_VIEW_ENABLED_PREF, !cardsViewEnabled()).apply()
+            removeHomeCardView() // drop any lingering card so the change takes cleanly next swipe
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Glass effects", toggleStateLabel(glassEffectsEnabled()),
             listOf("glass", "effects", "blur", "frosted")
         ) {
@@ -17372,7 +17705,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "Lockscreen wallpaper", toggleStateLabel(useLockscreenWallpaperOnHome()),
             listOf("wallpaper", "lockscreen", "background")
         ) {
-            prefs().edit().putBoolean(HOME_LOCK_WALLPAPER_PREF, !useLockscreenWallpaperOnHome()).apply()
+            prefs().edit().putBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), !useLockscreenWallpaperOnHome()).apply()
             homeWallpaperDrawable = loadHomeWallpaperDrawable()
             render()
             refreshSearchSurfaces()
@@ -21675,6 +22008,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val APP_LIBRARY_DEFAULT_HOME_PREF = "app_library_default_home"
         private const val ANIMATED_WEATHER_PREF = "animated_weather"
         private const val GLASS_EFFECTS_PREF = "glass_effects"
+        // Experimental: home screen lifts into a card as a board slides in over it.
+        private const val CARDS_VIEW_ENABLED_PREF = "cards_view_enabled"
         private const val HOME_SYSTEM_WALLPAPER_PREF = "home_system_wallpaper"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
         private const val HOME_LIVE_WALLPAPER_MOTION_PREF = "home_live_wallpaper_motion"
@@ -21704,6 +22039,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val WEATHER_WIDGET_STYLE_PREF = "weather_widget_style"
         private const val WEATHER_WIDGET_POS_X_PREF = "weather_widget_pos_x"
         private const val WEATHER_WIDGET_POS_Y_PREF = "weather_widget_pos_y"
+        // Docked mode keeps its own copy of the phone home setup (wallpaper + weather widget), so
+        // docked and widget mode are two independent experiences. Suffix appended to the shared keys.
+        private const val DOCKED_HOME_SUFFIX = "_docked"
+        private const val DOCKED_HOME_SEEDED_PREF = "docked_home_seeded"
         private const val WEATHER_TEMP_F_PREF = "weather_temp_f"
         private const val WEATHER_FEELS_F_PREF = "weather_feels_f"
         private const val WEATHER_HUMIDITY_PREF = "weather_humidity_pct"
