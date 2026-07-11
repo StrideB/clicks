@@ -15390,7 +15390,65 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    /**
+     * Dismissible "Join the beta" invite shown at the top of the settings pane on the Play build.
+     * Its CTA opens the Play testing-track opt-in ([BETA_INVITE_URL]) only — never an off-Play
+     * download. Returns null when [BETA_INVITE_ENABLED] is off or the user has dismissed it.
+     */
+    private fun betaInviteCard(): View? {
+        if (!BETA_INVITE_ENABLED) return null
+        if (prefs().getBoolean(BETA_INVITE_DISMISS_PREF, false)) return null
+        val fullWidth = { LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT) }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            addView(mono("JOIN THE BETA", 10.5f, Accent).apply {
+                letterSpacing = 0.18f
+                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            }, fullWidth())
+            addView(mono(
+                "Get early builds and help shape what ships. Opt in through Google Play and beta updates arrive automatically.",
+                8.8f, activeNeuTokens.inkDim
+            ).apply {
+                setPadding(0, dp(6), 0, 0)
+                setLineSpacing(dp(2).toFloat(), 1f)
+            }, fullWidth())
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(12), 0, 0)
+                addView(mono("OPEN IN PLAY  →", 9.5f, Accent2).apply {
+                    letterSpacing = 0.1f
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        startSafeIntent(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(BETA_INVITE_URL)),
+                            "Google Play isn't available"
+                        )
+                    }
+                })
+                addView(mono("DISMISS", 9.5f, activeNeuTokens.inkFaint).apply {
+                    letterSpacing = 0.1f
+                    isClickable = true
+                    setPadding(dp(22), 0, 0, 0)
+                    setOnClickListener {
+                        haptic(this)
+                        prefs().edit().putBoolean(BETA_INVITE_DISMISS_PREF, true).apply()
+                        renderPaneContent(teclasSettingsTarget())
+                    }
+                })
+            }, fullWidth())
+        }
+    }
+
     private fun settingsPaneContent(parent: LinearLayout) {
+        betaInviteCard()?.let {
+            parent.addView(it, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(18) })
+        }
         parent.addView(mono("LAUNCHER", 10f, Accent).apply {
             letterSpacing = 0.22f
             setPadding(0, 0, 0, dp(8))
@@ -22150,6 +22208,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val INNER_WIDGET_KEYBOARD_HIDDEN_PREF = "inner_widget_keyboard_hidden"
         private const val INNER_LIBRARY_LOCKED_PREF = "inner_library_locked"
         private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
+        // Play beta invite (Play build only). Flip BETA_INVITE_ENABLED off to hide the card. The URL
+        // is a placeholder in the standard Play testing-track opt-in format — replace it with the
+        // real closed/open-testing link from Play Console once the track exists. It MUST stay a
+        // play.google.com testing link: pointing an on-Play build at an off-Play (website/GitHub)
+        // APK of itself is a Play policy violation.
+        private const val BETA_INVITE_ENABLED = true
+        private const val BETA_INVITE_URL = "https://play.google.com/apps/testing/com.fran.teclas"
+        private const val BETA_INVITE_DISMISS_PREF = "beta_invite_dismissed"
         private const val GRID_WORKSPACE_LAB_PREF = "grid_workspace_lab"
         private const val DOCK_APP_LIMIT = 5
         private const val OFTEN_USED_LIMIT = 8
