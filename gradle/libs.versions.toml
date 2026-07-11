@@ -22,6 +22,8 @@ tasksGenai = "0.10.35"
 junit = "4.13.2"
 leakcanary = "2.14"
 profileinstaller = "1.4.1"
+shizuku = "13.1.5"
+hiddenapibypass = "6.1"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
@@ -53,6 +55,9 @@ mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 leakcanary = { group = "com.squareup.leakcanary", name = "leakcanary-android", version.ref = "leakcanary" }
 profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
+shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
+shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
+hiddenapibypass = { group = "org.lsposed.hiddenapibypass", name = "hiddenapibypass", version.ref = "hiddenapibypass" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

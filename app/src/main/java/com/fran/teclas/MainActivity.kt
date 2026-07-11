@@ -877,6 +877,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onResume() {
         super.onResume()
+        // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
+        DockedFreeform.externalAppInFront = false
+        if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
+        // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
+        DockedFreeform.ensureArmedIfEnabled(this)
         syncDockParallax()
         syncWallpaperMotion()
         stopService(Intent(this, DockedKeyboardService::class.java))
@@ -1242,6 +1247,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        detectDockedWallpaperTripleTap(event)   // passive: triple-tap docked home → change wallpaper
         if (innerWallpaperEditMode) return super.dispatchTouchEvent(event)
         if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
         if (handleVisibleWidgetKeyboardGlobalGesture(event)) return true
@@ -2573,15 +2579,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 // stack / dock / keyboard never reflow when the weather widget is moved.
                 addView(homeHeader().apply { visibility = View.INVISIBLE }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.08f))
-                nowPlayingCardView = ComposeView(context).apply {
-                    setBackgroundColor(Color.TRANSPARENT)
-                    setNowPlayingCardContent()
-                    elevation = dp(8).toFloat()
+                // Docked homescreen: no contextual widget stack — the docked home stays minimal
+                // (weather widget + dock). Widget mode keeps the stack (see phoneWidgetHome).
+                if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) {
+                    nowPlayingCardView = ComposeView(context).apply {
+                        setBackgroundColor(Color.TRANSPARENT)
+                        setNowPlayingCardContent()
+                        elevation = dp(8).toFloat()
+                    }
+                    addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()).apply {
+                        topMargin = dp(2)
+                        bottomMargin = dp(2)
+                    })
                 }
-                addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()).apply {
-                    topMargin = dp(2)
-                    bottomMargin = dp(2)
-                })
                 // "Today" teaser lives in the space below the widget stack; collapses to 0dp when empty.
                 if (todayEnabled) {
                     todayAlertView = ComposeView(context).apply {
@@ -5983,6 +5993,47 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return localX >= contentFrame.width - edgeWidth
     }
 
+    // Triple-tap the docked homescreen background → change the wallpaper (opens the image picker).
+    private var homeWallpaperTapCount = 0
+    private var homeWallpaperTapTime = 0L
+    private var homeWallpaperDownX = 0f
+    private var homeWallpaperDownY = 0f
+    private var homeWallpaperDownTime = 0L
+
+    private fun detectDockedWallpaperTripleTap(event: MotionEvent) {
+        val eligible = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive() &&
+            !libraryOpen && openPane == null && spaceBoardOverlay == null && homeLeftOverlay == null &&
+            widgetBoardView == null && !keyboardSettingsOpen && !homeEditMode && !innerWallpaperEditMode
+        if (!eligible) { homeWallpaperTapCount = 0; return }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                homeWallpaperDownX = event.rawX
+                homeWallpaperDownY = event.rawY
+                homeWallpaperDownTime = System.currentTimeMillis()
+            }
+            MotionEvent.ACTION_UP -> {
+                val now = System.currentTimeMillis()
+                val moved = abs(event.rawX - homeWallpaperDownX) > dp(24) || abs(event.rawY - homeWallpaperDownY) > dp(24)
+                val quick = now - homeWallpaperDownTime < 260
+                // Only the empty home background — not the keyboard, its reveal zone, or a widget/dock.
+                val onBackground = !isInsideKeyboard(homeWallpaperDownX, homeWallpaperDownY) &&
+                    !isInsideKeyboardRevealZone(homeWallpaperDownX, homeWallpaperDownY) &&
+                    !isInsideHomeWidget(homeWallpaperDownX, homeWallpaperDownY)
+                if (!moved && quick && onBackground) {
+                    homeWallpaperTapCount = if (now - homeWallpaperTapTime < 500) homeWallpaperTapCount + 1 else 1
+                    homeWallpaperTapTime = now
+                    if (homeWallpaperTapCount >= 3) {
+                        homeWallpaperTapCount = 0
+                        if (::contentFrame.isInitialized) haptic(contentFrame)
+                        openInnerWallpaperPicker()
+                    }
+                } else {
+                    homeWallpaperTapCount = 0
+                }
+            }
+        }
+    }
+
     private fun handleLibrarySwipe(event: MotionEvent): Boolean {
         if (innerWallpaperEditMode) return false
         if (keyboardGestureLockActive()) return false
@@ -8043,7 +8094,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
      */
     private fun syncDockedSearchStatusBar() {
         if (!::rootView.isInitialized) return
-        val opaque = libraryOpen && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
+        // Opaque behind the status bar when the library is open OR an app sits in the freeform top
+        // region — otherwise the launcher wallpaper bleeds into the status-bar strip above the app.
+        val opaque = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
+            (libraryOpen || DockedFreeform.externalAppInFront)
         rootView.setBackgroundColor(
             if (opaque || !launcherWallpaperCanvasActive()) activeNeuTokens.base else Color.TRANSPARENT
         )
@@ -14085,6 +14139,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Key handling ─────────────────────────────────────────────────────────
 
     private fun handleKey(label: String) {
+        // When an app launched from the docked launcher is in the freeform top region, the keyboard
+        // types into that app (via the accessibility injector) instead of the launcher's search.
+        if (keysRouteToForegroundApp() && routeKeyToForegroundApp(label)) return
         if (categoryFolderView != null && libraryOpen) {
             if (label == "teclas" || label == "back") closeCategoryFolder()
             return
@@ -15469,6 +15526,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(keyboardSwapAnimationSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()) {
+            parent.addView(settingToggle("APPS IN TOP REGION", DockedFreeform.isFeatureEnabled(this)) {
+                toggleDockedTopRegion()
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+            if (DockedFreeform.isFeatureEnabled(this)) {
+                parent.addView(settingAction("   ${dockedTopRegionStatusLabel()}") {
+                    haptic(this)
+                    showDockedTopRegionSetup()
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+                parent.addView(settingAction("   PIN APPS (SHIZUKU)   ${shizukuStatusLabel()}") {
+                    haptic(this)
+                    onShizukuRowTapped()
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+            }
+        }
         if (devExperimentsEnabled() && VivoDockedExperiment.isAvailable(this)) {
             parent.addView(vivoDockedExperimentSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
         }
@@ -16586,9 +16658,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setTarget(app.target)
                 setAccent(app.accent)
                 refreshActive()
-            }, FrameLayout.LayoutParams((iconFrameSize * 1.45f).toInt(), (iconFrameSize * 1.75f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
-                bottomMargin = -dp(4)
-            })
+                }, FrameLayout.LayoutParams((iconFrameSize * 1.45f).toInt(), (iconFrameSize * 1.95f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
+                    bottomMargin = -dp(10)
+                })
         }, FrameLayout.LayoutParams(iconFrameSize, iconFrameSize, Gravity.CENTER))
         setOnTouchListener { v, event ->
             when (event.actionMasked) {
@@ -16668,9 +16740,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     setTarget(target)
                     setAccent(item.accent)
                     refreshActive()
-                }, FrameLayout.LayoutParams((iconFrame * 1.45f).toInt(), (iconFrame * 1.75f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
-                    bottomMargin = -dp(4)
-                })
+                    }, FrameLayout.LayoutParams((iconFrame * 1.45f).toInt(), (iconFrame * 1.95f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
+                        bottomMargin = -dp(10)
+                    })
             }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             if (showLabel) {
                 addView(TextView(context).apply {
@@ -16855,7 +16927,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val phase = ((now + i * 520L) % 1800L) / 1800f
                 val alpha = (kotlin.math.sin(phase * Math.PI).toFloat() * 0.58f).coerceIn(0f, 0.58f)
                 val x = w * (0.30f + i * 0.19f) + kotlin.math.sin((phase * 6.283f) + i).toFloat() * w * 0.055f
-                val y = h * (0.84f - phase * 0.62f)
+                val y = h * (0.78f - phase * 0.70f)
                 paint.color = adjustAlpha(accent, alpha)
                 canvas.drawText(notes[i % notes.size].toString(), x, y, paint)
             }
@@ -17174,15 +17246,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun launchExternalIntent(intent: Intent, packageName: String): Boolean {
         if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
             if (!prepareDockedExternalMode()) return false
-            intent.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP
-            )
             val options = if (VivoDockedExperiment.isEnabled(this)) null else dockedExternalActivityOptions()
             if (options != null) {
-                runCatching { startActivity(intent, options.toBundle()) }
-                    .onFailure { startActivity(intent) }
+                // Freeform launch bounds are honored only for a fresh root activity of a new task,
+                // so clear any existing task for this app that would otherwise reopen fullscreen.
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                runCatching {
+                    startActivity(intent, options)
+                    DockedFreeform.externalAppInFront = true
+                    syncDockedSearchStatusBar()   // opaque status-bar strip so wallpaper doesn't bleed above the app
+                }
+                    .onFailure {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        startActivity(intent)
+                    }
             } else {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 startActivity(intent)
             }
         } else {
@@ -17268,21 +17347,185 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             equals(component.flattenToShortString(), ignoreCase = true)
     }
 
-    private fun dockedExternalActivityOptions(): ActivityOptions? {
+    private fun dockedExternalActivityOptions(): android.os.Bundle? {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return null
-        val screen = resources.displayMetrics
-        val keyboardHeight = dp(238 + (KeyboardSettings.keyboardSize(this) * 54 / 100))
-        val topBounds = Rect(
-            0,
-            0,
-            screen.widthPixels,
-            (screen.heightPixels - keyboardHeight).coerceAtLeast(dp(360))
-        )
-        return ActivityOptions.makeBasic().apply {
-            launchBounds = topBounds
-            runCatching {
-                javaClass.getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType).invoke(this, 5)
+        // Reserve the WHOLE docked keyboard band (search field + suggestion strip + keys) so the app
+        // never covers the search bar, which must always show. Two sources, take whichever reserves
+        // more: the measured on-screen top of the dock, and its computed height (deterministic —
+        // works even before the view is laid out; the old height formula under-reserved and let the
+        // app bottom fall over the search bar). Minus a small margin for clear separation.
+        val screenH = resources.displayMetrics.heightPixels
+        val measured = if (::keyboardDockView.isInitialized) {
+            val loc = IntArray(2)
+            keyboardDockView.getLocationOnScreen(loc)
+            loc[1].takeIf { it > 0 && keyboardDockView.height > 0 }
+        } else null
+        val computed = (screenH - activeRootDockHeight()).takeIf { it in 1 until screenH }
+        val keyboardTopPx = listOfNotNull(measured, computed).minOrNull()?.minus(dp(10))
+        // Share the top with the accessibility service so it can re-pin via Shizuku on window changes.
+        keyboardTopPx?.let { DockedFreeform.lastKeyboardTopPx = it }
+        // Returns an options Bundle only when the docked "apps in top region" feature is on and
+        // freeform is armed; otherwise null → normal fullscreen launch.
+        return DockedFreeform.activityOptions(this, keyboardTopPx)
+    }
+
+    // ---- Docked keyboard → foreground app typing (via the accessibility injector) ----
+
+    private fun keysRouteToForegroundApp(): Boolean =
+        DockedFreeform.externalAppInFront &&
+            keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
+            DockedFreeform.isActive(this) &&
+            isTeclasAccessibilityEnabled()
+
+    /**
+     * Send one keystroke to the foreground app's focused field. Returns true when consumed (so the
+     * launcher doesn't also handle it). "teclas" switches back to launcher search; "123"/"abc" fall
+     * through so the deck can still change number/symbol modes.
+     */
+    private fun routeKeyToForegroundApp(label: String): Boolean {
+        when (label) {
+            "123", "abc" -> return false
+            "teclas" -> { bringLauncherToFront(); return true }
+            "back" -> injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
+            "space" -> injectToForegroundApp(" ")
+            "period" -> injectToForegroundApp(".")
+            "enter" -> injectToForegroundApp(InputInjectionService.KEY_ENTER)
+            else -> {
+                val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
+                if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
+                injectToForegroundApp(char)
             }
+        }
+        return true
+    }
+
+    private fun injectToForegroundApp(payload: String) {
+        // Prefer the IME's InputConnection (physical-keyboard behavior: commit/delete deltas, never
+        // read the field — fixes placeholder contamination like Telegram's "Message"). Fall back to
+        // the accessibility injector only when the IME service isn't running yet.
+        val ime = TeclasImeService.instance
+        if (ime != null) {
+            ime.onDeckKey(payload)
+            return
+        }
+        sendBroadcast(Intent(InputInjectionService.ACTION_INJECT_KEY).apply {
+            setPackage(packageName)
+            putExtra(InputInjectionService.EXTRA_CHAR, payload)
+        })
+    }
+
+    /** Bring the launcher back to the front so typing targets launcher search again. */
+    private fun bringLauncherToFront() {
+        DockedFreeform.externalAppInFront = false
+        runCatching {
+            startActivity(Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            })
+        }
+    }
+
+    // ---- Docked "apps in top region" (freeform) toggle + arming flow ----
+
+    private fun toggleDockedTopRegion() {
+        haptic(window.decorView)
+        val turningOn = !DockedFreeform.isFeatureEnabled(this)
+        DockedFreeform.setFeatureEnabled(this, turningOn)
+        if (turningOn) {
+            // Arming (the freeform globals) is the real enabler and the only reliable signal —
+            // some OEMs support freeform without advertising the system feature. Needs the one-time
+            // WRITE_SECURE_SETTINGS grant first; if that's missing, walk the user through it.
+            when {
+                !DockedFreeform.hasWriteSecureSettings(this) ->
+                    showDockedTopRegionSetup()
+                DockedFreeform.arm(this) ->
+                    Toast.makeText(this, "Top-region mode on. If apps still open fullscreen, reboot once.", Toast.LENGTH_LONG).show()
+                else ->
+                    showDockedTopRegionSetup()
+            }
+        } else {
+            DockedFreeform.disarm(this)
+        }
+        renderPaneContent(teclasSettingsTarget())
+    }
+
+    private fun dockedTopRegionStatusLabel(): String = when {
+        !DockedFreeform.hasWriteSecureSettings(this) -> "NEEDS ADB GRANT →"
+        !DockedFreeform.isArmed(this) -> "TAP TO ARM →"
+        else -> "READY ✓"
+    }
+
+    private fun showDockedTopRegionSetup() {
+        val cmd = DockedFreeform.adbGrantCommand(this)
+        val hasPerm = DockedFreeform.hasWriteSecureSettings(this)
+        val armed = DockedFreeform.isArmed(this)
+        val body = buildString {
+            append("Opens every app in the top region while the keyboard is docked.\n\n")
+            when {
+                !hasPerm -> {
+                    append("One-time setup — run this from a computer with the phone connected:\n\n$cmd\n\n")
+                    append("Then reopen this dialog and tap Re-check.")
+                }
+                !armed -> append("Permission granted. Tap Arm now to enable freeform windows.")
+                else -> append("Ready. Apps you launch from Teclas open in the top region above the docked keyboard. If any still open fullscreen, reboot once.")
+            }
+        }
+        val builder = AlertDialog.Builder(this)
+            .setTitle("Apps in top region")
+            .setMessage(body)
+            .setNegativeButton("Close", null)
+        if (!hasPerm) {
+            builder.setPositiveButton("Copy command") { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("adb", cmd))
+                Toast.makeText(this, "Command copied", Toast.LENGTH_SHORT).show()
+            }
+            builder.setNeutralButton("Re-check") { _, _ ->
+                if (DockedFreeform.hasWriteSecureSettings(this)) {
+                    DockedFreeform.arm(this)
+                    Toast.makeText(this, "Top-region mode armed", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, "Permission not granted yet", Toast.LENGTH_SHORT).show()
+                }
+                renderPaneContent(teclasSettingsTarget())
+            }
+        } else if (!armed) {
+            builder.setPositiveButton("Arm now") { _, _ ->
+                DockedFreeform.arm(this)
+                renderPaneContent(teclasSettingsTarget())
+            }
+        }
+        builder.show()
+    }
+
+    private fun shizukuStatusLabel(): String = when {
+        !ShizukuPinner.isRunning() -> "NOT RUNNING →"
+        !ShizukuPinner.hasPermission() -> "GRANT →"
+        else -> "ON ✓"
+    }
+
+    private fun onShizukuRowTapped() {
+        when {
+            !ShizukuPinner.isRunning() -> AlertDialog.Builder(this)
+                .setTitle("Pin apps with Shizuku")
+                .setMessage(
+                    "Holds apps in the top region across their own screens, and works on phones that block freeform.\n\n" +
+                        "1. Install Shizuku from the Play Store.\n" +
+                        "2. Start it (Wireless debugging, or via adb).\n" +
+                        "3. Reopen this row and tap Grant."
+                )
+                .setPositiveButton("OK", null)
+                .show()
+            !ShizukuPinner.hasPermission() -> ShizukuPinner.requestPermission { granted ->
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        if (granted) "Shizuku granted — apps will stay pinned to the top region" else "Shizuku permission denied",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    renderPaneContent(teclasSettingsTarget())
+                }
+            }
+            else -> Toast.makeText(this, "Shizuku active — apps pinned to the top region", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -17312,6 +17555,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // predictions frozen at whatever the first render saw.
         libraryViewDirty = true
         libraryContentReady = false
+        // Clear the typed search after launching — returning to the launcher shouldn't leave the
+        // last query sitting there for the user to delete.
+        if (libraryOpen) {
+            closeLibrary()
+        } else if (query.isNotEmpty()) {
+            query = ""
+            cursorPos = null
+            suggestions = emptyList()
+            renderRibbon()
+        }
         renderFavoritesDock()
     }
 
