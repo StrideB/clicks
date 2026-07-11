@@ -29,6 +29,8 @@ class ParallaxSensorEngine(
     private var smoothRoll = 0f
     private var basePitch = Float.NaN
     private var baseRoll = Float.NaN
+    private var sentPitch = Float.NaN
+    private var sentRoll = Float.NaN
     private var registered = false
 
     val isSupported: Boolean get() = rotationSensor != null
@@ -46,6 +48,8 @@ class ParallaxSensorEngine(
         registered = false
         basePitch = Float.NaN
         baseRoll = Float.NaN
+        sentPitch = Float.NaN
+        sentRoll = Float.NaN
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -57,7 +61,17 @@ class ParallaxSensorEngine(
         if (basePitch.isNaN()) { basePitch = smoothPitch; baseRoll = smoothRoll }
         basePitch += baselineRate * (smoothPitch - basePitch)
         baseRoll += baselineRate * (smoothRoll - baseRoll)
-        onTilt(smoothPitch - basePitch, smoothRoll - baseRoll)
+        val pitch = smoothPitch - basePitch
+        val roll = smoothRoll - baseRoll
+        // A phone lying on a table (or held steady, once the baseline catches up) produces the
+        // same delta every event — skip the callback then, since each one mutates transforms on
+        // the dock and all its children and forces a GPU recomposite 15×/s.
+        if (!sentPitch.isNaN() &&
+            kotlin.math.abs(pitch - sentPitch) < 0.0015f && kotlin.math.abs(roll - sentRoll) < 0.0015f
+        ) return
+        sentPitch = pitch
+        sentRoll = roll
+        onTilt(pitch, roll)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
