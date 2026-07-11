@@ -238,8 +238,53 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private var deleteRepeatFired = false
     private var currentEditorPackage: String? = null
 
+    // Docked-deck typing routes through this IME's InputConnection (physical-keyboard behavior:
+    // commit/delete deltas, never read the field — fixes apps like Telegram that expose their
+    // "Message" placeholder as node text). [deckBuffer] holds keys typed before a field is focused;
+    // they're committed once the connection binds (onStartInput).
+    private val deckBuffer = StringBuilder()
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
     override fun onEvaluateInputViewShown(): Boolean {
-        return !isLauncherEditorActive()
+        return !shouldDeferToDeck()
+    }
+
+    /**
+     * Handle one keystroke from the docked launcher deck. Commits via the InputConnection when a
+     * field is focused; otherwise buffers it and asks the accessibility service to focus a field (or
+     * open the app's search), after which [onStartInput] flushes the buffer.
+     */
+    fun onDeckKey(payload: String) {
+        val ic = currentInputConnection
+        if (ic != null) {
+            flushDeckBuffer(ic)
+            applyDeckKey(ic, payload)
+            return
+        }
+        when (payload) {
+            InputInjectionService.KEY_BACKSPACE -> if (deckBuffer.isNotEmpty()) deckBuffer.deleteCharAt(deckBuffer.length - 1)
+            InputInjectionService.KEY_ENTER -> {}
+            else -> deckBuffer.append(payload)
+        }
+        sendBroadcast(Intent(InputInjectionService.ACTION_PREPARE_FIELD).setPackage(packageName))
+    }
+
+    private fun applyDeckKey(ic: android.view.inputmethod.InputConnection, payload: String) {
+        when (payload) {
+            InputInjectionService.KEY_BACKSPACE -> ic.deleteSurroundingText(1, 0)
+            InputInjectionService.KEY_ENTER -> if (!sendDefaultEditorAction(true)) ic.commitText("\n", 1)
+            else -> ic.commitText(payload, 1)
+        }
+    }
+
+    private fun flushDeckBuffer(ic: android.view.inputmethod.InputConnection) {
+        if (deckBuffer.isEmpty()) return
+        ic.commitText(deckBuffer.toString(), 1)
+        deckBuffer.clear()
     }
 
     override fun onCreateInputView(): View {
@@ -331,7 +376,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         super.onStartInputView(info, restarting)
         currentEditorPackage = info?.packageName?.toString() ?: currentEditorPackage
         ensureGlideClassifier()   // retry if a previous load failed (onCreateInputView runs only once)
-        if (isLauncherEditorActive()) {
+        if (shouldDeferToDeck()) {
             hideImeSurface()
             return
         }
@@ -358,8 +403,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
         currentEditorPackage = attribute?.packageName?.toString()
-        if (isLauncherEditorActive()) {
+        if (shouldDeferToDeck()) {
             hideImeSurface()
+            currentInputConnection?.let { flushDeckBuffer(it) }   // commit keys typed before the field focused
             return
         }
         shifted = shouldStartShifted(attribute)
@@ -368,7 +414,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     override fun onWindowShown() {
         super.onWindowShown()
-        if (isLauncherEditorActive()) hideImeSurface()
+        if (shouldDeferToDeck()) hideImeSurface()
     }
 
     override fun onUpdateSelection(
@@ -396,6 +442,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         return currentEditorPackage == packageName
     }
 
+    /**
+     * Whether the IME should stand down and let the docked launcher deck handle input: either the
+     * launcher's own editor is active, or an app is in the docked freeform top region (the deck is
+     * visible below it and types into the app via the accessibility injector — no IME handoff).
+     */
+    private fun shouldDeferToDeck(): Boolean {
+        return isLauncherEditorActive() || DockedFreeform.externalAppInFront
+    }
+
     private fun hideImeSurface() {
         stopDeleteRepeat(clearFired = true)
         requestHideSelf(0)
@@ -403,6 +458,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
+        deckBuffer.clear()
         stopDeleteRepeat(clearFired = true)
         imePrefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
         glideScope.cancel()
@@ -3461,7 +3518,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private companion object {
+    companion object {
+        // The live IME instance, so the docked launcher deck can type through its InputConnection.
+        @Volatile
+        internal var instance: TeclasImeService? = null
+
         private const val PREFS_NAME = "teclas"
         private const val TOUCH_MODEL_PREF = "touch_model_v1"
         private const val HAPTICS_PREF = "haptics"
