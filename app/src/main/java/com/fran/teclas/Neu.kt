@@ -92,11 +92,15 @@ object Neu {
     ) : Drawable() {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val rect = RectF()
+        private val scratch = RectF()
+        // tokens/level are immutable, so the spec and the (expensive) mask filter never change —
+        // build them once instead of on every draw; these drawables redraw on press animations.
+        private val spec = shadowSpec(tokens.mode, level)
+        private val blurFilter = BlurMaskFilter(spec.blur, BlurMaskFilter.Blur.NORMAL)
 
         override fun draw(canvas: Canvas) {
             val b = bounds
             if (b.isEmpty) return
-            val spec = shadowSpec(tokens.mode, level)
             val rawInset = spec.blur + kotlin.math.max(kotlin.math.abs(spec.lightDx), kotlin.math.abs(spec.darkDx)) + 1f
             val inset = kotlin.math.min(rawInset, kotlin.math.min(b.width(), b.height()) * 0.28f)
             rect.set(
@@ -115,37 +119,21 @@ object Neu {
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = spec.blur * 0.55f
                 paint.color = alpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.72f else 0.62f)
-                canvas.drawRoundRect(
-                    RectF(rect.left - spec.lightDx, rect.top - spec.lightDy, rect.right - spec.lightDx, rect.bottom - spec.lightDy),
-                    radiusPx,
-                    radiusPx,
-                    paint
-                )
+                scratch.set(rect.left - spec.lightDx, rect.top - spec.lightDy, rect.right - spec.lightDx, rect.bottom - spec.lightDy)
+                canvas.drawRoundRect(scratch, radiusPx, radiusPx, paint)
                 paint.color = alpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.82f else 0.92f)
-                canvas.drawRoundRect(
-                    RectF(rect.left - spec.darkDx, rect.top - spec.darkDy, rect.right - spec.darkDx, rect.bottom - spec.darkDy),
-                    radiusPx,
-                    radiusPx,
-                    paint
-                )
+                scratch.set(rect.left - spec.darkDx, rect.top - spec.darkDy, rect.right - spec.darkDx, rect.bottom - spec.darkDy)
+                canvas.drawRoundRect(scratch, radiusPx, radiusPx, paint)
                 paint.style = Paint.Style.FILL
             } else {
                 paint.style = Paint.Style.FILL
-                paint.maskFilter = BlurMaskFilter(spec.blur, BlurMaskFilter.Blur.NORMAL)
+                paint.maskFilter = blurFilter
                 paint.color = alpha(tokens.baseLo, if (tokens.mode == NeuMode.LIGHT) 0.88f else 0.95f)
-                canvas.drawRoundRect(
-                    RectF(rect.left + spec.darkDx, rect.top + spec.darkDy, rect.right + spec.darkDx, rect.bottom + spec.darkDy),
-                    radiusPx,
-                    radiusPx,
-                    paint
-                )
+                scratch.set(rect.left + spec.darkDx, rect.top + spec.darkDy, rect.right + spec.darkDx, rect.bottom + spec.darkDy)
+                canvas.drawRoundRect(scratch, radiusPx, radiusPx, paint)
                 paint.color = alpha(tokens.baseHi, if (tokens.mode == NeuMode.LIGHT) 0.9f else 0.72f)
-                canvas.drawRoundRect(
-                    RectF(rect.left + spec.lightDx, rect.top + spec.lightDy, rect.right + spec.lightDx, rect.bottom + spec.lightDy),
-                    radiusPx,
-                    radiusPx,
-                    paint
-                )
+                scratch.set(rect.left + spec.lightDx, rect.top + spec.lightDy, rect.right + spec.lightDx, rect.bottom + spec.lightDy)
+                canvas.drawRoundRect(scratch, radiusPx, radiusPx, paint)
                 paint.maskFilter = null
                 paint.color = tokens.base
                 canvas.drawRoundRect(rect, radiusPx, radiusPx, paint)
@@ -190,6 +178,15 @@ object Neu {
     }
 }
 
+// Draw-scope scratch objects: Compose re-runs drawWithContent on every redraw of a neu surface,
+// and allocating a Paint + BlurMaskFilter per pass churns memory during press animations. Draw
+// recording happens on the main thread, so one shared Paint is safe; the mask filters are
+// immutable and cached per radius (a handful of density-scaled values).
+private val neuScratchPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+private val neuBlurFilters = HashMap<Int, BlurMaskFilter>()
+private fun neuBlurFilter(radius: Float): BlurMaskFilter =
+    neuBlurFilters.getOrPut(radius.toRawBits()) { BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL) }
+
 fun Modifier.neu(tokens: NeuTokens, radius: Dp, level: NeuLevel): Modifier = this.drawWithContent {
     val r = radius.toPx()
     val light = tokens.mode == NeuMode.LIGHT
@@ -211,8 +208,10 @@ fun Modifier.neu(tokens: NeuTokens, radius: Dp, level: NeuLevel): Modifier = thi
 
     if (raised) {
         drawIntoCanvas { c ->
-            val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            val p = neuScratchPaint.apply {
+                style = android.graphics.Paint.Style.FILL
+                strokeWidth = 0f
+                maskFilter = neuBlurFilter(blur)
             }
             // dark shadow bottom-right
             p.color = androidx.compose.ui.graphics.Color(lo).copy(alpha = loA).toArgb()
@@ -230,10 +229,10 @@ fun Modifier.neu(tokens: NeuTokens, radius: Dp, level: NeuLevel): Modifier = thi
         }
         clipPath(clip) {
             drawIntoCanvas { c ->
-                val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                val p = neuScratchPaint.apply {
                     style = android.graphics.Paint.Style.STROKE
                     strokeWidth = blur * 1.6f
-                    maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                    maskFilter = neuBlurFilter(blur)
                 }
                 // dark inner shadow: pushed in from top-left → strong on top/left inner edges
                 p.color = androidx.compose.ui.graphics.Color(lo).copy(alpha = if (light) 0.9f else 0.92f).toArgb()

@@ -517,6 +517,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var weatherAmbientView: WeatherAmbientView? = null
     private var weatherDripView: WeatherDripView? = null
     private var homeWallpaperDrawable: Drawable? = null
+    private var homeWallpaperSourceSig: String? = null
     private var innerWallpaperImageView: ImageView? = null
     private var wallpaperMotionController: LiveWallpaperMotionController? = null
     private var wallpaperParallaxX = 0f
@@ -682,6 +683,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetKeyboardHidden = loadWidgetKeyboardHiddenForCurrentPosture()
         themeMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
         homeWallpaperDrawable = loadHomeWallpaperDrawable()
+        homeWallpaperSourceSig = deviceWallpaperSignature()   // so the first onResume can skip the re-decode
         applyTheme()
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
@@ -891,10 +893,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
         // Reload when we're mirroring the device wallpaper (no launcher-picked override), so a
-        // wallpaper the user changes device-side shows up here on the next resume.
+        // wallpaper the user changes device-side shows up here on the next resume. Compare the
+        // wallpaper ids first: launchers resume on every home press, and unconditionally
+        // re-decoding the image + rebuilding the whole view tree each time was a major heat source.
         if (!useSystemWallpaperOnHome() && (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive() || activeHomeWallpaperUri() == null)) {
-            homeWallpaperDrawable = loadHomeWallpaperDrawable()
-            if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
+            val sig = deviceWallpaperSignature()
+            if (sig != homeWallpaperSourceSig || homeWallpaperDrawable == null) {
+                homeWallpaperSourceSig = sig
+                homeWallpaperDrawable = loadHomeWallpaperDrawable()
+                if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
+            }
         }
         ensureBillingConnected()
         val now = System.currentTimeMillis()
@@ -916,6 +924,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         // Resume the music progress tick paused in onPause (no-op when the bar isn't showing).
         musicProgressRunnable?.let { r -> musicProgressHandler?.let { h -> h.removeCallbacks(r); h.post(r) } }
+        // Re-arm the context-dock check paused in onPause; it runs one cheap signature compare
+        // now and then re-schedules itself every 60 s.
+        contextDockRefreshRunnable?.let { handler.removeCallbacks(it); handler.post(it) }
         // Self-heal an empty Spotify library (e.g. connected in a previous session but never loaded).
         if (::spotifyAuth.isInitialized && spotifyAuth.isConnected &&
             musicPaneHost.spotifyCachedPlaylists.isEmpty() && musicPaneHost.spotifyCachedLikedSongs.isEmpty() && musicPaneHost.spotifyCachedRecent.isEmpty()) {
@@ -929,6 +940,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             renderRibbon()
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
+            refreshDockMusicNotes()   // re-arm the bounded notes burst on return to home
             refreshWeather(force = false)
         }
     }
@@ -947,9 +959,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         parallaxEngine?.stop()
         wallpaperMotionController?.stop()
         widgetCoachAnimator?.cancel()
-        // Halt periodic work while another app is in front: the 1 Hz music-progress tick and the
-        // 45-minute brief refresh both resume in onResume; nothing needs them while backgrounded.
+        // Halt periodic work while another app is in front: the 1 Hz music-progress tick, the
+        // 60 s context-dock check and the 45-minute brief refresh all resume in onResume;
+        // nothing needs them while backgrounded.
         musicProgressRunnable?.let { musicProgressHandler?.removeCallbacks(it) }
+        contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
             prefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
@@ -2216,13 +2230,43 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (previous == KEYBOARD_PLACEMENT_DOCKED) syncVivoDockedExperiment()
     }
 
+    /** Decode a wallpaper source at screen-fill size instead of full camera resolution. A 4-12 MP
+     *  image decoded as-is becomes a texture several times larger than the display that then gets
+     *  resampled on every parallax tick and re-blurred by the glass layers — pure GPU heat.
+     *  [open] must return a fresh stream on each call (bounds pass + pixel pass). */
+    private fun decodeWallpaperSampled(open: () -> java.io.InputStream?): android.graphics.Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        // Bounds-only pass: decodeStream returns null here by design, it only fills outWidth/Height.
+        (open() ?: return null).use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val dm = resources.displayMetrics
+        // Size for the current zoom + the 1.08 motion boost (plus a little slack); the zoom
+        // slider nulls homeWallpaperDrawable on change, so a new zoom always re-decodes.
+        val zoom = innerWallpaperZoom() * (if (liveWallpaperMotionEnabled()) 1.08f else 1f)
+        val target = (maxOf(dm.widthPixels, dm.heightPixels) * zoom * 1.15f).toInt().coerceAtLeast(1)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        return open()?.use { BitmapFactory.decodeStream(it, null, opts) }
+    }
+
+    /** Cheap identity of the current wallpaper sources, so resume can skip the decode + render
+     *  when nothing changed. Wallpaper ids bump whenever the device wallpaper is replaced. */
+    private fun deviceWallpaperSignature(): String {
+        val uri = activeHomeWallpaperUri()?.toString().orEmpty()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return "$uri|legacy"
+        val manager = WallpaperManager.getInstance(this)
+        val sys = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_SYSTEM) }.getOrDefault(-1)
+        val lock = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_LOCK) }.getOrDefault(-1)
+        return "$uri|$sys|$lock|${useLockscreenWallpaperOnHome()}"
+    }
+
     private fun loadHomeWallpaperDrawable(): Drawable? {
         normalizeInnerWallpaperTransform()
         val selectedDrawable = activeHomeWallpaperUri()?.let { uri ->
             runCatching {
-                contentResolver.openInputStream(uri)?.use { input ->
-                    BitmapFactory.decodeStream(input)?.let { bitmap -> BitmapDrawable(resources, bitmap) }
-                }
+                decodeWallpaperSampled { contentResolver.openInputStream(uri) }
+                    ?.let { bitmap -> BitmapDrawable(resources, bitmap) }
             }.onFailure {
                 android.util.Log.w("TeclasWallpaper", "Selected wallpaper load failed", it)
             }.getOrNull()
@@ -2233,10 +2277,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         fun fileDrawable(which: Int): Drawable? {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null
             return runCatching {
-                manager.getWallpaperFile(which)?.use { descriptor ->
-                    BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor)
-                        ?.let { bitmap -> BitmapDrawable(resources, bitmap) }
-                }
+                decodeWallpaperSampled {
+                    manager.getWallpaperFile(which)
+                        ?.let { android.os.ParcelFileDescriptor.AutoCloseInputStream(it) }
+                }?.let { bitmap -> BitmapDrawable(resources, bitmap) }
             }.onFailure {
                 android.util.Log.w("TeclasWallpaper", "Device wallpaper file load failed for $which", it)
             }.getOrNull()
@@ -2302,6 +2346,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    // Last matrix applied by applyInnerWallpaperMatrix, so the 30 Hz motion path can skip the
+    // full-screen invalidate when the computed transform hasn't visibly changed.
+    private var lastWallpaperMatrixImage: java.lang.ref.WeakReference<ImageView>? = null
+    private var lastWallpaperMatrixScale = 0f
+    private var lastWallpaperMatrixTx = Float.NaN
+    private var lastWallpaperMatrixTy = Float.NaN
+
     private fun applyInnerWallpaperMatrix(image: ImageView) {
         val drawable = image.drawable ?: return
         val viewW = image.width.toFloat()
@@ -2319,12 +2370,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
         val offsetX = (innerWallpaperOffsetX() + if (motionActive) wallpaperParallaxX * 0.26f else 0f).coerceIn(-1f, 1f)
         val offsetY = (innerWallpaperOffsetY() + if (motionActive) wallpaperParallaxY * 0.26f else 0f).coerceIn(-1f, 1f)
+        val tx = (viewW - scaledW) / 2f + maxX * offsetX
+        val ty = (viewH - scaledH) / 2f + maxY * offsetY
+        if (lastWallpaperMatrixImage?.get() === image && baseScale == lastWallpaperMatrixScale &&
+            abs(tx - lastWallpaperMatrixTx) < 0.4f && abs(ty - lastWallpaperMatrixTy) < 0.4f
+        ) return // sub-half-px shift: not visible, not worth re-rasterizing the wallpaper
+        lastWallpaperMatrixImage = java.lang.ref.WeakReference(image)
+        lastWallpaperMatrixScale = baseScale
+        lastWallpaperMatrixTx = tx
+        lastWallpaperMatrixTy = ty
         image.imageMatrix = Matrix().apply {
             postScale(baseScale, baseScale)
-            postTranslate(
-                (viewW - scaledW) / 2f + maxX * offsetX,
-                (viewH - scaledH) / 2f + maxY * offsetY
-            )
+            postTranslate(tx, ty)
         }
     }
 
@@ -6689,6 +6746,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun setLauncherBlurred(blurred: Boolean) {
         if (!::rootView.isInitialized || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        lastLauncherBlurStep = -1   // this path bypasses the step cache; don't let it go stale
         rootView.setRenderEffect(
             if (blurred) RenderEffect.createBlurEffect(dp(18).toFloat(), dp(18).toFloat(), Shader.TileMode.CLAMP)
             else null
@@ -8960,6 +9018,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return true
     }
 
+    private var lastLauncherBlurStep = -1
+
     /** Progressive blur+fade of the homescreen behind the left page (0 = clear, 1 = full glass). */
     private fun setLauncherBlurProgress(progress: Float) {
         if (!::rootView.isInitialized || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
@@ -8969,17 +9029,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
             rootView.setRenderEffect(null)
             rootView.alpha = 1f
+            lastLauncherBlurStep = -1
             return
         }
         val p = progress.coerceIn(0f, 1f)
         if (p <= 0.01f) {
             rootView.setRenderEffect(null)
             rootView.alpha = 1f
+            lastLauncherBlurStep = -1
             return
         }
-        val radius = (dp(22).toFloat() * p).coerceAtLeast(0.5f)
-        rootView.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
         rootView.alpha = 1f - p * 0.4f
+        // Quantize to whole-px steps: this runs per animation frame, and installing a brand-new
+        // full-screen blur effect each frame re-blurs the entire root even for sub-px changes.
+        val radius = (dp(22).toFloat() * p).coerceAtLeast(0.5f)
+        val step = (radius + 0.5f).toInt()
+        if (step == lastLauncherBlurStep) return
+        lastLauncherBlurStep = step
+        rootView.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
     }
 
     // ---- Cards View: the homescreen lifts into a REAL card as the board is revealed behind it ----
@@ -16936,30 +17003,46 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshActive()
         }
 
+        // The notes used to re-invalidate every vsync for as long as music played — an unbounded
+        // 60 fps draw loop that kept the render pipeline (and the phone) hot through entire
+        // listening sessions. Same treatment as the weather views: animate a bounded burst on each
+        // activation (play/source change, return to home), then hold a static frame.
+        private var burstUntilMs = 0L
+
         fun refreshActive() {
             val active = target?.let { dockMusicNotesActive(it) } ?: false
             visibility = if (active) View.VISIBLE else View.GONE
             alpha = if (active) 1f else 0f
-            if (active) postInvalidateOnAnimation()
+            if (active) {
+                burstUntilMs = android.os.SystemClock.uptimeMillis() + DOCK_NOTES_BURST_MS
+                invalidate()
+            }
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             if (visibility != View.VISIBLE) return
+            val active = target?.let { dockMusicNotesActive(it) } ?: dockMusicNotesActive(musicTarget())
+            if (!active) { refreshActive(); return }
             val now = android.os.SystemClock.uptimeMillis()
+            val animating = now < burstUntilMs
+            // After the burst the notes freeze on a stable frame (keyed off the burst end).
+            val t = if (animating) now else burstUntilMs
             val w = width.toFloat().coerceAtLeast(1f)
             val h = height.toFloat().coerceAtLeast(1f)
             paint.textSize = h * 0.22f
             for (i in 0 until 3) {
-                val phase = ((now + i * 520L) % 1800L) / 1800f
+                val phase = ((t + i * 520L) % 1800L) / 1800f
                 val alpha = (kotlin.math.sin(phase * Math.PI).toFloat() * 0.58f).coerceIn(0f, 0.58f)
                 val x = w * (0.30f + i * 0.19f) + kotlin.math.sin((phase * 6.283f) + i).toFloat() * w * 0.055f
                 val y = h * (0.78f - phase * 0.70f)
                 paint.color = adjustAlpha(accent, alpha)
                 canvas.drawText(notes[i % notes.size].toString(), x, y, paint)
             }
-            val active = target?.let { dockMusicNotesActive(it) } ?: dockMusicNotesActive(musicTarget())
-            if (isShown && active) postInvalidateOnAnimation() else refreshActive()
+            // Media-session changes re-trigger refreshDockMusicNotes, but AudioManager-only
+            // sources (no session) have no callback — poll slowly while frozen so the notes
+            // still hide when that audio stops.
+            if (isShown) postInvalidateDelayed(if (animating) DOCK_NOTES_FRAME_MS else 2_500L)
         }
     }
 
@@ -22334,6 +22417,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val WEATHER_ANIMATION_BURST_MS = 6500L
         private const val WEATHER_AMBIENT_BURST_MS = 6500L
         private const val WEATHER_DRIP_BURST_MS = 6500L
+        private const val DOCK_NOTES_BURST_MS = 12_000L
+        private const val DOCK_NOTES_FRAME_MS = 33L // ~30 fps is plenty for bobbing glyphs
         private const val WIDGET_HOST_ID = 1407
         private const val WIDGET_BIND_REQUEST_CODE = 501
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502

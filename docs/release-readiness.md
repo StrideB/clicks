@@ -78,7 +78,12 @@ So you have both options, independently or together:
 ## Battery/perf posture (for the beta listing)
 
 - Release builds AOT-optimize via R8 + bundled baseline profiles (profileinstaller).
-- No polling while backgrounded (music tick + brief refresh pause in onPause).
-- Cosmetic sensors run at 15 Hz and stop when not visible; no wakelocks, no alarms, no foreground
-  services except the user-invoked docked keyboard overlay.
+- No polling while backgrounded (music tick, context-dock check + brief refresh pause in onPause).
+- Cosmetic sensors run at 15 Hz, stop when not visible, and skip their callbacks entirely when the
+  device is held steady (dead-band on emitted deltas), so an idle home screen draws no frames;
+  no wakelocks, no alarms, no foreground services except the user-invoked docked keyboard overlay.
+- All decorative animations are burst-bounded (weather ≤6.5 s, dock music notes ≤12 s @ 30 fps) —
+  nothing self-invalidates at vsync indefinitely.
+- Wallpapers decode at screen-fill size for the active zoom (not camera resolution) and are only
+  re-decoded when the wallpaper id/uri actually changes, not on every resume.
 - LeakCanary guards debug builds; heap-verified on emulator.
