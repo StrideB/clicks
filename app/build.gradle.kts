@@ -143,13 +143,6 @@ dependencies {
     // Model + tokenizer files are user-imported into filesDir/semantic/ — nothing bundled.
     implementation(libs.localagents.rag)
     implementation(libs.mediapipe.tasks.genai)
-    // Shizuku: adb/root-privileged binder access so the launcher can pin apps into the docked
-    // top region (setTaskWindowingMode + resizeTask) — freeform launchBounds alone don't survive
-    // in-app navigation and are blocked outright on some OEMs. HiddenApiBypass reaches the hidden
-    // IActivityTaskManager/RunningTaskInfo APIs from the app process.
-    implementation(libs.shizuku.api)
-    implementation(libs.shizuku.provider)
-    implementation(libs.hiddenapibypass)
 
     // Unit tests for the shared keyboard core (pure-JVM logic: word placement, prediction/autocorrect).
     testImplementation(libs.junit)

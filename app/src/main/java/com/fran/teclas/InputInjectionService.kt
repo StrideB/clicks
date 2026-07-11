@@ -373,36 +373,8 @@ class InputInjectionService : AccessibilityService() {
             return
         }
         val bounds = Rect(); topApp.getBoundsInScreen(bounds)
-        // Shizuku re-pin: if the app's window dips into the keyboard band (in-app navigation resized
-        // it, or the OEM launched it fullscreen), force it back to the top region. Holds it pinned
-        // across navigation and works even where freeform launchBounds are ignored.
-        val keyboardTop = DockedFreeform.lastKeyboardTopPx
-        val slop = (8 * resources.displayMetrics.density).toInt()
-        if (keyboardTop > 0 && bounds.bottom > keyboardTop + slop && !isSystemRecentsSurface(null)) {
-            topApp.root?.packageName?.toString()?.let { requestPin(it) }
-        }
         val inTopRegion = bounds.bottom in 1 until (displayHeight - (200 * resources.displayMetrics.density).toInt())
         DockedFreeform.externalAppInFront = inTopRegion
-    }
-
-    private var pinPackage: String? = null
-    private var lastPinAtMs = 0L
-    private val pinRunnable = Runnable { doPin() }
-
-    private fun requestPin(pkg: String) {
-        if (!ShizukuPinner.isReady()) return
-        pinPackage = pkg
-        handler.removeCallbacks(pinRunnable)
-        handler.postDelayed(pinRunnable, 120)   // debounce the burst of window-change events
-    }
-
-    private fun doPin() {
-        val pkg = pinPackage ?: return
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastPinAtMs < 400) return     // cooldown so a stubborn app can't cause a pin storm
-        lastPinAtMs = now
-        val bounds = DockedFreeform.pinBounds(this)
-        Thread { ShizukuPinner.pin(pkg, bounds) }.start()   // binder call off the main thread
     }
 
     /** Editable field in the foreground app window — any TYPE_APPLICATION window not owned by us. */

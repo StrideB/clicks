@@ -112,8 +112,6 @@ import com.fran.teclas.predict.LaunchSource
 import com.fran.teclas.predict.Predictor
 import com.fran.teclas.predict.Space
 import com.fran.teclas.predict.SpaceManager
-import com.fran.teclas.keyboard.SmsIngestionEngine
-import com.fran.teclas.keyboard.SmsSeedingCoordinator
 import com.fran.teclas.keyboard.SpatialScorer
 import com.fran.teclas.keyboard.WordBoundaryDeleter
 import com.fran.teclas.db.NgramRepository
@@ -492,7 +490,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private lateinit var contactsLauncher: ActivityResultLauncher<String>
-    private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var calendarPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var weatherPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var photosPermissionLauncher: ActivityResultLauncher<String>
@@ -593,9 +590,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val pending = pendingTypeToDoCommand
             pendingTypeToDoCommand = null
             if (pending != null) executeTypeToDoCommand(pending) else renderRibbon()
-        }
-        smsPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) triggerSmsSeeding()
         }
         calendarPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             calendarEvents = loadCalendarEvents()
@@ -770,7 +764,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         handleKeyboardActionIntent(intent)
         rootView.post { maybeShowKeyboardPlacementIntro() }
         refreshWeather(force = false)
-        maybeRequestSmsPermission()
         mediaSessionSource.start()
         mediaUiScope.launch {
             mediaSessionSource.nowPlaying.collect { info ->
@@ -883,8 +876,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
         DockedFreeform.externalAppInFront = false
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
-        // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
-        DockedFreeform.ensureArmedIfEnabled(this)
         syncDockParallax()
         syncWallpaperMotion()
         stopService(Intent(this, DockedKeyboardService::class.java))
@@ -13127,32 +13118,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun maybeRequestSmsPermission() {
-        val seeder = SmsSeedingCoordinator(this)
-        if (!seeder.needsSeeding()) return
-        if (checkSelfPermission(android.Manifest.permission.READ_SMS) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            triggerSmsSeeding()
-        } else {
-            smsPermissionLauncher.launch(android.Manifest.permission.READ_SMS)
-        }
-    }
-
-    private fun triggerSmsSeeding() {
-        val seeder = SmsSeedingCoordinator(this)
-        mediaUiScope.launch {
-            seeder.runIfNeeded { smsFrequencies ->
-                // Merge: wordlist is base, SMS boosts words the user actually uses
-                val merged = HashMap<String, Float>(wordlistFrequencies)
-                smsFrequencies.forEach { (word, smsScore) ->
-                    val existing = merged[word] ?: 0f
-                    merged[word] = minOf(1f, existing + smsScore * 0.4f)
-                }
-                predictionEngine = PredictionEngine(merged)
-            }
-        }
-    }
-
     private fun updateGlideLayout() {
         val clf = glideClassifier ?: return
         if (keyBounds.isEmpty()) return
@@ -15553,21 +15518,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(keyboardSwapAnimationSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
-        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()) {
-            parent.addView(settingToggle("APPS IN TOP REGION", DockedFreeform.isFeatureEnabled(this)) {
-                toggleDockedTopRegion()
-            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-            if (DockedFreeform.isFeatureEnabled(this)) {
-                parent.addView(settingAction("   ${dockedTopRegionStatusLabel()}") {
-                    haptic(this)
-                    showDockedTopRegionSetup()
-                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-                parent.addView(settingAction("   PIN APPS (SHIZUKU)   ${shizukuStatusLabel()}") {
-                    haptic(this)
-                    onShizukuRowTapped()
-                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-            }
-        }
         if (devExperimentsEnabled() && VivoDockedExperiment.isAvailable(this)) {
             parent.addView(vivoDockedExperimentSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
         }
@@ -17389,10 +17339,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else null
         val computed = (screenH - activeRootDockHeight()).takeIf { it in 1 until screenH }
         val keyboardTopPx = listOfNotNull(measured, computed).minOrNull()?.minus(dp(10))
-        // Share the top with the accessibility service so it can re-pin via Shizuku on window changes.
+        // Share the measured top with the accessibility service (used by the keyboard router).
         keyboardTopPx?.let { DockedFreeform.lastKeyboardTopPx = it }
-        // Returns an options Bundle only when the docked "apps in top region" feature is on and
-        // freeform is armed; otherwise null → normal fullscreen launch.
+        // Dormant on this build: freeform arming is stripped, so this always returns null and the
+        // caller performs a normal fullscreen launch.
         return DockedFreeform.activityOptions(this, keyboardTopPx)
     }
 
@@ -17448,111 +17398,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             })
-        }
-    }
-
-    // ---- Docked "apps in top region" (freeform) toggle + arming flow ----
-
-    private fun toggleDockedTopRegion() {
-        haptic(window.decorView)
-        val turningOn = !DockedFreeform.isFeatureEnabled(this)
-        DockedFreeform.setFeatureEnabled(this, turningOn)
-        if (turningOn) {
-            // Arming (the freeform globals) is the real enabler and the only reliable signal —
-            // some OEMs support freeform without advertising the system feature. Needs the one-time
-            // WRITE_SECURE_SETTINGS grant first; if that's missing, walk the user through it.
-            when {
-                !DockedFreeform.hasWriteSecureSettings(this) ->
-                    showDockedTopRegionSetup()
-                DockedFreeform.arm(this) ->
-                    Toast.makeText(this, "Top-region mode on. If apps still open fullscreen, reboot once.", Toast.LENGTH_LONG).show()
-                else ->
-                    showDockedTopRegionSetup()
-            }
-        } else {
-            DockedFreeform.disarm(this)
-        }
-        renderPaneContent(teclasSettingsTarget())
-    }
-
-    private fun dockedTopRegionStatusLabel(): String = when {
-        !DockedFreeform.hasWriteSecureSettings(this) -> "NEEDS ADB GRANT →"
-        !DockedFreeform.isArmed(this) -> "TAP TO ARM →"
-        else -> "READY ✓"
-    }
-
-    private fun showDockedTopRegionSetup() {
-        val cmd = DockedFreeform.adbGrantCommand(this)
-        val hasPerm = DockedFreeform.hasWriteSecureSettings(this)
-        val armed = DockedFreeform.isArmed(this)
-        val body = buildString {
-            append("Opens every app in the top region while the keyboard is docked.\n\n")
-            when {
-                !hasPerm -> {
-                    append("One-time setup — run this from a computer with the phone connected:\n\n$cmd\n\n")
-                    append("Then reopen this dialog and tap Re-check.")
-                }
-                !armed -> append("Permission granted. Tap Arm now to enable freeform windows.")
-                else -> append("Ready. Apps you launch from Teclas open in the top region above the docked keyboard. If any still open fullscreen, reboot once.")
-            }
-        }
-        val builder = AlertDialog.Builder(this)
-            .setTitle("Apps in top region")
-            .setMessage(body)
-            .setNegativeButton("Close", null)
-        if (!hasPerm) {
-            builder.setPositiveButton("Copy command") { _, _ ->
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                cm?.setPrimaryClip(android.content.ClipData.newPlainText("adb", cmd))
-                Toast.makeText(this, "Command copied", Toast.LENGTH_SHORT).show()
-            }
-            builder.setNeutralButton("Re-check") { _, _ ->
-                if (DockedFreeform.hasWriteSecureSettings(this)) {
-                    DockedFreeform.arm(this)
-                    Toast.makeText(this, "Top-region mode armed", Toast.LENGTH_LONG).show()
-                } else {
-                    Toast.makeText(this, "Permission not granted yet", Toast.LENGTH_SHORT).show()
-                }
-                renderPaneContent(teclasSettingsTarget())
-            }
-        } else if (!armed) {
-            builder.setPositiveButton("Arm now") { _, _ ->
-                DockedFreeform.arm(this)
-                renderPaneContent(teclasSettingsTarget())
-            }
-        }
-        builder.show()
-    }
-
-    private fun shizukuStatusLabel(): String = when {
-        !ShizukuPinner.isRunning() -> "NOT RUNNING →"
-        !ShizukuPinner.hasPermission() -> "GRANT →"
-        else -> "ON ✓"
-    }
-
-    private fun onShizukuRowTapped() {
-        when {
-            !ShizukuPinner.isRunning() -> AlertDialog.Builder(this)
-                .setTitle("Pin apps with Shizuku")
-                .setMessage(
-                    "Holds apps in the top region across their own screens, and works on phones that block freeform.\n\n" +
-                        "1. Install Shizuku from the Play Store.\n" +
-                        "2. Start it (Wireless debugging, or via adb).\n" +
-                        "3. Reopen this row and tap Grant."
-                )
-                .setPositiveButton("OK", null)
-                .show()
-            !ShizukuPinner.hasPermission() -> ShizukuPinner.requestPermission { granted ->
-                runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        if (granted) "Shizuku granted — apps will stay pinned to the top region" else "Shizuku permission denied",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    renderPaneContent(teclasSettingsTarget())
-                }
-            }
-            else -> Toast.makeText(this, "Shizuku active — apps pinned to the top region", Toast.LENGTH_SHORT).show()
         }
     }
 
