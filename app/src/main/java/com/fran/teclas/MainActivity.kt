@@ -568,6 +568,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var musicProgressRunnable: Runnable? = null
     private var homeEditChipView: TextView? = null
     private var homeEditMode = false
+    // True while a home widget (the movable weather widget) is being dragged — launcher gestures are
+    // suppressed so the drag isn't hijacked/cancelled by a swipe.
+    private var weatherWidgetDragging = false
     private var pendingTrashPhotoId: Long? = null
     private val homeTileViews = mutableMapOf<String, FrameLayout>()
     private lateinit var sizeValueView: TextView
@@ -1246,7 +1249,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .setInterpolator(android.view.animation.DecelerateInterpolator(2f)).start()
     }
 
+    // Widget editing owns the screen: the widget-select sheet, home edit mode, dragging the movable
+    // weather widget, or editing a board's grid. While any of these is active, no launcher gesture
+    // (library/board swipes, triple-tap wallpaper, pane swipes) may fire — the touch goes straight to
+    // the widget UI so a move/placement isn't hijacked mid-gesture.
+    private fun widgetEditGestureLock(): Boolean {
+        if (homeEditMode || weatherWidgetDragging || widgetPickerView != null) return true
+        if (::spaceBoardController.isInitialized && spaceBoardController.isEditing()) return true
+        if (::homeLeftController.isInitialized && homeLeftController.isEditing()) return true
+        return false
+    }
+
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (widgetEditGestureLock()) return super.dispatchTouchEvent(event)
         detectDockedWallpaperTripleTap(event)   // passive: triple-tap docked home → change wallpaper
         if (innerWallpaperEditMode) return super.dispatchTouchEvent(event)
         if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
@@ -1413,6 +1428,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun render() {
         stopDeleteRepeat(clearFired = true)
+        weatherWidgetDragging = false   // the widget is rebuilt below; never carry a stuck drag lock
         ensureDockedHomeSeed()   // one-time: copy the shared home setup into the docked namespace
         keyViews.clear()
         keyBounds.clear()
@@ -1476,7 +1492,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setBackgroundColor(if (useSystemWallpaperOnHome()) Color.TRANSPARENT else activeNeuTokens.base)
                 if (!useSystemWallpaperOnHome()) {
                     homeWallpaperLayer()?.let {
-                        addView(it, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                        val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                        // Docked: fit the wallpaper to the home area above the keyboard instead of
+                        // full-screen — otherwise its lower half is buried behind the opaque keyboard
+                        // and only the top of the image is ever visible.
+                        if (phoneDockedFullBleed) lp.bottomMargin = activeRootDockHeight() + keyboardBottomLift()
+                        addView(it, lp)
                     }
                 }
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -4492,16 +4513,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetKeyboardModule?.let { populateWidgetKeyboardModule(it) }
     }
 
+    // The hide/show keyboard slider (two-finger swipe up/down) is a WIDGET-mode feature only. In
+    // docked mode the keyboard stays put — swipe-down must never bring it down.
     private fun widgetKeyboardSliderAvailable(): Boolean =
         keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET ||
-            isUnfoldedInnerLayoutActive() ||
-            (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && openPane == null)
+            isUnfoldedInnerLayoutActive()
 
     private fun widgetKeyboardHiddenPref(inner: Boolean = isUnfoldedInnerLayoutActive()): String =
         if (inner) INNER_WIDGET_KEYBOARD_HIDDEN_PREF else COVER_WIDGET_KEYBOARD_HIDDEN_PREF
 
     private fun loadWidgetKeyboardHiddenForCurrentPosture(): Boolean =
-        prefs().getBoolean(widgetKeyboardHiddenPref(), false)
+        // Docked mode never hides the keyboard (the slider is widget-only), so it can't get stranded
+        // hidden via the cover pref that widget mode shares. Only load the saved state off-docked.
+        keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED &&
+            prefs().getBoolean(widgetKeyboardHiddenPref(), false)
 
     private fun saveWidgetKeyboardHiddenForCurrentPosture(hidden: Boolean = widgetKeyboardHidden) {
         prefs().edit().putBoolean(widgetKeyboardHiddenPref(), hidden).apply()
@@ -5434,6 +5459,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     if (!dragging && (abs(dx) > dp(4) || abs(dy) > dp(4))) {
                         cancelPendingLongPress()
                         dragging = true
+                        weatherWidgetDragging = true
                         freezeWeatherWidgetWidthForDrag(this)
                         dispatchCancelToChildren()
                         animate().scaleX(1.025f).scaleY(1.025f).setDuration(90).start()
@@ -5446,6 +5472,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     cancelPendingLongPress()
                     parent?.requestDisallowInterceptTouchEvent(false)
+                    weatherWidgetDragging = false
                     if (longPressFired) {
                         longPressFired = false
                         return true
@@ -16271,7 +16298,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             else -> query
         }
         val hint = when {
-            libraryOpen && typedText.isBlank() -> "APP LIBRARY  ·  TAP TOP BUTTON FOR CATEGORY / GRID"
+            libraryOpen && typedText.isBlank() -> "SEARCH"
             keyboardSettingsOpen -> "KEYBOARD SETTINGS"
             numberPadOpen && typedText.isBlank() -> "TYPE NUMBER  ·  CONTACTS APPEAR ABOVE  ·  GO = DIAL"
             pane?.kind == PaneKind.CHAT && typedText.isBlank() -> "→ ${pane.name.uppercase(Locale.US)}"
