@@ -3964,6 +3964,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private val NON_LETTER_RE = Regex("[^\\p{L}]+")
 
         // Temporary: keystroke-path timing to logcat (tag TeclasPerf) to localize the freeze.
-        private const val PERF_LOG = true
+        private const val PERF_LOG = false
     }
 }
