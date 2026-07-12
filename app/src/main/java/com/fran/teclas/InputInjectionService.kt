@@ -407,9 +407,9 @@ class InputInjectionService : AccessibilityService() {
         // Shizuku re-pin: if the app's window dips into the keyboard band (in-app navigation resized
         // it, or the OEM launched it fullscreen), force it back to the top region. Holds it pinned
         // across navigation and works even where freeform launchBounds are ignored.
-        val keyboardTop = DockedFreeform.lastKeyboardTopPx
+        val keyboardTop = DockedFreeform.pinBounds(this).bottom
         val slop = (8 * resources.displayMetrics.density).toInt()
-        if (keyboardTop > 0 && bounds.bottom > keyboardTop + slop && !isSystemRecentsSurface(null)) {
+        if (kotlin.math.abs(bounds.bottom - keyboardTop) > slop && !isSystemRecentsSurface(null)) {
             topApp.root?.packageName?.toString()?.let { requestPin(it) }
         }
         val inTopRegion = bounds.bottom in 1 until (displayHeight - (200 * resources.displayMetrics.density).toInt())

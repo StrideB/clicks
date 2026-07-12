@@ -54,8 +54,10 @@ internal object DockedFreeform {
     fun pinBounds(context: Context): Rect {
         val dm = context.resources.displayMetrics
         val minH = (360 * dm.density).toInt()
-        val bottom = lastKeyboardTopPx.takeIf { it in minH..dm.heightPixels }
+        val visualBottom = lastKeyboardTopPx.takeIf { it in minH..dm.heightPixels }
             ?: (dm.heightPixels - keyboardHeightPx(context)).coerceAtLeast(minH)
+        val bottom = (visualBottom + DockedKeyboardMetrics.freeformTargetNudgePx(context))
+            .coerceIn(minH, dm.heightPixels)
         return Rect(0, 0, dm.widthPixels, bottom)
     }
 
@@ -152,11 +154,13 @@ internal object DockedFreeform {
     fun topBounds(context: Context, keyboardTopPx: Int? = null): Rect {
         val dm = context.resources.displayMetrics
         val minHeight = (360 * dm.density).toInt()
-        val bottom = if (keyboardTopPx != null && keyboardTopPx in minHeight..dm.heightPixels) {
+        val visualBottom = if (keyboardTopPx != null && keyboardTopPx in minHeight..dm.heightPixels) {
             keyboardTopPx
         } else {
             (dm.heightPixels - keyboardHeightPx(context)).coerceAtLeast(minHeight)
         }
+        val bottom = (visualBottom + DockedKeyboardMetrics.freeformTargetNudgePx(context))
+            .coerceIn(minHeight, dm.heightPixels)
         return Rect(0, 0, dm.widthPixels, bottom)
     }
 
@@ -178,9 +182,7 @@ internal object DockedFreeform {
     }
 
     private fun keyboardHeightPx(context: Context): Int {
-        val density = context.resources.displayMetrics.density
-        val size = KeyboardSettings.keyboardSize(context)
-        return ((238 + (size * 54 / 100)) * density).toInt()
+        return DockedKeyboardMetrics.externalReservedBandHeightPx(context)
     }
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

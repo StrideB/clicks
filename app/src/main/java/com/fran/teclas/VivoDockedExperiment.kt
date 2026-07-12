@@ -71,9 +71,7 @@ internal object VivoDockedExperiment {
     }
 
     fun keyboardHeight(context: Context): Int {
-        val density = context.resources.displayMetrics.density
-        val size = KeyboardSettings.keyboardSize(context)
-        return ((238 + (size * 54 / 100)) * density).toInt()
+        return DockedKeyboardMetrics.externalReservedBandHeightPx(context)
     }
 
     @SuppressLint("PrivateApi")
