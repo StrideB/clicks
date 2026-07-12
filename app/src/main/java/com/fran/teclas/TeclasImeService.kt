@@ -789,6 +789,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            // Keys are centered, not baseline-aligned; skipping the baseline pass trims the measure
+            // cost of every key row — paid at keyboard-open (buildKeyboard) and on each layout swap.
+            isBaselineAligned = false
             val inset = when (rowIndex) {
                 1 -> dp(12)
                 2 -> dp(6)
@@ -1679,6 +1682,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // We center children vertically ourselves, so the default baseline-alignment measure pass
+            // buys nothing and only costs an extra measure of every text child on each strip repaint.
+            isBaselineAligned = false
             setPadding(dp(6), dp(3), dp(6), dp(3))
         }
         suggestionStrip = strip
@@ -1722,6 +1728,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // Same as the strip container: we center vertically, so skip the baseline-alignment pass
+            // that would otherwise re-measure all 3 suggestion slots + chips a second time per repaint.
+            isBaselineAligned = false
         }
         stripFixView = TextView(this).apply {
             text = "⌁ Fix"; gravity = Gravity.CENTER; textSize = 14f
