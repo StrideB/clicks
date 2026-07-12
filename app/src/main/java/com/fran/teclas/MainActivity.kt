@@ -12070,9 +12070,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         spaceCursorLastX = event.rawX; spaceCursorMoved = false
                         keyTouchCancelledByMultiTouch = false
                         v.background = pressedBg()
-                        v.animate().translationY(dp(4).toFloat()).setDuration(35L).start()
+                        // Instant press nudge — no ViewPropertyAnimator on the per-key hot path.
+                        v.translationY = dp(4).toFloat()
                         keyHaptic(label)
-                        keyPreviewManager.show(v, label)
                         if (longPressAction != null) {
                             longPressFired = false
                             val r = Runnable { longPressFired = true; longPressAction() }
@@ -12089,8 +12089,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         keyTouchCancelledByMultiTouch = true
                         reserveKeyboardSlideGesture(event)
                         v.background = idleBg()
-                        keyPreviewManager.dismiss()
-                        v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                        v.translationY = 0f
                         cancelLongPress()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
                         if (label == "back") stopDeleteRepeat(clearFired = true)
@@ -12123,7 +12122,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         v.background = idleBg()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
                         seemeReleaseHaptic(v)
-                        v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                        v.translationY = 0f
                         cancelLongPress()
                         if (keyTouchCancelledByMultiTouch) {
                             keyTouchCancelledByMultiTouch = false
@@ -12155,7 +12154,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     MotionEvent.ACTION_CANCEL -> {
                         v.background = idleBg()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
-                        v.animate().translationY(0f).rotationX(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                        v.translationY = 0f
                         if (label == "back") stopDeleteRepeat(clearFired = true)
                         spaceCursorMoved = false
                         keyTouchCancelledByMultiTouch = false
@@ -13078,6 +13077,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val p = predictionCore.previousWord()
             val gen = ++launcherPredictGeneration
             runCatching { launcherPredictExecutor.execute {
+                // Skip stale queued work so a fast burst can't back up the worker thread.
+                if (gen != launcherPredictGeneration) return@execute
                 val base = predictionCore.computeSuggestions(w, p)
                 val correction = if (w.length >= 2)
                     autocorrectCore.computeCorrection(w, ngramRepo.cachedNextWords(p)) else null
