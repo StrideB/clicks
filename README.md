@@ -56,6 +56,16 @@ The homescreen visual language is dark, premium, and glass-like:
 
 Important: do not redesign this as the original hard-coded Message Hub/app ribbon prototype or as a plain app icon list.
 
+Battery/heat: the homescreen has no sensor-driven parallax. The favorites dock
+does not tilt with device motion, and the home wallpaper does not pan with
+device motion — both were removed (along with their `TYPE_ROTATION_VECTOR`
+sensor listeners, `ParallaxSensorEngine` and `LiveWallpaperMotionController`,
+deleted entirely) because continuous ~30 Hz sensor fusion plus full-screen
+wallpaper re-invalidation was a real heat/battery cost. Do not re-add tilt-
+driven dock or wallpaper motion. (The keyboard's separate "tilt lighting"
+setting/toggle is unrelated and untouched — it's keycap-highlight territory,
+not a homescreen effect, and out of scope here.)
+
 ## Current Dimensions And Layout Constants
 
 These are the current code-level sizing rules:
@@ -124,6 +134,22 @@ the full default browser. Detection is `InAppGoogleSearchEngine.urlFromQuery`
 (no spaces, no `@`, `Patterns.WEB_URL` full match, scheme defaulted to https).
 Opening triggers only on tap/GO — never on keystroke, since a prefix of a URL
 is itself a valid URL.
+
+Search results read top-down in three zones: one instant answer, apps, then
+everything else grouped under headers ("People", "Web", "Because you're home",
+etc. — `searchZoneHeader`, sized as real headings, not tiny eyebrow labels).
+Apps (zone 2, and predicted-app context suggestions) render as a fixed-column
+grid matching the App Library's own tile treatment (icon frame size, label
+size/color) via `searchAppGrid`/`searchAppTile` — never a horizontal scroll
+row, so nothing in search reads as draggable. Tap/long-press stay search-
+specific (open app; long-press pins to dock or the active Space board), not
+the library's rename/hide icon menu.
+
+Search text size is user-controlled: Settings → `SEARCH TEXT SIZE` slider
+(0–100, default 50 = Medium, `SEARCH_FONT_SIZE_PREF`) scales zone headers,
+result titles/subtitles, and app-tile labels together via `searchFontScale()`.
+Also reachable through type-to-customize by typing `search text size` or
+`font size`.
 
 ## Widget Stack
 

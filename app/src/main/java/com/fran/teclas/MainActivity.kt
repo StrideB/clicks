@@ -44,7 +44,6 @@ import android.graphics.drawable.LayerDrawable
 import com.fran.teclas.glide.KeyInfo
 import com.fran.teclas.glide.StatisticalGlideTypingClassifier
 import com.fran.teclas.keyboard.neural.TimedPoint
-import com.fran.teclas.hardware.ParallaxSensorEngine
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
@@ -522,9 +521,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var homeWallpaperDrawable: Drawable? = null
     private var homeWallpaperSourceSig: String? = null
     private var innerWallpaperImageView: ImageView? = null
-    private var wallpaperMotionController: LiveWallpaperMotionController? = null
-    private var wallpaperParallaxX = 0f
-    private var wallpaperParallaxY = 0f
     private var innerWallpaperEditMode = false
     private var pendingWallpaperInnerScope: Boolean? = null
     private var wallpaperLongPressRunnable: Runnable? = null
@@ -545,7 +541,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var favoritesDockContextStampView: TextView? = null
     private var favoritesDockContextShowing = false
     private var favoritesDockContextPreferred = false
-    private var parallaxEngine: ParallaxSensorEngine? = null
     private lateinit var homeGridView: FrameLayout
     private lateinit var rootView: LinearLayout
     internal lateinit var contentFrame: FrameLayout
@@ -750,12 +745,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         initSpellChecker()
         hapticEngine = CustomHapticEngine(this)
         spatialScorer = SpatialScorer()
-        parallaxEngine = ParallaxSensorEngine(this) { pitch, roll -> applyDockParallax(pitch, roll) }
-        wallpaperMotionController = LiveWallpaperMotionController(this) { x, y ->
-            wallpaperParallaxX = x
-            wallpaperParallaxY = y
-            innerWallpaperImageView?.let { image -> applyInnerWallpaperMatrix(image) }
-        }
         spatialScorer.importState(prefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
@@ -891,8 +880,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
-        syncDockParallax()
-        syncWallpaperMotion()
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
@@ -961,8 +948,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onPause() {
         cancelWidgetKeyboardSwap(resetTheme = true)
-        parallaxEngine?.stop()
-        wallpaperMotionController?.stop()
         widgetCoachAnimator?.cancel()
         // Halt periodic work while another app is in front: the 1 Hz music-progress tick, the
         // 60 s context-dock check and the 45-minute brief refresh all resume in onResume;
@@ -1408,83 +1393,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    // Start/stop the dock parallax sensor to match visibility — runs only on the home surface
-    // (dock present, no pane/library over it), and stops otherwise to keep it cheap.
-    private fun syncDockParallax() {
-        val engine = parallaxEngine ?: return
-        if (engine.isSupported && ::favoritesDockView.isInitialized && homeWidgetStackVisible() && !libraryOpen) {
-            engine.start()
-        } else {
-            engine.stop()
-            resetDockParallax()
-        }
-    }
-
-    // LiveSlider-inspired wallpaper motion. It is intentionally scoped to the home wallpaper
-    // canvas and pauses under overlays/edit mode so gesture-heavy surfaces stay deterministic.
-    private fun syncWallpaperMotion() {
-        val controller = wallpaperMotionController ?: return
-        val shouldRun = controller.isSupported &&
-            liveWallpaperMotionEnabled() &&
-            launcherWallpaperCanvasActive() &&
-            innerWallpaperImageView != null &&
-            !innerWallpaperEditMode &&
-            openPane == null &&
-            !libraryOpen &&
-            !todayOpen &&
-            !libraryDragActive &&
-            spaceBoardOverlay == null &&
-            homeLeftOverlay == null &&
-            widgetBoardView == null
-        if (shouldRun) {
-            controller.start()
-        } else {
-            controller.stop()
-            resetWallpaperMotion()
-        }
-    }
-
-    private fun resetWallpaperMotion() {
-        wallpaperParallaxX = 0f
-        wallpaperParallaxY = 0f
-        innerWallpaperImageView?.let { applyInnerWallpaperMatrix(it) }
-    }
-
-    private fun resetDockParallax() {
-        if (!::favoritesDockView.isInitialized) return
-        val dock = favoritesDockView
-        dock.translationX = 0f; dock.translationY = 0f; dock.rotationX = 0f; dock.rotationY = 0f
-        for (i in 0 until dock.childCount) {
-            dock.getChildAt(i).apply { translationX = 0f; translationY = 0f; rotationX = 0f; rotationY = 0f }
-        }
-    }
-
-    // Favorites-dock-only tilt parallax: the dock plate drifts subtly one way while the icons move
-    // the other with a slight 3D skew, for a floating, layered feel. Deliberately small.
-    private fun applyDockParallax(pitch: Float, roll: Float) {
-        if (!::favoritesDockView.isInitialized) return
-        val dock = favoritesDockView
-        if (dock.childCount == 0 || !dock.isShown) return
-        val tiltX = (roll / 0.42f).coerceIn(-1f, 1f)
-        val tiltY = (pitch / 0.42f).coerceIn(-1f, 1f)
-        val density = resources.displayMetrics.density
-        // Tilt the whole dock like one physical plate: perspective rotation about its center. A
-        // close camera makes these small angles read as genuine 3D depth rather than a flat skew.
-        dock.cameraDistance = density * 3200f
-        dock.rotationY = tiltX * 4f
-        dock.rotationX = -tiltY * 4f
-        // Icons float a hair in front of the plate for layered parallax; the plate itself does the 3D.
-        val maxT = density * 2.5f
-        for (i in 0 until dock.childCount) {
-            dock.getChildAt(i).apply {
-                translationX = tiltX * maxT
-                translationY = tiltY * maxT
-                rotationX = 0f
-                rotationY = 0f
-            }
-        }
-    }
-
     private fun render() {
         stopDeleteRepeat(clearFired = true)
         weatherWidgetDragging = false   // the widget is rebuilt below; never carry a stuck drag lock
@@ -1577,8 +1485,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         updateClock()
         renderHub()
         renderFavoritesDock()
-        syncDockParallax()
-        syncWallpaperMotion()
         renderRibbon()
         if (!unfolded) {
             openPane?.let { showPane(it, animate = false) }
@@ -2167,9 +2073,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun innerWallpaperOffsetY(): Float =
         prefs().getInt(activeWallpaperOffsetYPref(), 0).coerceIn(-100, 100) / 100f
 
-    private fun liveWallpaperMotionEnabled(): Boolean =
-        prefs().getBoolean(HOME_LIVE_WALLPAPER_MOTION_PREF, true)
-
     private fun innerWallpaperModeActive(): Boolean =
         openPane == null && (useSystemWallpaperOnHome() || activeHomeWallpaperUri() != null)
 
@@ -2321,8 +2224,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     /** Decode a wallpaper source at screen-fill size instead of full camera resolution. A 4-12 MP
-     *  image decoded as-is becomes a texture several times larger than the display that then gets
-     *  resampled on every parallax tick and re-blurred by the glass layers — pure GPU heat.
+     *  image decoded as-is becomes a texture several times larger than the display — pure GPU heat.
      *  [open] must return a fresh stream on each call (bounds pass + pixel pass). */
     private fun decodeWallpaperSampled(open: () -> java.io.InputStream?): android.graphics.Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -2330,9 +2232,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         (open() ?: return null).use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         val dm = resources.displayMetrics
-        // Size for the current zoom + the 1.08 motion boost (plus a little slack); the zoom
-        // slider nulls homeWallpaperDrawable on change, so a new zoom always re-decodes.
-        val zoom = innerWallpaperZoom() * (if (liveWallpaperMotionEnabled()) 1.08f else 1f)
+        // Size for the current zoom (plus a little slack); the zoom slider nulls
+        // homeWallpaperDrawable on change, so a new zoom always re-decodes.
+        val zoom = innerWallpaperZoom()
         val target = (maxOf(dm.widthPixels, dm.heightPixels) * zoom * 1.15f).toInt().coerceAtLeast(1)
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
@@ -2404,10 +2306,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     scaleType = ImageView.ScaleType.MATRIX
                     alpha = 1f
                     innerWallpaperImageView = this
-                    post {
-                        applyInnerWallpaperMatrix(this)
-                        syncWallpaperMotion()
-                    }
+                    post { applyInnerWallpaperMatrix(this) }
                 }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             } else {
                 addView(View(context).apply {
@@ -2451,15 +2350,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val drawH = drawable.intrinsicHeight.takeIf { it > 0 }?.toFloat() ?: return
         if (viewW <= 0f || viewH <= 0f) return
         val fillScale = maxOf(viewW / drawW, viewH / drawH)
-        val motionActive = liveWallpaperMotionEnabled() && !innerWallpaperEditMode
-        val motionBoost = if (motionActive) 1.08f else 1f
-        val baseScale = fillScale * innerWallpaperZoom() * motionBoost
+        val baseScale = fillScale * innerWallpaperZoom()
         val scaledW = drawW * baseScale
         val scaledH = drawH * baseScale
         val maxX = ((scaledW - viewW) / 2f).coerceAtLeast(0f)
         val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
-        val offsetX = (innerWallpaperOffsetX() + if (motionActive) wallpaperParallaxX * 0.26f else 0f).coerceIn(-1f, 1f)
-        val offsetY = (innerWallpaperOffsetY() + if (motionActive) wallpaperParallaxY * 0.26f else 0f).coerceIn(-1f, 1f)
+        val offsetX = innerWallpaperOffsetX().coerceIn(-1f, 1f)
+        val offsetY = innerWallpaperOffsetY().coerceIn(-1f, 1f)
         val tx = (viewW - scaledW) / 2f + maxX * offsetX
         val ty = (viewH - scaledH) / 2f + maxY * offsetY
         if (lastWallpaperMatrixImage?.get() === image && baseScale == lastWallpaperMatrixScale &&
@@ -2595,12 +2492,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(chip("CHANGE") {
                 innerWallpaperEditMode = false
-                syncWallpaperMotion()
                 openInnerWallpaperPicker()
             }, LinearLayout.LayoutParams(dp(78), dp(30)).apply { marginStart = dp(8) })
             addView(chip("DONE") {
                 innerWallpaperEditMode = false
-                syncWallpaperMotion()
                 render()
             }, LinearLayout.LayoutParams(dp(66), dp(30)).apply { marginStart = dp(8) })
         }, FrameLayout.LayoutParams(
@@ -2622,7 +2517,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openDeviceWallpaperPicker(anchor: View) {
         haptic(anchor)
         innerWallpaperEditMode = true
-        syncWallpaperMotion()
         homeWallpaperDrawable = loadHomeWallpaperDrawable()
         if (homeWallpaperDrawable == null) openInnerWallpaperPicker() else render()
     }
@@ -7020,7 +6914,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openLibrary() {
         if (libraryOpen || openPane != null) return
         libraryOpen = true
-        syncWallpaperMotion()
         query = ""
         keyboardSettingsOpen = false
         if (isUnfoldedInnerLayoutActive()) {
@@ -7040,7 +6933,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun beginLibraryDrag(startedOpen: Boolean, vertical: Boolean = false, fastPath: Boolean = false) {
         if (openPane != null && !startedOpen) return
         libraryDragActive = true
-        syncWallpaperMotion()
         libraryDragStartedOpen = startedOpen
         libraryDragVertical = vertical
         libraryDragHapticStage = 0
@@ -7126,7 +7018,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         if (shouldOpen) {
             libraryOpen = true
-            syncWallpaperMotion()
             syncDockedSearchStatusBar()
             val animation = overlay.animate()
                 .alpha(1f)
@@ -7147,7 +7038,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             animation.start()
         } else {
             libraryOpen = false
-            syncWallpaperMotion()
             syncDockedSearchStatusBar()
             libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
             libraryPopulateRunnable = null
@@ -8696,7 +8586,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun showLibrary(animate: Boolean) {
-        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         categoryFolderView = null
         val overlay = appLibrary()
@@ -9859,18 +9748,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (visibleResults.isEmpty() && command == null && hero == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
-                    textSize = 13f
+                    textSize = 13f * searchFontScale()
                     gravity = Gravity.CENTER
                     setTextColor(activeNeuTokens.inkDim)
                     includeFontPadding = false
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
             }
 
-            // ZONE 2 — apps as bare icons (the launcher's own icons / user's icon pack).
+            // ZONE 2 — apps as an App-Library-style grid (the launcher's own icons / user's icon pack).
             val appResults = visibleResults.filter { it.kind == SearchKind.APP }
             if (appResults.isNotEmpty()) {
                 addView(searchZoneHeader("Apps"), zoneHeaderParams())
-                addView(searchAppIconRow(appResults), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                addView(searchAppGrid(appResults), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(12)
                 })
             }
@@ -9890,10 +9779,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
 
-            // Context suggestions (predicted apps) — a labelled bare-icon row.
+            // Context suggestions (predicted apps) — a labelled App-Library-style grid.
             contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
                 addView(searchZoneHeader(label), zoneHeaderParams().apply { topMargin = dp(6) })
-                addView(searchAppIconRow(items), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                addView(searchAppGrid(items), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         })
     }
@@ -9956,61 +9845,88 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.APP -> "Apps"
     }
 
+    // User-controlled search text size (Settings → search font-size slider). 0..100, default 50
+    // (Medium). Scales zone headers, result titles/subtitles, and app-tile labels together.
+    private fun searchFontSizePref(): Int = prefs().getInt(SEARCH_FONT_SIZE_PREF, SEARCH_FONT_SIZE_DEFAULT)
+    private fun searchFontScale(progress: Int = searchFontSizePref()): Float =
+        0.90f + progress.coerceIn(0, 100) / 100f * 0.50f   // 0→0.90x, 50→1.15x (Medium), 100→1.40x
+    private fun searchFontSizeLabel(progress: Int = searchFontSizePref()): String = when {
+        progress < 34 -> "SMALL"
+        progress < 67 -> "MEDIUM"
+        else -> "LARGE"
+    }
+
     private fun searchZoneHeader(text: String): TextView =
-        mono(text.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
-            letterSpacing = 0.18f
-            setPadding(dp(2), dp(2), 0, dp(8))
+        TextView(this).apply {
+            this.text = text
+            textSize = 15.5f * searchFontScale()
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(activeNeuTokens.ink)
+            includeFontPadding = false
+            setPadding(dp(2), dp(4), 0, dp(8))
         }
 
     private fun zoneHeaderParams(): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
-    // ZONE 2 — a horizontally scrollable row of bare app icons.
-    private fun searchAppIconRow(items: List<SearchResult>): View = HorizontalScrollView(this).apply {
-        isHorizontalScrollBarEnabled = false
-        clipToPadding = false
-        addView(LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            items.forEachIndexed { index, result ->
-                addView(searchAppTile(result, index), LinearLayout.LayoutParams(dp(66), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    if (index > 0) marginStart = dp(4)
-                })
-            }
-        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+    // ZONE 2 — apps presented like the App Library grid (fixed columns, tap/long-press only — no
+    // horizontal scroll, so nothing here reads as draggable).
+    private fun searchAppGrid(items: List<SearchResult>, columns: Int = 4): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        items.chunked(columns).forEachIndexed { rowIndex, rowItems ->
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                rowItems.forEachIndexed { columnIndex, result ->
+                    addView(searchAppTile(result, rowIndex * columns + columnIndex), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                }
+                repeat(columns - rowItems.size) { addView(View(context), LinearLayout.LayoutParams(0, 1, 1f)) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                if (rowIndex > 0) topMargin = dp(4)
+            })
+        }
     }
 
-    // A single app: just the launcher's resolved icon (icon-pack honoured) + label. No box, no tag.
+    // A single app tile — same icon frame/size and label treatment as the App Library grid
+    // (appTile), so search results and the library read as one consistent presentation. Tap/
+    // long-press stay search-specific (pin to dock / pin to Space, not the library icon menu).
     private fun searchAppTile(result: SearchResult, index: Int): View {
         val app = result.target?.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg } }
         val builtIn = result.target?.let { target -> builtInLauncherApps().firstOrNull { it.target.id == target.id } }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER
             isClickable = true
             alpha = 0f
             translationY = dp(8).toFloat()
-            setPadding(0, dp(2), 0, dp(2))
+            setPadding(dp(3), dp(4), dp(3), dp(2))
             postDelayed({
                 animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
             }, (index * 28L).coerceAtMost(240L))
+            val iconFrame = appLibraryIconFrameSize()
             if (app != null || builtIn != null) {
-                addView(ImageView(context).apply {
-                    setImageDrawable(iconFor(app?.toLibraryApp() ?: builtIn!!))
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                }, LinearLayout.LayoutParams(dp(52), dp(52)))
+                addView(FrameLayout(context).apply {
+                    elevation = dp(3).toFloat(); background = libraryIconButtonBackground(13, Line)
+                    addView(ImageView(context).apply {
+                        setImageDrawable(iconFor(app?.toLibraryApp() ?: builtIn!!))
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        adjustViewBounds = true
+                        setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
+                    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             } else {
-                addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(52), dp(52)))
+                addView(searchResultIcon(result), LinearLayout.LayoutParams(iconFrame, iconFrame))
             }
             addView(TextView(context).apply {
                 text = highlightedLabel(result.title, query)
-                textSize = 11f
+                textSize = 10.5f * searchFontScale()
                 gravity = Gravity.CENTER
                 setTextColor(activeNeuTokens.inkDim)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 includeFontPadding = false
                 setPadding(0, dp(6), 0, 0)
-            }, LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             setOnClickListener { haptic(this); openSearchResult(result) }
             if (result.target?.packageName != null) {
                 setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
@@ -10037,7 +9953,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.VERTICAL
                 addView(TextView(context).apply {
                     text = highlightedLabel(result.title, query)
-                    textSize = 14f
+                    textSize = 14f * searchFontScale()
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     setTextColor(activeNeuTokens.ink)
                     maxLines = 1
@@ -10047,7 +9963,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (result.subtitle.isNotBlank()) {
                     addView(TextView(context).apply {
                         text = result.subtitle
-                        textSize = 11.5f
+                        textSize = 11.5f * searchFontScale()
                         setTextColor(activeNeuTokens.inkFaint)
                         maxLines = 1
                         ellipsize = android.text.TextUtils.TruncateAt.END
@@ -15900,13 +15816,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!target.id.startsWith("reply:")) replyingToKey = null
         closeCategoryFolder()
         libraryOpen = false
-        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         keyboardSettingsOpen = false; query = ""; composeText = ""
         shiftState = ShiftState.ONCE; suggestions = emptyList()
         updateKeyLabels(); updateSuggestionBar()
         openPane = target
-        syncWallpaperMotion()
         if (target.kind == PaneKind.SETTINGS) {
             render()
             return
@@ -15924,7 +15838,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openLibraryResult(target: PaneTarget) {
         closeCategoryFolder()
         libraryOpen = false
-        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         renderRibbon()
         syncNowPlayingCardVisibility()
@@ -16316,6 +16229,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             showIconPackMenu(this)
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(iconSizeSetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
+        parent.addView(searchFontSizeSetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
         parent.addView(settingToggle("DOCK LABELS", showDockLabels()) {
             val next = !showDockLabels()
             prefs().edit().putBoolean(DOCK_LABELS_PREF, next).apply()
@@ -16407,14 +16321,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             prefs().edit().putBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), next).apply()
             homeWallpaperDrawable = loadHomeWallpaperDrawable()
             haptic(this)
-            render()
-            openHere(teclasSettingsTarget())
-        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-        parent.addView(settingToggle("LIVE WALLPAPER MOTION", liveWallpaperMotionEnabled()) {
-            val next = !liveWallpaperMotionEnabled()
-            prefs().edit().putBoolean(HOME_LIVE_WALLPAPER_MOTION_PREF, next).apply()
-            haptic(this)
-            if (next) syncWallpaperMotion() else wallpaperMotionController?.stop()
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
@@ -16517,6 +16423,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
             }
             addView(valueView, LinearLayout.LayoutParams(dp(30), ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+    }
+
+    private fun searchFontSizeSetting(): View {
+        lateinit var valueView: TextView
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), 0)
+            addView(mono("SEARCH TEXT SIZE", 9.5f, InkDim).apply {
+                letterSpacing = 0.10f
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(dp(78), ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(SeekBar(context).apply {
+                max = 100
+                progress = searchFontSizePref()
+                thumbTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(KeyEdge)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        valueView.text = searchFontSizeLabel(p)
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(s: SeekBar?) {
+                        s?.let { haptic(it) }
+                        prefs().edit().putInt(SEARCH_FONT_SIZE_PREF, s?.progress ?: SEARCH_FONT_SIZE_DEFAULT).apply()
+                        refreshSearchSurfaces()
+                    }
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            })
+            valueView = mono(searchFontSizeLabel(), 9f, Accent2).apply {
+                gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
+            }
+            addView(valueView, LinearLayout.LayoutParams(dp(52), ViewGroup.LayoutParams.MATCH_PARENT))
         }
     }
 
@@ -19008,6 +18953,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             cycleIconPack()
             refreshSearchSurfaces()
         })
+        entries.add(SettingSearchEntry(
+            "Search text size", "${searchFontSizeLabel()} · tap for next",
+            listOf("search text size", "search font", "font size", "text size")
+        ) {
+            cycleSearchFontSize()
+            refreshSearchSurfaces()
+        })
         WidgetStackModes.WIDGET_IDS.forEach { id ->
             val name = WidgetStackModes.displayName(id)
             val mode = widgetStackMode(id)
@@ -19160,6 +19112,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appIconSize = presets.firstOrNull { it > appIconSize } ?: presets.first()
         prefs().edit().putInt(APP_ICON_SIZE_PREF, appIconSize).apply()
         renderFavoritesDock()
+    }
+
+    // Small/Medium/Large steps for the type-to-customize surface — the settings-pane slider
+    // covers the full continuous 0..100 range.
+    private fun cycleSearchFontSize() {
+        val presets = listOf(15, 50, 85)
+        val next = presets.firstOrNull { it > searchFontSizePref() } ?: presets.first()
+        prefs().edit().putInt(SEARCH_FONT_SIZE_PREF, next).apply()
     }
 
     private fun cycleIconPack() {
@@ -23211,6 +23171,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val INNER_KEYBOARD_OFFSET_Y_PREF = "inner_keyboard_offset_y"
         private const val TOUCH_MODEL_PREF = "touch_model_v1"
         private const val APP_ICON_SIZE_PREF = "app_icon_size"
+        private const val SEARCH_FONT_SIZE_PREF = "search_font_size"
+        private const val SEARCH_FONT_SIZE_DEFAULT = 50   // 0..100 slider; 50 = Medium
         private const val KEYBOARD_PLACEMENT_PREF = "keyboard_placement"
         private const val KEYBOARD_PLACEMENT_INTRO_PREF = "keyboard_placement_intro_shown"
         private const val KEYBOARD_PLACEMENT_DOCKED = "docked"
@@ -23265,7 +23227,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val CARDS_VIEW_ENABLED_PREF = "cards_view_enabled"
         private const val HOME_SYSTEM_WALLPAPER_PREF = "home_system_wallpaper"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
-        private const val HOME_LIVE_WALLPAPER_MOTION_PREF = "home_live_wallpaper_motion"
         private const val HOME_COVER_WALLPAPER_URI_PREF = "home_cover_wallpaper_uri"
         private const val HOME_COVER_WALLPAPER_ZOOM_PREF = "home_cover_wallpaper_zoom"
         private const val HOME_COVER_WALLPAPER_OFFSET_X_PREF = "home_cover_wallpaper_offset_x"
