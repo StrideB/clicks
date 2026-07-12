@@ -100,6 +100,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // Flip PERF_LOG to false to silence it once the culprit is found.
     private var perfLastNanos = 0L
     private var perfOverlay: TextView? = null
+    // Either diagnostic wants the shared on-screen overlay + pullable file plumbing (perfLine).
+    private val diagOn: Boolean get() = PERF_LOG || RENDER_LOG
     private fun plog(where: String) {
         if (!PERF_LOG) return
         val now = System.nanoTime()
@@ -120,7 +122,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val diagExecutor by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
     private val diagFile: java.io.File? by lazy { getExternalFilesDir(null)?.let { java.io.File(it, "teclas_perf.log") } }
     private fun perfLine(s: String) {
-        if (!PERF_LOG) return
+        if (!diagOn) return
         android.util.Log.d("TeclasPerf", s)
         perfLines.addLast(s)
         while (perfLines.size > 10) perfLines.removeFirst()
@@ -155,6 +157,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             perfReport(label, (System.nanoTime() - t0) / 1_000_000)
         }
     }
+    // Render-only timing: measures synchronous main-thread cost (e.g. view construction at keyboard
+    // open). Active whenever either diagnostic is on, so it works in the lightweight RENDER_LOG mode.
+    private inline fun <T> renderTime(label: String, block: () -> T): T {
+        if (!diagOn) return block()
+        val t0 = System.nanoTime()
+        try {
+            return block()
+        } finally {
+            perfLine("$label ${(System.nanoTime() - t0) / 1_000_000}ms")
+        }
+    }
 
     private fun recordSelfCaret() {
         selfCaretRing[selfCaretIdx % selfCaretRing.size] = shadowCaret
@@ -170,10 +183,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // Frame-time monitor: the event handlers all measure 0ms, so if the keyboard still feels slow the
     // cost is in the framework's per-frame measure/layout/draw (which runs AFTER our handlers return)
     // or in dropped frames. This logs any frame interval that overran the ~16ms budget, so the file
-    // shows real jank ("frame Nms") even when every handler is 0ms. Self-reposting; runs only while
-    // an input view is up and PERF_LOG is on.
+    // shows real jank ("frame Nms") even when every handler is 0ms. Event-armed (see armFrameSample):
+    // it samples a bounded burst of frames after each interaction and then releases the display, so it
+    // never pins 60fps while idle — the mistake the old always-on monitor made, which added its own
+    // jank to the very frames it was measuring. Active whenever either diagnostic flag is on.
     private var perfFrameLast = 0L
     private var perfFrameRunning = false
+    private var perfFrameBudget = 0
     private val perfFrameCallback = object : android.view.Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!perfFrameRunning) return
@@ -182,11 +198,22 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 if (ms in 24..4000) perfLine("‼ frame ${ms}ms")
             }
             perfFrameLast = frameTimeNanos
-            android.view.Choreographer.getInstance().postFrameCallback(this)
+            // Event-armed burst: keep sampling only for a bounded number of frames after the last
+            // interaction, then release the display. When the user types continuously each keystroke
+            // re-arms the budget, so we watch exactly the frames that follow input and stop pinning
+            // 60fps the instant typing pauses. Idle => zero frame callbacks scheduled.
+            if (--perfFrameBudget > 0) {
+                android.view.Choreographer.getInstance().postFrameCallback(this)
+            } else {
+                perfFrameRunning = false
+            }
         }
     }
-    private fun startFrameMonitor() {
-        if (!PERF_LOG || perfFrameRunning) return
+    // Arm (or extend) a short frame-sampling burst. Called at keyboard-open and after each keystroke.
+    private fun armFrameSample(frames: Int = 20) {
+        if (!diagOn) return
+        if (frames > perfFrameBudget) perfFrameBudget = frames
+        if (perfFrameRunning) return
         perfFrameRunning = true
         perfFrameLast = 0L
         android.view.Choreographer.getInstance().postFrameCallback(perfFrameCallback)
@@ -449,7 +476,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         initSpellChecker()
         spatialScorer.importState(imePrefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         AgenticRouter.ensureLoaded(this)
-        return buildInputView()
+        return renderTime("open onCreateInputView") { buildInputView() }
     }
 
     // Wrap the keyboard deck in a FrameLayout root so a picker can overlay it. [deckView] still points
@@ -457,7 +484,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun buildInputView(): View {
         attachOverlay = null
         shareCardOverlay = null
-        val deck = buildKeyboard().also { deckView = it }
+        // Truncate the pullable diag file up-front so both open-timing lines below survive in it (the
+        // serial diagExecutor would otherwise wipe an already-appended "open buildKeyboard" line).
+        if (diagOn) runCatching { diagExecutor.execute { runCatching { diagFile?.writeText("") } } }
+        val deck = renderTime("open buildKeyboard") { buildKeyboard() }.also { deckView = it }
         // On a wide canvas, don't stretch across the whole inner display — pin a narrower, centered
         // panel (matching the launcher keyboard); on phones keep the full-width keyboard.
         val deckParams = if (imeIsWideCanvas()) {
@@ -473,9 +503,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         return android.widget.FrameLayout(this).apply {
             addView(deck, deckParams)
             // Diagnostic on-screen readout of the slowest keystroke step (Vivo hides logcat).
-            if (PERF_LOG) {
-                runCatching { diagExecutor.execute { runCatching { diagFile?.writeText("") } } }
-                startFrameMonitor()
+            if (diagOn) {
+                armFrameSample()
                 perfOverlay = TextView(this@TeclasImeService).apply {
                     textSize = 9.5f
                     setTextColor(0xFF6BFF6B.toInt())
@@ -549,7 +578,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             hideImeSurface()
             return
         }
-        startFrameMonitor()
+        armFrameSample()
         // Seed the shadow mirror from the fresh editor so the first keystrokes read locally.
         seedShadow(info?.initialSelStart?.takeIf { it >= 0 } ?: 0)
         refreshChromeOrRebuild()
@@ -654,7 +683,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         runCatching { spellChecker?.close() }
         runCatching { thumbExecutor.shutdownNow() }
         runCatching { predictExecutor.shutdownNow() }
-        if (PERF_LOG) runCatching { diagExecutor.shutdownNow() }
+        if (diagOn) runCatching { diagExecutor.shutdownNow() }
         AttachBridge.pending = null
         super.onDestroy()
     }
@@ -955,6 +984,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         if (repeated) return true
                     }
                     ptime("handleKey('$label')") { handleKey(resolveTapKey(label, event.rawX, event.rawY)) }
+                    armFrameSample()   // watch the frames that render this keystroke, then release
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
@@ -3965,5 +3995,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
         // Temporary: keystroke-path timing to logcat (tag TeclasPerf) to localize the freeze.
         private const val PERF_LOG = false
+        // Narrow render-only diagnostic: times view construction at keyboard-open and samples a short
+        // burst of frames after each interaction (NOT continuously — the old always-on monitor pinned
+        // the display at 60fps and added the very jank it measured). Independent of PERF_LOG so it can
+        // run alone with almost none of the keystroke-path overhead.
+        private const val RENDER_LOG = true
     }
 }
