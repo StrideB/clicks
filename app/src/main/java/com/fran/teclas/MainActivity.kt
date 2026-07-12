@@ -921,6 +921,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             )
         }
         if (now - lastContactsLoadMs > 5 * 60_000) { preloadContactsCache(); lastContactsLoadMs = now }
+        scheduleBriefGeneration()
         if (todayEnabled && ::briefRepository.isInitialized) {
             briefRepository.startPeriodic()
             briefRepository.refreshDebounced(200)
@@ -2756,6 +2757,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
             if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
 
@@ -2810,6 +2812,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
 
@@ -5599,6 +5602,185 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             return super.dispatchTouchEvent(event)
+        }
+    }
+
+    // ── Daily brief widget ───────────────────────────────────────────────────
+    // Freeform like the weather widget (drag anywhere, per-surface persisted position),
+    // but ephemeral: it exists only while a morning/evening edition is live and undismissed.
+
+    private fun saveBriefWidgetPos(x: Int, y: Int) {
+        prefs().edit().putInt(homeScopedKey(BRIEF_POS_X_PREF), x).putInt(homeScopedKey(BRIEF_POS_Y_PREF), y).apply()
+    }
+
+    private fun buildBriefWidgetFrame(context: Context): View? {
+        val edition = com.fran.teclas.brief.DailyBrief.current(prefs()) ?: return null
+        val frame = BriefWidgetFrame(context)
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(14))
+            background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED)
+        }
+        card.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(mono(if (edition.morning) "TODAY · MORNING" else "TODAY · EVENING", 9f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.18f
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(mono("✕", 11f, activeNeuTokens.inkFaint).apply {
+                setPadding(dp(8), dp(2), dp(2), dp(6))
+                isClickable = true
+                setOnClickListener {
+                    haptic(this)
+                    com.fran.teclas.brief.DailyBrief.dismiss(prefs())
+                    (frame.parent as? ViewGroup)?.removeView(frame)
+                }
+            })
+        })
+        card.addView(TextView(context).apply {
+            text = edition.lede
+            textSize = 15f
+            setTextColor(Ink)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            setLineSpacing(0f, 1.15f)
+            setPadding(0, dp(4), 0, if (edition.rows.isEmpty()) 0 else dp(8))
+        })
+        edition.rows.forEach { row ->
+            card.addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(5), 0, dp(5))
+                addView(mono(row.glyph, 12f, InkDim).apply { setPadding(0, 0, dp(10), 0) })
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply {
+                        text = row.title; textSize = 12.5f; setTextColor(Ink); maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                    })
+                    addView(TextView(context).apply {
+                        text = row.sub; textSize = 11.5f; setTextColor(InkDim); maxLines = 2
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            })
+        }
+        frame.addView(card, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        frame.elevation = dp(8).toFloat()
+        return frame
+    }
+
+    private fun briefWidgetFrameLayoutParams(): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dp(14); topMargin = dp(120); rightMargin = dp(14)
+        }
+
+    private fun applyPersistedBriefWidgetPos(frame: View) {
+        if (!prefs().contains(homeScopedKey(BRIEF_POS_X_PREF))) return
+        val parent = frame.parent as? View ?: return
+        if (parent.width <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == FrameLayout.LayoutParams.MATCH_PARENT) { lp.width = frame.width; lp.rightMargin = 0 }
+        val x = prefs().getInt(homeScopedKey(BRIEF_POS_X_PREF), lp.leftMargin)
+        val y = prefs().getInt(homeScopedKey(BRIEF_POS_Y_PREF), lp.topMargin)
+        val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
+        lp.leftMargin = cx; lp.topMargin = cy
+        frame.layoutParams = lp
+    }
+
+    /** Same drag host as the weather widget, minus the style picker: slop starts a drag,
+     *  settle clamps + soft-snaps + avoids the widget stack, position persists per surface. */
+    private inner class BriefWidgetFrame(context: Context) : FrameLayout(context) {
+        private var startRawX = 0f; private var startRawY = 0f
+        private var startLeft = 0; private var startTop = 0
+        private var dragging = false
+        private var persistedPosApplied = false
+
+        init { clipChildren = false; clipToPadding = false }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!persistedPosApplied && width > 0 && ((parent as? View)?.width ?: 0) > 0) {
+                persistedPosApplied = true
+                post { applyPersistedBriefWidgetPos(this) }
+            }
+        }
+
+        private fun dispatchCancelToChildren() {
+            val now = android.os.SystemClock.uptimeMillis()
+            val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+            super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+        }
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    startRawX = event.rawX; startRawY = event.rawY
+                    val lp = layoutParams as FrameLayout.LayoutParams
+                    startLeft = lp.leftMargin; startTop = lp.topMargin
+                    dragging = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - startRawX).toInt()
+                    val dy = (event.rawY - startRawY).toInt()
+                    if (!dragging && (abs(dx) > dp(4) || abs(dy) > dp(4))) {
+                        dragging = true
+                        weatherWidgetDragging = true
+                        freezeWeatherWidgetWidthForDrag(this)
+                        dispatchCancelToChildren()
+                        animate().scaleX(1.025f).scaleY(1.025f).setDuration(90).start()
+                    }
+                    if (dragging) { moveWeatherWidget(this, startLeft + dx, startTop + dy); return true }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    weatherWidgetDragging = false
+                    if (dragging) {
+                        dragging = false
+                        animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+                        val parentView = parent as? View
+                        val lp = layoutParams as FrameLayout.LayoutParams
+                        if (parentView != null) {
+                            val (cx, cy) = clampWeatherWidgetPos(parentView, width, height, lp.leftMargin, lp.topMargin)
+                            val (sx, sy) = softSnapWeatherWidgetPos(parentView, cx, cy)
+                            val (bx, by) = clampWeatherWidgetPos(parentView, width, height, sx, sy)
+                            val resolved = resolveWeatherWidgetOverlap(parentView, width, height, bx, by)
+                            if (resolved != null) {
+                                lp.leftMargin = resolved.first; lp.topMargin = resolved.second
+                                layoutParams = lp
+                                saveBriefWidgetPos(resolved.first, resolved.second)
+                                haptic(this)
+                            } else {
+                                lp.leftMargin = startLeft; lp.topMargin = startTop
+                                layoutParams = lp
+                            }
+                        }
+                        return true
+                    }
+                }
+            }
+            return super.dispatchTouchEvent(event)
+        }
+    }
+
+    /** Kick a pending edition (morning/evening) — cheap no-op outside windows or when done.
+     *  [force] (the "brief!!" dev code) regenerates immediately, ignoring windows. */
+    private fun scheduleBriefGeneration(force: Boolean = false) {
+        if (!force && !com.fran.teclas.brief.DailyBrief.due(prefs())) return
+        mediaUiScope.launch {
+            val generated = com.fran.teclas.brief.DailyBrief.generate(
+                this@MainActivity, prefs(),
+                messages.map { Triple(it.sender, it.preview, it.lastUpdated) },
+                calendarEvents,
+                prefs().getString(WEATHER_TEMP_PREF, null).orEmpty(),
+                force = force,
+            )
+            if (generated && ::rootView.isInitialized) {
+                if (force) Toast.makeText(this@MainActivity, "Brief generated.", Toast.LENGTH_SHORT).show()
+                if (!libraryOpen && openPane == null) render()
+            }
         }
     }
 
@@ -14710,6 +14892,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 } else {
                     query += char
                 }
+                // Secret dev code: force-generate a brief edition (preview/theming aid).
+                if (query.equals("brief!!", ignoreCase = true) || query.equals("briefnow", ignoreCase = true)) {
+                    query = ""
+                    Toast.makeText(this, "Generating brief…", Toast.LENGTH_SHORT).show()
+                    scheduleBriefGeneration(force = true)
+                    renderRibbon(); return
+                }
                 // Secret dev unlock code
                 if (query == "devpro!!") {
                     query = ""
@@ -15203,30 +15392,32 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (q == webFallbackQuery) return
         val r = Runnable {
             webFallbackDebounce = null
-            mediaUiScope.launch {
-                val hits = withContext(Dispatchers.IO) {
-                    val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
-                    val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
-                    runCatching { GoogleSearchApi.search(q, key, cx, count = 5) }.getOrDefault(emptyList())
-                }
-                if (query.trim() != q) return@launch   // query moved on
-                webFallbackQuery = q
-                webFallbackResults = hits.take(5).map { hit ->
-                    SearchResult(
-                        title = hit.title,
-                        subtitle = hit.display,
-                        accent = 0xFF4285F4.toInt(),   // Google blue
-                        kind = SearchKind.WEB,
-                        target = null,
-                        action = { openUrlDirectly(hit.link) },
-                        longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(hit.link)), "No browser available") }
-                    )
-                }
-                refreshSearchResultsUi()
-            }
+            mediaUiScope.launch { fetchWebFallback(q) }
         }
         webFallbackDebounce = r
         handler.postDelayed(r, 600L)
+    }
+
+    private suspend fun fetchWebFallback(q: String) {
+        val hits = withContext(Dispatchers.IO) {
+            val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
+            val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
+            runCatching { GoogleSearchApi.search(q, key, cx, count = 5) }.getOrDefault(emptyList())
+        }
+        if (query.trim() != q) return   // query moved on
+        webFallbackQuery = q
+        webFallbackResults = hits.take(5).map { hit ->
+            SearchResult(
+                title = hit.title,
+                subtitle = hit.display,
+                accent = 0xFF4285F4.toInt(),   // Google blue
+                kind = SearchKind.WEB,
+                target = null,
+                action = { openUrlDirectly(hit.link) },
+                longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(hit.link)), "No browser available") }
+            )
+        }
+        refreshSearchResultsUi()
     }
 
     /** Debounced ESPN scores lookup. Populates [sportsCard] for the current query so the search
@@ -22877,6 +23068,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
         private const val GEMINI_ENABLED_PREF = "gemini_enabled"
         private const val SEMANTIC_SEARCH_PREF = "semantic_search"
+        private const val BRIEF_POS_X_PREF = "brief_widget_x"
+        private const val BRIEF_POS_Y_PREF = "brief_widget_y"
         internal const val GEMINI_API_KEY_PREF = "gemini_api_key"
         internal const val GEMINI_MODEL_PREF = "gemini_model"
         internal const val GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
