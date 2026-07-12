@@ -137,6 +137,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         shadowAfter.setLength(0); shadowAfter.append(after)
         shadowCaret = caret.coerceAtLeast(0)
         shadowValid = true
+        // Reseed = the mirror is now authoritative here; forget older caret positions so a later
+        // tap-to-reposition onto a stale position can't be mistaken for one of our own edits.
+        selfCaretIdx = 0
         recordSelfCaret()
     }
 
@@ -2925,6 +2928,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private var startRawX = 0f
         private var startRawY = 0f
         private var tracking = false
+        // Whether the touch went DOWN on a letter key. Glide/flick/delete gestures may only begin
+        // from a letter — otherwise a drag that starts on 123/space/back/etc. hijacks the touch and
+        // (worst case) fires quick-left-delete, eating the last word, or flashes the glide trail,
+        // instead of the key doing its job. This is the gate that fixes "pressing 123 deletes my text".
+        private var downOnLetterKey = false
         private val traced = mutableListOf<String>()
         private val trailLocal = mutableListOf<Pair<Float, Float>>()
         // Event timestamps parallel to trailLocal — needed for the neural decoder's velocity/accel
@@ -3080,10 +3088,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     // moment. Recapture here only if the deck actually moved on screen (window
                     // shifted between apps) or nothing is cached yet.
                     if (moved || keyBounds.isEmpty()) captureKeyBounds()
+                    // Gate the whole glide/flick/delete state machine on the down-key being a letter.
+                    val downKey = keyAtPoint(startRawX, startRawY, letterOnly = false)
+                    downOnLetterKey = downKey != null && downKey.length == 1 && downKey[0].isLetter()
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!tracking && (abs(ev.rawX - startRawX) > glideActivationSlop || abs(ev.rawY - startRawY) > glideActivationSlop)) {
+                    if (!tracking && downOnLetterKey &&
+                        (abs(ev.rawX - startRawX) > glideActivationSlop || abs(ev.rawY - startRawY) > glideActivationSlop)) {
                         tracking = true
                         if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
                         parent?.requestDisallowInterceptTouchEvent(true)
