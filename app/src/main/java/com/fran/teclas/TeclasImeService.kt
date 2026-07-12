@@ -105,12 +105,45 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val dt = if (perfLastNanos == 0L) 0L else (now - perfLastNanos) / 1_000_000
         perfLastNanos = now
         android.util.Log.d("TeclasPerf", "$where  +${dt}ms")
-        // On-screen readout (Vivo/FuntouchOS hides third-party logcat, so surface it in the window):
-        // whenever a step takes a visible slice of time, show the WORST step so the last thing on
-        // screen before a freeze names the culprit. Cheap; runs only on the (main-thread) plog path.
-        if (dt >= 60L) perfOverlay?.let { ov ->
-            ov.text = "⏱ $where  +${dt}ms"
+    }
+
+    // Live on-screen rolling log (Vivo hides logcat). Each timed operation and each key-down appends
+    // a line; the overlay shows the last ~10, so a single screenshot while typing captures the full
+    // recent sequence with per-op durations and the cross-process read count (perfIpcReads = getText*
+    // fallback reads that fire when the cursor-mirror is invalid — a prime suspect for the lag).
+    private var perfIpcReads = 0
+    private var perfWorstMs = 0L
+    private val perfLines = ArrayDeque<String>()
+    // Off-main writer so the perf file itself never adds jank to the thing we're measuring.
+    private val diagExecutor by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
+    private val diagFile: java.io.File? by lazy { getExternalFilesDir(null)?.let { java.io.File(it, "teclas_perf.log") } }
+    private fun perfLine(s: String) {
+        if (!PERF_LOG) return
+        android.util.Log.d("TeclasPerf", s)
+        perfLines.addLast(s)
+        while (perfLines.size > 10) perfLines.removeFirst()
+        perfOverlay?.let { ov ->
+            ov.text = perfLines.joinToString("\n")
             ov.visibility = View.VISIBLE
+        }
+        // Also append to a pullable file (Vivo hides logcat; a file survives). Truncated on keyboard
+        // open. Pull it with:  adb shell run-as com.fran.teclas cat files/teclas_perf.log 2>/dev/null
+        // or  adb pull /sdcard/Android/data/com.fran.teclas/files/teclas_perf.log
+        val f = diagFile ?: return
+        runCatching { diagExecutor.execute { runCatching { f.appendText(s + "\n") } } }
+    }
+    private fun perfReport(label: String, ms: Long) {
+        if (!PERF_LOG) return
+        if (ms > perfWorstMs) perfWorstMs = ms
+        perfLine("$label ${ms}ms" + if (perfIpcReads > 0) " ipc=$perfIpcReads" else "")
+    }
+    private inline fun <T> ptime(label: String, block: () -> T): T {
+        if (!PERF_LOG) return block()
+        val t0 = System.nanoTime()
+        try {
+            return block()
+        } finally {
+            perfReport(label, (System.nanoTime() - t0) / 1_000_000)
         }
     }
 
@@ -164,11 +197,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun shadowBeforeCursor(count: Int): String =
         if (shadowValid) shadowBefore.substring((shadowBefore.length - count).coerceAtLeast(0))
-        else currentInputConnection?.getTextBeforeCursor(count, 0)?.toString().orEmpty()
+        else { perfIpcReads++; currentInputConnection?.getTextBeforeCursor(count, 0)?.toString().orEmpty() }
 
     private fun shadowAfterCursor(count: Int): String =
         if (shadowValid) shadowAfter.substring(0, count.coerceAtMost(shadowAfter.length))
-        else currentInputConnection?.getTextAfterCursor(count, 0)?.toString().orEmpty()
+        else { perfIpcReads++; currentInputConnection?.getTextAfterCursor(count, 0)?.toString().orEmpty() }
     override fun editorPackage(): String? = currentEditorPackage
     override fun isPasswordField(): Boolean {
         val t = currentInputEditorInfo?.inputType ?: return false
@@ -394,11 +427,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             addView(deck, deckParams)
             // Diagnostic on-screen readout of the slowest keystroke step (Vivo hides logcat).
             if (PERF_LOG) {
+                runCatching { diagExecutor.execute { runCatching { diagFile?.writeText("") } } }
                 perfOverlay = TextView(this@TeclasImeService).apply {
-                    textSize = 11f
-                    setTextColor(0xFFFFFFFF.toInt())
-                    setBackgroundColor(0xCC000000.toInt())
-                    setPadding(dp(6), dp(2), dp(6), dp(2))
+                    textSize = 9.5f
+                    setTextColor(0xFF6BFF6B.toInt())
+                    setBackgroundColor(0xE6000000.toInt())
+                    setPadding(dp(6), dp(3), dp(6), dp(3))
+                    typeface = Typeface.MONOSPACE
+                    setLineSpacing(0f, 0.95f)
+                    maxLines = 12
                     visibility = View.GONE
                 }
                 addView(perfOverlay, android.widget.FrameLayout.LayoutParams(
@@ -567,6 +604,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         runCatching { spellChecker?.close() }
         runCatching { thumbExecutor.shutdownNow() }
         runCatching { predictExecutor.shutdownNow() }
+        if (PERF_LOG) runCatching { diagExecutor.shutdownNow() }
         AttachBridge.pending = null
         super.onDestroy()
     }
@@ -784,6 +822,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     spaceCursorLastX = event.rawX
                     spaceCursorMoved = false
                     teclasLongPressFired = false
+                    perfWorstMs = 0L   // fresh keystroke: start tracking its worst step
+                    perfLine("── key '$label' ──")
                     v.background = pressedBg
                     keyHaptic(label)
                     // Instant press nudge — no ViewPropertyAnimator. Starting two 35ms animators on
@@ -1309,7 +1349,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val r = Runnable {
             // Re-evaluate the active language every keystroke (not only on space) so mid-word
             // suggestions/corrections use the right dictionary while typing a secondary language.
-            plog("predict debounce fired")
             updateActiveLanguage()
             val before = shadowBeforeCursor(96)
             val fieldEmpty = before.isEmpty() && shadowAfterCursor(1).isEmpty()
@@ -1319,14 +1358,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 // A newer keystroke already superseded this one — skip the dictionary work entirely
                 // so a fast burst can't back the worker thread up with stale computations.
                 if (gen != predictGeneration) return@execute
+                val t0 = System.nanoTime()
                 val word = before.takeLast(48).takeLastWhile { it.isLetter() }
                 val prev = previousWordOf(before)
                 val base = predictionCore.computeSuggestions(word, prev)
                 val correction = if (word.length >= 2)
                     autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev)) else null
+                val computeMs = (System.nanoTime() - t0) / 1_000_000
                 handler.post {
                     if (gen != predictGeneration) return@post   // user typed past this answer
-                    plog("predict result -> updateStrip")
+                    perfReport("predict.compute(bg)", computeMs)
                     pendingCorrection = word to correction
                     suggestions = if (base.isEmpty()) {
                         // IME extra: notification quick-replies when the field is empty.
@@ -1343,13 +1384,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // cadence (180ms) so fast typing doesn't fire them every keystroke. Output is unchanged.
         val cs = Runnable {
             val word = currentWord()
-            computeSmartChips(word)
+            perfIpcReads = 0
+            ptime("computeSmartChips") { computeSmartChips(word) }
             updateStrip()
             // System spellchecker fills real corrections for hard misspellings the on-device engine
             // can't reach (parity with the launcher). Merges in via onGetSuggestions.
             if (word.length >= 2) {
                 lastSpellWord = word
-                runCatching { spellChecker?.getSuggestions(android.view.textservice.TextInfo(word), 5) }
+                perfIpcReads = 0
+                ptime("spellCheck.getSuggestions") {
+                    runCatching { spellChecker?.getSuggestions(android.view.textservice.TextInfo(word), 5) }
+                }
             }
         }
         chipsDebounce = cs
@@ -2016,12 +2061,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 .trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
 
     private fun updateStrip() {
-        plog("updateStrip enter")
+        perfIpcReads = 0
+        ptime("updateStrip") { updateStripBody() }
+    }
+
+    private fun updateStripBody() {
         val strip = suggestionStrip ?: return
         // Elevate command previews and working status into the elegant panel; it toggles the strip's
         // visibility. The strip is still populated below as the fallback surface when the panel idles.
-        renderAgenticPanel()
-        plog("updateStrip: renderAgenticPanel done")
+        ptime("renderAgenticPanel") { renderAgenticPanel() }
         // Legacy (rare) states rebuild the strip from scratch; the steady typing path below never
         // does — it recycles the fixed slot views in renderTypingStrip.
         val status = agenticStatus
@@ -2148,7 +2196,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         suggestionStrip?.visibility = View.VISIBLE
         inlineScroll?.visibility = View.GONE
         strip.background = stripWellBackground()
-        renderTypingStrip(shown, chips, showFix, canPolish)
+        ptime("renderTypingStrip") { renderTypingStrip(shown, chips, showFix, canPolish) }
     }
 
     // Inline AI command: "<text> //formal" + space -> transform the text with that style (shared with
