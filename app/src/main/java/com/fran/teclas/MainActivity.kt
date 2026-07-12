@@ -13362,7 +13362,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     setDictionary(adaptive.extendedWords, freqs)
                     load()
                 }
-                android.util.Log.d("NeuralSwipe", "Widget neural engine ready=${neuralV2.isReady} personal=${personal.size}")
                 launch(Dispatchers.Main) {
                     neuralSwipe = neural.takeIf { it.isReady }
                     neuralGlideV2 = neuralV2
