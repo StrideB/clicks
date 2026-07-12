@@ -113,6 +113,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // fallback reads that fire when the cursor-mirror is invalid — a prime suspect for the lag).
     private var perfIpcReads = 0
     private var perfWorstMs = 0L
+    private var perfOverlayPending = false
     private val perfLines = ArrayDeque<String>()
     // Off-main writer so the perf file itself never adds jank to the thing we're measuring.
     private val diagExecutor by lazy { java.util.concurrent.Executors.newSingleThreadExecutor() }
@@ -122,9 +123,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         android.util.Log.d("TeclasPerf", s)
         perfLines.addLast(s)
         while (perfLines.size > 10) perfLines.removeFirst()
-        perfOverlay?.let { ov ->
-            ov.text = perfLines.joinToString("\n")
-            ov.visibility = View.VISIBLE
+        // Throttle the on-screen refresh to ~8Hz. Re-laying-out a 10-line text view on every single
+        // log line (5–10x per keystroke) was itself dropping frames and polluting the frame monitor.
+        if (!perfOverlayPending) {
+            perfOverlayPending = true
+            handler.postDelayed({
+                perfOverlayPending = false
+                perfOverlay?.let { it.text = perfLines.joinToString("\n"); it.visibility = View.VISIBLE }
+            }, 120L)
         }
         // Append to a pullable file (Vivo hides logcat), but ONLY meaningful lines — skip the flood of
         // "… 0ms" so the per-line file I/O doesn't itself become a per-keystroke cost. Key/section
@@ -185,14 +191,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         android.view.Choreographer.getInstance().postFrameCallback(perfFrameCallback)
     }
 
-    private fun seedShadow(caret: Int) {
+    private fun seedShadow(caret: Int) = ptime("seedShadow(IPC)") { seedShadowInner(caret) }
+    private fun seedShadowInner(caret: Int) {
         val ic = currentInputConnection
         if (ic == null) { shadowValid = false; return }
-        plog("seedShadow: getTextBeforeCursor IPC ->")
         val before = ic.getTextBeforeCursor(shadowWindow, 0)?.toString().orEmpty()
-        plog("seedShadow: getTextAfterCursor IPC ->")
         val after = ic.getTextAfterCursor(shadowWindow, 0)?.toString().orEmpty()
-        plog("seedShadow: IPC done")
         shadowBefore.setLength(0); shadowBefore.append(before)
         shadowAfter.setLength(0); shadowAfter.append(after)
         shadowCaret = caret.coerceAtLeast(0)
