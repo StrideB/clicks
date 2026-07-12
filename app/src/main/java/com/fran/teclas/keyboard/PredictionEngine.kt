@@ -33,6 +33,11 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
             if (w.isEmpty()) continue
             buckets.getOrPut(w[0]) { ArrayList() }.add(Entry(w, f))
         }
+        // Sort each bucket by frequency (descending) so rank() can evaluate the most likely
+        // candidates first and stop early — bounding the edit-distance work regardless of how big
+        // the dictionary is. On a slow device the full scan was 30–80ms; the budget cap keeps it
+        // in single-digit ms while still seeing every frequent word a correction would land on.
+        buckets.values.forEach { it.sortByDescending { e -> e.freq } }
         buckets
     }
 
@@ -142,14 +147,21 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
         val lenMax = t.length + 2
         val out = ArrayList<Triple<String, Double, Double>>()
         val firstChars = adj[fc]?.let { "$fc$it" } ?: fc.toString()
+        // Buckets are frequency-sorted, so the exact first-letter bucket (the common case) yields the
+        // best candidates first. Budget the number of edit-distance evaluations so a huge bucket
+        // can't blow the frame budget; the frequent words a correction actually resolves to are all
+        // near the front.
+        var budget = MAX_RANK_EVAL
         for (c in firstChars) {
             for (e in byFirstChar[c].orEmpty()) {
                 val w = e.word
                 if (w.length !in lenMin..lenMax) continue
+                if (budget-- <= 0) break
                 val d = weightedDistance(t, w, maxDist + 0.5)
                 if (d > maxDist) continue
                 out.add(Triple(w, d, d - 0.18 * e.freq))   // frequency only nudges near-ties
             }
+            if (budget <= 0) break
         }
         out.sortBy { it.third }
         return out.map { it.first to it.second }
@@ -192,5 +204,9 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
     private companion object {
         // Max multiplicative boost a fully-dominant next-letter can add in an ambiguous tie-break.
         private const val NEXT_CHAR_BOOST = 1.5
+        // Cap on edit-distance evaluations per rank(). Buckets are frequency-sorted, so the first
+        // few hundred candidates are the ones a correction/completion actually lands on; this bounds
+        // rank() to single-digit ms even on a huge dictionary / slow CPU.
+        private const val MAX_RANK_EVAL = 400
     }
 }

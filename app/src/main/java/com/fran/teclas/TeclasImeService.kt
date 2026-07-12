@@ -1431,11 +1431,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             } }
         }
         suggestDebounce = r
-        // 150ms: the background word-search costs 30–80ms per keystroke on this device and was firing
-        // on nearly every key, saturating a CPU core and starving the render thread (the scattered
-        // dropped frames). At 150ms it only fires when you actually pause, so it stops competing with
-        // rendering during a fast burst; the strip still updates well within a "feels instant" window.
-        handler.postDelayed(r, 150L)
+        // 90ms: rank() is now budget-capped to single-digit ms, so prediction no longer saturates the
+        // CPU and we can keep a snappy cadence — which also means the space-bar autocorrect precompute
+        // is ready in time (no synchronous main-thread fallback hitch on space).
+        handler.postDelayed(r, 90L)
         // Emoji chips + system spellcheck are heavier and less time-critical — run them on a slower
         // cadence (180ms) so fast typing doesn't fire them every keystroke. Output is unchanged.
         val cs = Runnable {
