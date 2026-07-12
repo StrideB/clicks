@@ -307,8 +307,8 @@ class DockedKeyboardService : Service() {
 
     private fun visualKeyBackground(label: String, pressed: Boolean): Drawable {
         val base = keyFaceBackground(label, pressed)
-        if (label == "enter" || label == "123") return base
-        return InsetDrawable(base, dp(1), keyVerticalInset(), dp(1), keyVerticalInset())
+        if (label == "enter") return base
+        return InsetDrawable(base, keyVisualHorizontalInset(label), keyVerticalInset(), keyVisualHorizontalInset(label), keyVerticalInset())
     }
 
     private fun keyFaceBackground(label: String, pressed: Boolean): Drawable {
@@ -392,9 +392,16 @@ class DockedKeyboardService : Service() {
         }
     }
 
+    private fun keyVisualHorizontalInset(label: String): Int {
+        if (label == "space") return dp(3)
+        if (label == "teclas") return dp(3)
+        if (label == "123" || label == "back" || label == "shift" || label == ".") return dp(4)
+        return dp(4)
+    }
+
     private fun keyboardTopPadding() = dp(4)
     private fun keyboardBottomPadding() = dp(2)
-    private fun dockedOverlayBottomLift() = dp(24)
+    private fun dockedOverlayBottomLift() = dp(40)
 
     private fun keyTextSize(label: String): Float {
         val size = KeyboardSettings.keyboardSize(this)
