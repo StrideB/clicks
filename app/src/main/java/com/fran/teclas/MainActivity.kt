@@ -1497,9 +1497,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 clipChildren = false
                 clipToPadding = false
                 if (phoneDockedFullBleed) setBackgroundColor(activeNeuTokens.base)
-                addView(rootDockInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                val dockLift = launcherDockedKeyboardBottomLift()
+                addView(rootDockInputView(), FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                ).apply {
+                    if (phoneDockedFullBleed && dockLift > 0) bottomMargin = dockLift
+                })
             }
-            root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, activeRootDockHeight())
+            root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, activeRootDockHeight() + launcherDockedKeyboardBottomLift())
         } else {
             keyboardDockView = FrameLayout(this)
         }
@@ -12231,7 +12237,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var launcherAgenticStatus: String? = null
     private var pendingLauncherResult: AgenticResult? = null
 
-    private fun showSuggestionStrip() = true
+    private fun showSuggestionStrip() = keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
     private fun keyboardTypingWellHeight() = dp(36)
     private fun keyboardSuggestionStripHeight() = dp(28)
@@ -17562,6 +17568,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun prepareDockedExternalMode(): Boolean {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return true
+        refreshDockedExternalKeyboardTop()
         if (VivoDockedExperiment.isEnabled(this)) {
             VivoDockedExperiment.applyViewportTruncation(this)
             if (!Settings.canDrawOverlays(this)) {
@@ -17642,20 +17649,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // more: the measured on-screen top of the dock, and its computed height (deterministic —
         // works even before the view is laid out; the old height formula under-reserved and let the
         // app bottom fall over the search bar). Minus a small margin for clear separation.
+        val keyboardTopPx = refreshDockedExternalKeyboardTop()
+        // Returns an options Bundle only when the docked "apps in top region" feature is on and
+        // freeform is armed; otherwise null → normal fullscreen launch.
+        return DockedFreeform.activityOptions(this, keyboardTopPx)
+    }
+
+    private fun refreshDockedExternalKeyboardTop(): Int? {
         val screenH = resources.displayMetrics.heightPixels
         val measured = if (::keyboardDockView.isInitialized) {
             val loc = IntArray(2)
             keyboardDockView.getLocationOnScreen(loc)
             loc[1].takeIf { it > 0 && keyboardDockView.height > 0 }
         } else null
-        val computed = (screenH - activeRootDockHeight()).takeIf { it in 1 until screenH }
-        val keyboardTopPx = listOfNotNull(measured, computed).minOrNull()?.minus(dp(10))
+        val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift()).takeIf { it in 1 until screenH }
+        val keyboardTopPx = listOfNotNull(measured, computed).minOrNull()
+            ?.plus(dockedExternalDockCoverExtension())
+            ?.minus(dp(10))
+            ?.coerceAtMost(screenH - dp(420))
         // Share the top with the accessibility service so it can re-pin via Shizuku on window changes.
         keyboardTopPx?.let { DockedFreeform.lastKeyboardTopPx = it }
-        // Returns an options Bundle only when the docked "apps in top region" feature is on and
-        // freeform is armed; otherwise null → normal fullscreen launch.
-        return DockedFreeform.activityOptions(this, keyboardTopPx)
+        return keyboardTopPx
     }
+
+    private fun dockedExternalDockCoverExtension(): Int = dp(99)
 
     // ---- Docked keyboard → foreground app typing (via the accessibility injector) ----
 
@@ -19938,6 +19955,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // ~30dp taller than this slot and bleeds upward over the favorites dock / typing strip.
         return keyboardHeight() + launcherSuggestionStripOuterHeight()
     }
+
+    private fun launcherDockedKeyboardBottomLift(): Int =
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive() && openPane == null) DockedKeyboardMetrics.overlayBottomLiftPx(this) else 0
 
     private fun expandedRootDockHeight(): Int {
         if (widgetPaneUsesRootDock()) return widgetKeyboardHeight()
