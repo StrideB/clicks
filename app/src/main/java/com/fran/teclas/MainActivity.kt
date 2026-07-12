@@ -41,8 +41,15 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import com.fran.teclas.brief.accentColorInt
+import com.fran.teclas.brief.backgroundDrawable
+import com.fran.teclas.brief.cardDrawable
+import com.fran.teclas.brief.cardFillColorInt
 import com.fran.teclas.glide.KeyInfo
 import com.fran.teclas.glide.StatisticalGlideTypingClassifier
+import com.fran.teclas.brief.mutedColorInt
+import com.fran.teclas.brief.textColorInt
+import com.fran.teclas.brief.typeface
 import com.fran.teclas.keyboard.neural.TimedPoint
 import android.net.Uri
 import android.os.Build
@@ -5595,7 +5602,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     internal fun briefThemeId(): String =
-        prefs().getString(homeScopedKey(BRIEF_THEME_PREF), BRIEF_THEME_GLASS) ?: BRIEF_THEME_GLASS
+        com.fran.teclas.brief.BriefThemes
+            .themeForPref(prefs().getString(homeScopedKey(BRIEF_THEME_PREF), BRIEF_THEME_GLASS))
+            .id
+            .toString()
 
     /** Open a source thread: the exact notification if still live, else the app, else say so. */
     private fun openThread(pkg: String, key: String) {
@@ -5657,18 +5667,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun buildBriefWidgetFrame(context: Context): View? {
         val edition = com.fran.teclas.brief.DailyBrief.current(prefs()) ?: return null
-        val dotTheme = briefThemeId() == BRIEF_THEME_DOT
+        val briefTheme = com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId())
+        val dotTheme = briefTheme.id == com.fran.teclas.brief.BRIEF_THEME_DOT_ID.toInt()
         val frame = BriefWidgetFrame(context)
-        val ink = Color.WHITE
-        val dim = 0xB3FFFFFF.toInt()
-        val faint = 0x82FFFFFF.toInt()
-        val accent = if (dotTheme) 0xFFE5342A.toInt() else goKeyColor   // Nothing red on the dot theme
+        val ink = briefTheme.textColorInt()
+        val dim = briefTheme.mutedColorInt()
+        val faint = dim
+        val accent = briefTheme.accentColorInt()
         val hasBack = edition.todos.isNotEmpty()
         var flip: (() -> Unit)? = null
 
         fun titleFace(): android.graphics.Typeface =
-            if (dotTheme) android.graphics.Typeface.MONOSPACE
-            else android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            briefTheme.typeface(android.graphics.Typeface.BOLD)
 
         // Header row shared by both faces: label (LED on dot theme) + optional flip + dismiss.
         fun header(label: String, showFlip: Boolean): View = LinearLayout(context).apply {
@@ -5792,10 +5802,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        if (dotTheme) {
-            content.background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat(); setColor(0xF00A0A0A.toInt()); setStroke(dp(1), 0x24FFFFFF)
+        if (!briefTheme.isBoxed || dotTheme || briefTheme.cardFillColorInt() != null) {
+            content.background = if (briefTheme.isBoxed) {
+                briefTheme.cardDrawable(context)
+            } else {
+                briefTheme.backgroundDrawable(context, 20)
             }
+        }
+        if (dotTheme || !briefTheme.effect.orEmpty().contains("blur", ignoreCase = true)) {
             frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         } else {
             // Blurred wallpaper backdrop, sized to the content so the panel's match-parent blur layer
