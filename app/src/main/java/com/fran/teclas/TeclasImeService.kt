@@ -790,6 +790,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private var buffer: android.graphics.Bitmap? = null
         private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
         private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        // Touch state (mirrors ImeKeyTouchListener). The whole grid is one view, so the pressed key is
+        // captured on DOWN and that same key commits on UP — exactly the per-key-view capture semantics.
+        private var downRawX = 0f
+        private var downRawY = 0f
+        private var spaceCursorLastX = 0f
+        private var spaceCursorMoved = false
+        private var longPressFired = false
+        private var longPressRunnable: Runnable? = null
 
         fun rebuild() { relayoutKeys(); invalidate() }
         fun republishBounds() { publishBounds() }
@@ -921,20 +929,82 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private fun keyAtLocal(x: Float, y: Float): String? =
             keys.firstOrNull { it.cell.contains(x.toInt(), y.toInt()) }?.label
 
+        private fun armLongPress(delayMs: Long, action: () -> Unit) {
+            val r = Runnable { longPressFired = true; action() }
+            longPressRunnable = r
+            handler.postDelayed(r, delayMs)
+        }
+
+        private fun cancelLongPress() {
+            longPressRunnable?.let { handler.removeCallbacks(it) }
+            longPressRunnable = null
+            stopAgenticHapticRamp()
+        }
+
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     val lbl = keyAtLocal(event.x, event.y) ?: return false
                     pressedLabel = lbl
+                    downRawX = event.rawX; downRawY = event.rawY
+                    spaceCursorLastX = event.rawX; spaceCursorMoved = false
+                    longPressFired = false
                     keyHaptic(lbl)
                     invalidate()
+                    when (lbl) {
+                        "teclas" -> armLongPress(ViewConfiguration.getLongPressTimeout().toLong()) {
+                            keyHaptic("enter")
+                            openLauncherKeyboardAction(TeclasKeyboardActions.SWITCH_TO_WIDGET_MODE)
+                        }
+                        "enter", "space" -> {
+                            val total = (ViewConfiguration.getLongPressTimeout() * 1.25).toLong()
+                            startAgenticHapticRamp(total)
+                            armLongPress(total) {
+                                agenticConfirmHaptic()
+                                if (lbl == "space") runGeminiCompose() else runAgenticCommand()
+                            }
+                        }
+                        "123", "abc" -> armLongPress(ViewConfiguration.getLongPressTimeout().toLong()) {
+                            keyHaptic("enter"); openImeSettings()
+                        }
+                        "back" -> startDeleteRepeat()
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val lbl = pressedLabel ?: return true
+                    if ((lbl == "teclas" || lbl == "enter" || lbl == "space" || lbl == "123" || lbl == "abc") &&
+                        (abs(event.rawX - downRawX) > touchSlopPx || abs(event.rawY - downRawY) > touchSlopPx)) {
+                        cancelLongPress()
+                    }
+                    // Space-swipe cursor control: drag left/right on the space bar to move the caret.
+                    if (lbl == "space") {
+                        val step = dp(7).toFloat()
+                        var delta = event.rawX - spaceCursorLastX
+                        while (abs(delta) >= step) {
+                            moveTextCursor(delta > 0)
+                            spaceCursorMoved = true
+                            spaceCursorLastX += if (delta > 0) step else -step
+                            delta = event.rawX - spaceCursorLastX
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        }
+                    }
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
                     val lbl = pressedLabel
                     pressedLabel = null
                     invalidate()
-                    if (lbl != null && keyAtLocal(event.x, event.y) == lbl) {
+                    seemeReleaseHaptic(this)
+                    cancelLongPress()
+                    if (longPressFired) { longPressFired = false; return true }
+                    if (lbl == "space" && spaceCursorMoved) { spaceCursorMoved = false; return true }
+                    if (lbl == "back") {
+                        val repeated = deleteRepeatFired
+                        stopDeleteRepeat(clearFired = true)
+                        if (repeated) return true
+                    }
+                    if (lbl != null) {
                         handleKey(resolveTapKey(lbl, event.rawX, event.rawY))
                         armFrameSample()
                     }
@@ -943,6 +1013,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 MotionEvent.ACTION_CANCEL -> {
                     pressedLabel = null
                     invalidate()
+                    cancelLongPress()
+                    longPressFired = false
+                    stopDeleteRepeat(clearFired = true)
                     return true
                 }
             }
