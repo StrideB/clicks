@@ -4302,8 +4302,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private const val KEYBOARD_THEME_PREF = "keyboard_theme"
         private const val KEYBOARD_THEME_DEFAULT = "default"
         private const val KEYBOARD_THEME_TECLAS = "teclas"
-        // Experimental canvas keyboard (Stage 1), Teclas theme only. On for this testing branch so a
-        // debug install exercises it; flip to false (or wire a real setting) before any merge to main.
+        // Canvas keyboard: the Teclas theme renders its key grid as a single bitmap-backed view
+        // (buildKeyboard ~55ms -> ~19ms) instead of ~30 child views. Validated on-device as a full
+        // drop-in (taps, glide, flick, long-press, space-drag, backspace-repeat, caps-lock). Other
+        // themes fall back to the view keyboard until each is brought to canvas parity in turn.
         private const val CANVAS_KB_TECLAS = true
         private const val KEYBOARD_THEME_SKEUO = "skeuo"
         private const val KEYBOARD_THEME_GOKEYS = "gokeys"
@@ -4324,6 +4326,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // burst of frames after each interaction (NOT continuously — the old always-on monitor pinned
         // the display at 60fps and added the very jank it measured). Independent of PERF_LOG so it can
         // run alone with almost none of the keystroke-path overhead.
-        private const val RENDER_LOG = true
+        private const val RENDER_LOG = false
     }
 }
