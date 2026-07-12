@@ -502,10 +502,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
-    private lateinit var predictionEngine: PredictionEngine
+    // @Volatile: read by the background prediction thread (and the SMS-seeding IO callback writes
+    // it); PredictionEngine is immutable after construction, so safe publication is all we need.
+    @Volatile private var predictionEngine: PredictionEngine = PredictionEngine(emptyMap())
     // Parity with the IME: primary-language engine + latent flags drive languagePreferredOrder so a
     // swipe on the launcher keyboard also prefers the language you're writing (no English->Spanish).
-    private var predictionEnginePrimary: PredictionEngine = PredictionEngine(emptyMap())
+    @Volatile private var predictionEnginePrimary: PredictionEngine = PredictionEngine(emptyMap())
     private var hasLatentLanguages = false
     private var latentLanguageActive = false
     private lateinit var ngramRepo: NgramRepository
@@ -755,7 +757,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spatialScorer.importState(prefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
-        predictionEngine = PredictionEngine(emptyMap())
         flickDetector = FlickDetector()
         predictionOverlay = PredictionOverlayManager(this)
         liveRouter = LivePredictionRouter(
@@ -988,6 +989,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaUiScope.cancel()
         neuralGlideV2?.close()
         spellChecker?.close()
+        runCatching { launcherPredictExecutor.shutdownNow() }
         handler.removeCallbacksAndMessages(null)
         billingClient?.endConnection()
         billingClient = null
@@ -1537,6 +1539,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
         root.post { captureKeyBounds() }
+        // Key previews render inside our own window (one reused view) instead of a popup window.
+        (findViewById<View>(android.R.id.content) as? FrameLayout)?.let { keyPreviewManager.attachHost(it) }
     }
 
     // Typing display — lives with whichever keyboard placement is active. Shows typed
@@ -12517,70 +12521,167 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Persist: after a glide / word commit there may be nothing new to show, but keep the last
         // strip content (esp. the swipe result) until the user clears the field or fresh ones arrive.
         if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish && !fieldBlank && strip.childCount > 0) return
-        val wasEmpty = strip.childCount == 0
-        strip.removeAllViews()
-        strip.background = suggestionStripBackground(appColor, pro)
-        if (shown.isNotEmpty() || emojiChips.isNotEmpty() || canPolish) {
-            // Suggestions live under the persistent typing indicator. The typed text never moves
-            // into this row; it stays in typingStripView().
-        } else {
-            strip.addView(TextView(this).apply {
-                text = currentWordInCompose().ifBlank { launcherSuggestionText() }
+        renderLauncherTypingStrip(strip, shown, emojiChips, canPolish, appColor, pro)
+    }
+
+    // ── Typing-strip fast path (parity with the IME) ─────────────────────────
+    // The steady-state strip repaints on every keystroke; tearing down and re-inflating its views
+    // each time cost a measure/layout/alloc storm per key press. A fixed set of slot views is built
+    // ONCE and repaints are just setText/visibility flips. Rare states (polishing, agentic status,
+    // results, commands, actions, starters) keep the legacy rebuild path above.
+    private var launcherTypingRow: LinearLayout? = null
+    private var launcherStripFallback: TextView? = null
+    private val launcherStripSuggestionViews = ArrayList<TextView>(3)
+    private val launcherStripSuggestionDividers = ArrayList<View>(3)
+    private val launcherStripChipViews = ArrayList<TextView>(5)
+    private val launcherStripChipDividers = ArrayList<View>(5)
+    private var launcherStripPolish: TextView? = null
+    // Live data behind the slots; click listeners read these so they're bound once, not per repaint.
+    private var launcherStripShown: List<String> = emptyList()
+    private var launcherStripChipData: List<String> = emptyList()
+    // The strip well drawable is theme/app-color dependent but stable between keystrokes — cache it.
+    private var launcherStripBg: android.graphics.drawable.Drawable? = null
+    private var launcherStripBgColor: Int? = null
+    private var launcherStripBgPro = false
+    private var launcherStripBgTokens: NeuTokens? = null
+    private var launcherStripRowTokens: NeuTokens? = null
+
+    private fun launcherStripDivider(): View = View(this).apply {
+        setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000)
+    }
+
+    private fun ensureLauncherTypingRow(): LinearLayout {
+        launcherTypingRow?.let { return it }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        launcherStripFallback = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 13f
+            includeFontPadding = false
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            row.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+        repeat(3) { i ->
+            launcherStripSuggestionViews.add(TextView(this).apply {
                 gravity = Gravity.CENTER
-                textSize = 13f
+                textSize = 14.5f
                 includeFontPadding = false
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(activeNeuTokens.inkDim)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        }
-        if (shown.isNotEmpty()) {
-            val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
-            shown.forEachIndexed { i, word ->
-                strip.addView(TextView(this).apply {
-                    text = word
-                    gravity = Gravity.CENTER
-                    textSize = 14.5f
-                    includeFontPadding = false
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setTextColor(textColor)
-                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                    isClickable = true
-                    setOnClickListener { keyHaptic("space"); acceptSuggestion(word) }
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-                if (i < shown.lastIndex || emojiChips.isNotEmpty() || canPolish) {
-                    strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
-                        LinearLayout.LayoutParams(dp(1), dp(16)))
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                isClickable = true
+                setOnClickListener {
+                    launcherStripShown.getOrNull(i)?.let { w -> keyHaptic("space"); acceptSuggestion(w) }
                 }
-            }
+                row.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            })
+            launcherStripSuggestionDividers.add(launcherStripDivider().also {
+                row.addView(it, LinearLayout.LayoutParams(dp(1), dp(16)).apply { gravity = Gravity.CENTER_VERTICAL })
+            })
         }
-        emojiChips.forEachIndexed { i, emoji ->
-            strip.addView(TextView(this).apply {
-                text = emoji
+        repeat(5) { i ->
+            launcherStripChipViews.add(TextView(this).apply {
                 gravity = Gravity.CENTER
                 textSize = 18f
                 includeFontPadding = false
                 maxLines = 1
-                setTextColor(activeNeuTokens.ink)
                 setPadding(dp(10), 0, dp(10), 0)
                 isClickable = true
-                setOnClickListener { insertLauncherEmojiChip(emoji) }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            if (i < emojiChips.lastIndex || canPolish) {
-                strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
-                    LinearLayout.LayoutParams(dp(1), dp(16)))
-            }
+                setOnClickListener {
+                    launcherStripChipData.getOrNull(i)?.let { insertLauncherEmojiChip(it) }
+                }
+                row.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            })
+            launcherStripChipDividers.add(launcherStripDivider().also {
+                row.addView(it, LinearLayout.LayoutParams(dp(1), dp(16)).apply { gravity = Gravity.CENTER_VERTICAL })
+            })
         }
         // ✨ Polish the whole composed message (Pro + Gemini, 3+ words). Same sparkle as the IME.
-        if (canPolish) {
-            strip.addView(TextView(this).apply {
-                text = "✨"; gravity = Gravity.CENTER; textSize = 16f; includeFontPadding = false
-                background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
-                isClickable = true
-                setOnClickListener { keyHaptic("space"); polishLauncherField() }
-            }, LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+        launcherStripPolish = TextView(this).apply {
+            text = "✨"; gravity = Gravity.CENTER; textSize = 16f; includeFontPadding = false
+            background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
+            isClickable = true
+            setOnClickListener { keyHaptic("space"); polishLauncherField() }
+            row.addView(this, LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
         }
+        launcherTypingRow = row
+        return row
+    }
+
+    private fun launcherStripWell(appColor: Int?, pro: Boolean): android.graphics.drawable.Drawable {
+        launcherStripBg?.let {
+            if (launcherStripBgColor == appColor && launcherStripBgPro == pro && launcherStripBgTokens === activeNeuTokens) return it
+        }
+        return suggestionStripBackground(appColor, pro).also {
+            launcherStripBg = it
+            launcherStripBgColor = appColor
+            launcherStripBgPro = pro
+            launcherStripBgTokens = activeNeuTokens
+        }
+    }
+
+    /** Repaint the steady-state strip in place. All views are recycled; only text/visibility move. */
+    private fun renderLauncherTypingStrip(
+        strip: LinearLayout,
+        shown: List<String>,
+        chips: List<String>,
+        canPolish: Boolean,
+        appColor: Int?,
+        pro: Boolean
+    ) {
+        val row = ensureLauncherTypingRow()
+        val wasEmpty = row.parent !== strip
+        if (wasEmpty) {
+            (row.parent as? ViewGroup)?.removeView(row)
+            strip.removeAllViews()
+            strip.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        launcherStripShown = shown
+        launcherStripChipData = chips
+        strip.background = launcherStripWell(appColor, pro)
+        // Dividers carry a theme-derived tint; refresh it only when the theme tokens actually swap.
+        if (launcherStripRowTokens !== activeNeuTokens) {
+            launcherStripRowTokens = activeNeuTokens
+            val dividerColor = (activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000
+            launcherStripSuggestionDividers.forEach { it.setBackgroundColor(dividerColor) }
+            launcherStripChipDividers.forEach { it.setBackgroundColor(dividerColor) }
+        }
+        val hasContent = shown.isNotEmpty() || chips.isNotEmpty() || canPolish
+        // Suggestions live under the persistent typing indicator. The typed text never moves into
+        // this row (it stays in typingStripView()); the dim echo only fills an otherwise-empty strip.
+        launcherStripFallback?.let { fb ->
+            fb.visibility = if (hasContent) View.GONE else View.VISIBLE
+            if (!hasContent) {
+                val echo = currentWordInCompose().ifBlank { launcherSuggestionText() }
+                if (!fb.text.contentEquals(echo)) fb.text = echo
+                if (fb.currentTextColor != activeNeuTokens.inkDim) fb.setTextColor(activeNeuTokens.inkDim)
+            }
+        }
+        val suggestionInk = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
+        for (i in 0 until 3) {
+            val v = launcherStripSuggestionViews[i]
+            val d = launcherStripSuggestionDividers[i]
+            val w = shown.getOrNull(i)
+            if (w == null) { v.visibility = View.GONE; d.visibility = View.GONE; continue }
+            v.visibility = View.VISIBLE
+            if (!v.text.contentEquals(w)) v.text = w
+            if (v.currentTextColor != suggestionInk) v.setTextColor(suggestionInk)
+            d.visibility = if (i < shown.lastIndex || chips.isNotEmpty() || canPolish) View.VISIBLE else View.GONE
+        }
+        for (i in 0 until 5) {
+            val v = launcherStripChipViews[i]
+            val d = launcherStripChipDividers[i]
+            val chip = chips.getOrNull(i)
+            if (chip == null) { v.visibility = View.GONE; d.visibility = View.GONE; continue }
+            v.visibility = View.VISIBLE
+            if (!v.text.contentEquals(chip)) v.text = chip
+            if (v.currentTextColor != activeNeuTokens.ink) v.setTextColor(activeNeuTokens.ink)
+            d.visibility = if (i < chips.lastIndex || canPolish) View.VISIBLE else View.GONE
+        }
+        launcherStripPolish?.visibility = if (canPolish) View.VISIBLE else View.GONE
         // Elegant slide-in when the strip goes from empty to showing content.
         if (wasEmpty) {
             strip.alpha = 0f
@@ -12932,15 +13033,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         liveRouter.onTextChanged(word)
         computeLauncherEmojiChips(word)
-        val prev = previousWordInCompose()
-        // Base strip (in-memory candidate computation) stays snappy at 80ms.
+        // Candidate computation runs on the prediction thread (parity with the IME): the debounce
+        // only coalesces bursts, and the same pass precomputes the on-space autocorrect decision so
+        // the space key applies a cached answer instead of a dictionary search inside the keystroke.
         val r = Runnable {
             lastSuggestWord = word
-            suggestions = predictionCore.computeSuggestions()   // shared candidate computation
-            updateSuggestionBar()
+            val w = predictionCore.currentWord()
+            val p = predictionCore.previousWord()
+            val gen = ++launcherPredictGeneration
+            runCatching { launcherPredictExecutor.execute {
+                val base = predictionCore.computeSuggestions(w, p)
+                val correction = if (w.length >= 2)
+                    autocorrectCore.computeCorrection(w, ngramRepo.cachedNextWords(p)) else null
+                handler.post {
+                    if (gen != launcherPredictGeneration) return@post   // user typed past this answer
+                    pendingLauncherCorrection = w to correction
+                    suggestions = base
+                    updateSuggestionBar()
+                }
+            } }
         }
         suggestDebounce = r
-        handler.postDelayed(r, 80)
+        handler.postDelayed(r, 40)
         // Spellchecker is a cross-process call — defer it to a slower cadence so it doesn't fire on
         // every keystroke during fast typing (its async result merges into the strip when it lands).
         val sc = Runnable { spellChecker?.getSuggestions(TextInfo(word), 5) }
@@ -12978,8 +13092,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // space) and the space handler adds the space, matching the previous behavior.
     private fun tryAutocorrect(live: Boolean = false) {
         if (live) return
-        autocorrectCore.correctBeforeCommit()
+        // Fast path: the prediction thread already decided this word's correction while it was
+        // being typed — apply the cached answer with zero dictionary work inside the keystroke.
+        val word = autocorrectCore.currentWord()
+        val pre = pendingLauncherCorrection
+        if (pre != null && pre.first == word) {
+            pre.second?.let { autocorrectCore.applyCorrection(word, it) }
+        } else {
+            autocorrectCore.correctBeforeCommit()
+        }
+        pendingLauncherCorrection = null
     }
+
+    // ── Background prediction pipeline (parity with the IME) ────────────────
+    // Suggestions and the space-bar correction decision compute here, never on the UI thread.
+    private val launcherPredictExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "launcher-predict").apply { priority = Thread.NORM_PRIORITY - 1 }
+    }
+    @Volatile private var launcherPredictGeneration = 0
+    private var pendingLauncherCorrection: Pair<String, String?>? = null   // main-thread only
 
     private var liveCorrectDebounce: Runnable? = null
 
@@ -13166,13 +13297,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 val clf = StatisticalGlideTypingClassifier()
                 clf.setWordData(adaptive.extendedWords, freqs)
+                // Engines index the dictionary in their constructor — build them here on IO,
+                // publish on Main (constructing them on the main thread stalled the first frame).
+                val engineUnion = PredictionEngine(freqs)
+                val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
                 // Make glide available immediately with the statistical classifier; the heavy neural
                 // ONNX load must not block it (that stalls glide for seconds on a real device).
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
                     wordlistFrequencies = freqs
-                    predictionEngine = PredictionEngine(freqs)
-                    predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                    predictionEngine = engineUnion
+                    predictionEnginePrimary = enginePrimary
                     hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                     latentLanguageActive = false
                     updateGlideLayout()
