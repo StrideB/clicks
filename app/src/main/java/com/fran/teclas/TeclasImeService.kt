@@ -1460,6 +1460,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     } else base
                     updateStrip()
                     plog("predict updateStrip done")
+                    // Correction/spellcheck orchestration: the on-device engine already ran (correction
+                    // + suggestions). The system spellchecker is a cross-process FALLBACK, not a
+                    // parallel path — only reach for it when we came up empty-handed on a real word, so
+                    // it stops costing an IPC + an extra strip relayout on every single word.
+                    maybeSystemSpellcheck(word, base.isNotEmpty() || correction != null)
                 }
             } }
         }
@@ -1468,25 +1473,32 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // CPU and we can keep a snappy cadence — which also means the space-bar autocorrect precompute
         // is ready in time (no synchronous main-thread fallback hitch on space).
         handler.postDelayed(r, 90L)
-        // Emoji chips + system spellcheck are heavier and less time-critical — run them on a slower
-        // cadence (180ms) so fast typing doesn't fire them every keystroke. Output is unchanged.
+        // Emoji chips are heavier and less time-critical — run them on a slower cadence (180ms) so
+        // fast typing doesn't fire them every keystroke. (System spellcheck used to ride along here on
+        // every word; it's now a fallback triggered from the prediction result — see maybeSystemSpellcheck.)
         val cs = Runnable {
             val word = currentWord()
             perfIpcReads = 0
             ptime("computeSmartChips") { computeSmartChips(word) }
             updateStrip()
-            // System spellchecker fills real corrections for hard misspellings the on-device engine
-            // can't reach (parity with the launcher). Merges in via onGetSuggestions.
-            if (word.length >= 2) {
-                lastSpellWord = word
-                perfIpcReads = 0
-                ptime("spellCheck.getSuggestions") {
-                    runCatching { spellChecker?.getSuggestions(android.view.textservice.TextInfo(word), 5) }
-                }
-            }
         }
         chipsDebounce = cs
         handler.postDelayed(cs, 180L)
+    }
+
+    /**
+     * System spellcheck as a fallback only. The on-device engine (correction + suggestions) has already
+     * run for this word; [hadLocalAnswer] is true when it produced a correction or any suggestion. In
+     * that common case we skip the cross-process spellchecker entirely — it's redundant and its async
+     * result would trigger a second strip relayout for the same word. We reach for it solely when the
+     * local dictionary is empty-handed on a real word (a hard misspelling / proper noun it can't
+     * reach); the result merges back in via onGetSuggestions, which drops it if the user has typed on.
+     */
+    private fun maybeSystemSpellcheck(word: String, hadLocalAnswer: Boolean) {
+        if (hadLocalAnswer || word.length < 4) return
+        val sc = spellChecker ?: return
+        lastSpellWord = word
+        runCatching { sc.getSuggestions(android.view.textservice.TextInfo(word), 5) }
     }
 
     // Build emoji + smart-symbol chips for the current word/context. Emoji lead; symbols fill in.
