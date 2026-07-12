@@ -27,9 +27,15 @@ class PredictionCore(
 
     /** Up to 3 candidates: completions/corrections for the current word, or — between words —
      *  next-word predictions for the previous word. */
-    fun computeSuggestions(): List<String> {
-        val word = currentWord()
-        val prev = previousWord()
+    fun computeSuggestions(): List<String> = computeSuggestions(currentWord(), previousWord())
+
+    /**
+     * [computeSuggestions] over an explicit (word, previous-word) snapshot. Thread-safe: the
+     * engine is immutable, the n-gram reads hit a concurrent cache, and no host text is touched —
+     * so a host can take the snapshot on the UI thread and run the dictionary work on a background
+     * prediction thread.
+     */
+    fun computeSuggestions(word: String, prev: String): List<String> {
         if (word.length < 2) {
             if (prev.length < 2) return emptyList()
             ngram.prefetchNextWords(prev)

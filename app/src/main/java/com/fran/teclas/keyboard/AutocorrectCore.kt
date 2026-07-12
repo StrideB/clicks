@@ -39,16 +39,37 @@ class AutocorrectCore(
     /** Corrects the just-finished word in place (call right before committing a space/period). */
     fun correctBeforeCommit(): Boolean {
         val word = currentWord()
-        if (word.length < 2) return false
-        extendedEngine()?.let { if (it.isDictWord(word)) return false }   // valid in another language
-        val ctx = contextNextWords(previousWord())
+        val corrected = computeCorrection(word, contextNextWords(previousWord())) ?: return false
+        return applyCorrection(word, corrected)
+    }
+
+    /**
+     * The candidate-search half of [correctBeforeCommit]: what would [word] be corrected to, given
+     * the personalized next-word context [ctx]? Pure — touches no host text and no mutable state —
+     * so a host can precompute it on a background thread while the user is still mid-word and apply
+     * the cached answer instantly when space lands (the Gboard pipeline: decode while typing,
+     * commit on the keystroke).
+     */
+    fun computeCorrection(word: String, ctx: List<String>): String? {
+        if (word.length < 2) return null
+        extendedEngine()?.let { if (it.isDictWord(word)) return null }   // valid in another language
         val corrected = engine().bestCorrection(word, ctx) ?: run {
-            if (!useFallback) return false
-            val g = engine().getSuggestions(word, 1).firstOrNull() ?: return false
-            if (levenshtein(word.lowercase(Locale.US), g.lowercase(Locale.US)) > 1) return false
+            if (!useFallback) return null
+            val g = engine().getSuggestions(word, 1).firstOrNull() ?: return null
+            if (levenshtein(word.lowercase(Locale.US), g.lowercase(Locale.US)) > 1) return null
             g
         }
-        if (corrected.equals(word, ignoreCase = true)) return false
+        if (corrected.equals(word, ignoreCase = true)) return null
+        return corrected
+    }
+
+    /**
+     * The edit half of [correctBeforeCommit]: replace [word] (the in-progress word before the
+     * cursor) with [corrected], honoring remembered rejections and preserving case. Main thread
+     * only — it writes through the host and arms the backspace undo.
+     */
+    fun applyCorrection(word: String, corrected: String): Boolean {
+        if (word.isEmpty() || corrected.equals(word, ignoreCase = true)) return false
         if (rejected[word.lowercase(Locale.US)]?.contains(corrected.lowercase(Locale.US)) == true) return false
         val cased = preserveCase(word, corrected)
         host.deleteBeforeCursor(word.length)

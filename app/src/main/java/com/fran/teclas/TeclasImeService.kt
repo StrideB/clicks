@@ -177,9 +177,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private var lastGlidePath: List<TimedPoint> = emptyList()
     private var lastGlideBounds: FloatArray? = null
     private var lastGlideWord: String = ""
-    private var predictionEngine = PredictionEngine(emptyMap())         // active pointer (primary or extended)
-    private var predictionEnginePrimary = PredictionEngine(emptyMap())  // primary language only
-    private var predictionEngineExtended = PredictionEngine(emptyMap()) // primary + secondary phone languages
+    // @Volatile: read by the background prediction thread; swapped on main when dictionaries load
+    // or the active language flips. PredictionEngine itself is immutable after construction.
+    @Volatile private var predictionEngine = PredictionEngine(emptyMap())         // active pointer (primary or extended)
+    @Volatile private var predictionEnginePrimary = PredictionEngine(emptyMap())  // primary language only
+    @Volatile private var predictionEngineExtended = PredictionEngine(emptyMap()) // primary + secondary phone languages
     private var hasLatentLanguages = false
     private var latentLanguageActive = false
     private val spatialScorer = SpatialScorer()
@@ -228,6 +230,19 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // True right after a glide commits a word, while the strip shows the swipe's other decodings as
     // tap-to-correct alternatives. Any physical key press clears it (back to normal typing/next-word).
     private var glideJustCommitted = false
+
+    // ── Background prediction pipeline (the Gboard model) ───────────────────────────────────────
+    // Dictionary-scanning work (suggestions + the space-bar autocorrect decision) runs here, never
+    // on the UI thread. Results post back to main; [predictGeneration] drops stale answers when the
+    // user has typed past them. [pendingCorrection] is (word, correction-or-null) precomputed for
+    // the in-progress word so the space key applies it instantly instead of running a dictionary
+    // search inside the keystroke.
+    private val predictExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "teclas-predict").apply { priority = Thread.NORM_PRIORITY - 1 }
+    }
+    @Volatile private var predictGeneration = 0
+    private var pendingCorrection: Pair<String, String?>? = null   // main-thread only
+
     private var suggestDebounce: Runnable? = null
     private var chipsDebounce: Runnable? = null      // emoji chips + spellcheck on a slower cadence
     private var liveCorrectDebounce: Runnable? = null
@@ -326,7 +341,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         return android.widget.FrameLayout(this).apply {
             addView(deck, deckParams)
-        }.also { imeRoot = it }
+        }.also {
+            imeRoot = it
+            // Key previews render inside this window (one reused view), never as per-press popups.
+            keyPreview.attachHost(it)
+        }
     }
 
     /**
@@ -468,6 +487,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         nanoRewrite.close()
         runCatching { spellChecker?.close() }
         runCatching { thumbExecutor.shutdownNow() }
+        runCatching { predictExecutor.shutdownNow() }
         AttachBridge.pending = null
         super.onDestroy()
     }
@@ -489,24 +509,47 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             addView(buildInlineAutofillRow(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply {
                 leftMargin = dp(4); rightMargin = dp(4)
             })
-            val rows = if (symbolsMode) listOf(
-                com.fran.teclas.keyboard.KeyboardSymbols.ROW_DIGITS,
-                com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_1,
-                com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"),
-                listOf("abc", "teclas", "space", ".", "enter")
-            ) else listOf(
-                "qwertyuiop".map { it.toString() },
-                "asdfghjkl".map { it.toString() },
-                listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"),
-                listOf("123", "teclas", "space", ".", "enter")
-            )
-            rows.forEachIndexed { rowIndex, row ->
-                addView(keyRow(row, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight()).apply {
-                    if (rowIndex > 0) topMargin = -keyRowOverlap()
-                })
-            }
+            addKeyRows(this)
             post { captureKeyBounds() }
         }
+    }
+
+    // Children before the key rows: suggestion strip, agentic panel, inline autofill row.
+    private val chromeChildCount = 3
+
+    private fun addKeyRows(deck: LinearLayout) {
+        val rows = if (symbolsMode) listOf(
+            com.fran.teclas.keyboard.KeyboardSymbols.ROW_DIGITS,
+            com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_1,
+            com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"),
+            listOf("abc", "teclas", "space", ".", "enter")
+        ) else listOf(
+            "qwertyuiop".map { it.toString() },
+            "asdfghjkl".map { it.toString() },
+            listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"),
+            listOf("123", "teclas", "space", ".", "enter")
+        )
+        rows.forEachIndexed { rowIndex, row ->
+            deck.addView(keyRow(row, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight()).apply {
+                if (rowIndex > 0) topMargin = -keyRowOverlap()
+            })
+        }
+    }
+
+    /**
+     * Flip between letters and symbols by swapping ONLY the key rows inside the live deck. The old
+     * path rebuilt the entire input view (strip, panels, cached backgrounds, a setInputView window
+     * pass) on every 123/abc tap, which made the mode switch itself feel slow.
+     */
+    private fun setSymbolsMode(on: Boolean) {
+        if (symbolsMode == on) return
+        symbolsMode = on
+        val deck = deckView ?: run { rebuildDeck(); return }
+        keyPreview.dismiss()
+        while (deck.childCount > chromeChildCount) deck.removeViewAt(deck.childCount - 1)
+        keyViews.clear()
+        addKeyRows(deck)
+        deck.post { captureKeyBounds() }
     }
 
     private var lastBuiltTheme: String? = null
@@ -619,11 +662,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             }
             background = visualKeyBackground(label, pressed = false)
             isClickable = true
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            // No per-key hardware layer: 30+ layers cost texture memory and force a texture
+            // re-upload on every press/label change. Default display-list rendering redraws only
+            // the pressed key's small dirty rect, which is cheaper for views this size.
             setOnTouchListener(ImeKeyTouchListener(label))
             keyViews[label] = this
         }
     }
+
+    private val touchSlopPx by lazy { ViewConfiguration.get(this).scaledTouchSlop }
 
     private inner class ImeKeyTouchListener(private val label: String) : View.OnTouchListener {
         private var downRawX = 0f
@@ -688,8 +735,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if ((label == "teclas" || label == "enter" || label == "space" || label == "123" || label == "abc") &&
-                        (abs(event.rawX - downRawX) > ViewConfiguration.get(this@TeclasImeService).scaledTouchSlop ||
-                            abs(event.rawY - downRawY) > ViewConfiguration.get(this@TeclasImeService).scaledTouchSlop)) {
+                        (abs(event.rawX - downRawX) > touchSlopPx || abs(event.rawY - downRawY) > touchSlopPx)) {
                         cancelTeclasLongPress()
                     }
                     // Space-swipe cursor control (parity with the launcher): drag left/right on the
@@ -791,20 +837,38 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     lastSpaceMs = 0L; updateAutoCap(); return
                 }
                 lastSpaceMs = now
-                if (proofreadEnabled()) {
-                    // Never auto-change the word mid-sentence; just learn it (so your slang/abbrev
-                    // stops being flagged) and let it stand. Fixing happens only on send.
-                    userDict.noteTyped(currentWord())
-                } else if (autocorrectEnabled()) {
-                    autocorrect.correctBeforeCommit()
+                // One batch edit around correct+space: the editor sees a single atomic change
+                // (one selection update, one undo step) instead of delete/commit/commit.
+                input?.beginBatchEdit()
+                try {
+                    if (proofreadEnabled()) {
+                        // Never auto-change the word mid-sentence; just learn it (so your slang/abbrev
+                        // stops being flagged) and let it stand. Fixing happens only on send.
+                        userDict.noteTyped(currentWord())
+                    } else if (autocorrectEnabled()) {
+                        // Fast path: the prediction thread already decided this word's correction
+                        // while it was being typed — apply the cached answer with zero dictionary
+                        // work inside the keystroke. Falls back to the synchronous search only when
+                        // the cache doesn't match (e.g. space immediately after a cursor jump).
+                        val word = currentWord()
+                        val pre = pendingCorrection
+                        if (pre != null && pre.first == word) {
+                            pre.second?.let { autocorrect.applyCorrection(word, it) }
+                        } else {
+                            autocorrect.correctBeforeCommit()
+                        }
+                        pendingCorrection = null
+                    }
+                    commitValue(" ")
+                } finally {
+                    input?.endBatchEdit()
                 }
-                commitValue(" ")
                 learnAndPredictAfterSpace()
                 updateAutoCap()
             }
             "teclas" -> openImeSettings()
-            "123" -> { symbolsMode = true; rebuildDeck() }
-            "abc" -> { symbolsMode = false; rebuildDeck() }
+            "123" -> setSymbolsMode(true)
+            "abc" -> setSymbolsMode(false)
             "." -> commitValue(".")
             else -> {
                 autocorrect.clearPending()
@@ -1003,14 +1067,18 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 glideWords = words
                 val clf = StatisticalGlideTypingClassifier()
                 clf.setWordData(words, freqs)
+                // Engines index the dictionary in their constructor — build them here (off main),
+                // publish on main.
+                val enginePrimary = PredictionEngine(primaryFreqs)
+                val engineExtended = PredictionEngine(extendedFreqs)
                 handler.post {
                     glideClassifier = clf
                     glideFreqs = freqs
-                    predictionEnginePrimary = PredictionEngine(primaryFreqs)
-                    predictionEngineExtended = PredictionEngine(extendedFreqs)
+                    predictionEnginePrimary = enginePrimary
+                    predictionEngineExtended = engineExtended
                     hasLatentLanguages = latent
                     latentLanguageActive = false
-                    predictionEngine = predictionEnginePrimary
+                    predictionEngine = enginePrimary
                     android.util.Log.d("TeclasGlide", "classifier loaded words=${words.size}")
                     updateGlideLayout()
                 }
@@ -1080,12 +1148,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun wordsBeforeCursor(): List<String> {
         val before = shadowBeforeCursor(96)
-        return Regex("[A-Za-z]+").findAll(before).map { it.value }.toList()
+        return WORD_RE.findAll(before).map { it.value }.toList()
     }
 
-    private fun previousWord(): String {
-        val before = shadowBeforeCursor(96)
-        val tokens = Regex("[A-Za-z]+").findAll(before).map { it.value }.toList()
+    private fun previousWord(): String = previousWordOf(shadowBeforeCursor(96))
+
+    /** [previousWord] over a text snapshot — used off the main thread by the prediction pipeline. */
+    private fun previousWordOf(before: String): String {
+        val tokens = WORD_RE.findAll(before).map { it.value }.toList()
         val endsLetter = before.isNotEmpty() && before.last().isLetter()
         return if (endsLetter) tokens.getOrElse(tokens.size - 2) { "" } else tokens.lastOrNull().orEmpty()
     }
@@ -1129,23 +1199,38 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         chipsDebounce?.let { handler.removeCallbacks(it) }
         // No strip to populate (view not built / not shown) → skip all per-keystroke prediction work.
         if (suggestionStrip == null) return
-        // Base prediction strip — fast (70ms). Reads go through the shadow mirror (no cross-process
-        // getText* IPC when the mirror is valid, which is the common case mid-word).
+        // Base prediction strip. The debounce only coalesces bursts; the dictionary work itself runs
+        // on the prediction thread (never the UI thread), off a text snapshot taken from the shadow
+        // mirror on main. While it's at it, the same pass precomputes the space-bar autocorrect
+        // decision for the in-progress word, so pressing space applies a cached answer instead of
+        // paying a dictionary search inside the keystroke — Gboard's decode-while-typing pipeline.
         val r = Runnable {
             // Re-evaluate the active language every keystroke (not only on space) so mid-word
             // suggestions/corrections use the right dictionary while typing a secondary language.
             updateActiveLanguage()
-            val base = predictionCore.computeSuggestions()
-            suggestions = if (base.isEmpty()) {
-                // IME extra: notification quick-replies when the field is empty.
-                val before = shadowBeforeCursor(2)
-                val fieldEmpty = before.isEmpty() && shadowAfterCursor(1).isEmpty()
-                if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
-            } else base
-            updateStrip()
+            val before = shadowBeforeCursor(96)
+            val fieldEmpty = before.isEmpty() && shadowAfterCursor(1).isEmpty()
+            val gen = ++predictGeneration
+            // runCatching: a debounce that fires after onDestroy would hit a shut-down executor.
+            runCatching { predictExecutor.execute {
+                val word = before.takeLast(48).takeLastWhile { it.isLetter() }
+                val prev = previousWordOf(before)
+                val base = predictionCore.computeSuggestions(word, prev)
+                val correction = if (word.length >= 2)
+                    autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev)) else null
+                handler.post {
+                    if (gen != predictGeneration) return@post   // user typed past this answer
+                    pendingCorrection = word to correction
+                    suggestions = if (base.isEmpty()) {
+                        // IME extra: notification quick-replies when the field is empty.
+                        if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
+                    } else base
+                    updateStrip()
+                }
+            } }
         }
         suggestDebounce = r
-        handler.postDelayed(r, 70L)
+        handler.postDelayed(r, 40L)
         // Emoji chips + system spellcheck are heavier and less time-critical — run them on a slower
         // cadence (180ms) so fast typing doesn't fire them every keystroke. Output is unchanged.
         val cs = Runnable {
@@ -1283,7 +1368,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun updateActiveLanguage() {
         if (!hasLatentLanguages) return
         val before = shadowBeforeCursor(96).lowercase()
-        val words = before.split(Regex("[^\\p{L}]+")).filter { it.length >= 2 }.takeLast(4)
+        val words = before.split(NON_LETTER_RE).filter { it.length >= 2 }.takeLast(4)
         if (words.isEmpty()) return
         val latentHits = words.count { predictionEngineExtended.isDictWord(it) && !predictionEnginePrimary.isDictWord(it) }
         val active = when {
@@ -1363,8 +1448,132 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         return strip
     }
 
-    private fun stripWellBackground() = android.graphics.drawable.GradientDrawable().apply {
+    // One well-background instance for the strip's lifetime; setBackground(same instance) is a
+    // no-op in View, so repaints don't re-allocate or re-invalidate.
+    private var stripWellCache: android.graphics.drawable.GradientDrawable? = null
+    private fun stripWellBackground(): Drawable = stripWellCache ?: GradientDrawable().apply {
         setColor(0x14FFFFFF); cornerRadius = dp(10).toFloat()
+    }.also { stripWellCache = it }
+
+    // ── Typing-strip fast path ──────────────────────────────────────────────────────────────────
+    // The steady-state strip (word suggestions + emoji/symbol chips + Fix/Polish) repaints on every
+    // keystroke. Tearing down and re-inflating its views each time — the old removeAllViews +
+    // fresh TextViews + fresh drawables — cost a measure/layout/alloc storm per key press. Instead
+    // a fixed set of slot views is built ONCE and repaints are just setText/visibility flips
+    // (LatinIME's recycled SuggestionStripView). Rare states (agentic status, command previews,
+    // proofread, actions) still use the legacy rebuild path.
+    private var typingRow: LinearLayout? = null
+    private val stripSuggestionViews = ArrayList<TextView>(3)
+    private val stripSuggestionDividers = ArrayList<View>(3)
+    private val stripChipViews = ArrayList<TextView>(5)
+    private val stripChipDividers = ArrayList<View>(5)
+    private var stripFixView: TextView? = null
+    private var stripFixDivider: View? = null
+    private var stripPolishView: TextView? = null
+    // Live data behind the slots; click listeners read these so they're bound once, not per repaint.
+    private var stripShown: List<String> = emptyList()
+    private var stripChipData: List<Triple<String, String, Boolean>> = emptyList()
+
+    private fun stripDivider(): View = View(this).apply { setBackgroundColor(0x22FFFFFF) }
+    private fun dividerParams() = LinearLayout.LayoutParams(dp(1), dp(18)).apply {
+        gravity = Gravity.CENTER_VERTICAL
+    }
+
+    private fun ensureTypingRow(): LinearLayout {
+        typingRow?.let { return it }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        stripFixView = TextView(this).apply {
+            text = "⌁ Fix"; gravity = Gravity.CENTER; textSize = 14f
+            setTextColor(0xFF33E1C4.toInt()); setPadding(dp(12), 0, dp(12), 0)
+            isClickable = true
+            setOnClickListener { keyHaptic("space"); runNanoProofread() }
+            row.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+        }
+        stripFixDivider = stripDivider().also { row.addView(it, dividerParams()) }
+        repeat(3) { i ->
+            stripSuggestionViews.add(TextView(this).apply {
+                gravity = Gravity.CENTER
+                textSize = 15f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                isClickable = true
+                setOnClickListener {
+                    stripShown.getOrNull(i)?.let { w -> keyHaptic("space"); acceptSuggestion(w) }
+                }
+                row.addView(this, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            })
+            stripSuggestionDividers.add(stripDivider().also { row.addView(it, dividerParams()) })
+        }
+        repeat(5) { i ->
+            stripChipViews.add(TextView(this).apply {
+                gravity = Gravity.CENTER
+                maxLines = 1
+                setPadding(dp(8), 0, dp(8), 0)
+                isClickable = true
+                setOnClickListener {
+                    stripChipData.getOrNull(i)?.let { (d, ins, e) -> insertSmartChip(d, ins, e) }
+                }
+                row.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            })
+            stripChipDividers.add(stripDivider().also { row.addView(it, dividerParams()) })
+        }
+        stripPolishView = TextView(this).apply {
+            text = "✨"; gravity = Gravity.CENTER; textSize = 17f
+            background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
+            isClickable = true
+            setOnClickListener { polishField() }
+            row.addView(this, LinearLayout.LayoutParams(dp(46), LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+        }
+        typingRow = row
+        return row
+    }
+
+    /** Repaint the steady-state strip in place. All views are recycled; only text/visibility move. */
+    private fun renderTypingStrip(
+        shown: List<String>,
+        chips: List<Triple<String, String, Boolean>>,
+        showFix: Boolean,
+        canPolish: Boolean
+    ) {
+        val strip = suggestionStrip ?: return
+        val row = ensureTypingRow()
+        if (row.parent !== strip) {
+            (row.parent as? ViewGroup)?.removeView(row)
+            strip.removeAllViews()
+            strip.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT))
+        }
+        stripShown = shown
+        stripChipData = chips
+        val ink = stripInk()
+        val hasTrailing = shown.isNotEmpty() || chips.isNotEmpty() || canPolish
+        stripFixView?.visibility = if (showFix) View.VISIBLE else View.GONE
+        stripFixDivider?.visibility = if (showFix && hasTrailing) View.VISIBLE else View.GONE
+        for (i in 0 until 3) {
+            val v = stripSuggestionViews[i]
+            val d = stripSuggestionDividers[i]
+            val w = shown.getOrNull(i)
+            if (w == null) { v.visibility = View.GONE; d.visibility = View.GONE; continue }
+            v.visibility = View.VISIBLE
+            if (!v.text.contentEquals(w)) v.text = w
+            if (v.currentTextColor != ink) v.setTextColor(ink)
+            d.visibility = if (i < shown.lastIndex || canPolish || chips.isNotEmpty()) View.VISIBLE else View.GONE
+        }
+        for (i in 0 until 5) {
+            val v = stripChipViews[i]
+            val d = stripChipDividers[i]
+            val chip = chips.getOrNull(i)
+            if (chip == null) { v.visibility = View.GONE; d.visibility = View.GONE; continue }
+            v.visibility = View.VISIBLE
+            if (!v.text.contentEquals(chip.first)) v.text = chip.first
+            val size = if (chip.third) 18f else 16f
+            if (v.textSize != size * resources.displayMetrics.scaledDensity) v.textSize = size
+            if (v.currentTextColor != ink) v.setTextColor(ink)
+            d.visibility = if (i < chips.lastIndex || canPolish) View.VISIBLE else View.GONE
+        }
+        stripPolishView?.visibility = if (canPolish) View.VISIBLE else View.GONE
     }
 
     // ── Agentic panel ──────────────────────────────────────────────────────────
@@ -1703,9 +1912,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Elevate command previews and working status into the elegant panel; it toggles the strip's
         // visibility. The strip is still populated below as the fallback surface when the panel idles.
         renderAgenticPanel()
-        strip.removeAllViews()
+        // Legacy (rare) states rebuild the strip from scratch; the steady typing path below never
+        // does — it recycles the fixed slot views in renderTypingStrip.
         val status = agenticStatus
         if (status != null) {
+            strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
                 text = status
@@ -1716,6 +1927,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         val pending = pendingCommand
         if (pending != null) {
+            strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
                 text = pending.label
@@ -1741,6 +1953,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         val proof = pendingProofread
         if (proof != null) {
+            strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
                 text = proof
@@ -1769,6 +1982,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             return
         }
         if (polishing) {
+            strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
                 text = "✨ Polishing…"
@@ -1778,6 +1992,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             return
         }
         if (pendingActions.isNotEmpty()) {
+            strip.removeAllViews()
             strip.background = stripWellBackground()
             pendingActions.forEachIndexed { i, action ->
                 strip.addView(TextView(this).apply {
@@ -1804,14 +2019,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             b.trim().length >= 6 && b.contains(' ')
         }
         if (shown.isEmpty() && !canPolish && chips.isEmpty() && !showFix) {
+            renderTypingStrip(emptyList(), emptyList(), showFix = false, canPolish = false)
             strip.background = null
-            // Nothing to show: hide the strip entirely when the field is empty (fresh keyboard / not
-            // typing) so there's no empty bar; keep it present once there's text so it reliably
-            // reappears as you type. onTextChanged -> scheduleSuggestions -> updateStrip resurfaces it.
+            // Nothing to show: blank the strip when the field is empty (fresh keyboard / not typing);
+            // INVISIBLE, not GONE — collapsing the row resized the whole IME window on the first
+            // keystroke, a guaranteed jank right when typing starts. The reserved row keeps the
+            // keyboard's height constant for the entire session.
             if (agenticHud == null && agenticStatus == null && pendingCommand == null &&
                 inlineScroll?.visibility != View.VISIBLE) {
                 val fieldEmpty = shadowBeforeCursor(1).isEmpty() && shadowAfterCursor(1).isEmpty()
-                suggestionStrip?.visibility = if (fieldEmpty) View.GONE else View.VISIBLE
+                suggestionStrip?.visibility = if (fieldEmpty) View.INVISIBLE else View.VISIBLE
             }
             return
         }
@@ -1821,62 +2038,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         suggestionStrip?.visibility = View.VISIBLE
         inlineScroll?.visibility = View.GONE
         strip.background = stripWellBackground()
-        if (showFix) {
-            strip.addView(TextView(this).apply {
-                text = "⌁ Fix"; gravity = Gravity.CENTER; textSize = 14f
-                setTextColor(0xFF33E1C4.toInt()); setPadding(dp(12), 0, dp(12), 0)
-                isClickable = true
-                setOnClickListener { keyHaptic("space"); runNanoProofread() }
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
-            if (shown.isNotEmpty() || chips.isNotEmpty() || canPolish) {
-                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
-                    LinearLayout.LayoutParams(dp(1), dp(18)))
-            }
-        }
-        shown.forEachIndexed { i, w ->
-            strip.addView(TextView(this).apply {
-                text = w
-                gravity = Gravity.CENTER
-                textSize = 15f
-                setTextColor(stripInk())
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                isClickable = true
-                setOnClickListener { keyHaptic("space"); acceptSuggestion(w) }
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
-            if (i < shown.lastIndex || canPolish || chips.isNotEmpty()) {
-                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
-                    LinearLayout.LayoutParams(dp(1), dp(18)))
-            }
-        }
-        chips.forEachIndexed { i, (display, insert, emoji) ->
-            strip.addView(TextView(this).apply {
-                text = display
-                gravity = Gravity.CENTER
-                textSize = if (emoji) 18f else 16f
-                setTextColor(stripInk())
-                maxLines = 1
-                setPadding(dp(8), 0, dp(8), 0)
-                isClickable = true
-                setOnClickListener { insertSmartChip(display, insert, emoji) }
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
-            if (i < chips.lastIndex || canPolish) {
-                strip.addView(View(this).apply { setBackgroundColor(0x22FFFFFF) },
-                    LinearLayout.LayoutParams(dp(1), dp(18)))
-            }
-        }
-        if (canPolish) {
-            strip.addView(TextView(this).apply {
-                text = "✨"
-                gravity = Gravity.CENTER
-                textSize = 17f
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    setColor(0x338B5CF6); cornerRadius = dp(9).toFloat()
-                }
-                isClickable = true
-                setOnClickListener { polishField() }
-            }, LinearLayout.LayoutParams(dp(46), LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
-        }
+        renderTypingStrip(shown, chips, showFix, canPolish)
     }
 
     // Inline AI command: "<text> //formal" + space -> transform the text with that style (shared with
@@ -2604,7 +2766,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 for (keyIndex in 0 until row.childCount) {
                     val key = row.getChildAt(keyIndex) as? TextView ?: continue
                     val raw = key.tag as? String ?: continue
-                    key.setTextColor(textColor(raw))
+                    val ink = textColor(raw)
+                    if (key.currentTextColor != ink) key.setTextColor(ink)
                     if (key is com.fran.teclas.keyboard.DynamicFlickKeyView && raw.length == 1 && raw[0].isLetter() && !symbolsMode) {
                         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                             key.setLabelPlacement(
@@ -2619,17 +2782,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         key.setSymbolHint(com.fran.teclas.keyboard.KeyboardSymbols.keyUp[raw.lowercase(Locale.US)], symbolHintColor())
                         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                             val brushedLabel = if (capsLock) raw.uppercase(Locale.US) else raw.lowercase(Locale.US)
-                            key.setDrawnPrimaryLabel(brushedLabel, textColor(raw), keyTextSize(raw) * resources.displayMetrics.scaledDensity, key.typeface)
+                            key.setDrawnPrimaryLabel(brushedLabel, ink, keyTextSize(raw) * resources.displayMetrics.scaledDensity, key.typeface)
                         } else {
                             key.setDrawnPrimaryLabel(
                                 visualLabel(raw),
-                                textColor(raw),
+                                ink,
                                 keyTextSize(raw) * resources.displayMetrics.scaledDensity,
                                 key.typeface
                             )
                         }
                     } else {
-                        key.text = keyDisplayText(raw)
+                        // Only touch TextView.text when the label actually changed — setText always
+                        // invalidates and can trigger a layout pass across the row.
+                        val newText = keyDisplayText(raw)
+                        if (key.text?.toString() != newText.toString()) key.text = newText
                     }
                     if (rebuildBackgrounds) key.background = visualKeyBackground(raw, pressed = false)
                 }
@@ -2638,6 +2804,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private inner class SwipeImeKeyboardLayout : LinearLayout(this@TeclasImeService) {
+        // Key bounds refresh after every layout pass of the deck (rows swapped, autofill row shown,
+        // size changed) instead of on every touch-down. One coalesced post per pass.
+        private var boundsCapturePending = false
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!boundsCapturePending) {
+                boundsCapturePending = true
+                post { boundsCapturePending = false; captureKeyBounds() }
+            }
+        }
+
         private var startRawX = 0f
         private var startRawY = 0f
         private var tracking = false
@@ -2788,9 +2965,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     trailTimes.clear()
                     val loc = IntArray(2)
                     getLocationOnScreen(loc)
+                    val moved = loc[0].toFloat() != screenX || loc[1].toFloat() != screenY
                     screenX = loc[0].toFloat()
                     screenY = loc[1].toFloat()
-                    captureKeyBounds()
+                    // Key bounds are captured on layout (and after a row swap) — re-walking all 34
+                    // key views on EVERY touch-down put avoidable work at the most latency-critical
+                    // moment. Recapture here only if the deck actually moved on screen (window
+                    // shifted between apps) or nothing is cached yet.
+                    if (moved || keyBounds.isEmpty()) captureKeyBounds()
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -3542,5 +3724,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
         private const val GO_KEY_COLOR_PREF = "go_key_color"
+
+        // Hot-path regexes, compiled once (these used to be re-compiled on every keystroke).
+        private val WORD_RE = Regex("[A-Za-z]+")
+        private val NON_LETTER_RE = Regex("[^\\p{L}]+")
     }
 }
