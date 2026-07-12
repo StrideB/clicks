@@ -2816,7 +2816,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         favoritesDockView.visibility = if (favoritesDockContextShowing) View.GONE else View.VISIBLE
         favoritesDockView.alpha = if (favoritesDockContextShowing) 0f else 1f
         favoritesDockView.rotationX = if (favoritesDockContextShowing) -90f else 0f
-        frame.addView(foldAwareGlassPlate(context, radiusDp = 19), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        // Docked mode: give the dock the same real wallpaper-blur glass that widget mode uses. The
+        // software DynamicGlassPlate fallback (what foldAwareGlassPlate picks off-widget) is invisible
+        // over a sharp wallpaper with nothing blurred behind it. Widget/unfolded are left untouched.
+        val dockGlass: View =
+            if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive())
+                NativeFoldGlassPanel(context, radiusDp = 19, compactDockGlass = true)
+            else foldAwareGlassPlate(context, radiusDp = 19)
+        frame.addView(dockGlass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.addView(favoritesDockContextView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         if (showAffordance) {
@@ -9710,124 +9717,153 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun searchSportsCard(): SportsApi.ScoreCard? =
         sportsCard?.takeIf { sportsQuery == query.trim() }
 
-    /** Widget-style instant-answer card (Brave rich data): header label, big value, change chip,
-     *  sparkline from the payload timeseries, provider credit. Tap opens the full Brave page. */
+    /** Hero-style instant-answer card (Brave rich data): the value floats big over a full-bleed
+     *  chart at the card's bottom edge, with a tinted change pill and a circular vertical badge.
+     *  Provider credit stays in the detail line. Tap opens the full Brave page. */
     private fun braveRichCard(rich: BraveSearchApi.RichAnswer): View {
         val accent = 0xFFFB542B.toInt()   // Brave orange
-        val deltaColor = if (rich.deltaUp) 0xFF43B97F.toInt() else 0xFFE45B5B.toInt()
+        val deltaColor = if (rich.deltaUp) 0xFF46C184.toInt() else 0xFFE45B5B.toInt()
+        val lineColor = if (rich.delta == null) accent else deltaColor
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
-            setPadding(dp(14), dp(12), dp(14), dp(11))
-            background = searchCardBackground(SearchKind.ANSWER, true, 16)
+            background = searchCardBackground(SearchKind.ANSWER, true, 18)
+            clipToOutline = true   // the full-bleed chart must respect the rounded corners
             addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(TextView(context).apply {
-                    text = rich.glyph
-                    gravity = Gravity.CENTER
-                    textSize = if (rich.glyph == "✦") 12f else 13f
-                    setTextColor(accent)
-                    includeFontPadding = false
-                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.RAISED_SM)
-                }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(9) })
-                addView(mono(rich.label.uppercase(Locale.US), 8.5f, activeNeuTokens.inkDim).apply {
-                    letterSpacing = 0.12f
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                addView(searchKindTag(SearchKind.ANSWER))
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)))
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.BOTTOM
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(14), dp(16), if (rich.spark.size >= 2) dp(2) else dp(14))
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(context).apply {
+                        text = if (rich.glyph == "✦") verticalBadgeGlyph(rich.vertical) else rich.glyph
+                        gravity = Gravity.CENTER
+                        textSize = 13f
+                        setTextColor(accent)
+                        typeface = Typeface.DEFAULT_BOLD
+                        includeFontPadding = false
+                        background = GradientDrawable().apply {
+                            shape = GradientDrawable.OVAL
+                            setColor(adjustAlpha(accent, 0.14f))
+                        }
+                    }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(8) })
+                    addView(TextView(context).apply {
+                        text = rich.label
+                        textSize = 13f
+                        setTextColor(activeNeuTokens.inkDim)
+                        includeFontPadding = false
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                    rich.delta?.let { delta ->
+                        addView(TextView(context).apply {
+                            text = delta
+                            textSize = 11.5f
+                            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                            setTextColor(deltaColor)
+                            includeFontPadding = false
+                            setPadding(dp(10), dp(4), dp(10), dp(4))
+                            background = GradientDrawable().apply {
+                                cornerRadius = dp(99).toFloat()
+                                setColor(adjustAlpha(deltaColor, 0.15f))
+                            }
+                        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            marginStart = dp(8)
+                        })
+                    }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
                 addView(TextView(context).apply {
                     text = rich.headline
-                    textSize = 25f
-                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    textSize = if (rich.headline.length > 16) 24f else 34f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    letterSpacing = -0.02f
                     setTextColor(activeNeuTokens.ink)
                     includeFontPadding = false
                     maxLines = 2
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                rich.delta?.let { delta ->
-                    addView(mono(delta, 10f, deltaColor).apply {
-                        letterSpacing = 0.04f
-                        setPadding(dp(8), dp(4), dp(8), dp(4))
-                        background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.PRESSED_SM)
-                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                        marginStart = dp(8); bottomMargin = dp(3)
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(9)
+                })
+                // Detail + provider credit in one quiet line — Brave's data partners require it.
+                val credit = listOf(rich.detail, rich.provider.ifBlank { "Brave Search" })
+                    .filter { it.isNotBlank() }.joinToString("  ·  ")
+                if (credit.isNotBlank()) {
+                    addView(TextView(context).apply {
+                        text = credit
+                        textSize = 11.5f
+                        setTextColor(activeNeuTokens.inkDim)
+                        includeFontPadding = false
+                        setLineSpacing(dp(2).toFloat(), 1f)
+                        maxLines = 3
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        topMargin = dp(4)
                     })
                 }
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(4)
-            })
-            if (rich.detail.isNotBlank()) {
-                addView(TextView(context).apply {
-                    text = rich.detail
-                    textSize = 11.5f
-                    setTextColor(activeNeuTokens.inkDim)
-                    includeFontPadding = false
-                    setLineSpacing(dp(2).toFloat(), 1f)
-                    maxLines = 3
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    topMargin = dp(5)
-                })
-            }
+                if (rich.forecast.isNotEmpty()) {
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        rich.forecast.forEach { day ->
+                            addView(LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                gravity = Gravity.CENTER_HORIZONTAL
+                                setPadding(0, dp(7), 0, dp(7))
+                                background = GradientDrawable().apply {
+                                    cornerRadius = dp(11).toFloat()
+                                    setColor(adjustAlpha(activeNeuTokens.inkFaint, 0.08f))
+                                }
+                                addView(mono(day.day, 7.5f, activeNeuTokens.inkFaint).apply { letterSpacing = 0.08f })
+                                addView(TextView(context).apply {
+                                    text = day.glyph
+                                    gravity = Gravity.CENTER
+                                    textSize = 15f
+                                    includeFontPadding = false
+                                    setPadding(0, dp(4), 0, dp(4))
+                                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                                addView(TextView(context).apply {
+                                    text = day.hi
+                                    gravity = Gravity.CENTER
+                                    textSize = 11f
+                                    typeface = Typeface.DEFAULT_BOLD
+                                    setTextColor(activeNeuTokens.ink)
+                                    includeFontPadding = false
+                                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                                addView(TextView(context).apply {
+                                    text = day.lo
+                                    gravity = Gravity.CENTER
+                                    textSize = 10f
+                                    setTextColor(activeNeuTokens.inkDim)
+                                    includeFontPadding = false
+                                    setPadding(0, dp(1), 0, 0)
+                                }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                                if (day !== rich.forecast.first()) marginStart = dp(7)
+                            })
+                        }
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        topMargin = dp(10)
+                    })
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             if (rich.spark.size >= 2) {
-                addView(sparklineView(rich.spark, if (rich.delta == null) accent else deltaColor),
-                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(9) })
+                // Full bleed: the chart runs edge to edge and sits flush with the card's bottom.
+                addView(sparklineView(rich.spark, lineColor),
+                    LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply { topMargin = dp(6) })
             }
-            if (rich.forecast.isNotEmpty()) {
-                addView(LinearLayout(context).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    rich.forecast.forEach { day ->
-                        addView(LinearLayout(context).apply {
-                            orientation = LinearLayout.VERTICAL
-                            gravity = Gravity.CENTER_HORIZONTAL
-                            setPadding(0, dp(7), 0, dp(7))
-                            background = Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
-                            addView(mono(day.day, 7.5f, activeNeuTokens.inkFaint).apply { letterSpacing = 0.08f })
-                            addView(TextView(context).apply {
-                                text = day.glyph
-                                gravity = Gravity.CENTER
-                                textSize = 15f
-                                includeFontPadding = false
-                                setPadding(0, dp(4), 0, dp(4))
-                            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                            addView(TextView(context).apply {
-                                text = day.hi
-                                gravity = Gravity.CENTER
-                                textSize = 11f
-                                typeface = Typeface.DEFAULT_BOLD
-                                setTextColor(activeNeuTokens.ink)
-                                includeFontPadding = false
-                            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                            addView(TextView(context).apply {
-                                text = day.lo
-                                gravity = Gravity.CENTER
-                                textSize = 10f
-                                setTextColor(activeNeuTokens.inkDim)
-                                includeFontPadding = false
-                                setPadding(0, dp(1), 0, 0)
-                            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                            if (day !== rich.forecast.first()) marginStart = dp(7)
-                        })
-                    }
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    topMargin = dp(10)
-                })
-            }
-            addView(mono("DATA · ${rich.provider.ifBlank { "BRAVE" }.uppercase(Locale.US)} · BRAVE SEARCH", 7.5f, activeNeuTokens.inkFaint).apply {
-                letterSpacing = 0.1f
-                setPadding(0, dp(8), 0, 0)
-            })
             setOnClickListener {
                 haptic(this)
                 openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(query.trim())}")
             }
         }
+    }
+
+    /** Badge character for verticals whose payload has no glyph of its own. */
+    private fun verticalBadgeGlyph(vertical: String): String = when (vertical) {
+        "cryptocurrency" -> "₿"
+        "stocks", "stock" -> "◆"
+        "currency" -> "$"
+        "calculator", "unit_conversion", "unix_timestamp" -> "="
+        "definitions" -> "Aa"
+        else -> "✦"
     }
 
     /** Widget-style live-scores card (ESPN): league header, one row per game with team lines and
@@ -9940,14 +9976,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun sparklineView(points: List<Float>, color: Int): View = object : View(this) {
         private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = dp(2).toFloat()
+            strokeWidth = 2.5f * resources.displayMetrics.density
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
             this.color = color
         }
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
-            this.color = adjustAlpha(color, 0.13f)
+            this.color = adjustAlpha(color, 0.16f)
         }
         override fun onDraw(canvas: Canvas) {
             val min = points.min()
@@ -17651,14 +17687,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun injectToForegroundApp(payload: String) {
-        // Prefer the IME's InputConnection (physical-keyboard behavior: commit/delete deltas, never
-        // read the field — fixes placeholder contamination like Telegram's "Message"). Fall back to
-        // the accessibility injector only when the IME service isn't running yet.
-        val ime = TeclasImeService.instance
-        if (ime != null) {
-            ime.onDeckKey(payload)
-            return
-        }
+        // Type straight into the foreground app's focused field via the accessibility injector — the
+        // launcher's own keyboard, no IME handoff. This is the fast path and, crucially, it works
+        // while the launcher deck is the visible keyboard: routing through the IME dropped keys and
+        // felt slow because the IME has no live InputConnection unless it is the on-screen keyboard.
         sendBroadcast(Intent(InputInjectionService.ACTION_INJECT_KEY).apply {
             setPackage(packageName)
             putExtra(InputInjectionService.EXTRA_CHAR, payload)
