@@ -126,9 +126,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             ov.text = perfLines.joinToString("\n")
             ov.visibility = View.VISIBLE
         }
-        // Also append to a pullable file (Vivo hides logcat; a file survives). Truncated on keyboard
-        // open. Pull it with:  adb shell run-as com.fran.teclas cat files/teclas_perf.log 2>/dev/null
-        // or  adb pull /sdcard/Android/data/com.fran.teclas/files/teclas_perf.log
+        // Append to a pullable file (Vivo hides logcat), but ONLY meaningful lines — skip the flood of
+        // "… 0ms" so the per-line file I/O doesn't itself become a per-keystroke cost. Key/section
+        // markers and any non-zero timing are kept. Truncated on keyboard open.
+        //   adb pull /sdcard/Android/data/com.fran.teclas/files/teclas_perf.log
+        if (s.endsWith(" 0ms")) return
         val f = diagFile ?: return
         runCatching { diagExecutor.execute { runCatching { f.appendText(s + "\n") } } }
     }
@@ -1381,7 +1383,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             } }
         }
         suggestDebounce = r
-        handler.postDelayed(r, 40L)
+        // 80ms (was 40): the background prediction on this device costs 30–60ms per word, so a 40ms
+        // cadence kept the worker saturated and suggestions lagging behind fast typing. 80ms still
+        // feels instant for the strip but leaves the worker idle between bursts.
+        handler.postDelayed(r, 80L)
         // Emoji chips + system spellcheck are heavier and less time-critical — run them on a slower
         // cadence (180ms) so fast typing doesn't fire them every keystroke. Output is unchanged.
         val cs = Runnable {
@@ -1904,6 +1909,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // Render the active agentic state into the card, or hide it and restore the strip when idle.
     private fun renderAgenticPanel() {
         val panel = agenticPanel ?: return
+        // Fast idle path (the case on essentially every keystroke): nothing agentic is showing and
+        // the panel is already hidden, so there is nothing to rebuild. Returning here avoids the
+        // removeAllViews + color-alloc churn that ran ~3x per keystroke and accumulated as GC
+        // pressure — the "gets slower the longer you type" effect.
+        val idle = agenticHud == null && agenticStarters.isEmpty() &&
+            agenticStatus == null && pendingCommand == null
+        if (idle) {
+            if (panel.visibility != View.GONE) {
+                panel.removeAllViews()
+                panel.visibility = View.GONE
+                panel.background = null
+                suggestionStrip?.visibility = View.VISIBLE
+            }
+            return
+        }
         panel.removeAllViews()
 
         val light = agenticPanelLight()
