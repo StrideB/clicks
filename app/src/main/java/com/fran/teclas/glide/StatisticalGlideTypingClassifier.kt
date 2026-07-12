@@ -43,6 +43,10 @@ class StatisticalGlideTypingClassifier {
     private val suggestionCache = LruCache<Int, List<String>>(8)
 
     fun setLayout(keyList: List<KeyInfo>) {
+        // Rebuilding the pruner walks the full word list — a real allocation storm. Layout capture
+        // runs after every layout pass of the keyboard, which happens constantly while typing, so
+        // skip everything when the keys haven't actually moved (KeyInfo is a data class).
+        if (keyList == keys) return
         keysByCode.clear()
         keys = keyList
         keyList.forEach { keysByCode[it.code] = it }

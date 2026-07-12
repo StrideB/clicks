@@ -969,13 +969,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun captureKeyBounds() {
-        keyBounds.clear()
+        val fresh = linkedMapOf<String, Rect>()
         val loc = IntArray(2)
         keyViews.forEach { (label, view) ->
             if (view.width <= 0 || view.height <= 0) return@forEach
             view.getLocationOnScreen(loc)
-            keyBounds[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
+            fresh[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
         }
+        // This runs after every layout pass, and layout passes happen per keystroke (the strip's
+        // setText). When nothing moved, feeding identical bounds downstream made the glide
+        // classifier rebuild its full-dictionary pruner on the main thread on every key press —
+        // steadily worsening jank/GC as you typed. Skip all of it when the keys haven't moved.
+        if (fresh == keyBounds) return
+        keyBounds.clear()
+        keyBounds.putAll(fresh)
         spatialScorer.setKeys(keyBounds)
         updateGlideLayout()
     }

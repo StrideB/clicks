@@ -13298,14 +13298,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun captureKeyBounds() {
         if (keyViews.isEmpty()) return
-        keyBounds.clear()
+        val fresh = linkedMapOf<String, Rect>()
         val loc = IntArray(2)
         keyViews.forEach { (label, view) ->
             if (view.width > 0 && view.height > 0) {
                 view.getLocationOnScreen(loc)
-                keyBounds[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
+                fresh[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
             }
         }
+        // Called after renders/animations that usually didn't move a single key. Feeding identical
+        // bounds downstream made the glide classifier rebuild its full-dictionary pruner on the
+        // main thread each time — skip all of it when nothing moved.
+        if (fresh == keyBounds) return
+        keyBounds.clear()
+        keyBounds.putAll(fresh)
         spatialScorer.setKeys(keyBounds)
         updateGlideLayout()
     }

@@ -75,11 +75,19 @@ class KeyPreviewManager(private val context: Context) {
 
     // Same-window path: move the persistent bubble over the key. Position math is two cheap
     // getLocationInWindow calls; no window creation, no IPC, visible the same frame as the press.
+    // Z-order comes from a fixed high elevation (set once) — bringToFront() per press would force
+    // a full layout pass of the host on every keystroke.
     private fun showInWindow(h: FrameLayout, anchor: View, label: String) {
         val tv = overlay ?: buildPreviewText().also {
             overlay = it
             it.visibility = View.INVISIBLE
-            h.addView(it, FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.START))
+            it.elevation = dp(24).toFloat()
+        }
+        // A host that rebuilt its children (the launcher's setContentView) silently orphans the
+        // bubble — re-attach whenever it isn't parented to the current host.
+        if (tv.parent !== h) {
+            (tv.parent as? ViewGroup)?.removeView(tv)
+            h.addView(tv, FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.START))
         }
         val up = label.uppercase()
         if (!tv.text.contentEquals(up)) tv.text = up
@@ -88,7 +96,6 @@ class KeyPreviewManager(private val context: Context) {
         anchor.getLocationInWindow(anchorLoc)
         tv.translationX = anchorLoc[0] - hostLoc[0] + (anchor.width - size) / 2f
         tv.translationY = (anchorLoc[1] - hostLoc[1] - size - dp(4)).toFloat()
-        tv.bringToFront()
         tv.visibility = View.VISIBLE
     }
 
