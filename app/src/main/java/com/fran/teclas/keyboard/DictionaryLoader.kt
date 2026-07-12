@@ -104,14 +104,16 @@ object DictionaryLoader {
     )
 
     fun loadAdaptive(context: Context): Adaptive {
+        // Gboard model: use ONLY the languages the user actually enabled ([enabledLanguages] — the
+        // in-app picker, or the single primary system language by default). We deliberately no
+        // longer pull the phone's *other* system locales in as a hidden "latent" language: that
+        // silently merged a second dictionary the user never chose, which doubled the glide search
+        // space, raised memory, and made tap corrections auto-flip between languages mid-sentence.
+        // To type bilingually, enable both languages in the picker — then they're both in [active]
+        // and share one dictionary, with no flipping. Single language stays a single dictionary.
         val active = enabledLanguages(context)
         val primaryFreqs = merge(context, active)
-        val latent = systemBundledLanguages(context).filter { it !in active }
-        if (latent.isEmpty()) {
-            return Adaptive(primaryFreqs, primaryFreqs, capWords(primaryFreqs), active, emptyList())
-        }
-        val extendedFreqs = merge(context, active + latent)
-        return Adaptive(primaryFreqs, extendedFreqs, capWords(extendedFreqs), active, latent)
+        return Adaptive(primaryFreqs, primaryFreqs, capWords(primaryFreqs), active, emptyList())
     }
 
     /** Every bundled language present in the phone's locale list, primary first. */
