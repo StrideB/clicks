@@ -1,12 +1,19 @@
+<!--
+  Teclas launcher mark: a lowercase "t" (stem + crossbar, Paper) with a typing cursor block
+  (Cursor Violet) at its lower-right. STATIC by requirement — paths only, no animation.
+  Geometry stays inside the adaptive-icon 72x72 safe zone (18..90 on the 108 canvas).
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- lowercase "t": vertical stem + crossbar -->
     <path
-        android:fillColor="#19201D"
-        android:pathData="M54,18C34.1,18 18,34.1 18,54s16.1,36 36,36 36,-16.1 36,-36S73.9,18 54,18zM54,27c14.9,0 27,12.1 27,27S68.9,81 54,81 27,68.9 27,54 39.1,27 54,27z" />
+        android:fillColor="@color/brand_paper"
+        android:pathData="M42,31 L54,31 L54,77 L42,77 Z M32,41 L64,41 L64,52 L32,52 Z" />
+    <!-- typing cursor block, lower-right -->
     <path
-        android:fillColor="#C95B3D"
-        android:pathData="M54,36L72,54L54,72L36,54z" />
+        android:fillColor="@color/cursor_violet"
+        android:pathData="M62,59 L77,59 L77,77 L62,77 Z" />
 </vector>

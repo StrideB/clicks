@@ -754,7 +754,8 @@ class DockedKeyboardService : Service() {
     }
 
     private fun goKeyColor(): Int {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(GO_KEY_COLOR_PREF, 0xFFFF5A3C.toInt())
+        // Default: Cursor Violet (brand accent). A user-chosen accent overrides it.
+        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(GO_KEY_COLOR_PREF, 0xFFC9A7FF.toInt())
     }
 
     private fun isFnKey(label: String) = label in setOf("123", "teclas", "back", "shift", ".")
