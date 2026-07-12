@@ -904,9 +904,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         stopDeleteRepeat(clearFired = true)
                         if (repeated) return true
                     }
-                    plog("ACTION_UP -> resolveTapKey+handleKey")
-                    handleKey(resolveTapKey(label, event.rawX, event.rawY))
-                    plog("handleKey returned")
+                    ptime("handleKey('$label')") { handleKey(resolveTapKey(label, event.rawX, event.rawY)) }
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
@@ -1361,8 +1359,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 val t0 = System.nanoTime()
                 val word = before.takeLast(48).takeLastWhile { it.isLetter() }
                 val prev = previousWordOf(before)
-                val base = predictionCore.computeSuggestions(word, prev)
-                val correction = if (word.length >= 2)
+                // Above ~18 chars it's not a real word (URL, gibberish, run-on); an edit-distance
+                // scan over the dictionary is pointless AND the most expensive case (this is the
+                // predict.compute 60–90ms spikes). Skip prediction/correction for it.
+                val tooLong = word.length > 18
+                val base = if (tooLong) emptyList() else predictionCore.computeSuggestions(word, prev)
+                val correction = if (!tooLong && word.length >= 2)
                     autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev)) else null
                 val computeMs = (System.nanoTime() - t0) / 1_000_000
                 handler.post {
