@@ -464,6 +464,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Seed the shadow mirror from the fresh editor so the first keystrokes read locally.
         seedShadow(info?.initialSelStart?.takeIf { it >= 0 } ?: 0)
         refreshChromeOrRebuild()
+        // On a FRESH field (not an input restart), open the layout the field wants: numbers/symbols
+        // for numeric/phone/date fields, letters otherwise. Guarded by !restarting so a per-keystroke
+        // input restart never yanks the user out of a layout they manually switched to.
+        if (!restarting) {
+            val want = desiredSymbolsModeFor(info)
+            if (want != symbolsMode) { symbolsMode = want; rebuildKeyRows() }
+        }
         updateInputViewShown()
         clearInlineSuggestions()
         agenticHud = null
@@ -613,12 +620,25 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun setSymbolsMode(on: Boolean) {
         if (symbolsMode == on) return
         symbolsMode = on
+        rebuildKeyRows()
+    }
+
+    /** Swap the on-screen key rows to match the current [symbolsMode], in place (no window pass). */
+    private fun rebuildKeyRows() {
         val deck = deckView ?: run { rebuildDeck(); return }
         keyPreview.dismiss()
         while (deck.childCount > chromeChildCount) deck.removeViewAt(deck.childCount - 1)
         keyViews.clear()
         addKeyRows(deck)
         deck.post { captureKeyBounds() }
+    }
+
+    /** Numeric/phone/date fields should open straight to the digits+symbols layout (Gboard behavior). */
+    private fun desiredSymbolsModeFor(info: EditorInfo?): Boolean {
+        val cls = (info?.inputType ?: return false) and android.text.InputType.TYPE_MASK_CLASS
+        return cls == android.text.InputType.TYPE_CLASS_NUMBER ||
+            cls == android.text.InputType.TYPE_CLASS_PHONE ||
+            cls == android.text.InputType.TYPE_CLASS_DATETIME
     }
 
     private var lastBuiltTheme: String? = null
