@@ -759,16 +759,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     // One laid-out key in the canvas keyboard. [cell] is the full key rect (matching the old per-key
-    // view bounds, so keyBounds — and therefore glide/tap resolution — stay identical).
+    // view bounds, so keyBounds — and therefore glide/tap resolution — stay identical). Label geometry
+    // mirrors the two draw modes of the view keyboard: flick letters place the glyph mid-face with the
+    // swipe-down symbol hint up top (DynamicFlickKeyView); every other key centers its label.
     private class CanvasKeyCell(
         val label: String,
         val cell: Rect,
         val idle: Drawable,
         val pressed: Drawable,
-        val text: CharSequence,
+        val primaryText: String,
+        val symbolHint: String?,
+        val isFlickLetter: Boolean,
         val color: Int,
-        val textSizePx: Float,
-        val bold: Boolean
+        val symbolColor: Int,
+        val typeface: Typeface,
+        val textSizePx: Float
     )
 
     // ── Canvas keyboard view (Stage 1, Teclas theme) ────────────────────────────────────────────
@@ -783,7 +788,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private var keys: List<CanvasKeyCell> = emptyList()
         private var pressedLabel: String? = null
         private var buffer: android.graphics.Bitmap? = null
-        private val textPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
+        private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
 
         fun rebuild() { relayoutKeys(); invalidate() }
         fun republishBounds() { publishBounds() }
@@ -827,15 +833,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         else if (weightSum > 0f) (flexible * keyWeight(lbl) / weightSum).toInt() else 0
                     val cellTop = if (square) rowTop + (rowH - goSize) / 2 else rowTop
                     val cellH = if (square) goSize else rowH
+                    val flick = lbl.length == 1 && lbl[0].isLetter() && !symbolsMode
+                    val tf = if (lbl == "enter") Typeface.DEFAULT_BOLD
+                        else Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     out.add(CanvasKeyCell(
                         lbl,
                         Rect(x, cellTop, x + kw, cellTop + cellH),
                         visualKeyBackground(lbl, pressed = false),
                         visualKeyBackground(lbl, pressed = true),
-                        keyDisplayText(lbl),
+                        visualLabel(lbl),
+                        if (flick) com.fran.teclas.keyboard.KeyboardSymbols.keyUp[lbl.lowercase(Locale.US)] else null,
+                        flick,
                         textColor(lbl),
-                        keyTextSize(lbl) * density,
-                        lbl == "enter"
+                        symbolHintColor(),
+                        tf,
+                        keyTextSize(lbl) * density
                     ))
                     x += kw
                 }
@@ -858,18 +870,35 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val d = if (pressed) k.pressed else k.idle
             d.setBounds(k.cell.left, k.cell.top, k.cell.right, k.cell.bottom)
             d.draw(canvas)
-            textPaint.color = k.color
-            textPaint.textSize = k.textSizePx
-            textPaint.typeface = if (k.bold) Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            val layout = android.text.StaticLayout.Builder
-                .obtain(k.text, 0, k.text.length, textPaint, k.cell.width().coerceAtLeast(1))
-                .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
-                .setIncludePad(false)
-                .build()
-            canvas.save()
-            canvas.translate(k.cell.left.toFloat(), k.cell.top + (k.cell.height() - layout.height) / 2f)
-            layout.draw(canvas)
-            canvas.restore()
+            val cx = k.cell.exactCenterX()
+            if (k.isFlickLetter) {
+                // Mirror DynamicFlickKeyView: symbol hint up-face (bias 0.24), letter mid-face (0.52),
+                // both inside a face inset by keyVerticalInset(), sizes scaled off the face height.
+                val faceInset = keyVerticalInset().toFloat()
+                val faceTop = k.cell.top + faceInset
+                val faceHeight = (k.cell.height() - faceInset * 2).coerceAtLeast(1f)
+                k.symbolHint?.let { s ->
+                    symbolPaint.color = k.symbolColor
+                    symbolPaint.textSize = faceHeight * 0.16f
+                    val m = symbolPaint.fontMetrics
+                    val cy = faceTop + faceHeight * 0.24f
+                    canvas.drawText(s, cx, cy - (m.ascent + m.descent) / 2f, symbolPaint)
+                }
+                labelPaint.color = k.color
+                labelPaint.typeface = k.typeface
+                labelPaint.textSize = minOf(k.textSizePx, faceHeight * 0.62f)
+                val m = labelPaint.fontMetrics
+                val cy = faceTop + faceHeight * 0.52f
+                canvas.drawText(k.primaryText, cx, cy - (m.ascent + m.descent) / 2f, labelPaint)
+            } else {
+                // Plain keys: label centered in the cell (matches the view keyboard's gravity=CENTER).
+                labelPaint.color = k.color
+                labelPaint.typeface = k.typeface
+                labelPaint.textSize = k.textSizePx
+                val m = labelPaint.fontMetrics
+                val cy = k.cell.exactCenterY()
+                canvas.drawText(k.primaryText, cx, cy - (m.ascent + m.descent) / 2f, labelPaint)
+            }
         }
 
         override fun onDraw(canvas: Canvas) {
