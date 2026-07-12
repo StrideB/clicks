@@ -80,7 +80,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val shadowBefore = StringBuilder()
     private val shadowAfter = StringBuilder()
     private var shadowCaret = 0
-    private var shadowValid = false
+    private var shadowValid = false       // before-cursor mirror is populated
+    private var shadowAfterValid = false  // after-cursor mirror is populated (filled lazily)
     // Reads never look back more than ~200 chars (polishAvailable is the deepest), so seeding a
     // full 1KB on each resync was 4x more cross-process payload than anything ever consumes.
     private val shadowWindow = 256
@@ -194,20 +195,24 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun seedShadow(caret: Int) = ptime("seedShadow(IPC)") { seedShadowInner(caret) }
     private fun seedShadowInner(caret: Int) {
         val ic = currentInputConnection
-        if (ic == null) { shadowValid = false; return }
+        if (ic == null) { shadowValid = false; shadowAfterValid = false; return }
+        // Only read the BEFORE-cursor half here (one IPC). The AFTER half is almost never consumed
+        // mid-word — the only readers are field-empty checks, which short-circuit when the before
+        // text is non-empty — so read it lazily in shadowAfterCursor. This halves the reseed's
+        // main-thread cost (the ~27ms seedShadow spikes that drop a frame after every backspace).
+        perfIpcReads++
         val before = ic.getTextBeforeCursor(shadowWindow, 0)?.toString().orEmpty()
-        val after = ic.getTextAfterCursor(shadowWindow, 0)?.toString().orEmpty()
         shadowBefore.setLength(0); shadowBefore.append(before)
-        shadowAfter.setLength(0); shadowAfter.append(after)
         shadowCaret = caret.coerceAtLeast(0)
         shadowValid = true
+        shadowAfterValid = false
         // Reseed = the mirror is now authoritative here; forget older caret positions so a later
         // tap-to-reposition onto a stale position can't be mistaken for one of our own edits.
         selfCaretIdx = 0
         recordSelfCaret()
     }
 
-    private fun invalidateShadow() { shadowValid = false }
+    private fun invalidateShadow() { shadowValid = false; shadowAfterValid = false }
 
     private fun shadowOnCommit(text: String) {
         if (!shadowValid) return
@@ -230,9 +235,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (shadowValid) shadowBefore.substring((shadowBefore.length - count).coerceAtLeast(0))
         else { perfIpcReads++; currentInputConnection?.getTextBeforeCursor(count, 0)?.toString().orEmpty() }
 
-    private fun shadowAfterCursor(count: Int): String =
-        if (shadowValid) shadowAfter.substring(0, count.coerceAtMost(shadowAfter.length))
+    private fun shadowAfterCursor(count: Int): String {
+        // Lazily fill the after-cursor mirror the first time it's actually needed after a reseed.
+        if (shadowValid && !shadowAfterValid) {
+            val ic = currentInputConnection
+            if (ic != null) {
+                perfIpcReads++
+                val after = ic.getTextAfterCursor(shadowWindow, 0)?.toString().orEmpty()
+                shadowAfter.setLength(0); shadowAfter.append(after)
+                shadowAfterValid = true
+            }
+        }
+        return if (shadowValid && shadowAfterValid) shadowAfter.substring(0, count.coerceAtMost(shadowAfter.length))
         else { perfIpcReads++; currentInputConnection?.getTextAfterCursor(count, 0)?.toString().orEmpty() }
+    }
     override fun editorPackage(): String? = currentEditorPackage
     override fun isPasswordField(): Boolean {
         val t = currentInputEditorInfo?.inputType ?: return false
@@ -1415,10 +1431,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             } }
         }
         suggestDebounce = r
-        // 80ms (was 40): the background prediction on this device costs 30–60ms per word, so a 40ms
-        // cadence kept the worker saturated and suggestions lagging behind fast typing. 80ms still
-        // feels instant for the strip but leaves the worker idle between bursts.
-        handler.postDelayed(r, 80L)
+        // 150ms: the background word-search costs 30–80ms per keystroke on this device and was firing
+        // on nearly every key, saturating a CPU core and starving the render thread (the scattered
+        // dropped frames). At 150ms it only fires when you actually pause, so it stops competing with
+        // rendering during a fast burst; the strip still updates well within a "feels instant" window.
+        handler.postDelayed(r, 150L)
         // Emoji chips + system spellcheck are heavier and less time-critical — run them on a slower
         // cadence (180ms) so fast typing doesn't fire them every keystroke. Output is unchanged.
         val cs = Runnable {
