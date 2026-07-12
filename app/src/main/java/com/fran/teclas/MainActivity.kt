@@ -44,7 +44,6 @@ import android.graphics.drawable.LayerDrawable
 import com.fran.teclas.glide.KeyInfo
 import com.fran.teclas.glide.StatisticalGlideTypingClassifier
 import com.fran.teclas.keyboard.neural.TimedPoint
-import com.fran.teclas.hardware.ParallaxSensorEngine
 import android.net.Uri
 import android.os.Build
 import android.provider.ContactsContract
@@ -331,6 +330,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var composeText = ""
     private var aiDraftText = ""
     private var aiDraftActive = false
+    private val dockedForegroundDraft = StringBuilder()
     private val chatLinesById = mutableMapOf<String, MutableList<ChatLine>>()
 
     private var shiftState = ShiftState.ONCE
@@ -385,9 +385,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var braveRichAnswer: BraveSearchApi.RichAnswer? = null
     // Inline Brave web results: real search results as native rows in universal search, so the
     // launcher is the search page — no pane, no Custom Tab detour.
-    private var braveWebDebounce: Runnable? = null
-    private var braveWebQuery: String = ""
-    private var braveWebResults: List<SearchResult> = emptyList()
+    private var webFallbackDebounce: Runnable? = null
+    private var webFallbackQuery: String = ""
+    private var webFallbackResults: List<SearchResult> = emptyList()
 
     private var sportsDebounce: Runnable? = null
     private var sportsQuery: String = ""
@@ -521,9 +521,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var homeWallpaperDrawable: Drawable? = null
     private var homeWallpaperSourceSig: String? = null
     private var innerWallpaperImageView: ImageView? = null
-    private var wallpaperMotionController: LiveWallpaperMotionController? = null
-    private var wallpaperParallaxX = 0f
-    private var wallpaperParallaxY = 0f
     private var innerWallpaperEditMode = false
     private var pendingWallpaperInnerScope: Boolean? = null
     private var wallpaperLongPressRunnable: Runnable? = null
@@ -532,6 +529,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var weatherFeelsView: TextView
     private lateinit var weatherStatsView: TextView
     private var weatherStylePickerView: View? = null
+    private var briefThemePickerView: View? = null
     private var weatherPlacementView: View? = null
     // Snapshot of the weather prefs the Compose-rendered widget styles observe.
     private val weatherWidgetComposeData = mutableStateOf<WeatherData?>(null)
@@ -543,7 +541,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var favoritesDockContextStampView: TextView? = null
     private var favoritesDockContextShowing = false
     private var favoritesDockContextPreferred = false
-    private var parallaxEngine: ParallaxSensorEngine? = null
     private lateinit var homeGridView: FrameLayout
     private lateinit var rootView: LinearLayout
     internal lateinit var contentFrame: FrameLayout
@@ -691,7 +688,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
         libraryOpen = appLibraryDefaultHome()
-        goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, Accent)
+        goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, CursorViolet)
         migrateWidgetGestureDefault()
         apps = loadLaunchableApps()
         lastAppsLoadMs = System.currentTimeMillis()
@@ -748,12 +745,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         initSpellChecker()
         hapticEngine = CustomHapticEngine(this)
         spatialScorer = SpatialScorer()
-        parallaxEngine = ParallaxSensorEngine(this) { pitch, roll -> applyDockParallax(pitch, roll) }
-        wallpaperMotionController = LiveWallpaperMotionController(this) { x, y ->
-            wallpaperParallaxX = x
-            wallpaperParallaxY = y
-            innerWallpaperImageView?.let { image -> applyInnerWallpaperMatrix(image) }
-        }
         spatialScorer.importState(prefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
@@ -885,11 +876,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         super.onResume()
         // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
         DockedFreeform.externalAppInFront = false
+        dockedForegroundDraft.clear()
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
-        syncDockParallax()
-        syncWallpaperMotion()
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
@@ -919,6 +909,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             )
         }
         if (now - lastContactsLoadMs > 5 * 60_000) { preloadContactsCache(); lastContactsLoadMs = now }
+        scheduleBriefGeneration()
         if (todayEnabled && ::briefRepository.isInitialized) {
             briefRepository.startPeriodic()
             briefRepository.refreshDebounced(200)
@@ -957,8 +948,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onPause() {
         cancelWidgetKeyboardSwap(resetTheme = true)
-        parallaxEngine?.stop()
-        wallpaperMotionController?.stop()
         widgetCoachAnimator?.cancel()
         // Halt periodic work while another app is in front: the 1 Hz music-progress tick, the
         // 60 s context-dock check and the 45-minute brief refresh all resume in onResume;
@@ -1098,6 +1087,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onBackPressed() {
         if (weatherPlacementView?.isAttachedToWindow == true) { exitWeatherPlacementMode(); return }
         if (weatherStylePickerView?.isAttachedToWindow == true) { closeWeatherStylePicker(); return }
+        if (briefThemePickerView?.isAttachedToWindow == true) { closeBriefThemePicker(); return }
         if (homeLeftOverlay != null) { closeHomeLeftPage(); return }
         if (spaceBoardOverlay != null) { closeSpaceBoard(); return }
         if (todayOpen) { todayPaneHost.closeToday(); return }
@@ -1271,6 +1261,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // the widget UI so a move/placement isn't hijacked mid-gesture.
     private fun widgetEditGestureLock(): Boolean {
         if (homeEditMode || weatherWidgetDragging || widgetPickerView != null) return true
+        // Theme/style pickers + placement mode own the screen too: no swipe-up-for-library etc.
+        if (weatherStylePickerView?.isAttachedToWindow == true || briefThemePickerView?.isAttachedToWindow == true) return true
+        if (weatherPlacementView?.isAttachedToWindow == true) return true
         if (::spaceBoardController.isInitialized && spaceBoardController.isEditing()) return true
         if (::homeLeftController.isInitialized && homeLeftController.isEditing()) return true
         return false
@@ -1352,92 +1345,50 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (prefs().getBoolean(KEYBOARD_PLACEMENT_INTRO_PREF, false)) return
         prefs().edit().putBoolean(KEYBOARD_PLACEMENT_INTRO_PREF, true).apply()
         AlertDialog.Builder(this)
-            .setTitle("Choose keyboard style")
-            .setMessage("Docked keeps the Teclas keyboard fixed at the bottom. Widget places it on the homescreen, with a DOCK key to return to the fixed layout.")
-            .setPositiveButton("Docked") { dialog, _ ->
+            .setCustomTitle(brandDialogTitle("pick a keyboard"))
+            .setMessage("docked pins the keyboard to the bottom. widget floats it on the homescreen, with a dock key to bring it back. type. done.")
+            .setPositiveButton("docked") { dialog, _ ->
                 dialog.dismiss()
                 setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
             }
-            .setNegativeButton("Widget") { dialog, _ ->
+            .setNegativeButton("widget") { dialog, _ ->
                 dialog.dismiss()
                 setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
             }
             .show()
     }
 
-    // Start/stop the dock parallax sensor to match visibility — runs only on the home surface
-    // (dock present, no pane/library over it), and stops otherwise to keep it cheap.
-    private fun syncDockParallax() {
-        val engine = parallaxEngine ?: return
-        if (engine.isSupported && ::favoritesDockView.isInitialized && homeWidgetStackVisible() && !libraryOpen) {
-            engine.start()
-        } else {
-            engine.stop()
-            resetDockParallax()
-        }
-    }
-
-    // LiveSlider-inspired wallpaper motion. It is intentionally scoped to the home wallpaper
-    // canvas and pauses under overlays/edit mode so gesture-heavy surfaces stay deterministic.
-    private fun syncWallpaperMotion() {
-        val controller = wallpaperMotionController ?: return
-        val shouldRun = controller.isSupported &&
-            liveWallpaperMotionEnabled() &&
-            launcherWallpaperCanvasActive() &&
-            innerWallpaperImageView != null &&
-            !innerWallpaperEditMode &&
-            openPane == null &&
-            !libraryOpen &&
-            !todayOpen &&
-            !libraryDragActive &&
-            spaceBoardOverlay == null &&
-            homeLeftOverlay == null &&
-            widgetBoardView == null
-        if (shouldRun) {
-            controller.start()
-        } else {
-            controller.stop()
-            resetWallpaperMotion()
-        }
-    }
-
-    private fun resetWallpaperMotion() {
-        wallpaperParallaxX = 0f
-        wallpaperParallaxY = 0f
-        innerWallpaperImageView?.let { applyInnerWallpaperMatrix(it) }
-    }
-
-    private fun resetDockParallax() {
-        if (!::favoritesDockView.isInitialized) return
-        val dock = favoritesDockView
-        dock.translationX = 0f; dock.translationY = 0f; dock.rotationX = 0f; dock.rotationY = 0f
-        for (i in 0 until dock.childCount) {
-            dock.getChildAt(i).apply { translationX = 0f; translationY = 0f; rotationX = 0f; rotationY = 0f }
-        }
-    }
-
-    // Favorites-dock-only tilt parallax: the dock plate drifts subtly one way while the icons move
-    // the other with a slight 3D skew, for a floating, layered feel. Deliberately small.
-    private fun applyDockParallax(pitch: Float, roll: Float) {
-        if (!::favoritesDockView.isInitialized) return
-        val dock = favoritesDockView
-        if (dock.childCount == 0 || !dock.isShown) return
-        val tiltX = (roll / 0.42f).coerceIn(-1f, 1f)
-        val tiltY = (pitch / 0.42f).coerceIn(-1f, 1f)
-        val density = resources.displayMetrics.density
-        // Tilt the whole dock like one physical plate: perspective rotation about its center. A
-        // close camera makes these small angles read as genuine 3D depth rather than a flat skew.
-        dock.cameraDistance = density * 3200f
-        dock.rotationY = tiltX * 4f
-        dock.rotationX = -tiltY * 4f
-        // Icons float a hair in front of the plate for layered parallax; the plate itself does the 3D.
-        val maxT = density * 2.5f
-        for (i in 0 until dock.childCount) {
-            dock.getChildAt(i).apply {
-                translationX = tiltX * maxT
-                translationY = tiltY * maxT
-                rotationX = 0f
-                rotationY = 0f
+    /** Native Teclas wordmark for AlertDialog titles: lowercase "teclas" + a Cursor Violet caret,
+     *  above an optional lowercase [subtitle]. The launcher icon stays static; this may not blink. */
+    private fun brandDialogTitle(subtitle: String? = null): View {
+        val ink = activeNeuTokens.ink
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(4))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(this@MainActivity).apply {
+                    text = "teclas"
+                    textSize = 26f
+                    typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                    letterSpacing = -0.04f
+                    setTextColor(ink)
+                    includeFontPadding = false
+                })
+                addView(View(this@MainActivity).apply {
+                    setBackgroundColor(CursorViolet)
+                }, LinearLayout.LayoutParams(dp(5), dp(22)).apply { marginStart = dp(5) })
+            })
+            if (subtitle != null) {
+                addView(TextView(this@MainActivity).apply {
+                    text = subtitle
+                    textSize = 12.5f
+                    typeface = Typeface.MONOSPACE
+                    letterSpacing = 0.06f
+                    setTextColor(activeNeuTokens.inkDim)
+                    setPadding(0, dp(4), 0, 0)
+                })
             }
         }
     }
@@ -1534,8 +1485,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         updateClock()
         renderHub()
         renderFavoritesDock()
-        syncDockParallax()
-        syncWallpaperMotion()
         renderRibbon()
         if (!unfolded) {
             openPane?.let { showPane(it, animate = false) }
@@ -1559,7 +1508,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             background = typingStripBackground()
             elevation = dp(3).toFloat()
             isClickable = true
-            setOnTouchListener { _, event -> handleTypingStripGesture(event) }
+            setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             searchHintView = TextView(context).apply {
                 text = launcherTypingStripText()
                 textSize = 15f
@@ -1571,13 +1520,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 ellipsize = android.text.TextUtils.TruncateAt.START
                 setPadding(dp(16), dp(3), dp(8), dp(3))
                 isClickable = true
-                setOnTouchListener { _, event -> handleTypingStripGesture(event) }
+                setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             }
             addView(searchHintView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
         }
     }
 
     private fun launcherTypingStripText(): CharSequence {
+        if (dockedForegroundChirpActive()) return dockedForegroundChirpText()
         val pane = openPane
         val typedText = when {
             pane?.kind == PaneKind.CHAT -> composeText
@@ -1593,6 +1543,42 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             pane?.kind == PaneKind.AI -> "ASK GEMINI"
             else -> "SEARCH"
         }
+    }
+
+    private fun dockedForegroundChirpActive(): Boolean =
+        keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && keysRouteToForegroundApp()
+
+    private fun dockedForegroundChirpText(): CharSequence {
+        val result = pendingLauncherResult
+        if (result != null) {
+            val body = if (result.body.length > 52) result.body.take(50).trimEnd() + "…" else result.body
+            return if (result.insert != null) "INSERT · $body" else body
+        }
+        pendingLauncherCommand?.let { return "APPLY · ${it.label}" }
+        if (pendingLauncherActions.isNotEmpty()) return "CHIRP · ${pendingLauncherActions.joinToString(" · ") { it.first }}"
+        if (pendingLauncherStarters.isNotEmpty()) return "TRY · ${pendingLauncherStarters.joinToString(" · ") { it.first }}"
+        launcherAgenticStatus?.let { return it }
+        if (launcherPolishing) return "POLISHING…"
+        return if (dockedForegroundDraft.isNotBlank()) {
+            "CHIRP · hold GO"
+        } else {
+            "TYPING IN APP · HOLD GO FOR CHIRP"
+        }
+    }
+
+    private fun updateDockedForegroundChirpStrip(): Boolean {
+        if (!::searchHintView.isInitialized || !dockedForegroundChirpActive()) return false
+        searchHintView.translationY = 0f
+        searchHintView.textSize = 10.2f
+        searchHintView.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        searchHintView.letterSpacing = 0.11f
+        searchHintView.ellipsize = android.text.TextUtils.TruncateAt.END
+        searchHintView.includeFontPadding = false
+        searchHintView.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
+        searchHintView.setPadding(dp(10), dp(2), dp(10), dp(3))
+        searchHintView.setTextColor(keyboardIndicatorTextColor(dim = false))
+        searchHintView.text = dockedForegroundChirpText()
+        return true
     }
 
     private fun zeissCameraButton(): View {
@@ -2087,9 +2073,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun innerWallpaperOffsetY(): Float =
         prefs().getInt(activeWallpaperOffsetYPref(), 0).coerceIn(-100, 100) / 100f
 
-    private fun liveWallpaperMotionEnabled(): Boolean =
-        prefs().getBoolean(HOME_LIVE_WALLPAPER_MOTION_PREF, true)
-
     private fun innerWallpaperModeActive(): Boolean =
         openPane == null && (useSystemWallpaperOnHome() || activeHomeWallpaperUri() != null)
 
@@ -2241,8 +2224,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     /** Decode a wallpaper source at screen-fill size instead of full camera resolution. A 4-12 MP
-     *  image decoded as-is becomes a texture several times larger than the display that then gets
-     *  resampled on every parallax tick and re-blurred by the glass layers — pure GPU heat.
+     *  image decoded as-is becomes a texture several times larger than the display — pure GPU heat.
      *  [open] must return a fresh stream on each call (bounds pass + pixel pass). */
     private fun decodeWallpaperSampled(open: () -> java.io.InputStream?): android.graphics.Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -2250,9 +2232,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         (open() ?: return null).use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         val dm = resources.displayMetrics
-        // Size for the current zoom + the 1.08 motion boost (plus a little slack); the zoom
-        // slider nulls homeWallpaperDrawable on change, so a new zoom always re-decodes.
-        val zoom = innerWallpaperZoom() * (if (liveWallpaperMotionEnabled()) 1.08f else 1f)
+        // Size for the current zoom (plus a little slack); the zoom slider nulls
+        // homeWallpaperDrawable on change, so a new zoom always re-decodes.
+        val zoom = innerWallpaperZoom()
         val target = (maxOf(dm.widthPixels, dm.heightPixels) * zoom * 1.15f).toInt().coerceAtLeast(1)
         var sample = 1
         while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
@@ -2324,10 +2306,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     scaleType = ImageView.ScaleType.MATRIX
                     alpha = 1f
                     innerWallpaperImageView = this
-                    post {
-                        applyInnerWallpaperMatrix(this)
-                        syncWallpaperMotion()
-                    }
+                    post { applyInnerWallpaperMatrix(this) }
                 }, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             } else {
                 addView(View(context).apply {
@@ -2371,15 +2350,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val drawH = drawable.intrinsicHeight.takeIf { it > 0 }?.toFloat() ?: return
         if (viewW <= 0f || viewH <= 0f) return
         val fillScale = maxOf(viewW / drawW, viewH / drawH)
-        val motionActive = liveWallpaperMotionEnabled() && !innerWallpaperEditMode
-        val motionBoost = if (motionActive) 1.08f else 1f
-        val baseScale = fillScale * innerWallpaperZoom() * motionBoost
+        val baseScale = fillScale * innerWallpaperZoom()
         val scaledW = drawW * baseScale
         val scaledH = drawH * baseScale
         val maxX = ((scaledW - viewW) / 2f).coerceAtLeast(0f)
         val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
-        val offsetX = (innerWallpaperOffsetX() + if (motionActive) wallpaperParallaxX * 0.26f else 0f).coerceIn(-1f, 1f)
-        val offsetY = (innerWallpaperOffsetY() + if (motionActive) wallpaperParallaxY * 0.26f else 0f).coerceIn(-1f, 1f)
+        val offsetX = innerWallpaperOffsetX().coerceIn(-1f, 1f)
+        val offsetY = innerWallpaperOffsetY().coerceIn(-1f, 1f)
         val tx = (viewW - scaledW) / 2f + maxX * offsetX
         val ty = (viewH - scaledH) / 2f + maxY * offsetY
         if (lastWallpaperMatrixImage?.get() === image && baseScale == lastWallpaperMatrixScale &&
@@ -2515,12 +2492,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(chip("CHANGE") {
                 innerWallpaperEditMode = false
-                syncWallpaperMotion()
                 openInnerWallpaperPicker()
             }, LinearLayout.LayoutParams(dp(78), dp(30)).apply { marginStart = dp(8) })
             addView(chip("DONE") {
                 innerWallpaperEditMode = false
-                syncWallpaperMotion()
                 render()
             }, LinearLayout.LayoutParams(dp(66), dp(30)).apply { marginStart = dp(8) })
         }, FrameLayout.LayoutParams(
@@ -2542,7 +2517,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openDeviceWallpaperPicker(anchor: View) {
         haptic(anchor)
         innerWallpaperEditMode = true
-        syncWallpaperMotion()
         homeWallpaperDrawable = loadHomeWallpaperDrawable()
         if (homeWallpaperDrawable == null) openInnerWallpaperPicker() else render()
     }
@@ -2717,6 +2691,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
             if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
 
@@ -2771,6 +2746,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
 
@@ -3047,10 +3023,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private inner class NativeFoldGlassPanel(
         context: Context,
         private val radiusDp: Int,
-        private val compactDockGlass: Boolean = false
+        private val compactDockGlass: Boolean = false,
+        blurScale: Float = 1f,
     ) : FrameLayout(context) {
         private val honorGlass = isHonorDevice()
-        private val blurLayer = FoldGlassWallpaperLayer(context, radiusDp, compactDockGlass, honorGlass)
+        private val blurLayer = FoldGlassWallpaperLayer(context, radiusDp, compactDockGlass, honorGlass, blurScale)
         private val washLayer = FoldGlassWashLayer(context, radiusDp, compactDockGlass, honorGlass)
         private val preDrawListener = android.view.ViewTreeObserver.OnPreDrawListener {
             blurLayer.syncToPanel(invalidateEvenIfStill = false)
@@ -3100,7 +3077,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         context: Context,
         radiusDp: Int,
         private val compactDockGlass: Boolean,
-        private val honorGlass: Boolean
+        private val honorGlass: Boolean,
+        private val blurScale: Float = 1f,
     ) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         private val clipPath = Path()
@@ -3113,12 +3091,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         init {
             setWillNotDraw(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val blur = when {
+                val blur = (when {
                     honorGlass && compactDockGlass -> dp(116).toFloat()
                     honorGlass -> dp(104).toFloat()
                     compactDockGlass -> dp(76).toFloat()
                     else -> dp(64).toFloat()
-                }
+                } * blurScale).coerceAtLeast(dp(1).toFloat())
                 setRenderEffect(RenderEffect.createBlurEffect(blur, blur, Shader.TileMode.CLAMP))
             }
             alpha = when {
@@ -5464,23 +5442,137 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    /**
+     * Freeform-move host shared by the weather + brief widgets. The widget is LOCKED by default so a
+     * vertical swipe passes through to the home (keeping the swipe-up-for-app-library gesture). A
+     * DOUBLE-TAP unlocks "move mode" (scale + haptic + hint); then a drag repositions and re-locks on
+     * release, or it auto-locks after a few idle seconds. Long-press (when locked) opens the picker.
+     */
+    private abstract inner class MovableWidgetFrame(context: Context) : FrameLayout(context) {
+        protected var startRawX = 0f
+        protected var startRawY = 0f
+        protected var startLeft = 0
+        protected var startTop = 0
+        private var dragging = false
+        private var moveMode = false
+        private var lastTapMs = 0L
+        private var longPressFired = false
+        private var longPressRunnable: Runnable? = null
+        private var autoLockRunnable: Runnable? = null
+
+        /** Persist the settled position. */
+        protected abstract fun onSettle(fallbackLeft: Int, fallbackTop: Int)
+        /** Long-press action while locked (open the style/theme picker). */
+        protected abstract fun onLongPress()
+
+        protected fun dispatchCancelToChildren() {
+            val t = android.os.SystemClock.uptimeMillis()
+            val cancel = MotionEvent.obtain(t, t, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+            super.dispatchTouchEvent(cancel); cancel.recycle()
+        }
+
+        private fun cancelPickerLongPress() { longPressRunnable?.let { removeCallbacks(it) }; longPressRunnable = null }
+        private fun armAutoLock() {
+            autoLockRunnable?.let { removeCallbacks(it) }
+            val r = Runnable { autoLockRunnable = null; exitMoveMode() }
+            autoLockRunnable = r; postDelayed(r, 5_000L)
+        }
+
+        private fun enterMoveMode() {
+            if (moveMode) return
+            moveMode = true
+            if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            animate().scaleX(1.03f).scaleY(1.03f).setDuration(110).start()
+            elevation = dp(16).toFloat()
+            Toast.makeText(this@MainActivity, "Drag to move — locks when you let go", Toast.LENGTH_SHORT).show()
+            armAutoLock()
+        }
+
+        private fun exitMoveMode() {
+            autoLockRunnable?.let { removeCallbacks(it) }; autoLockRunnable = null
+            if (!moveMode) return
+            moveMode = false
+            weatherWidgetDragging = false
+            animate().scaleX(1f).scaleY(1f).setDuration(110).start()
+            elevation = dp(8).toFloat()
+        }
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startRawX = event.rawX; startRawY = event.rawY
+                    val lp = layoutParams as FrameLayout.LayoutParams
+                    startLeft = lp.leftMargin; startTop = lp.topMargin
+                    dragging = false; longPressFired = false
+                    cancelPickerLongPress()
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val doubleTap = now - lastTapMs < 280
+                    lastTapMs = now
+                    if (doubleTap && !moveMode) enterMoveMode()
+                    if (moveMode) {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        armAutoLock()
+                    } else {
+                        // Locked: keep the long-press → picker, but DON'T disallow parent intercept,
+                        // so a vertical swipe still reaches the home (app-library gesture).
+                        val r = Runnable {
+                            longPressRunnable = null; longPressFired = true
+                            dispatchCancelToChildren()
+                            if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                            onLongPress()
+                        }
+                        longPressRunnable = r
+                        // A deliberately long, tight hold (≈700ms) so a glance-touch or the start of
+                        // a swipe never trips the picker — only an intentional press-and-wait does.
+                        postDelayed(r, 700L)
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!moveMode) {
+                        // A touch that starts drifting is a swipe, not a hold → cancel the picker timer
+                        // so the gesture reaches the home cleanly.
+                        if ((abs(event.rawX - startRawX) > dp(6) || abs(event.rawY - startRawY) > dp(6))) cancelPickerLongPress()
+                        return super.dispatchTouchEvent(event)  // swipe passes through
+                    }
+                    if (longPressFired) return true
+                    val dx = (event.rawX - startRawX).toInt()
+                    val dy = (event.rawY - startRawY).toInt()
+                    if (!dragging && (abs(dx) > dp(4) || abs(dy) > dp(4))) {
+                        dragging = true
+                        weatherWidgetDragging = true
+                        freezeWeatherWidgetWidthForDrag(this)
+                        dispatchCancelToChildren()
+                    }
+                    if (dragging) { moveWeatherWidget(this, startLeft + dx, startTop + dy); armAutoLock() }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    cancelPickerLongPress()
+                    if (longPressFired) { longPressFired = false; return true }
+                    if (moveMode) {
+                        parent?.requestDisallowInterceptTouchEvent(false)
+                        if (dragging) {
+                            dragging = false
+                            onSettle(startLeft, startTop)
+                            exitMoveMode()
+                            return true
+                        }
+                        armAutoLock()   // tap in move mode without a drag: stay armed
+                        return true
+                    }
+                }
+            }
+            return super.dispatchTouchEvent(event)
+        }
+    }
+
     // Drag/long-press host for the weather widget. Same dispatchTouchEvent pattern as
     // HomeTileFrame, but always active: tap falls through to the header's refresh click,
     // a dp(4) slop starts the drag, and the standard long-press timeout opens the picker.
-    private inner class WeatherWidgetFrame(context: Context) : FrameLayout(context) {
-        private var startRawX = 0f
-        private var startRawY = 0f
-        private var startLeft = 0
-        private var startTop = 0
-        private var dragging = false
-        private var longPressFired = false
-        private var longPressRunnable: Runnable? = null
+    private inner class WeatherWidgetFrame(context: Context) : MovableWidgetFrame(context) {
         private var persistedPosApplied = false
 
-        init {
-            clipChildren = false
-            clipToPadding = false
-        }
+        init { clipChildren = false; clipToPadding = false }
 
         override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
             super.onLayout(changed, l, t, r, b)
@@ -5490,77 +5582,349 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        private fun cancelPendingLongPress() {
-            longPressRunnable?.let { removeCallbacks(it) }
-            longPressRunnable = null
+        override fun onSettle(fallbackLeft: Int, fallbackTop: Int) = settleWeatherWidget(this, fallbackLeft, fallbackTop)
+        override fun onLongPress() = openWeatherStylePicker()
+    }
+
+    // ── Daily brief widget ───────────────────────────────────────────────────
+    // Freeform like the weather widget (drag anywhere, per-surface persisted position),
+    // but ephemeral: it exists only while a morning/evening edition is live and undismissed.
+
+    private fun saveBriefWidgetPos(x: Int, y: Int) {
+        prefs().edit().putInt(homeScopedKey(BRIEF_POS_X_PREF), x).putInt(homeScopedKey(BRIEF_POS_Y_PREF), y).apply()
+    }
+
+    internal fun briefThemeId(): String =
+        prefs().getString(homeScopedKey(BRIEF_THEME_PREF), BRIEF_THEME_GLASS) ?: BRIEF_THEME_GLASS
+
+    /** Open a source thread: the exact notification if still live, else the app, else say so. */
+    private fun openThread(pkg: String, key: String) {
+        val intent = TeclasNotificationListener.notificationIntents[key]
+        if (intent != null) { runCatching { intent.send() }.onSuccess { return } }
+        if (pkg.isNotBlank()) {
+            packageManager.getLaunchIntentForPackage(pkg)?.let { startSafeIntent(it, "Couldn't open the app"); return }
+        }
+        Toast.makeText(this, "That conversation is no longer available.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun openBriefRow(row: com.fran.teclas.brief.DailyBrief.Row) = openThread(row.pkg, row.key)
+
+    // Natural recall → things to do with people: commitments harvested from conversations (during
+    // the brief pass; no background work) plus timed calendar events. "what to do today" surfaces
+    // the day's plans generally; naming a person keyword-matches. Tap opens the thread / event.
+    private fun searchCommitmentResults(q: String): List<SearchResult> {
+        val lower = q.lowercase(Locale.US)
+        val general = listOf("what to do", "to do", "todo", "plans", "plan", "anything", "coming up", "upcoming", "my day")
+            .any { lower.contains(it) }
+        val recall = general || looksLikeAiQuestion(lower) ||
+            listOf("supposed", "remind", "owe", "was i", "did i", "need to", "meant to", "dinner", "with ", "doing")
+                .any { lower.contains(it) }
+        if (!recall) return emptyList()
+
+        val out = mutableListOf<SearchResult>()
+        val commits = if (general) com.fran.teclas.brief.CommitmentStore.all(prefs()).take(3)
+            else com.fran.teclas.brief.CommitmentStore.search(prefs(), q)
+        commits.forEach { c ->
+            out.add(SearchResult(
+                if (c.person.isBlank()) c.text else "${c.person} · ${c.text}",
+                if (c.pkg.isNotBlank()) "From your conversations · tap to open" else "From your conversations",
+                0xFF5FD0C4.toInt(), SearchKind.MESSAGE, null,
+            ) { openThread(c.pkg, c.key) })
         }
 
-        // Synthesized rather than copied from the DOWN event: the long-press runnable fires
-        // after dispatchTouchEvent returned, when the framework may have recycled that event.
-        private fun dispatchCancelToChildren() {
-            val now = android.os.SystemClock.uptimeMillis()
-            val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
-            super.dispatchTouchEvent(cancel)
-            cancel.recycle()
+        // Calendar plans with people = timed (non-all-day) upcoming events. General query → today's;
+        // a person/keyword query → matching titles/locations over the next week.
+        val now = System.currentTimeMillis()
+        val todayEnd = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 23); set(java.util.Calendar.MINUTE, 59)
+        }.timeInMillis
+        val horizon = if (general) todayEnd else now + 7L * 24 * 3600_000L
+        val terms = lower.split(Regex("[^a-z0-9]+")).filter { it.length >= 3 &&
+            it !in setOf("what", "with", "the", "did", "was", "todo", "plans", "plan", "today", "tonight", "have", "any", "for", "and", "doing", "supposed", "need") }
+        calendarEvents.asSequence()
+            .filter { it.beginMs in now..horizon && (it.endMs - it.beginMs) in 1..(23L * 3600_000L) }
+            .filter { ev -> general || terms.isEmpty() || terms.any { "${ev.title} ${ev.location}".lowercase().contains(it) } }
+            .take(3)
+            .forEach { ev ->
+                out.add(SearchResult(
+                    ev.title,
+                    listOf(ev.timeLabel, ev.location).filter { it.isNotBlank() }.joinToString(" · "),
+                    0xFFFF8F8F.toInt(), SearchKind.CALENDAR, null,
+                ) { openCalendarEventOrRequest(ev) })
+            }
+        return out.take(5)
+    }
+
+    private fun buildBriefWidgetFrame(context: Context): View? {
+        val edition = com.fran.teclas.brief.DailyBrief.current(prefs()) ?: return null
+        val dotTheme = briefThemeId() == BRIEF_THEME_DOT
+        val frame = BriefWidgetFrame(context)
+        val ink = Color.WHITE
+        val dim = 0xB3FFFFFF.toInt()
+        val faint = 0x82FFFFFF.toInt()
+        val accent = if (dotTheme) 0xFFE5342A.toInt() else goKeyColor   // Nothing red on the dot theme
+        val hasBack = edition.todos.isNotEmpty()
+        var flip: (() -> Unit)? = null
+
+        fun titleFace(): android.graphics.Typeface =
+            if (dotTheme) android.graphics.Typeface.MONOSPACE
+            else android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+
+        // Header row shared by both faces: label (LED on dot theme) + optional flip + dismiss.
+        fun header(label: String, showFlip: Boolean): View = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            if (dotTheme && !label.contains(' ')) {
+                addView(View(context).apply {
+                    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(accent) }
+                }, LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(9); bottomMargin = dp(1) })
+                addView(com.fran.teclas.brief.DotMatrixView(context).apply { setColors(ink, 0x1FFFFFFF); text = label },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { gravity = Gravity.CENTER_VERTICAL })
+            } else {
+                addView(mono(if (dotTheme) label else "TODAY · $label", 9f, faint).apply { letterSpacing = 0.18f },
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+            if (showFlip) addView(mono("⇆", 15f, faint).apply {
+                setPadding(dp(6), dp(2), dp(6), dp(6)); isClickable = true
+                setOnClickListener { haptic(this); flip?.invoke() }
+            })
+            addView(mono("✕", 12f, faint).apply {
+                setPadding(dp(8), dp(2), dp(2), dp(6)); isClickable = true
+                setOnClickListener {
+                    haptic(this)
+                    com.fran.teclas.brief.DailyBrief.dismiss(prefs())
+                    (frame.parent as? ViewGroup)?.removeView(frame)
+                }
+            })
         }
 
-        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    parent?.requestDisallowInterceptTouchEvent(true)
-                    startRawX = event.rawX
-                    startRawY = event.rawY
-                    val lp = layoutParams as FrameLayout.LayoutParams
-                    startLeft = lp.leftMargin
-                    startTop = lp.topMargin
-                    dragging = false
-                    longPressFired = false
-                    cancelPendingLongPress()
-                    val r = Runnable {
-                        longPressRunnable = null
-                        longPressFired = true
-                        dispatchCancelToChildren()
-                        if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        openWeatherStylePicker()
+        // Front face — the brief itself: lede + rows.
+        val front = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(13), dp(16), dp(14))
+            addView(header(if (edition.morning) "MORNING" else "EVENING", hasBack))
+            addView(TextView(context).apply {
+                text = edition.lede
+                textSize = if (dotTheme) 13.5f else 15f
+                setTextColor(ink); typeface = titleFace()
+                setLineSpacing(0f, if (dotTheme) 1.3f else 1.15f)
+                setPadding(0, dp(if (dotTheme) 10 else 4), 0, if (edition.rows.isEmpty()) 0 else dp(8))
+            })
+            edition.rows.forEach { row ->
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, dp(5), 0, dp(5))
+                    if (row.actionable) {
+                        isClickable = true; background = briefRowRipple(8)
+                        setOnClickListener { haptic(this); openBriefRow(row) }
                     }
-                    longPressRunnable = r
-                    postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                    addView(mono(row.glyph, 12f, if (row.actionable) accent else dim).apply { setPadding(0, 0, dp(10), 0) })
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(TextView(context).apply {
+                            text = row.title; textSize = 12.5f; setTextColor(ink); maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END; typeface = titleFace()
+                        })
+                        if (row.sub.isNotBlank()) addView(TextView(context).apply {
+                            text = row.sub; textSize = 11.5f; setTextColor(dim); maxLines = 2
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        })
+                    }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                    if (row.actionable) addView(mono("›", 15f, accent).apply { setPadding(dp(8), 0, 0, 0) })
+                })
+            }
+        }
+
+        // Back face — the checklist, scrolling within the front's height so the card never grows.
+        val back: View? = if (!hasBack) null else android.widget.ScrollView(context).apply {
+            isVerticalScrollBarEnabled = false; overScrollMode = View.OVER_SCROLL_NEVER
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(13), dp(16), dp(14))
+                addView(header("WHAT YOU DID TODAY", true))
+                addView(View(context).apply {}, LinearLayout.LayoutParams(0, dp(4)))
+                edition.todos.forEachIndexed { i, todo ->
+                    val box = mono(if (todo.done) "☑" else "☐", 15f, if (todo.done) accent else dim)
+                    val label = TextView(context).apply {
+                        text = todo.text; textSize = 12.5f; setTextColor(if (todo.done) faint else ink)
+                        if (todo.done) paintFlags = paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
+                        typeface = if (dotTheme) android.graphics.Typeface.MONOSPACE else android.graphics.Typeface.DEFAULT
+                    }
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                        setPadding(0, dp(4), 0, dp(4)); isClickable = true; background = briefRowRipple(8)
+                        addView(box.apply { setPadding(0, 0, dp(11), 0) })
+                        addView(label, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                        var done = todo.done
+                        setOnClickListener {
+                            haptic(this)
+                            com.fran.teclas.brief.DailyBrief.toggleTodo(prefs(), i)
+                            done = !done
+                            box.text = if (done) "☑" else "☐"; box.setTextColor(if (done) accent else dim)
+                            label.setTextColor(if (done) faint else ink)
+                            label.paintFlags = if (done) label.paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
+                                else label.paintFlags and android.graphics.Paint.STRIKE_THRU_TEXT_FLAG.inv()
+                        }
+                    })
                 }
-                MotionEvent.ACTION_MOVE -> {
-                    if (longPressFired) return true
-                    val dx = (event.rawX - startRawX).toInt()
-                    val dy = (event.rawY - startRawY).toInt()
-                    if (!dragging && (abs(dx) > dp(4) || abs(dy) > dp(4))) {
-                        cancelPendingLongPress()
-                        dragging = true
-                        weatherWidgetDragging = true
-                        freezeWeatherWidgetWidthForDrag(this)
-                        dispatchCancelToChildren()
-                        animate().scaleX(1.025f).scaleY(1.025f).setDuration(90).start()
-                    }
-                    if (dragging) {
-                        moveWeatherWidget(this, startLeft + dx, startTop + dy)
-                        return true
-                    }
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    cancelPendingLongPress()
-                    parent?.requestDisallowInterceptTouchEvent(false)
-                    weatherWidgetDragging = false
-                    if (longPressFired) {
-                        longPressFired = false
-                        return true
-                    }
-                    if (dragging) {
-                        dragging = false
-                        animate().scaleX(1f).scaleY(1f).setDuration(110).start()
-                        settleWeatherWidget(this, startLeft, startTop)
-                        return true
-                    }
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        }
+
+        // Content = the front alone, or a flip container where the front (WRAP) fixes the height and
+        // the back (MATCH_PARENT, INVISIBLE) rides on top and scrolls. Flipping never resizes the card.
+        val content: View = if (back == null) front else FrameLayout(context).apply {
+            minimumHeight = dp(150)
+            addView(front, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+            addView(back, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            back.visibility = View.INVISIBLE
+            var showingBack = false
+            cameraDistance = 9000f * resources.displayMetrics.density
+            flip = flip@{
+                if (animation != null) return@flip
+                val toBack = !showingBack
+                animate().rotationY(90f).setDuration(150).withEndAction {
+                    front.visibility = if (toBack) View.INVISIBLE else View.VISIBLE
+                    back.visibility = if (toBack) View.VISIBLE else View.INVISIBLE
+                    rotationY = -90f
+                    animate().rotationY(0f).setDuration(150).start()
+                    showingBack = toBack
+                }.start()
+            }
+        }
+
+        if (dotTheme) {
+            content.background = GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat(); setColor(0xF00A0A0A.toInt()); setStroke(dp(1), 0x24FFFFFF)
+            }
+            frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        } else {
+            // Blurred wallpaper backdrop, sized to the content so the panel's match-parent blur layer
+            // doesn't inflate the wrap-content host to full screen. Sits flat behind the flipping card.
+            val glass = NativeFoldGlassPanel(context, radiusDp = 22, blurScale = 0.42f)
+            frame.addView(glass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0))
+            frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+            content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                if (content.height > 0 && glass.layoutParams.height != content.height) {
+                    glass.layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, content.height)
                 }
             }
-            return super.dispatchTouchEvent(event)
         }
+        frame.elevation = dp(8).toFloat()
+        return frame
+    }
+
+    private fun briefWidgetFrameLayoutParams(): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dp(14); topMargin = dp(120); rightMargin = dp(14)
+        }
+
+    private fun applyPersistedBriefWidgetPos(frame: View) {
+        if (!prefs().contains(homeScopedKey(BRIEF_POS_X_PREF))) return
+        val parent = frame.parent as? View ?: return
+        if (parent.width <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == FrameLayout.LayoutParams.MATCH_PARENT) { lp.width = frame.width; lp.rightMargin = 0 }
+        val x = prefs().getInt(homeScopedKey(BRIEF_POS_X_PREF), lp.leftMargin)
+        val y = prefs().getInt(homeScopedKey(BRIEF_POS_Y_PREF), lp.topMargin)
+        val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
+        lp.leftMargin = cx; lp.topMargin = cy
+        frame.layoutParams = lp
+    }
+
+    /** Same drag host as the weather widget, minus the style picker: slop starts a drag,
+     *  settle clamps + soft-snaps + avoids the widget stack, position persists per surface. */
+    private inner class BriefWidgetFrame(context: Context) : MovableWidgetFrame(context) {
+        private var persistedPosApplied = false
+
+        init { clipChildren = false; clipToPadding = false; isClickable = true }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!persistedPosApplied && width > 0 && ((parent as? View)?.width ?: 0) > 0) {
+                persistedPosApplied = true
+                post { applyPersistedBriefWidgetPos(this) }
+            }
+        }
+
+        override fun onLongPress() = openBriefThemePicker()
+
+        override fun onSettle(fallbackLeft: Int, fallbackTop: Int) {
+            val parentView = parent as? View ?: return
+            val lp = layoutParams as FrameLayout.LayoutParams
+            val (cx, cy) = clampWeatherWidgetPos(parentView, width, height, lp.leftMargin, lp.topMargin)
+            val (sx, sy) = softSnapWeatherWidgetPos(parentView, cx, cy)
+            val (bx, by) = clampWeatherWidgetPos(parentView, width, height, sx, sy)
+            val resolved = resolveWeatherWidgetOverlap(parentView, width, height, bx, by)
+            if (resolved != null) {
+                lp.leftMargin = resolved.first; lp.topMargin = resolved.second
+                layoutParams = lp
+                saveBriefWidgetPos(resolved.first, resolved.second)
+                haptic(this)
+            } else {
+                lp.leftMargin = fallbackLeft; lp.topMargin = fallbackTop
+                layoutParams = lp
+            }
+        }
+    }
+
+    /** Kick a pending edition (morning/evening) — cheap no-op outside windows or when done.
+     *  [force] (the "brief!!" dev code) regenerates immediately, ignoring windows. */
+    private fun scheduleBriefGeneration(force: Boolean = false, forceMorning: Boolean? = null) {
+        if (!force && !com.fran.teclas.brief.DailyBrief.due(prefs())) return
+        mediaUiScope.launch {
+            val generated = com.fran.teclas.brief.DailyBrief.generate(
+                this@MainActivity, prefs(),
+                messages.map { com.fran.teclas.brief.DailyBrief.Notif(it.sender, it.preview, it.lastUpdated, it.packageName, it.key) },
+                calendarEvents,
+                prefs().getString(WEATHER_TEMP_PREF, null).orEmpty(),
+                force = force,
+                forceMorning = forceMorning,
+            )
+            if (generated && ::rootView.isInitialized) {
+                if (force) Toast.makeText(this@MainActivity, "Brief generated.", Toast.LENGTH_SHORT).show()
+                if (!libraryOpen && openPane == null) render()
+            }
+        }
+    }
+
+    private fun briefRowRipple(radiusDp: Int): android.graphics.drawable.Drawable {
+        val mask = GradientDrawable().apply { cornerRadius = dp(radiusDp).toFloat(); setColor(Color.WHITE) }
+        return android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(0x33FFFFFF), null, mask
+        )
+    }
+
+    // Twin of openWeatherStylePicker: same Compose bottom sheet, same open/close animation.
+    private fun openBriefThemePicker() {
+        if (briefThemePickerView?.isAttachedToWindow == true) return
+        val overlay = ComposeView(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setContent {
+                com.fran.teclas.brief.BriefThemePickerSheet(
+                    accent = ComposeColor(goKeyColor),
+                    currentThemeId = briefThemeId(),
+                    onSelect = { id ->
+                        prefs().edit().putString(homeScopedKey(BRIEF_THEME_PREF), id).apply()
+                        closeBriefThemePicker()
+                        if (!libraryOpen && openPane == null) render()
+                    },
+                    onCancel = { closeBriefThemePicker() },
+                )
+            }
+        }
+        briefThemePickerView = overlay
+        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        overlay.alpha = 0f
+        overlay.translationY = dp(40).toFloat()
+        overlay.animate().alpha(1f).translationY(0f).setDuration(240).setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    private fun closeBriefThemePicker() {
+        val overlay = briefThemePickerView ?: return
+        briefThemePickerView = null
+        overlay.animate().alpha(0f).translationY(dp(24).toFloat()).setDuration(160)
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }
+            .start()
     }
 
     private fun refreshWeatherWidgetComposeData() {
@@ -6433,6 +6797,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             rawY <= loc[1] + keyboardDockView.height
     }
 
+    private fun isInsideTypingStrip(rawX: Float, rawY: Float): Boolean {
+        val strip = typingStripWellView ?: return false
+        if (strip.height <= 0 || strip.visibility != View.VISIBLE) return false
+        val loc = IntArray(2)
+        strip.getLocationOnScreen(loc)
+        return rawX >= loc[0] &&
+            rawX <= loc[0] + strip.width &&
+            rawY >= loc[1] &&
+            rawY <= loc[1] + strip.height
+    }
+
+    private fun handleTypingStripPassiveTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                stripSwipeStartX = event.rawX
+                stripSwipeStartY = event.rawY
+                stripSwipeTriggered = false
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!stripSwipeTriggered &&
+                    (abs(event.rawX - stripSwipeStartX) > dp(8) || abs(event.rawY - stripSwipeStartY) > dp(8))) {
+                    stripSwipeTriggered = true
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!stripSwipeTriggered && dockedForegroundChirpActive()) handleDockedForegroundChirpTap()
+                stripSwipeTriggered = false
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                stripSwipeTriggered = false
+                return true
+            }
+        }
+        return true
+    }
+
     private fun handleTypingStripGesture(event: MotionEvent): Boolean {
         if (innerWallpaperEditMode) return false
         if (widgetKeyboardSwapActive()) return false
@@ -6452,7 +6855,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (!stripSwipeTriggered) {
+                if (!stripSwipeTriggered && dockedForegroundChirpActive()) {
+                    handleDockedForegroundChirpTap()
+                } else if (!stripSwipeTriggered) {
                     placeCursorFromTypingStrip(event.rawX)
                 }
                 stripSwipeTriggered = false
@@ -6464,6 +6869,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         return true
+    }
+
+    private fun handleDockedForegroundChirpTap() {
+        when {
+            pendingLauncherResult != null -> {
+                val result = pendingLauncherResult ?: return
+                pendingLauncherResult = null
+                result.insert?.let { replaceDockedForegroundDraft(it) }
+                updateDockedForegroundChirpStrip()
+            }
+            pendingLauncherCommand != null -> applyLauncherCommand()
+            pendingLauncherActions.isNotEmpty() -> runLauncherInlineTransform(pendingLauncherActions.first().second)
+            pendingLauncherStarters.isNotEmpty() -> {
+                val starter = pendingLauncherStarters.first()
+                pendingLauncherStarters = emptyList()
+                starter.second()
+                updateDockedForegroundChirpStrip()
+            }
+            else -> flashLauncherStatus("Hold GO for Chirp", 1400)
+        }
     }
 
     private fun placeCursorFromTypingStrip(rawX: Float) {
@@ -6489,7 +6914,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openLibrary() {
         if (libraryOpen || openPane != null) return
         libraryOpen = true
-        syncWallpaperMotion()
         query = ""
         keyboardSettingsOpen = false
         if (isUnfoldedInnerLayoutActive()) {
@@ -6509,7 +6933,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun beginLibraryDrag(startedOpen: Boolean, vertical: Boolean = false, fastPath: Boolean = false) {
         if (openPane != null && !startedOpen) return
         libraryDragActive = true
-        syncWallpaperMotion()
         libraryDragStartedOpen = startedOpen
         libraryDragVertical = vertical
         libraryDragHapticStage = 0
@@ -6595,7 +7018,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         overlay.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         if (shouldOpen) {
             libraryOpen = true
-            syncWallpaperMotion()
             syncDockedSearchStatusBar()
             val animation = overlay.animate()
                 .alpha(1f)
@@ -6616,7 +7038,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             animation.start()
         } else {
             libraryOpen = false
-            syncWallpaperMotion()
             syncDockedSearchStatusBar()
             libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
             libraryPopulateRunnable = null
@@ -8165,7 +8586,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun showLibrary(animate: Boolean) {
-        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         categoryFolderView = null
         val overlay = appLibrary()
@@ -9328,18 +9748,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (visibleResults.isEmpty() && command == null && hero == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
-                    textSize = 13f
+                    textSize = 13f * searchFontScale()
                     gravity = Gravity.CENTER
                     setTextColor(activeNeuTokens.inkDim)
                     includeFontPadding = false
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(180)))
             }
 
-            // ZONE 2 — apps as bare icons (the launcher's own icons / user's icon pack).
+            // ZONE 2 — apps as an App-Library-style grid (the launcher's own icons / user's icon pack).
             val appResults = visibleResults.filter { it.kind == SearchKind.APP }
             if (appResults.isNotEmpty()) {
                 addView(searchZoneHeader("Apps"), zoneHeaderParams())
-                addView(searchAppIconRow(appResults), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                addView(searchAppGrid(appResults), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(12)
                 })
             }
@@ -9359,10 +9779,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
 
-            // Context suggestions (predicted apps) — a labelled bare-icon row.
+            // Context suggestions (predicted apps) — a labelled App-Library-style grid.
             contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
                 addView(searchZoneHeader(label), zoneHeaderParams().apply { topMargin = dp(6) })
-                addView(searchAppIconRow(items), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                addView(searchAppGrid(items), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         })
     }
@@ -9425,61 +9845,88 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.APP -> "Apps"
     }
 
+    // User-controlled search text size (Settings → search font-size slider). 0..100, default 50
+    // (Medium). Scales zone headers, result titles/subtitles, and app-tile labels together.
+    private fun searchFontSizePref(): Int = prefs().getInt(SEARCH_FONT_SIZE_PREF, SEARCH_FONT_SIZE_DEFAULT)
+    private fun searchFontScale(progress: Int = searchFontSizePref()): Float =
+        0.90f + progress.coerceIn(0, 100) / 100f * 0.50f   // 0→0.90x, 50→1.15x (Medium), 100→1.40x
+    private fun searchFontSizeLabel(progress: Int = searchFontSizePref()): String = when {
+        progress < 34 -> "SMALL"
+        progress < 67 -> "MEDIUM"
+        else -> "LARGE"
+    }
+
     private fun searchZoneHeader(text: String): TextView =
-        mono(text.uppercase(Locale.US), 8.5f, activeNeuTokens.inkFaint).apply {
-            letterSpacing = 0.18f
-            setPadding(dp(2), dp(2), 0, dp(8))
+        TextView(this).apply {
+            this.text = text
+            textSize = 15.5f * searchFontScale()
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            setTextColor(activeNeuTokens.ink)
+            includeFontPadding = false
+            setPadding(dp(2), dp(4), 0, dp(8))
         }
 
     private fun zoneHeaderParams(): LinearLayout.LayoutParams =
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
 
-    // ZONE 2 — a horizontally scrollable row of bare app icons.
-    private fun searchAppIconRow(items: List<SearchResult>): View = HorizontalScrollView(this).apply {
-        isHorizontalScrollBarEnabled = false
-        clipToPadding = false
-        addView(LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            items.forEachIndexed { index, result ->
-                addView(searchAppTile(result, index), LinearLayout.LayoutParams(dp(66), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                    if (index > 0) marginStart = dp(4)
-                })
-            }
-        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+    // ZONE 2 — apps presented like the App Library grid (fixed columns, tap/long-press only — no
+    // horizontal scroll, so nothing here reads as draggable).
+    private fun searchAppGrid(items: List<SearchResult>, columns: Int = 4): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        items.chunked(columns).forEachIndexed { rowIndex, rowItems ->
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                rowItems.forEachIndexed { columnIndex, result ->
+                    addView(searchAppTile(result, rowIndex * columns + columnIndex), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                }
+                repeat(columns - rowItems.size) { addView(View(context), LinearLayout.LayoutParams(0, 1, 1f)) }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                if (rowIndex > 0) topMargin = dp(4)
+            })
+        }
     }
 
-    // A single app: just the launcher's resolved icon (icon-pack honoured) + label. No box, no tag.
+    // A single app tile — same icon frame/size and label treatment as the App Library grid
+    // (appTile), so search results and the library read as one consistent presentation. Tap/
+    // long-press stay search-specific (pin to dock / pin to Space, not the library icon menu).
     private fun searchAppTile(result: SearchResult, index: Int): View {
         val app = result.target?.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg } }
         val builtIn = result.target?.let { target -> builtInLauncherApps().firstOrNull { it.target.id == target.id } }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
+            gravity = Gravity.CENTER
             isClickable = true
             alpha = 0f
             translationY = dp(8).toFloat()
-            setPadding(0, dp(2), 0, dp(2))
+            setPadding(dp(3), dp(4), dp(3), dp(2))
             postDelayed({
                 animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
             }, (index * 28L).coerceAtMost(240L))
+            val iconFrame = appLibraryIconFrameSize()
             if (app != null || builtIn != null) {
-                addView(ImageView(context).apply {
-                    setImageDrawable(iconFor(app?.toLibraryApp() ?: builtIn!!))
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                }, LinearLayout.LayoutParams(dp(52), dp(52)))
+                addView(FrameLayout(context).apply {
+                    elevation = dp(3).toFloat(); background = libraryIconButtonBackground(13, Line)
+                    addView(ImageView(context).apply {
+                        setImageDrawable(iconFor(app?.toLibraryApp() ?: builtIn!!))
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        adjustViewBounds = true
+                        setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
+                    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             } else {
-                addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(52), dp(52)))
+                addView(searchResultIcon(result), LinearLayout.LayoutParams(iconFrame, iconFrame))
             }
             addView(TextView(context).apply {
                 text = highlightedLabel(result.title, query)
-                textSize = 11f
+                textSize = 10.5f * searchFontScale()
                 gravity = Gravity.CENTER
                 setTextColor(activeNeuTokens.inkDim)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 includeFontPadding = false
                 setPadding(0, dp(6), 0, 0)
-            }, LinearLayout.LayoutParams(dp(62), ViewGroup.LayoutParams.WRAP_CONTENT))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             setOnClickListener { haptic(this); openSearchResult(result) }
             if (result.target?.packageName != null) {
                 setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
@@ -9506,7 +9953,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.VERTICAL
                 addView(TextView(context).apply {
                     text = highlightedLabel(result.title, query)
-                    textSize = 14f
+                    textSize = 14f * searchFontScale()
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     setTextColor(activeNeuTokens.ink)
                     maxLines = 1
@@ -9516,7 +9963,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (result.subtitle.isNotBlank()) {
                     addView(TextView(context).apply {
                         text = result.subtitle
-                        textSize = 11.5f
+                        textSize = 11.5f * searchFontScale()
                         setTextColor(activeNeuTokens.inkFaint)
                         maxLines = 1
                         ellipsize = android.text.TextUtils.TruncateAt.END
@@ -9857,7 +10304,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             setOnClickListener {
                 haptic(this)
-                openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(query.trim())}")
+                // Local POIs jump straight to Google Maps; other verticals open the full answer
+                // page on Brave. Never a bare search-results redirect when a target exists.
+                openUrlDirectly(rich.url ?: "https://search.brave.com/search?q=${Uri.encode(query.trim())}")
             }
         }
     }
@@ -12055,7 +12504,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             var longPressRunnable: Runnable? = null
             var longPressFired = false
             val touchSlop = android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop
-            fun cancelLongPress() {
+            fun cancelPickerLongPress() {
                 longPressRunnable?.let { longPressHandler?.removeCallbacks(it) }
                 longPressRunnable = null
             }
@@ -12064,7 +12513,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                         v.background = idleBg()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
-                        cancelLongPress()
+                        cancelPickerLongPress()
                         if (label == "back") stopDeleteRepeat(clearFired = true)
                         spaceCursorMoved = false
                     }
@@ -12096,7 +12545,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         reserveKeyboardSlideGesture(event)
                         v.background = idleBg()
                         v.translationY = 0f
-                        cancelLongPress()
+                        cancelPickerLongPress()
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
                         if (label == "back") stopDeleteRepeat(clearFired = true)
                         return@setOnTouchListener true
@@ -12105,7 +12554,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         if (keyTouchCancelledByMultiTouch) return@setOnTouchListener true
                         if (longPressRunnable != null &&
                             (Math.abs(event.x - touchDownX) > touchSlop || Math.abs(event.y - touchDownY) > touchSlop)) {
-                            cancelLongPress()
+                            cancelPickerLongPress()
                             if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
                         }
                         if (label == "space" && !libraryOpen) {
@@ -12129,7 +12578,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         if (isWidgetDockKey) (v as? DockKeyView)?.cancelHoldProgress()
                         seemeReleaseHaptic(v)
                         v.translationY = 0f
-                        cancelLongPress()
+                        cancelPickerLongPress()
                         if (keyTouchCancelledByMultiTouch) {
                             keyTouchCancelledByMultiTouch = false
                             if (label == "back") stopDeleteRepeat(clearFired = true)
@@ -12164,7 +12613,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         if (label == "back") stopDeleteRepeat(clearFired = true)
                         spaceCursorMoved = false
                         keyTouchCancelledByMultiTouch = false
-                        cancelLongPress(); longPressFired = false
+                        cancelPickerLongPress(); longPressFired = false
                     }
                 }
                 true  // consume all key touches so they don't bubble to pane swipe handler
@@ -12389,7 +12838,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun updateSuggestionBar() {
-        val strip = suggestionStripView ?: return
+        val strip = suggestionStripView ?: run {
+            updateDockedForegroundChirpStrip()
+            return
+        }
         val fieldBlank = launcherSuggestionText().isBlank()
         val forceExpanded =
             launcherPolishing ||
@@ -12891,7 +13343,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // Agentic command bar: hold the go/enter key in the type-first launcher to route the typed query
     // to an action (music, maps, timer, location, web). Shows a preview chip; only runs on APPLY.
     private fun launcherCommandText(): String =
-        if (openPane?.kind == PaneKind.CHAT) composeText else query
+        if (dockedForegroundChirpActive()) dockedForegroundDraft.toString()
+        else if (openPane?.kind == PaneKind.CHAT) composeText else query
 
     private fun launcherClipboardText(): String {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return ""
@@ -12916,7 +13369,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         override fun isGoogleConnected() = GmailAuth(this@MainActivity).isConnected
         override fun post(action: () -> Unit) { runOnUiThread(action) }
         override fun clearField(consumed: String) {
-            if (openPane?.kind == PaneKind.CHAT) { composeText = ""; openPane?.let { renderPaneContent(it) } } else query = ""
+            if (dockedForegroundChirpActive()) {
+                clearDockedForegroundDraft()
+                updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return
+            } else if (openPane?.kind == PaneKind.CHAT) { composeText = ""; openPane?.let { renderPaneContent(it) } } else query = ""
             updateAutoCapState(); updateKeyLabels(); render()
         }
         override fun showStatus(msg: String) { launcherAgenticStatus = msg; updateSuggestionBar() }
@@ -12926,7 +13383,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         override fun insertText(text: String) {
             launcherAgenticStatus = null
-            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } } else query += text
+            if (dockedForegroundChirpActive()) {
+                insertDockedForegroundText(text)
+                updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return
+            } else if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } } else query += text
             updateAutoCapState(); updateKeyLabels(); render()
         }
         override fun runAttach() { flashLauncherStatus("📎 Attach works in the in-app keyboard", 2600) }
@@ -12995,12 +13456,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherLocation(); return }
         if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); AgenticEngine.runWeather(launcherAgenticHost, cmd.arg); return }
         if (cmd.insertText != null) {
-            if (openPane?.kind == PaneKind.CHAT) composeText = cmd.insertText else query = cmd.insertText
+            if (dockedForegroundChirpActive()) {
+                replaceDockedForegroundDraft(cmd.insertText)
+                suggestions = emptyList(); updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return
+            } else if (openPane?.kind == PaneKind.CHAT) composeText = cmd.insertText else query = cmd.insertText
             suggestions = emptyList(); updateAutoCapState(); updateKeyLabels(); render()
             return
         }
         val statusMsg = AgenticRouter.execute(this, cmd)
-        if (openPane?.kind == PaneKind.CHAT) composeText = "" else query = ""
+        if (dockedForegroundChirpActive()) {
+            clearDockedForegroundDraft()
+            suggestions = emptyList()
+            updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+            if (statusMsg != null) android.widget.Toast.makeText(this, statusMsg, android.widget.Toast.LENGTH_SHORT).show()
+            return
+        } else if (openPane?.kind == PaneKind.CHAT) composeText = "" else query = ""
         suggestions = emptyList()
         updateAutoCapState(); updateKeyLabels(); render()
         if (statusMsg != null) android.widget.Toast.makeText(this, statusMsg, android.widget.Toast.LENGTH_SHORT).show()
@@ -13023,7 +13494,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         mediaUiScope.launch {
             val text = withContext(Dispatchers.IO) { AgenticLocation.currentLocationText(this@MainActivity) } ?: return@launch
-            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
+            if (dockedForegroundChirpActive()) {
+                insertDockedForegroundText(text)
+                updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return@launch
+            } else if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
             else query += text
             updateKeyLabels(); render()
         }
@@ -13054,10 +13529,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val result = runCatching { withContext(Dispatchers.IO) { GeminiClient.fetchTransform(key, model, text, instruction) } }.getOrNull()
             launcherPolishing = false
             if (result != null && result != text) {
-                if (openPane?.kind == PaneKind.CHAT) composeText = result else query = result
+                if (dockedForegroundChirpActive()) replaceDockedForegroundDraft(result)
+                else if (openPane?.kind == PaneKind.CHAT) composeText = result else query = result
                 updateAutoCapState(); updateKeyLabels(); openPane?.let { renderPaneContent(it) }
             }
-            updateSuggestionBar(); render()
+            updateSuggestionBar()
+            if (!dockedForegroundChirpActive()) render()
         }
     }
 
@@ -13532,6 +14009,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private val trailTimes = mutableListOf<Long>()
         private var screenX = 0f
         private var screenY = 0f
+        private var glideBlockedByTypingStrip = false
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -13552,6 +14030,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         private fun clearGlideTouchState() {
             tracking = false
+            glideBlockedByTypingStrip = false
             traced.clear()
             trailLocal.clear()
             trailTimes.clear()
@@ -13620,6 +14099,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX; startRawY = ev.rawY
+                    glideBlockedByTypingStrip = isInsideTypingStrip(ev.rawX, ev.rawY)
                     glideFadeRunnable?.let { handler.removeCallbacks(it) }
                     glidePersisting = false; glideRecognizedColor = null
                     tracking = false; traced.clear(); trailLocal.clear(); trailTimes.clear()
@@ -13629,6 +14109,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (glideBlockedByTypingStrip) return false
                     if (trackpadActive) return true
                     if (!tracking) {
                         if (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart) {
@@ -13644,7 +14125,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                     return tracking
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { tracking = false; glideGestureActive = false; return false }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { tracking = false; glideGestureActive = false; glideBlockedByTypingStrip = false; return false }
             }
             return false
         }
@@ -14575,6 +15056,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 } else {
                     query += char
                 }
+                // Secret dev code: force-generate a brief edition (preview/theming aid).
+                if (query.equals("seedcommit", ignoreCase = true)) {
+                    query = ""
+                    com.fran.teclas.brief.CommitmentStore.add(prefs(), listOf(
+                        com.fran.teclas.brief.CommitmentStore.Commitment("send the redraw files", "Ethan", "org.telegram.messenger", "", System.currentTimeMillis()),
+                        com.fran.teclas.brief.CommitmentStore.Commitment("confirm dinner Friday", "Ana", "com.whatsapp", "", System.currentTimeMillis()),
+                    ))
+                    Toast.makeText(this, "Seeded test commitments", Toast.LENGTH_SHORT).show()
+                    renderRibbon(); return
+                }
+                if (query.equals("briefnow", ignoreCase = true) || query.equals("briefam", ignoreCase = true) || query.equals("briefpm", ignoreCase = true)) {
+                    val fm = when (query.lowercase()) { "briefam" -> true; "briefpm" -> false; else -> null }
+                    query = ""
+                    Toast.makeText(this, "Generating brief…", Toast.LENGTH_SHORT).show()
+                    scheduleBriefGeneration(force = true, forceMorning = fm)
+                    renderRibbon(); return
+                }
                 // Secret dev unlock code
                 if (query == "devpro!!") {
                     query = ""
@@ -14959,7 +15457,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         braveRichDebounce?.let { handler.removeCallbacks(it) }
         val q = query.trim()
         val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
-        if (q.length < 2 || key.isBlank() || !mayHaveRichIntent(q)) {
+        if (q.length < 2 || !(mayHaveRichIntent(q) || dictionaryWordFor(q) != null)) {
             if (braveRichAnswer != null || braveRichQuery.isNotEmpty()) { braveRichAnswer = null; braveRichQuery = "" }
             return
         }
@@ -14968,9 +15466,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             braveRichDebounce = null
             mediaUiScope.launch {
                 val answer = withContext(Dispatchers.IO) {
+                    // Word-shaped queries hit the free dictionary first — no Brave credit spent.
+                    dictionaryWordFor(q)?.let { word ->
+                        runCatching { DictionaryApi.define(word) }.getOrNull()?.let { return@withContext it }
+                    }
+                    if (key.isBlank() || !mayHaveRichIntent(q)) return@withContext null
                     // Resolved off the main thread: bare "weather" may need a geocoder round-trip.
                     val effective = resolveBraveRichQuery(q) ?: return@withContext null
-                    runCatching { BraveSearchApi.fetchRich(effective, key) }.getOrNull()
+                    // Location headers turn on Brave's POI block and localize weather/sports.
+                    val loc = AgenticLocation.lastKnown(this@MainActivity)
+                    runCatching { BraveSearchApi.fetchRich(effective, key, loc?.latitude, loc?.longitude) }.getOrNull()
                 }
                 if (query.trim() != q) return@launch   // query moved on
                 braveRichQuery = q
@@ -14986,9 +15491,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun mayHaveRichIntent(q: String): Boolean {
         val lower = q.lowercase(Locale.US)
         return lower in BraveSearchApi.CRYPTO_TERMS || lower in BraveSearchApi.STOCK_TERMS ||
+            looksLikeTicker(q) || looksLikeLocalIntent(lower) ||
             ((lower == "weather" || lower == "forecast") && AgenticLocation.hasPermission(this)) ||
             looksLikeRichIntent(q)
     }
+
+    /** The word to define for [q], or null. Bare lowercase words ("serendipity") and explicit
+     *  "define X" both qualify; finance/weather/sports terms and installed app names don't —
+     *  those have better answers than a dictionary entry. */
+    private fun dictionaryWordFor(q: String): String? {
+        val lower = q.lowercase(Locale.US)
+        val word = when {
+            lower.startsWith("define ") -> lower.removePrefix("define ").trim()
+            lower.startsWith("meaning of ") -> lower.removePrefix("meaning of ").trim()
+            q.length >= 3 && q.all { it.isLetter() && it.isLowerCase() } -> lower
+            else -> return null
+        }
+        if (word.length < 3 || !word.all { it.isLetter() }) return null
+        if (word in BraveSearchApi.CRYPTO_TERMS || word in BraveSearchApi.STOCK_TERMS) return null
+        if (word == "weather" || word == "forecast") return null
+        if (SportsApi.hasSportsIntent(word)) return null
+        // Typing an app's name is launch intent, not vocabulary curiosity.
+        if (apps.any { it.label.equals(word, ignoreCase = true) || it.shortName.equals(word, ignoreCase = true) }) return null
+        return word
+    }
+
+    /** "AAPL", "Tsla" — a short letters-only token the user deliberately capitalized reads as a
+     *  ticker. A miss just means Brave returns no hint; nothing is shown. */
+    private fun looksLikeTicker(q: String): Boolean =
+        q.length in 2..5 && q.all { it.isLetter() } && q.count { it.isUpperCase() } >= 2
+
+    /** "nearest best buy", "coffee near me" — place lookups Brave can answer with a POI. */
+    private fun looksLikeLocalIntent(lower: String): Boolean =
+        listOf("near me", "nearest ", "closest ", "nearby", "open now").any { lower.contains(it) }
 
     private var richWeatherCity: String? = null
 
@@ -15000,7 +15535,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val lower = q.lowercase(Locale.US)
         return when {
             lower in BraveSearchApi.CRYPTO_TERMS -> "$lower price"
-            lower in BraveSearchApi.STOCK_TERMS -> "$lower stock"
+            lower in BraveSearchApi.STOCK_TERMS || looksLikeTicker(q) -> "$lower stock"
+            looksLikeLocalIntent(lower) -> q   // POI lookup: the locations block answers it
             lower == "weather" || lower == "forecast" -> {
                 val city = richWeatherCity ?: AgenticLocation.lastKnown(this)?.let { loc ->
                     runCatching {
@@ -15017,49 +15553,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    /** Debounced inline Brave web search. Populates [braveWebResults] so universalSearchResults()
-     *  renders real web results as native rows — tap opens the page in the in-launcher sheet.
-     *  Longest debounce of the quick sources: each fire is one paid request (~1,000/month). */
+    /** Debounced Google (Custom Search JSON) fallback rows. Brave is reserved for rich answers
+     *  only — when no rich card exists for the query, these rows are the web results, and each
+     *  tap goes straight to the target page: no search-engine page in between. */
     private fun scheduleBraveWebSearch() {
-        braveWebDebounce?.let { handler.removeCallbacks(it) }
+        webFallbackDebounce?.let { handler.removeCallbacks(it) }
         val q = query.trim()
-        val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
-        if (q.length < 3 || key.isBlank()) {
-            if (braveWebResults.isNotEmpty()) { braveWebResults = emptyList(); braveWebQuery = "" }
+        if (q.length < 3 || !GoogleSearchApi.isConfigured(prefs())) {
+            if (webFallbackResults.isNotEmpty()) { webFallbackResults = emptyList(); webFallbackQuery = "" }
             return
         }
-        if (q == braveWebQuery) return
+        if (q == webFallbackQuery) return
         val r = Runnable {
-            braveWebDebounce = null
-            mediaUiScope.launch {
-                val hits = withContext(Dispatchers.IO) {
-                    // "…news" queries pull Brave's news vertical in the same request — the
-                    // stories lead the list, followed by web results.
-                    val news = q.lowercase(Locale.US).contains("news")
-                    // Curated verticals: sports queries pin the rows to one trusted brand
-                    // instead of a mixed page of aggregators. The score card carries the
-                    // numbers; these rows carry ESPN's stories around them.
-                    val curated = if (SportsApi.hasSportsIntent(q)) "$q site:espn.com" else q
-                    runCatching { BraveSearchApi.search(curated, key, count = 4, includeNews = news) }.getOrDefault(emptyList())
-                }
-                if (query.trim() != q) return@launch   // query moved on
-                braveWebQuery = q
-                braveWebResults = hits.take(5).map { hit ->
-                    SearchResult(
-                        title = hit.title,
-                        subtitle = hit.display,
-                        accent = 0xFFFB542B.toInt(),   // Brave orange
-                        kind = SearchKind.WEB,
-                        target = null,
-                        action = { openUrlDirectly(hit.link) },
-                        longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(hit.link)), "No browser available") }
-                    )
-                }
-                refreshSearchResultsUi()
-            }
+            webFallbackDebounce = null
+            mediaUiScope.launch { fetchWebFallback(q) }
         }
-        braveWebDebounce = r
+        webFallbackDebounce = r
         handler.postDelayed(r, 600L)
+    }
+
+    private suspend fun fetchWebFallback(q: String) {
+        val hits = withContext(Dispatchers.IO) {
+            val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
+            val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
+            runCatching { GoogleSearchApi.search(q, key, cx, count = 5) }.getOrDefault(emptyList())
+        }
+        if (query.trim() != q) return   // query moved on
+        webFallbackQuery = q
+        webFallbackResults = hits.take(5).map { hit ->
+            SearchResult(
+                title = hit.title,
+                subtitle = hit.display,
+                accent = 0xFF4285F4.toInt(),   // Google blue
+                kind = SearchKind.WEB,
+                target = null,
+                action = { openUrlDirectly(hit.link) },
+                longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(hit.link)), "No browser available") }
+            )
+        }
+        refreshSearchResultsUi()
     }
 
     /** Debounced ESPN scores lookup. Populates [sportsCard] for the current query so the search
@@ -15284,13 +15816,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!target.id.startsWith("reply:")) replyingToKey = null
         closeCategoryFolder()
         libraryOpen = false
-        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         keyboardSettingsOpen = false; query = ""; composeText = ""
         shiftState = ShiftState.ONCE; suggestions = emptyList()
         updateKeyLabels(); updateSuggestionBar()
         openPane = target
-        syncWallpaperMotion()
         if (target.kind == PaneKind.SETTINGS) {
             render()
             return
@@ -15308,7 +15838,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun openLibraryResult(target: PaneTarget) {
         closeCategoryFolder()
         libraryOpen = false
-        syncWallpaperMotion()
         libraryView?.let { contentFrame.removeView(it) }
         renderRibbon()
         syncNowPlayingCardVisibility()
@@ -15700,6 +16229,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             showIconPackMenu(this)
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(iconSizeSetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
+        parent.addView(searchFontSizeSetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
         parent.addView(settingToggle("DOCK LABELS", showDockLabels()) {
             val next = !showDockLabels()
             prefs().edit().putBoolean(DOCK_LABELS_PREF, next).apply()
@@ -15791,14 +16321,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             prefs().edit().putBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), next).apply()
             homeWallpaperDrawable = loadHomeWallpaperDrawable()
             haptic(this)
-            render()
-            openHere(teclasSettingsTarget())
-        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-        parent.addView(settingToggle("LIVE WALLPAPER MOTION", liveWallpaperMotionEnabled()) {
-            val next = !liveWallpaperMotionEnabled()
-            prefs().edit().putBoolean(HOME_LIVE_WALLPAPER_MOTION_PREF, next).apply()
-            haptic(this)
-            if (next) syncWallpaperMotion() else wallpaperMotionController?.stop()
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
@@ -15901,6 +16423,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
             }
             addView(valueView, LinearLayout.LayoutParams(dp(30), ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+    }
+
+    private fun searchFontSizeSetting(): View {
+        lateinit var valueView: TextView
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), 0)
+            addView(mono("SEARCH TEXT SIZE", 9.5f, InkDim).apply {
+                letterSpacing = 0.10f
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(dp(78), ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(SeekBar(context).apply {
+                max = 100
+                progress = searchFontSizePref()
+                thumbTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(KeyEdge)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        valueView.text = searchFontSizeLabel(p)
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(s: SeekBar?) {
+                        s?.let { haptic(it) }
+                        prefs().edit().putInt(SEARCH_FONT_SIZE_PREF, s?.progress ?: SEARCH_FONT_SIZE_DEFAULT).apply()
+                        refreshSearchSurfaces()
+                    }
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            })
+            valueView = mono(searchFontSizeLabel(), 9f, Accent2).apply {
+                gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
+            }
+            addView(valueView, LinearLayout.LayoutParams(dp(52), ViewGroup.LayoutParams.MATCH_PARENT))
         }
     }
 
@@ -16547,17 +17108,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             pane?.kind == PaneKind.AI -> aiDraftText
             else -> query
         }
+        // Brand voice: lowercase, verb-first. The strip is the app's command line, so the idle
+        // hint carries a "> " affordance and renders in the mono command face (see below).
         val hint = when {
-            libraryOpen && typedText.isBlank() -> "SEARCH"
-            keyboardSettingsOpen -> "KEYBOARD SETTINGS"
-            numberPadOpen && typedText.isBlank() -> "TYPE NUMBER  ·  CONTACTS APPEAR ABOVE  ·  GO = DIAL"
-            pane?.kind == PaneKind.CHAT && typedText.isBlank() -> "→ ${pane.name.uppercase(Locale.US)}"
-            pane?.kind == PaneKind.AI && typedText.isBlank() -> "ASK GEMINI  ·  TAP ASKED OR START TYPING"
-            else -> "SEARCH"
+            libraryOpen && typedText.isBlank() -> "search"
+            keyboardSettingsOpen -> "keyboard settings"
+            numberPadOpen && typedText.isBlank() -> "type a number  ·  contacts appear above  ·  go = dial"
+            pane?.kind == PaneKind.CHAT && typedText.isBlank() -> "→ ${pane.name.lowercase(Locale.US)}"
+            pane?.kind == PaneKind.AI && typedText.isBlank() -> "ask gemini  ·  tap asked or start typing"
+            else -> "search"
         }
-        if (typedText.isNotBlank() && !keyboardSettingsOpen) {
+        if (updateDockedForegroundChirpStrip()) {
+            // Third-party app owns the real text field; keep this fixed well as the Chirp/action bar.
+        } else if (typedText.isNotBlank() && !keyboardSettingsOpen) {
+            // Type-to-do echo: mono command face, "> " affordance, Cursor Violet caret.
             searchHintView.textSize = 15f
-            searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            searchHintView.typeface = Typeface.MONOSPACE
             searchHintView.letterSpacing = 0f
             searchHintView.ellipsize = android.text.TextUtils.TruncateAt.START
             searchHintView.gravity = Gravity.CENTER_VERTICAL
@@ -16565,18 +17131,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             searchHintView.translationY = dp(1).toFloat()
             searchHintView.setPadding(dp(16), dp(5), dp(16), dp(1))
             searchHintView.setTextColor(keyboardIndicatorTextColor())
-            searchHintView.text = styledTypedCommand(typedText)
+            searchHintView.text = commandLine(styledTypedCommand(typedText))
         } else {
+            // Idle placeholder: mono command face with the "> " prompt affordance.
             searchHintView.translationY = 0f
-            searchHintView.textSize = if (libraryOpen) 10.8f else if (isVivoDevice()) 8.6f else 9.5f
-            searchHintView.typeface = Typeface.create(if (libraryOpen) "sans-serif-medium" else "sans-serif-thin", if (libraryOpen) Typeface.BOLD else Typeface.NORMAL)
-            searchHintView.letterSpacing = if (libraryOpen) 0.11f else if (isVivoDevice()) 0.14f else 0.18f
+            searchHintView.textSize = if (libraryOpen) 11.5f else if (isVivoDevice()) 9.5f else 10.5f
+            searchHintView.typeface = Typeface.MONOSPACE
+            searchHintView.letterSpacing = if (libraryOpen) 0.04f else 0.02f
             searchHintView.ellipsize = android.text.TextUtils.TruncateAt.END
             searchHintView.includeFontPadding = false
             searchHintView.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
             searchHintView.setPadding(dp(10), dp(2), dp(6), dp(3))
             searchHintView.setTextColor(if (libraryOpen) keyboardIndicatorTextColor() else keyboardIndicatorTextColor(dim = true))
-            searchHintView.text = hint
+            searchHintView.text = if (hint.startsWith("→")) hint else commandLine(hint)
         }
         val widgetSearchActive = isWidgetUniversalSearchActive()
         if (widgetSearchActive != widgetSearchRendered && ::contentFrame.isInitialized) {
@@ -17074,12 +17641,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    /** Prefix [body] with a Cursor Violet "> " command affordance — the brand's typing signal.
+     *  Preserves any spans on [body] (offsets shift by the 2-char prompt). */
+    private fun commandLine(body: CharSequence): CharSequence {
+        val out = android.text.SpannableStringBuilder("> ")
+        out.setSpan(ForegroundColorSpan(CursorViolet), 0, 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        out.append(body)
+        return out
+    }
+
     private fun styledTypedCommand(text: String): SpannableString {
         val cursor = (cursorPos ?: text.length).coerceIn(0, text.length)
         val display = text.substring(0, cursor) + "|" + text.substring(cursor)
         val styled = SpannableString(display)
         styled.setSpan(ScaleXSpan(0.35f), cursor, cursor + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        styled.setSpan(ForegroundColorSpan(0xFFFF5A3C.toInt()), cursor, cursor + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        styled.setSpan(ForegroundColorSpan(CursorViolet), cursor, cursor + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         // Color whole text with top app's accent when it's a clear match
         val topApp = filteredRibbonEntries().firstOrNull()
         if (topApp != null && text.trim().length >= 2) {
@@ -17690,17 +18266,78 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         when (label) {
             "123", "abc" -> return false
             "teclas" -> { bringLauncherToFront(); return true }
-            "back" -> injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
-            "space" -> injectToForegroundApp(" ")
-            "period" -> injectToForegroundApp(".")
-            "enter" -> injectToForegroundApp(InputInjectionService.KEY_ENTER)
+            "back" -> {
+                mirrorDockedForegroundBackspace()
+                injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
+            }
+            "space" -> {
+                mirrorDockedForegroundInsert(" ")
+                injectToForegroundApp(" ")
+            }
+            "period" -> {
+                mirrorDockedForegroundInsert(".")
+                injectToForegroundApp(".")
+            }
+            "enter" -> {
+                injectToForegroundApp(InputInjectionService.KEY_ENTER)
+                clearDockedForegroundDraft(localOnly = true)
+            }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
+                mirrorDockedForegroundInsert(char)
                 injectToForegroundApp(char)
             }
         }
         return true
+    }
+
+    private fun mirrorDockedForegroundInsert(text: String) {
+        if (!dockedForegroundChirpActive()) return
+        dockedForegroundDraft.append(text)
+        pendingLauncherCommand = null
+        pendingLauncherActions = emptyList()
+        pendingLauncherStarters = emptyList()
+        pendingLauncherResult = null
+        launcherAgenticStatus = null
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun mirrorDockedForegroundBackspace() {
+        if (!dockedForegroundChirpActive()) return
+        if (dockedForegroundDraft.isNotEmpty()) dockedForegroundDraft.deleteCharAt(dockedForegroundDraft.length - 1)
+        pendingLauncherCommand = null
+        pendingLauncherActions = emptyList()
+        pendingLauncherStarters = emptyList()
+        pendingLauncherResult = null
+        launcherAgenticStatus = null
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun insertDockedForegroundText(text: String) {
+        if (text.isEmpty()) return
+        text.forEach { ch ->
+            val payload = if (ch == '\n') InputInjectionService.KEY_ENTER else ch.toString()
+            injectToForegroundApp(payload)
+            if (ch != '\n') dockedForegroundDraft.append(ch) else dockedForegroundDraft.append('\n')
+        }
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun clearDockedForegroundDraft(localOnly: Boolean = false) {
+        if (!localOnly) repeat(dockedForegroundDraft.length) { injectToForegroundApp(InputInjectionService.KEY_BACKSPACE) }
+        dockedForegroundDraft.clear()
+        pendingLauncherCommand = null
+        pendingLauncherActions = emptyList()
+        pendingLauncherStarters = emptyList()
+        pendingLauncherResult = null
+        launcherAgenticStatus = null
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun replaceDockedForegroundDraft(text: String) {
+        clearDockedForegroundDraft()
+        insertDockedForegroundText(text)
     }
 
     private fun injectToForegroundApp(payload: String) {
@@ -18068,6 +18705,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 "From your Gmail", 0xFF5FD0C4.toInt(), SearchKind.TRAVEL, null
             ) { travelPaneHost.openTravelOverlay(startOnBoardingPasses = boarding) })
         }
+        // Recall: "what was I supposed to do with ana?" surfaces stored commitments up top.
+        searchCommitmentResults(q).forEachIndexed { i, r -> results.add(minOf(i, results.size), r) }
         results.addAll(searchContactResults(q))
         results.addAll(searchMessageResults(q))
         results.addAll(searchCalendarResults(q))
@@ -18084,11 +18723,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 ))
             }
         }
-        // Inline Brave web results — the launcher is the search page. Ranked after everything
-        // local (apps, people, events win), tap opens the page in the in-launcher sheet.
-        // When a rich answer card is showing it IS the answer — web rows would be noise.
+        // Google fallback rows — only when NO rich representation exists for this query.
+        // A rich card (Brave) or sports card (ESPN) IS the answer; anything else is noise.
+        // Exception: a definition card is context, not the destination — a bare word like
+        // "serendipity" keeps its web results below the card.
         // A command intent suppresses them entirely: "play jazz" wants music, not links.
-        if (braveWebQuery == q && searchRichAnswer() == null && !commandIntent) results.addAll(braveWebResults)
+        val richCard = searchRichAnswer()
+        val richIsTheAnswer = richCard != null && richCard.vertical != "definitions"
+        if (webFallbackQuery == q && !richIsTheAnswer && searchSportsCard() == null && !commandIntent) {
+            results.addAll(webFallbackResults)
+        }
         // A typed URL ("theverge.com") is an unambiguous intent — rank opening the site itself
         // first, so GO fires it directly. Tap = in-launcher sheet, long-press = full browser.
         InAppGoogleSearchEngine.urlFromQuery(q)?.let { url ->
@@ -18309,6 +18953,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             cycleIconPack()
             refreshSearchSurfaces()
         })
+        entries.add(SettingSearchEntry(
+            "Search text size", "${searchFontSizeLabel()} · tap for next",
+            listOf("search text size", "search font", "font size", "text size")
+        ) {
+            cycleSearchFontSize()
+            refreshSearchSurfaces()
+        })
         WidgetStackModes.WIDGET_IDS.forEach { id ->
             val name = WidgetStackModes.displayName(id)
             val mode = widgetStackMode(id)
@@ -18461,6 +19112,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         appIconSize = presets.firstOrNull { it > appIconSize } ?: presets.first()
         prefs().edit().putInt(APP_ICON_SIZE_PREF, appIconSize).apply()
         renderFavoritesDock()
+    }
+
+    // Small/Medium/Large steps for the type-to-customize surface — the settings-pane slider
+    // covers the full continuous 0..100 range.
+    private fun cycleSearchFontSize() {
+        val presets = listOf(15, 50, 85)
+        val next = presets.firstOrNull { it > searchFontSizePref() } ?: presets.first()
+        prefs().edit().putInt(SEARCH_FONT_SIZE_PREF, next).apply()
     }
 
     private fun cycleIconPack() {
@@ -18645,11 +19304,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val search = InAppGoogleSearchEngine.stripWebVerb(rawQuery).ifBlank { return }
         // Typed a URL → open the site itself, not a web search about it.
         InAppGoogleSearchEngine.urlFromQuery(search)?.let { openUrlDirectly(it); return }
-        // Brave connected → Brave is the search engine, sheet included.
-        if (BraveSearchApi.isConfigured(prefs())) {
-            openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(search)}")
-            return
-        }
         val toolbar = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.baseHi else activeNeuTokens.base
         val nav = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.base else activeNeuTokens.baseLo
         runCatching {
@@ -22502,6 +23156,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         internal const val InkDim = 0xFF8B8F99.toInt()
         private const val Accent = 0xFFFF5A3C.toInt()
         private const val Accent2 = 0xFFF5C451.toInt()
+        // Cursor Violet — the Teclas brand accent and the default goKeyColor when the user
+        // hasn't picked one. Kept in sync with @color/cursor_violet.
+        private const val CursorViolet = 0xFFC9A7FF.toInt()
         private const val Line = 0xFF2A2C33.toInt()
         private const val Key = 0xFF23262E.toInt()
         private const val KeyEdge = 0xFF34373F.toInt()
@@ -22514,6 +23171,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val INNER_KEYBOARD_OFFSET_Y_PREF = "inner_keyboard_offset_y"
         private const val TOUCH_MODEL_PREF = "touch_model_v1"
         private const val APP_ICON_SIZE_PREF = "app_icon_size"
+        private const val SEARCH_FONT_SIZE_PREF = "search_font_size"
+        private const val SEARCH_FONT_SIZE_DEFAULT = 50   // 0..100 slider; 50 = Medium
         private const val KEYBOARD_PLACEMENT_PREF = "keyboard_placement"
         private const val KEYBOARD_PLACEMENT_INTRO_PREF = "keyboard_placement_intro_shown"
         private const val KEYBOARD_PLACEMENT_DOCKED = "docked"
@@ -22568,7 +23227,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val CARDS_VIEW_ENABLED_PREF = "cards_view_enabled"
         private const val HOME_SYSTEM_WALLPAPER_PREF = "home_system_wallpaper"
         private const val HOME_LOCK_WALLPAPER_PREF = "home_lock_wallpaper"
-        private const val HOME_LIVE_WALLPAPER_MOTION_PREF = "home_live_wallpaper_motion"
         private const val HOME_COVER_WALLPAPER_URI_PREF = "home_cover_wallpaper_uri"
         private const val HOME_COVER_WALLPAPER_ZOOM_PREF = "home_cover_wallpaper_zoom"
         private const val HOME_COVER_WALLPAPER_OFFSET_X_PREF = "home_cover_wallpaper_offset_x"
@@ -22647,6 +23305,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
         private const val GEMINI_ENABLED_PREF = "gemini_enabled"
         private const val SEMANTIC_SEARCH_PREF = "semantic_search"
+        private const val BRIEF_POS_X_PREF = "brief_widget_x"
+        private const val BRIEF_POS_Y_PREF = "brief_widget_y"
+        private const val BRIEF_THEME_PREF = "brief_theme"
+        private const val BRIEF_THEME_GLASS = "glass"
+        private const val BRIEF_THEME_DOT = "dotmatrix"
         internal const val GEMINI_API_KEY_PREF = "gemini_api_key"
         internal const val GEMINI_MODEL_PREF = "gemini_model"
         internal const val GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
@@ -22688,7 +23351,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
 
         private val GO_COLORS = listOf(
-            ColorOption("ORANGE", Accent), ColorOption("AMBER", Accent2),
+            ColorOption("VIOLET", CursorViolet), ColorOption("ORANGE", Accent), ColorOption("AMBER", Accent2),
             ColorOption("TEAL", 0xFF5FD0C4.toInt()), ColorOption("BLUE", 0xFF54A9EB.toInt()),
             ColorOption("LILAC", 0xFFC4B5FF.toInt()), ColorOption("GREEN", 0xFF8FD694.toInt())
         )

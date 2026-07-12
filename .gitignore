@@ -13,3 +13,4 @@ screenshots/
 scratch_*.png
 app/src/main/cpp/llama.cpp/
 app/.cxx/
+.kotlin/

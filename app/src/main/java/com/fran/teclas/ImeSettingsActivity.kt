@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.fran.teclas.brand.TeclasWordmark
 import com.fran.teclas.keyboard.DictionaryLoader
 
 /** Toggle live autocorrect in the IME. Shared "teclas" pref, default on. */
@@ -116,8 +117,15 @@ class ImeSettingsActivity : ComponentActivity() {
                 .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 40.dp)
         ) {
-            Text("Teclas Keyboard", color = t.inkCompose, fontSize = 23.sp, fontWeight = FontWeight.Medium)
-            Text("Keyboard settings", Modifier.padding(top = 2.dp), color = t.inkDimCompose, fontSize = 13.5.sp)
+            TeclasWordmark(color = t.inkCompose, fontSize = 30.sp)
+            Text(
+                "keyboard settings",
+                Modifier.padding(top = 4.dp),
+                color = t.inkDimCompose,
+                fontSize = 12.5.sp,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 0.06.em,
+            )
 
             Section(t, "TYPING") {
                 ToggleRow(t, "Auto-correction", "Fix typos as you type", IME_AUTOCORRECT_PREF, true)
@@ -214,6 +222,21 @@ class ImeSettingsActivity : ComponentActivity() {
                             inner()
                         }
                     }
+                )
+            }
+
+            // Brand lockup / About line: wordmark + tagline, a launcher you talk to.
+            Row(
+                Modifier.fillMaxWidth().padding(top = 28.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TeclasWordmark(color = t.inkDimCompose, fontSize = 15.sp, blink = false)
+                Text(
+                    "  ·  ${com.fran.teclas.brand.TeclasBrand.TAGLINE}",
+                    color = t.inkFaintCompose,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
                 )
             }
         }

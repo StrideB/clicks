@@ -1,3 +1,18 @@
 <resources>
     <color name="launcher_bg">#F8F5EF</color>
+
+    <!-- Teclas brand tokens (source of truth: brand system). Same values in values-night/ —
+         brand colors are absolute, not theme-derived. Do not delete launcher_bg. -->
+    <color name="brand_ink">#0B0D12</color>
+    <color name="brand_paper">#F4F1EA</color>
+    <!-- Primary brand accent + default value of the goKeyColor pref. -->
+    <color name="cursor_violet">#C9A7FF</color>
+    <!-- Glass Raised material gradient stops (homescreen chrome). -->
+    <color name="glass_hi">#20232A</color>
+    <color name="glass_lo">#14161B</color>
+    <!-- Signal-only accents: live-state motion/status ONLY, never static chrome/text/background. -->
+    <color name="signal_play">#1DB954</color>
+    <color name="signal_message">#64B5F6</color>
+    <color name="signal_capture">#F6C453</color>
+    <color name="signal_route">#FF8A65</color>
 </resources>

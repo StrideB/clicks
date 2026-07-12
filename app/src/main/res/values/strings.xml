@@ -1,4 +1,6 @@
 <resources>
     <string name="app_name">Teclas</string>
-    <string name="most_used_widget_description">Your most-launched apps, one tap away.</string>
+    <!-- Brand tagline / store one-liner. Voice: direct, lowercase, verb-first. -->
+    <string name="brand_tagline">type. done.</string>
+    <string name="most_used_widget_description">your most-launched apps, one tap away.</string>
 </resources>
