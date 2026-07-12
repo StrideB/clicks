@@ -8,26 +8,25 @@ import java.net.URL
 import java.net.URLEncoder
 
 /**
- * In-launcher web search via the Brave Search API — unlike Google, Brave licenses its index for
- * rendering results directly in your own UI, so these become native launcher rows/panes.
- * Also serves Rich Data Enrichments: instant answers (weather, stocks, crypto, currency,
- * calculator, definitions, unit conversions, sports scores) for a search query.
+ * Rich Data Enrichments via the Brave Search API — instant-answer cards ONLY (weather, stocks,
+ * crypto, currency, calculator, definitions, conversions, plus local POI lookups). Brave is
+ * deliberately NOT used for plain web result rows: those come from the Google Custom Search
+ * fallback when no rich representation exists for a query.
  *
  * Connect: create a key at api-dashboard.search.brave.com (Search plan). The recurring $5/month
- * credit covers ~1,000 requests — keep the "Results from Brave Search" attribution visible to
+ * credit covers ~1,000 requests — keep the Brave/provider attribution visible on cards to
  * retain it. A rich answer costs TWO requests (search + callback), so callers gate rich lookups
  * on query intent instead of firing per keystroke.
  *
  * Rich flow per Brave's API: a web search with enable_rich_callback=1 returns
  * rich.hint.callback_key when the query has rich intent, then /res/v1/web/rich resolves it into
- * the typed payload. Brave doesn't publish per-vertical schemas, so parsing is tolerant: known
- * field names first, generic title/description scan as fallback. Blocking; call off main thread.
+ * the typed payload. When there is no rich hint but the response carries a `locations` block
+ * ("nearest best buy"), the top POI becomes a card that opens Google Maps directly.
+ * Brave doesn't publish per-vertical schemas, so parsing is tolerant: known field names first,
+ * generic title/description scan as fallback. Blocking; call off main thread.
  */
 object BraveSearchApi {
     const val KEY_PREF = "brave_search_key"
-    const val ATTRIBUTION = "Results from Brave Search"
-
-    data class Result(val title: String, val snippet: String, val link: String, val display: String)
 
     /** One day in the weather card's forecast strip. Temps are short-form ("82°"). */
     data class DayForecast(val day: String, val glyph: String, val hi: String, val lo: String)
@@ -44,7 +43,8 @@ object BraveSearchApi {
         val provider: String,        // attribution: "CoinGecko", "OpenWeatherMap", …
         val spark: List<Float>,      // timeseries for the sparkline; empty = no chart
         val glyph: String = "✦",     // header icon: condition emoji for weather, ✦ otherwise
-        val forecast: List<DayForecast> = emptyList()   // weather only: next-days strip
+        val forecast: List<DayForecast> = emptyList(),  // weather only: next-days strip
+        val url: String? = null      // tap destination override (Maps for local POIs)
     )
 
     fun isConfigured(prefs: SharedPreferences): Boolean =
@@ -67,76 +67,64 @@ object BraveSearchApi {
         "coinbase", "disney", "nike"
     )
 
-    /** Standard web results — title/snippet/URL, safe to render natively in the launcher.
-     *  [includeNews] adds Brave's news vertical to the same request (no extra cost) and
-     *  prepends those results — for "…news" queries the stories ARE the answer. */
-    fun search(query: String, apiKey: String, count: Int = 6, includeNews: Boolean = false): List<Result> {
-        if (query.isBlank() || apiKey.isBlank()) return emptyList()
-        val body = get(
-            "https://api.search.brave.com/res/v1/web/search?q=${URLEncoder.encode(query, "UTF-8")}" +
-                "&count=${count.coerceIn(1, 20)}&result_filter=${if (includeNews) "web,news" else "web"}",
-            apiKey
-        ) ?: return emptyList()
-        val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
-        val out = ArrayList<Result>()
-        if (includeNews) {
-            root.optJSONObject("news")?.optJSONArray("results")?.let { items ->
-                for (i in 0 until minOf(items.length(), 4)) {
-                    val it = items.optJSONObject(i) ?: continue
-                    val title = it.optString("title").trim()
-                    val link = it.optString("url").trim()
-                    if (title.isBlank() || link.isBlank()) continue
-                    val host = it.optJSONObject("meta_url")?.optString("hostname")?.trim().orEmpty()
-                    val age = it.optString("age").trim()
-                    out.add(Result(title, it.optString("description").trim(), link,
-                        listOf(host, age).filter { s -> s.isNotBlank() }.joinToString(" · ").ifBlank { link }))
-                }
-            }
-        }
-        root.optJSONObject("web")?.optJSONArray("results")?.let { items ->
-            for (i in 0 until items.length()) {
-                val it = items.optJSONObject(i) ?: continue
-                val title = it.optString("title").trim()
-                val link = it.optString("url").trim()
-                if (title.isBlank() || link.isBlank()) continue
-                if (out.any { r -> r.link == link }) continue
-                out.add(
-                    Result(
-                        title = title,
-                        snippet = it.optString("description").trim(),
-                        link = link,
-                        display = it.optJSONObject("meta_url")?.optString("hostname")?.trim()
-                            .orEmpty().ifBlank { link }
-                    )
-                )
-            }
-        }
-        return out
-    }
-
-    fun fetchRich(query: String, apiKey: String): RichAnswer? {
+    fun fetchRich(query: String, apiKey: String, lat: Double? = null, long: Double? = null): RichAnswer? {
         if (query.isBlank() || apiKey.isBlank()) return null
+        // Location headers make Brave return the `locations` POI block ("best buy" → the actual
+        // nearest store) — verified live: absent without them.
+        val locHeaders = if (lat != null && long != null)
+            mapOf("X-Loc-Lat" to lat.toString(), "X-Loc-Long" to long.toString()) else emptyMap()
         val search = get(
             "https://api.search.brave.com/res/v1/web/search?q=${URLEncoder.encode(query, "UTF-8")}" +
                 "&enable_rich_callback=1&count=1",
-            apiKey
+            apiKey, locHeaders
         ) ?: return null
-        val hint = runCatching { JSONObject(search).optJSONObject("rich")?.optJSONObject("hint") }
-            .getOrNull() ?: return null
-        val callbackKey = hint.optString("callback_key").trim()
-        if (callbackKey.isBlank()) return null
-        val vertical = hint.optString("vertical").trim()
+        val root = runCatching { JSONObject(search) }.getOrNull() ?: return null
+        val hint = root.optJSONObject("rich")?.optJSONObject("hint")
+        val callbackKey = hint?.optString("callback_key")?.trim().orEmpty()
+        if (callbackKey.isBlank()) {
+            // No rich vertical — a POI answer ("nearest best buy") may still be in `locations`.
+            return parseLocations(root)
+        }
+        val vertical = hint?.optString("vertical")?.trim().orEmpty()
 
         val rich = get(
             "https://api.search.brave.com/res/v1/web/rich?callback_key=${URLEncoder.encode(callbackKey, "UTF-8")}",
             apiKey
-        ) ?: return null
-        val results = runCatching { JSONObject(rich).optJSONArray("results") }.getOrNull() ?: return null
+        ) ?: return parseLocations(root)
+        val results = runCatching { JSONObject(rich).optJSONArray("results") }.getOrNull()
+            ?: return parseLocations(root)
         for (i in 0 until results.length()) {
             val item = results.optJSONObject(i) ?: continue
             parse(item, vertical)?.let { return it }
         }
-        return null
+        return parseLocations(root)
+    }
+
+    /** Top POI from the web response's `locations` block → a card that opens Google Maps
+     *  directly. No search-results page in between. */
+    private fun parseLocations(root: JSONObject): RichAnswer? {
+        val items = root.optJSONObject("locations")?.optJSONArray("results") ?: return null
+        val top = items.optJSONObject(0) ?: return null
+        val name = top.optString("title").trim().ifBlank { return null }
+        val address = top.optJSONObject("postal_address")?.let { pa ->
+            pa.optString("displayAddress").trim().ifBlank {
+                listOf(pa.optString("streetAddress"), pa.optString("addressLocality"))
+                    .map { it.trim() }.filter { it.isNotBlank() }.joinToString(", ")
+            }
+        }.orEmpty()
+        val more = (items.length() - 1).takeIf { it > 0 }?.let { "  ·  +$it more on Maps" }.orEmpty()
+        return RichAnswer(
+            vertical = "local",
+            headline = name,
+            label = "Nearby",
+            detail = "$address$more".trim(),
+            delta = null, deltaUp = true,
+            provider = "Brave Search",
+            spark = emptyList(),
+            glyph = "📍",
+            url = "https://www.google.com/maps/search/?api=1&query=" +
+                URLEncoder.encode(listOf(name, address).filter { it.isNotBlank() }.joinToString(" "), "UTF-8")
+        )
     }
 
     // Field paths verified against live responses (July 2026): each result carries
@@ -343,12 +331,13 @@ object BraveSearchApi {
         return null
     }
 
-    private fun get(url: String, apiKey: String): String? = try {
+    private fun get(url: String, apiKey: String, headers: Map<String, String> = emptyMap()): String? = try {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 5_000; readTimeout = 8_000
             setRequestProperty("Accept", "application/json")
             setRequestProperty("x-subscription-token", apiKey)
+            headers.forEach { (k, v) -> setRequestProperty(k, v) }
         }
         try {
             if (conn.responseCode !in 200..299) null

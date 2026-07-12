@@ -331,6 +331,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var composeText = ""
     private var aiDraftText = ""
     private var aiDraftActive = false
+    private val dockedForegroundDraft = StringBuilder()
     private val chatLinesById = mutableMapOf<String, MutableList<ChatLine>>()
 
     private var shiftState = ShiftState.ONCE
@@ -385,9 +386,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var braveRichAnswer: BraveSearchApi.RichAnswer? = null
     // Inline Brave web results: real search results as native rows in universal search, so the
     // launcher is the search page — no pane, no Custom Tab detour.
-    private var braveWebDebounce: Runnable? = null
-    private var braveWebQuery: String = ""
-    private var braveWebResults: List<SearchResult> = emptyList()
+    private var webFallbackDebounce: Runnable? = null
+    private var webFallbackQuery: String = ""
+    private var webFallbackResults: List<SearchResult> = emptyList()
 
     private var sportsDebounce: Runnable? = null
     private var sportsQuery: String = ""
@@ -885,6 +886,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         super.onResume()
         // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
         DockedFreeform.externalAppInFront = false
+        dockedForegroundDraft.clear()
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
@@ -1559,7 +1561,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             background = typingStripBackground()
             elevation = dp(3).toFloat()
             isClickable = true
-            setOnTouchListener { _, event -> handleTypingStripGesture(event) }
+            setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             searchHintView = TextView(context).apply {
                 text = launcherTypingStripText()
                 textSize = 15f
@@ -1571,13 +1573,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 ellipsize = android.text.TextUtils.TruncateAt.START
                 setPadding(dp(16), dp(3), dp(8), dp(3))
                 isClickable = true
-                setOnTouchListener { _, event -> handleTypingStripGesture(event) }
+                setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             }
             addView(searchHintView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
         }
     }
 
     private fun launcherTypingStripText(): CharSequence {
+        if (dockedForegroundChirpActive()) return dockedForegroundChirpText()
         val pane = openPane
         val typedText = when {
             pane?.kind == PaneKind.CHAT -> composeText
@@ -1593,6 +1596,42 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             pane?.kind == PaneKind.AI -> "ASK GEMINI"
             else -> "SEARCH"
         }
+    }
+
+    private fun dockedForegroundChirpActive(): Boolean =
+        keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && keysRouteToForegroundApp()
+
+    private fun dockedForegroundChirpText(): CharSequence {
+        val result = pendingLauncherResult
+        if (result != null) {
+            val body = if (result.body.length > 52) result.body.take(50).trimEnd() + "…" else result.body
+            return if (result.insert != null) "INSERT · $body" else body
+        }
+        pendingLauncherCommand?.let { return "APPLY · ${it.label}" }
+        if (pendingLauncherActions.isNotEmpty()) return "CHIRP · ${pendingLauncherActions.joinToString(" · ") { it.first }}"
+        if (pendingLauncherStarters.isNotEmpty()) return "TRY · ${pendingLauncherStarters.joinToString(" · ") { it.first }}"
+        launcherAgenticStatus?.let { return it }
+        if (launcherPolishing) return "POLISHING…"
+        return if (dockedForegroundDraft.isNotBlank()) {
+            "CHIRP · hold GO"
+        } else {
+            "TYPING IN APP · HOLD GO FOR CHIRP"
+        }
+    }
+
+    private fun updateDockedForegroundChirpStrip(): Boolean {
+        if (!::searchHintView.isInitialized || !dockedForegroundChirpActive()) return false
+        searchHintView.translationY = 0f
+        searchHintView.textSize = 10.2f
+        searchHintView.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        searchHintView.letterSpacing = 0.11f
+        searchHintView.ellipsize = android.text.TextUtils.TruncateAt.END
+        searchHintView.includeFontPadding = false
+        searchHintView.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
+        searchHintView.setPadding(dp(10), dp(2), dp(10), dp(3))
+        searchHintView.setTextColor(keyboardIndicatorTextColor(dim = false))
+        searchHintView.text = dockedForegroundChirpText()
+        return true
     }
 
     private fun zeissCameraButton(): View {
@@ -6433,6 +6472,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             rawY <= loc[1] + keyboardDockView.height
     }
 
+    private fun isInsideTypingStrip(rawX: Float, rawY: Float): Boolean {
+        val strip = typingStripWellView ?: return false
+        if (strip.height <= 0 || strip.visibility != View.VISIBLE) return false
+        val loc = IntArray(2)
+        strip.getLocationOnScreen(loc)
+        return rawX >= loc[0] &&
+            rawX <= loc[0] + strip.width &&
+            rawY >= loc[1] &&
+            rawY <= loc[1] + strip.height
+    }
+
+    private fun handleTypingStripPassiveTouch(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                stripSwipeStartX = event.rawX
+                stripSwipeStartY = event.rawY
+                stripSwipeTriggered = false
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!stripSwipeTriggered &&
+                    (abs(event.rawX - stripSwipeStartX) > dp(8) || abs(event.rawY - stripSwipeStartY) > dp(8))) {
+                    stripSwipeTriggered = true
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!stripSwipeTriggered && dockedForegroundChirpActive()) handleDockedForegroundChirpTap()
+                stripSwipeTriggered = false
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                stripSwipeTriggered = false
+                return true
+            }
+        }
+        return true
+    }
+
     private fun handleTypingStripGesture(event: MotionEvent): Boolean {
         if (innerWallpaperEditMode) return false
         if (widgetKeyboardSwapActive()) return false
@@ -6452,7 +6530,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (!stripSwipeTriggered) {
+                if (!stripSwipeTriggered && dockedForegroundChirpActive()) {
+                    handleDockedForegroundChirpTap()
+                } else if (!stripSwipeTriggered) {
                     placeCursorFromTypingStrip(event.rawX)
                 }
                 stripSwipeTriggered = false
@@ -6464,6 +6544,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         return true
+    }
+
+    private fun handleDockedForegroundChirpTap() {
+        when {
+            pendingLauncherResult != null -> {
+                val result = pendingLauncherResult ?: return
+                pendingLauncherResult = null
+                result.insert?.let { replaceDockedForegroundDraft(it) }
+                updateDockedForegroundChirpStrip()
+            }
+            pendingLauncherCommand != null -> applyLauncherCommand()
+            pendingLauncherActions.isNotEmpty() -> runLauncherInlineTransform(pendingLauncherActions.first().second)
+            pendingLauncherStarters.isNotEmpty() -> {
+                val starter = pendingLauncherStarters.first()
+                pendingLauncherStarters = emptyList()
+                starter.second()
+                updateDockedForegroundChirpStrip()
+            }
+            else -> flashLauncherStatus("Hold GO for Chirp", 1400)
+        }
     }
 
     private fun placeCursorFromTypingStrip(rawX: Float) {
@@ -9857,7 +9957,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             setOnClickListener {
                 haptic(this)
-                openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(query.trim())}")
+                // Local POIs jump straight to Google Maps; other verticals open the full answer
+                // page on Brave. Never a bare search-results redirect when a target exists.
+                openUrlDirectly(rich.url ?: "https://search.brave.com/search?q=${Uri.encode(query.trim())}")
             }
         }
     }
@@ -12389,7 +12491,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun updateSuggestionBar() {
-        val strip = suggestionStripView ?: return
+        val strip = suggestionStripView ?: run {
+            updateDockedForegroundChirpStrip()
+            return
+        }
         val fieldBlank = launcherSuggestionText().isBlank()
         val forceExpanded =
             launcherPolishing ||
@@ -12891,7 +12996,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // Agentic command bar: hold the go/enter key in the type-first launcher to route the typed query
     // to an action (music, maps, timer, location, web). Shows a preview chip; only runs on APPLY.
     private fun launcherCommandText(): String =
-        if (openPane?.kind == PaneKind.CHAT) composeText else query
+        if (dockedForegroundChirpActive()) dockedForegroundDraft.toString()
+        else if (openPane?.kind == PaneKind.CHAT) composeText else query
 
     private fun launcherClipboardText(): String {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return ""
@@ -12916,7 +13022,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         override fun isGoogleConnected() = GmailAuth(this@MainActivity).isConnected
         override fun post(action: () -> Unit) { runOnUiThread(action) }
         override fun clearField(consumed: String) {
-            if (openPane?.kind == PaneKind.CHAT) { composeText = ""; openPane?.let { renderPaneContent(it) } } else query = ""
+            if (dockedForegroundChirpActive()) {
+                clearDockedForegroundDraft()
+                updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return
+            } else if (openPane?.kind == PaneKind.CHAT) { composeText = ""; openPane?.let { renderPaneContent(it) } } else query = ""
             updateAutoCapState(); updateKeyLabels(); render()
         }
         override fun showStatus(msg: String) { launcherAgenticStatus = msg; updateSuggestionBar() }
@@ -12926,7 +13036,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         override fun insertText(text: String) {
             launcherAgenticStatus = null
-            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } } else query += text
+            if (dockedForegroundChirpActive()) {
+                insertDockedForegroundText(text)
+                updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return
+            } else if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } } else query += text
             updateAutoCapState(); updateKeyLabels(); render()
         }
         override fun runAttach() { flashLauncherStatus("📎 Attach works in the in-app keyboard", 2600) }
@@ -12995,12 +13109,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (cmd.insertsLocation) { AgenticRouter.recordUse(this, cmd.skillId); insertLauncherLocation(); return }
         if (cmd.fetchWeather) { AgenticRouter.recordUse(this, cmd.skillId); AgenticEngine.runWeather(launcherAgenticHost, cmd.arg); return }
         if (cmd.insertText != null) {
-            if (openPane?.kind == PaneKind.CHAT) composeText = cmd.insertText else query = cmd.insertText
+            if (dockedForegroundChirpActive()) {
+                replaceDockedForegroundDraft(cmd.insertText)
+                suggestions = emptyList(); updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return
+            } else if (openPane?.kind == PaneKind.CHAT) composeText = cmd.insertText else query = cmd.insertText
             suggestions = emptyList(); updateAutoCapState(); updateKeyLabels(); render()
             return
         }
         val statusMsg = AgenticRouter.execute(this, cmd)
-        if (openPane?.kind == PaneKind.CHAT) composeText = "" else query = ""
+        if (dockedForegroundChirpActive()) {
+            clearDockedForegroundDraft()
+            suggestions = emptyList()
+            updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+            if (statusMsg != null) android.widget.Toast.makeText(this, statusMsg, android.widget.Toast.LENGTH_SHORT).show()
+            return
+        } else if (openPane?.kind == PaneKind.CHAT) composeText = "" else query = ""
         suggestions = emptyList()
         updateAutoCapState(); updateKeyLabels(); render()
         if (statusMsg != null) android.widget.Toast.makeText(this, statusMsg, android.widget.Toast.LENGTH_SHORT).show()
@@ -13023,7 +13147,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         mediaUiScope.launch {
             val text = withContext(Dispatchers.IO) { AgenticLocation.currentLocationText(this@MainActivity) } ?: return@launch
-            if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
+            if (dockedForegroundChirpActive()) {
+                insertDockedForegroundText(text)
+                updateKeyLabels(); updateDockedForegroundChirpStrip()
+                return@launch
+            } else if (openPane?.kind == PaneKind.CHAT) { composeText += text; openPane?.let { renderPaneContent(it) } }
             else query += text
             updateKeyLabels(); render()
         }
@@ -13054,10 +13182,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val result = runCatching { withContext(Dispatchers.IO) { GeminiClient.fetchTransform(key, model, text, instruction) } }.getOrNull()
             launcherPolishing = false
             if (result != null && result != text) {
-                if (openPane?.kind == PaneKind.CHAT) composeText = result else query = result
+                if (dockedForegroundChirpActive()) replaceDockedForegroundDraft(result)
+                else if (openPane?.kind == PaneKind.CHAT) composeText = result else query = result
                 updateAutoCapState(); updateKeyLabels(); openPane?.let { renderPaneContent(it) }
             }
-            updateSuggestionBar(); render()
+            updateSuggestionBar()
+            if (!dockedForegroundChirpActive()) render()
         }
     }
 
@@ -13533,6 +13663,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private val trailTimes = mutableListOf<Long>()
         private var screenX = 0f
         private var screenY = 0f
+        private var glideBlockedByTypingStrip = false
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -13553,6 +13684,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         private fun clearGlideTouchState() {
             tracking = false
+            glideBlockedByTypingStrip = false
             traced.clear()
             trailLocal.clear()
             trailTimes.clear()
@@ -13621,6 +13753,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX; startRawY = ev.rawY
+                    glideBlockedByTypingStrip = isInsideTypingStrip(ev.rawX, ev.rawY)
                     glideFadeRunnable?.let { handler.removeCallbacks(it) }
                     glidePersisting = false; glideRecognizedColor = null
                     tracking = false; traced.clear(); trailLocal.clear(); trailTimes.clear()
@@ -13630,6 +13763,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (glideBlockedByTypingStrip) return false
                     if (trackpadActive) return true
                     if (!tracking) {
                         if (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart) {
@@ -13645,7 +13779,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                     return tracking
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { tracking = false; glideGestureActive = false; return false }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { tracking = false; glideGestureActive = false; glideBlockedByTypingStrip = false; return false }
             }
             return false
         }
@@ -14960,7 +15094,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         braveRichDebounce?.let { handler.removeCallbacks(it) }
         val q = query.trim()
         val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
-        if (q.length < 2 || key.isBlank() || !mayHaveRichIntent(q)) {
+        if (q.length < 2 || !(mayHaveRichIntent(q) || dictionaryWordFor(q) != null)) {
             if (braveRichAnswer != null || braveRichQuery.isNotEmpty()) { braveRichAnswer = null; braveRichQuery = "" }
             return
         }
@@ -14969,9 +15103,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             braveRichDebounce = null
             mediaUiScope.launch {
                 val answer = withContext(Dispatchers.IO) {
+                    // Word-shaped queries hit the free dictionary first — no Brave credit spent.
+                    dictionaryWordFor(q)?.let { word ->
+                        runCatching { DictionaryApi.define(word) }.getOrNull()?.let { return@withContext it }
+                    }
+                    if (key.isBlank() || !mayHaveRichIntent(q)) return@withContext null
                     // Resolved off the main thread: bare "weather" may need a geocoder round-trip.
                     val effective = resolveBraveRichQuery(q) ?: return@withContext null
-                    runCatching { BraveSearchApi.fetchRich(effective, key) }.getOrNull()
+                    // Location headers turn on Brave's POI block and localize weather/sports.
+                    val loc = AgenticLocation.lastKnown(this@MainActivity)
+                    runCatching { BraveSearchApi.fetchRich(effective, key, loc?.latitude, loc?.longitude) }.getOrNull()
                 }
                 if (query.trim() != q) return@launch   // query moved on
                 braveRichQuery = q
@@ -14987,9 +15128,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun mayHaveRichIntent(q: String): Boolean {
         val lower = q.lowercase(Locale.US)
         return lower in BraveSearchApi.CRYPTO_TERMS || lower in BraveSearchApi.STOCK_TERMS ||
+            looksLikeTicker(q) || looksLikeLocalIntent(lower) ||
             ((lower == "weather" || lower == "forecast") && AgenticLocation.hasPermission(this)) ||
             looksLikeRichIntent(q)
     }
+
+    /** The word to define for [q], or null. Bare lowercase words ("serendipity") and explicit
+     *  "define X" both qualify; finance/weather/sports terms and installed app names don't —
+     *  those have better answers than a dictionary entry. */
+    private fun dictionaryWordFor(q: String): String? {
+        val lower = q.lowercase(Locale.US)
+        val word = when {
+            lower.startsWith("define ") -> lower.removePrefix("define ").trim()
+            lower.startsWith("meaning of ") -> lower.removePrefix("meaning of ").trim()
+            q.length >= 3 && q.all { it.isLetter() && it.isLowerCase() } -> lower
+            else -> return null
+        }
+        if (word.length < 3 || !word.all { it.isLetter() }) return null
+        if (word in BraveSearchApi.CRYPTO_TERMS || word in BraveSearchApi.STOCK_TERMS) return null
+        if (word == "weather" || word == "forecast") return null
+        if (SportsApi.hasSportsIntent(word)) return null
+        // Typing an app's name is launch intent, not vocabulary curiosity.
+        if (apps.any { it.label.equals(word, ignoreCase = true) || it.shortName.equals(word, ignoreCase = true) }) return null
+        return word
+    }
+
+    /** "AAPL", "Tsla" — a short letters-only token the user deliberately capitalized reads as a
+     *  ticker. A miss just means Brave returns no hint; nothing is shown. */
+    private fun looksLikeTicker(q: String): Boolean =
+        q.length in 2..5 && q.all { it.isLetter() } && q.count { it.isUpperCase() } >= 2
+
+    /** "nearest best buy", "coffee near me" — place lookups Brave can answer with a POI. */
+    private fun looksLikeLocalIntent(lower: String): Boolean =
+        listOf("near me", "nearest ", "closest ", "nearby", "open now").any { lower.contains(it) }
 
     private var richWeatherCity: String? = null
 
@@ -15001,7 +15172,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val lower = q.lowercase(Locale.US)
         return when {
             lower in BraveSearchApi.CRYPTO_TERMS -> "$lower price"
-            lower in BraveSearchApi.STOCK_TERMS -> "$lower stock"
+            lower in BraveSearchApi.STOCK_TERMS || looksLikeTicker(q) -> "$lower stock"
+            looksLikeLocalIntent(lower) -> q   // POI lookup: the locations block answers it
             lower == "weather" || lower == "forecast" -> {
                 val city = richWeatherCity ?: AgenticLocation.lastKnown(this)?.let { loc ->
                     runCatching {
@@ -15018,38 +15190,32 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    /** Debounced inline Brave web search. Populates [braveWebResults] so universalSearchResults()
-     *  renders real web results as native rows — tap opens the page in the in-launcher sheet.
-     *  Longest debounce of the quick sources: each fire is one paid request (~1,000/month). */
+    /** Debounced Google (Custom Search JSON) fallback rows. Brave is reserved for rich answers
+     *  only — when no rich card exists for the query, these rows are the web results, and each
+     *  tap goes straight to the target page: no search-engine page in between. */
     private fun scheduleBraveWebSearch() {
-        braveWebDebounce?.let { handler.removeCallbacks(it) }
+        webFallbackDebounce?.let { handler.removeCallbacks(it) }
         val q = query.trim()
-        val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
-        if (q.length < 3 || key.isBlank()) {
-            if (braveWebResults.isNotEmpty()) { braveWebResults = emptyList(); braveWebQuery = "" }
+        if (q.length < 3 || !GoogleSearchApi.isConfigured(prefs())) {
+            if (webFallbackResults.isNotEmpty()) { webFallbackResults = emptyList(); webFallbackQuery = "" }
             return
         }
-        if (q == braveWebQuery) return
+        if (q == webFallbackQuery) return
         val r = Runnable {
-            braveWebDebounce = null
+            webFallbackDebounce = null
             mediaUiScope.launch {
                 val hits = withContext(Dispatchers.IO) {
-                    // "…news" queries pull Brave's news vertical in the same request — the
-                    // stories lead the list, followed by web results.
-                    val news = q.lowercase(Locale.US).contains("news")
-                    // Curated verticals: sports queries pin the rows to one trusted brand
-                    // instead of a mixed page of aggregators. The score card carries the
-                    // numbers; these rows carry ESPN's stories around them.
-                    val curated = if (SportsApi.hasSportsIntent(q)) "$q site:espn.com" else q
-                    runCatching { BraveSearchApi.search(curated, key, count = 4, includeNews = news) }.getOrDefault(emptyList())
+                    val key = prefs().getString(GoogleSearchApi.KEY_PREF, null)?.trim().orEmpty()
+                    val cx = prefs().getString(GoogleSearchApi.CX_PREF, null)?.trim().orEmpty()
+                    runCatching { GoogleSearchApi.search(q, key, cx, count = 5) }.getOrDefault(emptyList())
                 }
                 if (query.trim() != q) return@launch   // query moved on
-                braveWebQuery = q
-                braveWebResults = hits.take(5).map { hit ->
+                webFallbackQuery = q
+                webFallbackResults = hits.take(5).map { hit ->
                     SearchResult(
                         title = hit.title,
                         subtitle = hit.display,
-                        accent = 0xFFFB542B.toInt(),   // Brave orange
+                        accent = 0xFF4285F4.toInt(),   // Google blue
                         kind = SearchKind.WEB,
                         target = null,
                         action = { openUrlDirectly(hit.link) },
@@ -15059,7 +15225,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 refreshSearchResultsUi()
             }
         }
-        braveWebDebounce = r
+        webFallbackDebounce = r
         handler.postDelayed(r, 600L)
     }
 
@@ -16556,7 +16722,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             pane?.kind == PaneKind.AI && typedText.isBlank() -> "ASK GEMINI  ·  TAP ASKED OR START TYPING"
             else -> "SEARCH"
         }
-        if (typedText.isNotBlank() && !keyboardSettingsOpen) {
+        if (updateDockedForegroundChirpStrip()) {
+            // Third-party app owns the real text field; keep this fixed well as the Chirp/action bar.
+        } else if (typedText.isNotBlank() && !keyboardSettingsOpen) {
             searchHintView.textSize = 15f
             searchHintView.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             searchHintView.letterSpacing = 0f
@@ -17691,17 +17859,78 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         when (label) {
             "123", "abc" -> return false
             "teclas" -> { bringLauncherToFront(); return true }
-            "back" -> injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
-            "space" -> injectToForegroundApp(" ")
-            "period" -> injectToForegroundApp(".")
-            "enter" -> injectToForegroundApp(InputInjectionService.KEY_ENTER)
+            "back" -> {
+                mirrorDockedForegroundBackspace()
+                injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
+            }
+            "space" -> {
+                mirrorDockedForegroundInsert(" ")
+                injectToForegroundApp(" ")
+            }
+            "period" -> {
+                mirrorDockedForegroundInsert(".")
+                injectToForegroundApp(".")
+            }
+            "enter" -> {
+                injectToForegroundApp(InputInjectionService.KEY_ENTER)
+                clearDockedForegroundDraft(localOnly = true)
+            }
             else -> {
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
+                mirrorDockedForegroundInsert(char)
                 injectToForegroundApp(char)
             }
         }
         return true
+    }
+
+    private fun mirrorDockedForegroundInsert(text: String) {
+        if (!dockedForegroundChirpActive()) return
+        dockedForegroundDraft.append(text)
+        pendingLauncherCommand = null
+        pendingLauncherActions = emptyList()
+        pendingLauncherStarters = emptyList()
+        pendingLauncherResult = null
+        launcherAgenticStatus = null
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun mirrorDockedForegroundBackspace() {
+        if (!dockedForegroundChirpActive()) return
+        if (dockedForegroundDraft.isNotEmpty()) dockedForegroundDraft.deleteCharAt(dockedForegroundDraft.length - 1)
+        pendingLauncherCommand = null
+        pendingLauncherActions = emptyList()
+        pendingLauncherStarters = emptyList()
+        pendingLauncherResult = null
+        launcherAgenticStatus = null
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun insertDockedForegroundText(text: String) {
+        if (text.isEmpty()) return
+        text.forEach { ch ->
+            val payload = if (ch == '\n') InputInjectionService.KEY_ENTER else ch.toString()
+            injectToForegroundApp(payload)
+            if (ch != '\n') dockedForegroundDraft.append(ch) else dockedForegroundDraft.append('\n')
+        }
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun clearDockedForegroundDraft(localOnly: Boolean = false) {
+        if (!localOnly) repeat(dockedForegroundDraft.length) { injectToForegroundApp(InputInjectionService.KEY_BACKSPACE) }
+        dockedForegroundDraft.clear()
+        pendingLauncherCommand = null
+        pendingLauncherActions = emptyList()
+        pendingLauncherStarters = emptyList()
+        pendingLauncherResult = null
+        launcherAgenticStatus = null
+        updateDockedForegroundChirpStrip()
+    }
+
+    private fun replaceDockedForegroundDraft(text: String) {
+        clearDockedForegroundDraft()
+        insertDockedForegroundText(text)
     }
 
     private fun injectToForegroundApp(payload: String) {
@@ -18085,11 +18314,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 ))
             }
         }
-        // Inline Brave web results — the launcher is the search page. Ranked after everything
-        // local (apps, people, events win), tap opens the page in the in-launcher sheet.
-        // When a rich answer card is showing it IS the answer — web rows would be noise.
+        // Google fallback rows — only when NO rich representation exists for this query.
+        // A rich card (Brave) or sports card (ESPN) IS the answer; anything else is noise.
+        // Exception: a definition card is context, not the destination — a bare word like
+        // "serendipity" keeps its web results below the card.
         // A command intent suppresses them entirely: "play jazz" wants music, not links.
-        if (braveWebQuery == q && searchRichAnswer() == null && !commandIntent) results.addAll(braveWebResults)
+        val richCard = searchRichAnswer()
+        val richIsTheAnswer = richCard != null && richCard.vertical != "definitions"
+        if (webFallbackQuery == q && !richIsTheAnswer && searchSportsCard() == null && !commandIntent) {
+            results.addAll(webFallbackResults)
+        }
         // A typed URL ("theverge.com") is an unambiguous intent — rank opening the site itself
         // first, so GO fires it directly. Tap = in-launcher sheet, long-press = full browser.
         InAppGoogleSearchEngine.urlFromQuery(q)?.let { url ->
@@ -18646,11 +18880,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val search = InAppGoogleSearchEngine.stripWebVerb(rawQuery).ifBlank { return }
         // Typed a URL → open the site itself, not a web search about it.
         InAppGoogleSearchEngine.urlFromQuery(search)?.let { openUrlDirectly(it); return }
-        // Brave connected → Brave is the search engine, sheet included.
-        if (BraveSearchApi.isConfigured(prefs())) {
-            openUrlDirectly("https://search.brave.com/search?q=${Uri.encode(search)}")
-            return
-        }
         val toolbar = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.baseHi else activeNeuTokens.base
         val nav = if (activeNeuTokens.mode == NeuMode.LIGHT) activeNeuTokens.base else activeNeuTokens.baseLo
         runCatching {
