@@ -98,12 +98,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // hung. Capture with:  adb logcat -c ; <reproduce> ; adb logcat -d -s TeclasPerf:D
     // Flip PERF_LOG to false to silence it once the culprit is found.
     private var perfLastNanos = 0L
+    private var perfOverlay: TextView? = null
     private fun plog(where: String) {
         if (!PERF_LOG) return
         val now = System.nanoTime()
         val dt = if (perfLastNanos == 0L) 0L else (now - perfLastNanos) / 1_000_000
         perfLastNanos = now
         android.util.Log.d("TeclasPerf", "$where  +${dt}ms")
+        // On-screen readout (Vivo/FuntouchOS hides third-party logcat, so surface it in the window):
+        // whenever a step takes a visible slice of time, show the WORST step so the last thing on
+        // screen before a freeze names the culprit. Cheap; runs only on the (main-thread) plog path.
+        if (dt >= 60L) perfOverlay?.let { ov ->
+            ov.text = "⏱ $where  +${dt}ms"
+            ov.visibility = View.VISIBLE
+        }
     }
 
     private fun recordSelfCaret() {
@@ -381,6 +389,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         return android.widget.FrameLayout(this).apply {
             addView(deck, deckParams)
+            // Diagnostic on-screen readout of the slowest keystroke step (Vivo hides logcat).
+            if (PERF_LOG) {
+                perfOverlay = TextView(this@TeclasImeService).apply {
+                    textSize = 11f
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setBackgroundColor(0xCC000000.toInt())
+                    setPadding(dp(6), dp(2), dp(6), dp(2))
+                    visibility = View.GONE
+                }
+                addView(perfOverlay, android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.START))
+            }
         }.also {
             imeRoot = it
             // Key previews render inside this window (one reused view), never as per-press popups.
