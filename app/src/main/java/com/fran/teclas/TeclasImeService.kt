@@ -694,8 +694,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     teclasLongPressFired = false
                     v.background = pressedBg
                     keyHaptic(label)
-                    keyPreview.show(v, label)
-                    v.animate().translationY(dp(4).toFloat()).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                    // Instant press nudge — no ViewPropertyAnimator. Starting two 35ms animators on
+                    // every key down/up flooded the main thread's animation phase during fast typing.
+                    v.translationY = dp(4).toFloat()
                     if (label == "teclas") {
                         val runnable = Runnable {
                             teclasLongPressFired = true
@@ -755,9 +756,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 MotionEvent.ACTION_UP -> {
                     v.background = idleBg
-                    keyPreview.dismiss()
                     seemeReleaseHaptic(v)
-                    v.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                    v.translationY = 0f
                     cancelTeclasLongPress()
                     if (teclasLongPressFired) {
                         teclasLongPressFired = false
@@ -777,8 +777,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     v.background = idleBg
-                    keyPreview.dismiss()
-                    v.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                    v.translationY = 0f
                     cancelTeclasLongPress()
                     teclasLongPressFired = false
                     if (label == "back") stopDeleteRepeat(clearFired = true)
@@ -1220,6 +1219,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val gen = ++predictGeneration
             // runCatching: a debounce that fires after onDestroy would hit a shut-down executor.
             runCatching { predictExecutor.execute {
+                // A newer keystroke already superseded this one — skip the dictionary work entirely
+                // so a fast burst can't back the worker thread up with stale computations.
+                if (gen != predictGeneration) return@execute
                 val word = before.takeLast(48).takeLastWhile { it.isLetter() }
                 val prev = previousWordOf(before)
                 val base = predictionCore.computeSuggestions(word, prev)
