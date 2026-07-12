@@ -81,7 +81,27 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val shadowAfter = StringBuilder()
     private var shadowCaret = 0
     private var shadowValid = false
-    private val shadowWindow = 1024
+    // Reads never look back more than ~200 chars (polishAvailable is the deepest), so seeding a
+    // full 1KB on each resync was 4x more cross-process payload than anything ever consumes.
+    private val shadowWindow = 256
+    // Ring of the caret positions our own edits just moved through. onUpdateSelection callbacks are
+    // async and arrive *after* we've already advanced the caret for the next keystroke(s), so during
+    // a fast burst each stale callback reports a position behind shadowCaret and used to trigger a
+    // full reseed (two getText* IPC round-trips) on EVERY keystroke. Recognizing a stale position as
+    // "one of our own recent edits" lets us keep the already-correct mirror instead of re-reading it.
+    private val selfCaretRing = IntArray(32)
+    private var selfCaretIdx = 0
+
+    private fun recordSelfCaret() {
+        selfCaretRing[selfCaretIdx % selfCaretRing.size] = shadowCaret
+        selfCaretIdx++
+    }
+
+    private fun caretIsRecentlyOurs(caret: Int): Boolean {
+        val n = minOf(selfCaretIdx, selfCaretRing.size)
+        for (i in 0 until n) if (selfCaretRing[i] == caret) return true
+        return false
+    }
 
     private fun seedShadow(caret: Int) {
         val ic = currentInputConnection
@@ -92,6 +112,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         shadowAfter.setLength(0); shadowAfter.append(after)
         shadowCaret = caret.coerceAtLeast(0)
         shadowValid = true
+        recordSelfCaret()
     }
 
     private fun invalidateShadow() { shadowValid = false }
@@ -100,8 +121,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (!shadowValid) return
         shadowBefore.append(text)
         shadowCaret += text.length
-        // Keep only a working window near the caret; reads never look back more than ~100 chars.
+        // Keep only a working window near the caret; reads never look back more than ~200 chars.
         if (shadowBefore.length > shadowWindow * 2) shadowBefore.delete(0, shadowBefore.length - shadowWindow)
+        recordSelfCaret()
     }
 
     private fun shadowOnDeleteBefore(count: Int) {
@@ -109,6 +131,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val d = count.coerceAtMost(shadowBefore.length)
         shadowBefore.setLength(shadowBefore.length - d)
         shadowCaret -= d
+        recordSelfCaret()
     }
 
     private fun shadowBeforeCursor(count: Int): String =
@@ -451,7 +474,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // app's own edit) — reseed from the editor. This runs off the keystroke hot path.
         if (newSelStart != newSelEnd) {
             invalidateShadow()
-        } else if (!(shadowValid && newSelStart == shadowCaret)) {
+        } else if (shadowValid && newSelStart == shadowCaret) {
+            // Mirror already at the true caret — nothing to do, no IPC.
+        } else if (shadowValid && newSelStart < shadowCaret && caretIsRecentlyOurs(newSelStart)) {
+            // A belated callback for one of our own just-committed edits, arriving while we've
+            // already advanced. The mirror is ahead and correct — don't pay a reseed for a stale
+            // event. This is what stops fast typing from doing two getText* IPC calls per keystroke.
+        } else {
             seedShadow(newSelStart)
         }
         if (!isLauncherEditorActive()) scheduleSuggestions()
@@ -694,8 +723,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     teclasLongPressFired = false
                     v.background = pressedBg
                     keyHaptic(label)
-                    keyPreview.show(v, label)
-                    v.animate().translationY(dp(4).toFloat()).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                    // Instant press nudge — no ViewPropertyAnimator. Starting two 35ms animators on
+                    // every key down/up flooded the main thread's animation phase during fast typing.
+                    v.translationY = dp(4).toFloat()
                     if (label == "teclas") {
                         val runnable = Runnable {
                             teclasLongPressFired = true
@@ -755,9 +785,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 MotionEvent.ACTION_UP -> {
                     v.background = idleBg
-                    keyPreview.dismiss()
                     seemeReleaseHaptic(v)
-                    v.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                    v.translationY = 0f
                     cancelTeclasLongPress()
                     if (teclasLongPressFired) {
                         teclasLongPressFired = false
@@ -777,8 +806,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     v.background = idleBg
-                    keyPreview.dismiss()
-                    v.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(35L).start()
+                    v.translationY = 0f
                     cancelTeclasLongPress()
                     teclasLongPressFired = false
                     if (label == "back") stopDeleteRepeat(clearFired = true)
@@ -969,13 +997,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun captureKeyBounds() {
-        keyBounds.clear()
+        val fresh = linkedMapOf<String, Rect>()
         val loc = IntArray(2)
         keyViews.forEach { (label, view) ->
             if (view.width <= 0 || view.height <= 0) return@forEach
             view.getLocationOnScreen(loc)
-            keyBounds[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
+            fresh[label] = Rect(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
         }
+        // This runs after every layout pass, and layout passes happen per keystroke (the strip's
+        // setText). When nothing moved, feeding identical bounds downstream made the glide
+        // classifier rebuild its full-dictionary pruner on the main thread on every key press —
+        // steadily worsening jank/GC as you typed. Skip all of it when the keys haven't moved.
+        if (fresh == keyBounds) return
+        keyBounds.clear()
+        keyBounds.putAll(fresh)
         spatialScorer.setKeys(keyBounds)
         updateGlideLayout()
     }
@@ -1079,7 +1114,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     hasLatentLanguages = latent
                     latentLanguageActive = false
                     predictionEngine = enginePrimary
-                    android.util.Log.d("TeclasGlide", "classifier loaded words=${words.size}")
                     updateGlideLayout()
                 }
             } catch (t: Throwable) {
@@ -1104,7 +1138,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     setDictionary(glideWords, glideFreqs)
                     load()
                 }
-                android.util.Log.d("NeuralSwipe", "IME neural engine ready=${neural.isReady}")
                 handler.post {
                     neuralGlide = neural
                     hybridDecoder = com.fran.teclas.keyboard.neural.HybridGlideDecoder(neural)
@@ -1213,6 +1246,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val gen = ++predictGeneration
             // runCatching: a debounce that fires after onDestroy would hit a shut-down executor.
             runCatching { predictExecutor.execute {
+                // A newer keystroke already superseded this one — skip the dictionary work entirely
+                // so a fast burst can't back the worker thread up with stale computations.
+                if (gen != predictGeneration) return@execute
                 val word = before.takeLast(48).takeLastWhile { it.isLetter() }
                 val prev = previousWordOf(before)
                 val base = predictionCore.computeSuggestions(word, prev)
@@ -2979,7 +3015,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     if (!tracking && (abs(ev.rawX - startRawX) > glideActivationSlop || abs(ev.rawY - startRawY) > glideActivationSlop)) {
                         tracking = true
                         if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
-                        android.util.Log.d("TeclasGlide", "glide start keyBounds=${keyBounds.size} clfReady=${glideClassifier != null}")
                         parent?.requestDisallowInterceptTouchEvent(true)
                         keyAtPoint(startRawX, startRawY, letterOnly = true)?.let { traced.add(it) }
                         trailLocal.add(startRawX - screenX to startRawY - screenY)
@@ -3047,8 +3082,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     traced.clear()
                     glidePersisting = trailLocal.size > 1
                     invalidate()
-                    android.util.Log.d("TeclasGlide", "UP pkg=$currentEditorPackage clfReady=${clf != null} " +
-                        "enoughPts=${clf?.hasEnoughPoints} traced=${tracedKeys.size} quickDel=$quickLeftDelete")
                     if (quickLeftDelete) {
                         keyHaptic("back"); deleteWord(); clf?.clear(); fadeGlideTrail(); return true
                     }
@@ -3070,7 +3103,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                             val statistical: suspend () -> List<String> = {
                                 withContext(kotlinx.coroutines.Dispatchers.Default) {
                                     try { clf.getSuggestions(6, contextBoost) }
-                                    catch (e: Throwable) { android.util.Log.e("TeclasGlide", "decode failed", e); emptyList() }
+                                    catch (e: Throwable) { emptyList() }
                                 }
                             }
                             val res = if (hybrid != null) {
@@ -3085,7 +3118,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                             }
                             runCatching { clf.clear() }
                             val results = languagePreferredOrder(res.words)
-                            android.util.Log.d("TeclasGlide", "hybrid=${results.size} top=${results.firstOrNull()} src=${res.source} agreed=${res.agreed}")
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) haptics().glideCommit()
                                 val top = glideCore.rerank(results)

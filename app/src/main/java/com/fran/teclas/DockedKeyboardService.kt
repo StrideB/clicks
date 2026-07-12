@@ -95,7 +95,7 @@ class DockedKeyboardService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM
-            y = dockedOverlayBottomLift()
+            y = DockedKeyboardMetrics.overlayBottomLiftPx(this@DockedKeyboardService)
         }
         windowManager?.addView(deck, lp)
         overlayParams = lp
@@ -401,8 +401,6 @@ class DockedKeyboardService : Service() {
 
     private fun keyboardTopPadding() = dp(4)
     private fun keyboardBottomPadding() = dp(2)
-    private fun dockedOverlayBottomLift() = dp(40)
-
     private fun keyTextSize(label: String): Float {
         val size = KeyboardSettings.keyboardSize(this)
         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
