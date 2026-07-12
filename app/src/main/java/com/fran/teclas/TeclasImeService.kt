@@ -935,7 +935,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             handler.postDelayed(r, delayMs)
         }
 
-        private fun cancelLongPress() {
+        private fun cancelKeyLongPress() {
             longPressRunnable?.let { handler.removeCallbacks(it) }
             longPressRunnable = null
             stopAgenticHapticRamp()
@@ -975,7 +975,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     val lbl = pressedLabel ?: return true
                     if ((lbl == "teclas" || lbl == "enter" || lbl == "space" || lbl == "123" || lbl == "abc") &&
                         (abs(event.rawX - downRawX) > touchSlopPx || abs(event.rawY - downRawY) > touchSlopPx)) {
-                        cancelLongPress()
+                        cancelKeyLongPress()
                     }
                     // Space-swipe cursor control: drag left/right on the space bar to move the caret.
                     if (lbl == "space") {
@@ -996,7 +996,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     pressedLabel = null
                     invalidate()
                     seemeReleaseHaptic(this)
-                    cancelLongPress()
+                    cancelKeyLongPress()
                     if (longPressFired) { longPressFired = false; return true }
                     if (lbl == "space" && spaceCursorMoved) { spaceCursorMoved = false; return true }
                     if (lbl == "back") {
@@ -1013,7 +1013,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 MotionEvent.ACTION_CANCEL -> {
                     pressedLabel = null
                     invalidate()
-                    cancelLongPress()
+                    cancelKeyLongPress()
                     longPressFired = false
                     stopDeleteRepeat(clearFired = true)
                     return true
