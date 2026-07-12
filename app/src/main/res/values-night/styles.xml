@@ -1,6 +1,8 @@
 <resources>
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
+        <!-- Brand accent (Cursor Violet) drives framework accent surfaces. -->
+        <item name="android:colorAccent">@color/cursor_violet</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
         <item name="android:navigationBarColor">@color/launcher_bg</item>

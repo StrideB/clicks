@@ -1,3 +1,15 @@
 <resources>
     <color name="launcher_bg">#0D0E11</color>
+
+    <!-- Teclas brand tokens. Brand colors are absolute, so these match values/colors.xml
+         exactly; only launcher_bg differs by theme. -->
+    <color name="brand_ink">#0B0D12</color>
+    <color name="brand_paper">#F4F1EA</color>
+    <color name="cursor_violet">#C9A7FF</color>
+    <color name="glass_hi">#20232A</color>
+    <color name="glass_lo">#14161B</color>
+    <color name="signal_play">#1DB954</color>
+    <color name="signal_message">#64B5F6</color>
+    <color name="signal_capture">#F6C453</color>
+    <color name="signal_route">#FF8A65</color>
 </resources>
