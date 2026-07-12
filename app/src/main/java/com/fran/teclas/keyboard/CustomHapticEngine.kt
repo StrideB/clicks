@@ -67,15 +67,31 @@ class CustomHapticEngine(context: Context) {
                 else -> VibrationEffect.Composition.PRIMITIVE_TICK
             }
             runCatching {
-                v.vibrate(
-                    VibrationEffect.startComposition()
-                        .addPrimitive(primitive, amplitude())
-                        .compose()
-                )
+                v.vibrate(tapEffect(primitive, amplitude()))
             }.onFailure { fallback(label) }
         } else {
             fallback(label)
         }
+    }
+
+    // The per-tap composition is identical between keystrokes at a given intensity; composing it
+    // fresh on every key press allocated on the hot path for nothing. Cache the last one and only
+    // rebuild when the primitive or (quantized) amplitude actually changes.
+    private var cachedTapPrimitive = -1
+    private var cachedTapScale = -1f
+    private var cachedTapEffect: VibrationEffect? = null
+
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
+    private fun tapEffect(primitive: Int, scale: Float): VibrationEffect {
+        val q = (scale * 100).toInt() / 100f
+        cachedTapEffect?.let { if (cachedTapPrimitive == primitive && cachedTapScale == q) return it }
+        val effect = VibrationEffect.startComposition()
+            .addPrimitive(primitive, q)
+            .compose()
+        cachedTapPrimitive = primitive
+        cachedTapScale = q
+        cachedTapEffect = effect
+        return effect
     }
 
     /** Firm click the instant a swipe crosses the slop threshold into glide mode. */

@@ -45,6 +45,10 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
     }
 
     fun setDrawnPrimaryLabel(label: String?, color: Int, textSizePx: Float, typeface: Typeface?) {
+        // Chrome refresh runs after every shift/auto-cap flip; skipping identical values keeps an
+        // unchanged key from invalidating on each space.
+        if (primaryLabel == label && primaryColor == color &&
+            primaryTextSizePx == textSizePx && primaryTypeface == typeface) return
         primaryLabel = label
         primaryColor = color
         primaryTextSizePx = textSizePx
@@ -61,11 +65,19 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         extraBottomInsetPx: Int = 0,
         engravedSymbols: Boolean = false
     ) {
-        labelVerticalBias = labelBias.coerceIn(0.28f, 0.62f)
-        symbolVerticalBias = symbolBias.coerceIn(0.04f, 0.36f)
-        primaryMaxFaceScale = labelMaxScale.coerceIn(0.36f, 0.68f)
-        symbolFaceScale = symbolScale.coerceIn(0.08f, 0.22f)
-        extraBottomFaceInset = extraBottomInsetPx.toFloat().coerceAtLeast(0f)
+        val newLabelBias = labelBias.coerceIn(0.28f, 0.62f)
+        val newSymbolBias = symbolBias.coerceIn(0.04f, 0.36f)
+        val newMaxScale = labelMaxScale.coerceIn(0.36f, 0.68f)
+        val newSymbolScale = symbolScale.coerceIn(0.08f, 0.22f)
+        val newBottomInset = extraBottomInsetPx.toFloat().coerceAtLeast(0f)
+        if (labelVerticalBias == newLabelBias && symbolVerticalBias == newSymbolBias &&
+            primaryMaxFaceScale == newMaxScale && symbolFaceScale == newSymbolScale &&
+            extraBottomFaceInset == newBottomInset && engraveSymbolHint == engravedSymbols) return
+        labelVerticalBias = newLabelBias
+        symbolVerticalBias = newSymbolBias
+        primaryMaxFaceScale = newMaxScale
+        symbolFaceScale = newSymbolScale
+        extraBottomFaceInset = newBottomInset
         engraveSymbolHint = engravedSymbols
         invalidate()
     }

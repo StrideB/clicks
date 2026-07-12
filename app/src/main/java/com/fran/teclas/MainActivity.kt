@@ -502,10 +502,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var hapticEngine: CustomHapticEngine
     private lateinit var spatialScorer: SpatialScorer
     private lateinit var keyPreviewManager: KeyPreviewManager
-    private lateinit var predictionEngine: PredictionEngine
+    // @Volatile: read by the background prediction thread (and the SMS-seeding IO callback writes
+    // it); PredictionEngine is immutable after construction, so safe publication is all we need.
+    @Volatile private var predictionEngine: PredictionEngine = PredictionEngine(emptyMap())
     // Parity with the IME: primary-language engine + latent flags drive languagePreferredOrder so a
     // swipe on the launcher keyboard also prefers the language you're writing (no English->Spanish).
-    private var predictionEnginePrimary: PredictionEngine = PredictionEngine(emptyMap())
+    @Volatile private var predictionEnginePrimary: PredictionEngine = PredictionEngine(emptyMap())
     private var hasLatentLanguages = false
     private var latentLanguageActive = false
     private lateinit var ngramRepo: NgramRepository
@@ -517,6 +519,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var weatherAmbientView: WeatherAmbientView? = null
     private var weatherDripView: WeatherDripView? = null
     private var homeWallpaperDrawable: Drawable? = null
+    private var homeWallpaperSourceSig: String? = null
     private var innerWallpaperImageView: ImageView? = null
     private var wallpaperMotionController: LiveWallpaperMotionController? = null
     private var wallpaperParallaxX = 0f
@@ -682,6 +685,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetKeyboardHidden = loadWidgetKeyboardHiddenForCurrentPosture()
         themeMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
         homeWallpaperDrawable = loadHomeWallpaperDrawable()
+        homeWallpaperSourceSig = deviceWallpaperSignature()   // so the first onResume can skip the re-decode
         applyTheme()
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
@@ -753,7 +757,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spatialScorer.importState(prefs().getString(TOUCH_MODEL_PREF, "") ?: "")
         keyPreviewManager = KeyPreviewManager(this)
         ngramRepo = NgramRepository(this)
-        predictionEngine = PredictionEngine(emptyMap())
         flickDetector = FlickDetector()
         predictionOverlay = PredictionOverlayManager(this)
         liveRouter = LivePredictionRouter(
@@ -891,10 +894,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
         // Reload when we're mirroring the device wallpaper (no launcher-picked override), so a
-        // wallpaper the user changes device-side shows up here on the next resume.
+        // wallpaper the user changes device-side shows up here on the next resume. Compare the
+        // wallpaper ids first: launchers resume on every home press, and unconditionally
+        // re-decoding the image + rebuilding the whole view tree each time was a major heat source.
         if (!useSystemWallpaperOnHome() && (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive() || activeHomeWallpaperUri() == null)) {
-            homeWallpaperDrawable = loadHomeWallpaperDrawable()
-            if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
+            val sig = deviceWallpaperSignature()
+            if (sig != homeWallpaperSourceSig || homeWallpaperDrawable == null) {
+                homeWallpaperSourceSig = sig
+                homeWallpaperDrawable = loadHomeWallpaperDrawable()
+                if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
+            }
         }
         ensureBillingConnected()
         val now = System.currentTimeMillis()
@@ -916,6 +925,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         // Resume the music progress tick paused in onPause (no-op when the bar isn't showing).
         musicProgressRunnable?.let { r -> musicProgressHandler?.let { h -> h.removeCallbacks(r); h.post(r) } }
+        // Re-arm the context-dock check paused in onPause; it runs one cheap signature compare
+        // now and then re-schedules itself every 60 s.
+        contextDockRefreshRunnable?.let { handler.removeCallbacks(it); handler.post(it) }
         // Self-heal an empty Spotify library (e.g. connected in a previous session but never loaded).
         if (::spotifyAuth.isInitialized && spotifyAuth.isConnected &&
             musicPaneHost.spotifyCachedPlaylists.isEmpty() && musicPaneHost.spotifyCachedLikedSongs.isEmpty() && musicPaneHost.spotifyCachedRecent.isEmpty()) {
@@ -929,6 +941,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             renderRibbon()
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
+            refreshDockMusicNotes()   // re-arm the bounded notes burst on return to home
             refreshWeather(force = false)
         }
     }
@@ -947,9 +960,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         parallaxEngine?.stop()
         wallpaperMotionController?.stop()
         widgetCoachAnimator?.cancel()
-        // Halt periodic work while another app is in front: the 1 Hz music-progress tick and the
-        // 45-minute brief refresh both resume in onResume; nothing needs them while backgrounded.
+        // Halt periodic work while another app is in front: the 1 Hz music-progress tick, the
+        // 60 s context-dock check and the 45-minute brief refresh all resume in onResume;
+        // nothing needs them while backgrounded.
         musicProgressRunnable?.let { musicProgressHandler?.removeCallbacks(it) }
+        contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
             prefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
@@ -974,6 +989,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaUiScope.cancel()
         neuralGlideV2?.close()
         spellChecker?.close()
+        runCatching { launcherPredictExecutor.shutdownNow() }
         handler.removeCallbacksAndMessages(null)
         billingClient?.endConnection()
         billingClient = null
@@ -1523,6 +1539,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
         root.post { captureKeyBounds() }
+        // Key previews render inside our own window (one reused view) instead of a popup window.
+        (findViewById<View>(android.R.id.content) as? FrameLayout)?.let { keyPreviewManager.attachHost(it) }
     }
 
     // Typing display — lives with whichever keyboard placement is active. Shows typed
@@ -2216,13 +2234,43 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (previous == KEYBOARD_PLACEMENT_DOCKED) syncVivoDockedExperiment()
     }
 
+    /** Decode a wallpaper source at screen-fill size instead of full camera resolution. A 4-12 MP
+     *  image decoded as-is becomes a texture several times larger than the display that then gets
+     *  resampled on every parallax tick and re-blurred by the glass layers — pure GPU heat.
+     *  [open] must return a fresh stream on each call (bounds pass + pixel pass). */
+    private fun decodeWallpaperSampled(open: () -> java.io.InputStream?): android.graphics.Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        // Bounds-only pass: decodeStream returns null here by design, it only fills outWidth/Height.
+        (open() ?: return null).use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        val dm = resources.displayMetrics
+        // Size for the current zoom + the 1.08 motion boost (plus a little slack); the zoom
+        // slider nulls homeWallpaperDrawable on change, so a new zoom always re-decodes.
+        val zoom = innerWallpaperZoom() * (if (liveWallpaperMotionEnabled()) 1.08f else 1f)
+        val target = (maxOf(dm.widthPixels, dm.heightPixels) * zoom * 1.15f).toInt().coerceAtLeast(1)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= target) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        return open()?.use { BitmapFactory.decodeStream(it, null, opts) }
+    }
+
+    /** Cheap identity of the current wallpaper sources, so resume can skip the decode + render
+     *  when nothing changed. Wallpaper ids bump whenever the device wallpaper is replaced. */
+    private fun deviceWallpaperSignature(): String {
+        val uri = activeHomeWallpaperUri()?.toString().orEmpty()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return "$uri|legacy"
+        val manager = WallpaperManager.getInstance(this)
+        val sys = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_SYSTEM) }.getOrDefault(-1)
+        val lock = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_LOCK) }.getOrDefault(-1)
+        return "$uri|$sys|$lock|${useLockscreenWallpaperOnHome()}"
+    }
+
     private fun loadHomeWallpaperDrawable(): Drawable? {
         normalizeInnerWallpaperTransform()
         val selectedDrawable = activeHomeWallpaperUri()?.let { uri ->
             runCatching {
-                contentResolver.openInputStream(uri)?.use { input ->
-                    BitmapFactory.decodeStream(input)?.let { bitmap -> BitmapDrawable(resources, bitmap) }
-                }
+                decodeWallpaperSampled { contentResolver.openInputStream(uri) }
+                    ?.let { bitmap -> BitmapDrawable(resources, bitmap) }
             }.onFailure {
                 android.util.Log.w("TeclasWallpaper", "Selected wallpaper load failed", it)
             }.getOrNull()
@@ -2233,10 +2281,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         fun fileDrawable(which: Int): Drawable? {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null
             return runCatching {
-                manager.getWallpaperFile(which)?.use { descriptor ->
-                    BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor)
-                        ?.let { bitmap -> BitmapDrawable(resources, bitmap) }
-                }
+                decodeWallpaperSampled {
+                    manager.getWallpaperFile(which)
+                        ?.let { android.os.ParcelFileDescriptor.AutoCloseInputStream(it) }
+                }?.let { bitmap -> BitmapDrawable(resources, bitmap) }
             }.onFailure {
                 android.util.Log.w("TeclasWallpaper", "Device wallpaper file load failed for $which", it)
             }.getOrNull()
@@ -2302,6 +2350,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    // Last matrix applied by applyInnerWallpaperMatrix, so the 30 Hz motion path can skip the
+    // full-screen invalidate when the computed transform hasn't visibly changed.
+    private var lastWallpaperMatrixImage: java.lang.ref.WeakReference<ImageView>? = null
+    private var lastWallpaperMatrixScale = 0f
+    private var lastWallpaperMatrixTx = Float.NaN
+    private var lastWallpaperMatrixTy = Float.NaN
+
     private fun applyInnerWallpaperMatrix(image: ImageView) {
         val drawable = image.drawable ?: return
         val viewW = image.width.toFloat()
@@ -2319,12 +2374,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
         val offsetX = (innerWallpaperOffsetX() + if (motionActive) wallpaperParallaxX * 0.26f else 0f).coerceIn(-1f, 1f)
         val offsetY = (innerWallpaperOffsetY() + if (motionActive) wallpaperParallaxY * 0.26f else 0f).coerceIn(-1f, 1f)
+        val tx = (viewW - scaledW) / 2f + maxX * offsetX
+        val ty = (viewH - scaledH) / 2f + maxY * offsetY
+        if (lastWallpaperMatrixImage?.get() === image && baseScale == lastWallpaperMatrixScale &&
+            abs(tx - lastWallpaperMatrixTx) < 0.4f && abs(ty - lastWallpaperMatrixTy) < 0.4f
+        ) return // sub-half-px shift: not visible, not worth re-rasterizing the wallpaper
+        lastWallpaperMatrixImage = java.lang.ref.WeakReference(image)
+        lastWallpaperMatrixScale = baseScale
+        lastWallpaperMatrixTx = tx
+        lastWallpaperMatrixTy = ty
         image.imageMatrix = Matrix().apply {
             postScale(baseScale, baseScale)
-            postTranslate(
-                (viewW - scaledW) / 2f + maxX * offsetX,
-                (viewH - scaledH) / 2f + maxY * offsetY
-            )
+            postTranslate(tx, ty)
         }
     }
 
@@ -6696,6 +6757,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun setLauncherBlurred(blurred: Boolean) {
         if (!::rootView.isInitialized || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        lastLauncherBlurStep = -1   // this path bypasses the step cache; don't let it go stale
         rootView.setRenderEffect(
             if (blurred) RenderEffect.createBlurEffect(dp(18).toFloat(), dp(18).toFloat(), Shader.TileMode.CLAMP)
             else null
@@ -8967,6 +9029,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return true
     }
 
+    private var lastLauncherBlurStep = -1
+
     /** Progressive blur+fade of the homescreen behind the left page (0 = clear, 1 = full glass). */
     private fun setLauncherBlurProgress(progress: Float) {
         if (!::rootView.isInitialized || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
@@ -8976,17 +9040,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
             rootView.setRenderEffect(null)
             rootView.alpha = 1f
+            lastLauncherBlurStep = -1
             return
         }
         val p = progress.coerceIn(0f, 1f)
         if (p <= 0.01f) {
             rootView.setRenderEffect(null)
             rootView.alpha = 1f
+            lastLauncherBlurStep = -1
             return
         }
-        val radius = (dp(22).toFloat() * p).coerceAtLeast(0.5f)
-        rootView.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
         rootView.alpha = 1f - p * 0.4f
+        // Quantize to whole-px steps: this runs per animation frame, and installing a brand-new
+        // full-screen blur effect each frame re-blurs the entire root even for sub-px changes.
+        val radius = (dp(22).toFloat() * p).coerceAtLeast(0.5f)
+        val step = (radius + 0.5f).toInt()
+        if (step == lastLauncherBlurStep) return
+        lastLauncherBlurStep = step
+        rootView.setRenderEffect(RenderEffect.createBlurEffect(radius, radius, Shader.TileMode.CLAMP))
     }
 
     // ---- Cards View: the homescreen lifts into a REAL card as the board is revealed behind it ----
@@ -12486,70 +12557,167 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Persist: after a glide / word commit there may be nothing new to show, but keep the last
         // strip content (esp. the swipe result) until the user clears the field or fresh ones arrive.
         if (shown.isEmpty() && emojiChips.isEmpty() && appColor == null && !canPolish && !fieldBlank && strip.childCount > 0) return
-        val wasEmpty = strip.childCount == 0
-        strip.removeAllViews()
-        strip.background = suggestionStripBackground(appColor, pro)
-        if (shown.isNotEmpty() || emojiChips.isNotEmpty() || canPolish) {
-            // Suggestions live under the persistent typing indicator. The typed text never moves
-            // into this row; it stays in typingStripView().
-        } else {
-            strip.addView(TextView(this).apply {
-                text = currentWordInCompose().ifBlank { launcherSuggestionText() }
+        renderLauncherTypingStrip(strip, shown, emojiChips, canPolish, appColor, pro)
+    }
+
+    // ── Typing-strip fast path (parity with the IME) ─────────────────────────
+    // The steady-state strip repaints on every keystroke; tearing down and re-inflating its views
+    // each time cost a measure/layout/alloc storm per key press. A fixed set of slot views is built
+    // ONCE and repaints are just setText/visibility flips. Rare states (polishing, agentic status,
+    // results, commands, actions, starters) keep the legacy rebuild path above.
+    private var launcherTypingRow: LinearLayout? = null
+    private var launcherStripFallback: TextView? = null
+    private val launcherStripSuggestionViews = ArrayList<TextView>(3)
+    private val launcherStripSuggestionDividers = ArrayList<View>(3)
+    private val launcherStripChipViews = ArrayList<TextView>(5)
+    private val launcherStripChipDividers = ArrayList<View>(5)
+    private var launcherStripPolish: TextView? = null
+    // Live data behind the slots; click listeners read these so they're bound once, not per repaint.
+    private var launcherStripShown: List<String> = emptyList()
+    private var launcherStripChipData: List<String> = emptyList()
+    // The strip well drawable is theme/app-color dependent but stable between keystrokes — cache it.
+    private var launcherStripBg: android.graphics.drawable.Drawable? = null
+    private var launcherStripBgColor: Int? = null
+    private var launcherStripBgPro = false
+    private var launcherStripBgTokens: NeuTokens? = null
+    private var launcherStripRowTokens: NeuTokens? = null
+
+    private fun launcherStripDivider(): View = View(this).apply {
+        setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000)
+    }
+
+    private fun ensureLauncherTypingRow(): LinearLayout {
+        launcherTypingRow?.let { return it }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        launcherStripFallback = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 13f
+            includeFontPadding = false
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            row.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+        repeat(3) { i ->
+            launcherStripSuggestionViews.add(TextView(this).apply {
                 gravity = Gravity.CENTER
-                textSize = 13f
+                textSize = 14.5f
                 includeFontPadding = false
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(activeNeuTokens.inkDim)
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-        }
-        if (shown.isNotEmpty()) {
-            val textColor = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
-            shown.forEachIndexed { i, word ->
-                strip.addView(TextView(this).apply {
-                    text = word
-                    gravity = Gravity.CENTER
-                    textSize = 14.5f
-                    includeFontPadding = false
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                    setTextColor(textColor)
-                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                    isClickable = true
-                    setOnClickListener { keyHaptic("space"); acceptSuggestion(word) }
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
-                if (i < shown.lastIndex || emojiChips.isNotEmpty() || canPolish) {
-                    strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
-                        LinearLayout.LayoutParams(dp(1), dp(16)))
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                isClickable = true
+                setOnClickListener {
+                    launcherStripShown.getOrNull(i)?.let { w -> keyHaptic("space"); acceptSuggestion(w) }
                 }
-            }
+                row.addView(this, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            })
+            launcherStripSuggestionDividers.add(launcherStripDivider().also {
+                row.addView(it, LinearLayout.LayoutParams(dp(1), dp(16)).apply { gravity = Gravity.CENTER_VERTICAL })
+            })
         }
-        emojiChips.forEachIndexed { i, emoji ->
-            strip.addView(TextView(this).apply {
-                text = emoji
+        repeat(5) { i ->
+            launcherStripChipViews.add(TextView(this).apply {
                 gravity = Gravity.CENTER
                 textSize = 18f
                 includeFontPadding = false
                 maxLines = 1
-                setTextColor(activeNeuTokens.ink)
                 setPadding(dp(10), 0, dp(10), 0)
                 isClickable = true
-                setOnClickListener { insertLauncherEmojiChip(emoji) }
-            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            if (i < emojiChips.lastIndex || canPolish) {
-                strip.addView(View(this).apply { setBackgroundColor((activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000) },
-                    LinearLayout.LayoutParams(dp(1), dp(16)))
-            }
+                setOnClickListener {
+                    launcherStripChipData.getOrNull(i)?.let { insertLauncherEmojiChip(it) }
+                }
+                row.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            })
+            launcherStripChipDividers.add(launcherStripDivider().also {
+                row.addView(it, LinearLayout.LayoutParams(dp(1), dp(16)).apply { gravity = Gravity.CENTER_VERTICAL })
+            })
         }
         // ✨ Polish the whole composed message (Pro + Gemini, 3+ words). Same sparkle as the IME.
-        if (canPolish) {
-            strip.addView(TextView(this).apply {
-                text = "✨"; gravity = Gravity.CENTER; textSize = 16f; includeFontPadding = false
-                background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
-                isClickable = true
-                setOnClickListener { keyHaptic("space"); polishLauncherField() }
-            }, LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
+        launcherStripPolish = TextView(this).apply {
+            text = "✨"; gravity = Gravity.CENTER; textSize = 16f; includeFontPadding = false
+            background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
+            isClickable = true
+            setOnClickListener { keyHaptic("space"); polishLauncherField() }
+            row.addView(this, LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
         }
+        launcherTypingRow = row
+        return row
+    }
+
+    private fun launcherStripWell(appColor: Int?, pro: Boolean): android.graphics.drawable.Drawable {
+        launcherStripBg?.let {
+            if (launcherStripBgColor == appColor && launcherStripBgPro == pro && launcherStripBgTokens === activeNeuTokens) return it
+        }
+        return suggestionStripBackground(appColor, pro).also {
+            launcherStripBg = it
+            launcherStripBgColor = appColor
+            launcherStripBgPro = pro
+            launcherStripBgTokens = activeNeuTokens
+        }
+    }
+
+    /** Repaint the steady-state strip in place. All views are recycled; only text/visibility move. */
+    private fun renderLauncherTypingStrip(
+        strip: LinearLayout,
+        shown: List<String>,
+        chips: List<String>,
+        canPolish: Boolean,
+        appColor: Int?,
+        pro: Boolean
+    ) {
+        val row = ensureLauncherTypingRow()
+        val wasEmpty = row.parent !== strip
+        if (wasEmpty) {
+            (row.parent as? ViewGroup)?.removeView(row)
+            strip.removeAllViews()
+            strip.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        launcherStripShown = shown
+        launcherStripChipData = chips
+        strip.background = launcherStripWell(appColor, pro)
+        // Dividers carry a theme-derived tint; refresh it only when the theme tokens actually swap.
+        if (launcherStripRowTokens !== activeNeuTokens) {
+            launcherStripRowTokens = activeNeuTokens
+            val dividerColor = (activeNeuTokens.inkFaint and 0x00FFFFFF) or 0x30000000
+            launcherStripSuggestionDividers.forEach { it.setBackgroundColor(dividerColor) }
+            launcherStripChipDividers.forEach { it.setBackgroundColor(dividerColor) }
+        }
+        val hasContent = shown.isNotEmpty() || chips.isNotEmpty() || canPolish
+        // Suggestions live under the persistent typing indicator. The typed text never moves into
+        // this row (it stays in typingStripView()); the dim echo only fills an otherwise-empty strip.
+        launcherStripFallback?.let { fb ->
+            fb.visibility = if (hasContent) View.GONE else View.VISIBLE
+            if (!hasContent) {
+                val echo = currentWordInCompose().ifBlank { launcherSuggestionText() }
+                if (!fb.text.contentEquals(echo)) fb.text = echo
+                if (fb.currentTextColor != activeNeuTokens.inkDim) fb.setTextColor(activeNeuTokens.inkDim)
+            }
+        }
+        val suggestionInk = appColor ?: if (pro) 0xFFCBB4FF.toInt() else activeNeuTokens.ink
+        for (i in 0 until 3) {
+            val v = launcherStripSuggestionViews[i]
+            val d = launcherStripSuggestionDividers[i]
+            val w = shown.getOrNull(i)
+            if (w == null) { v.visibility = View.GONE; d.visibility = View.GONE; continue }
+            v.visibility = View.VISIBLE
+            if (!v.text.contentEquals(w)) v.text = w
+            if (v.currentTextColor != suggestionInk) v.setTextColor(suggestionInk)
+            d.visibility = if (i < shown.lastIndex || chips.isNotEmpty() || canPolish) View.VISIBLE else View.GONE
+        }
+        for (i in 0 until 5) {
+            val v = launcherStripChipViews[i]
+            val d = launcherStripChipDividers[i]
+            val chip = chips.getOrNull(i)
+            if (chip == null) { v.visibility = View.GONE; d.visibility = View.GONE; continue }
+            v.visibility = View.VISIBLE
+            if (!v.text.contentEquals(chip)) v.text = chip
+            if (v.currentTextColor != activeNeuTokens.ink) v.setTextColor(activeNeuTokens.ink)
+            d.visibility = if (i < chips.lastIndex || canPolish) View.VISIBLE else View.GONE
+        }
+        launcherStripPolish?.visibility = if (canPolish) View.VISIBLE else View.GONE
         // Elegant slide-in when the strip goes from empty to showing content.
         if (wasEmpty) {
             strip.alpha = 0f
@@ -12901,15 +13069,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         liveRouter.onTextChanged(word)
         computeLauncherEmojiChips(word)
-        val prev = previousWordInCompose()
-        // Base strip (in-memory candidate computation) stays snappy at 80ms.
+        // Candidate computation runs on the prediction thread (parity with the IME): the debounce
+        // only coalesces bursts, and the same pass precomputes the on-space autocorrect decision so
+        // the space key applies a cached answer instead of a dictionary search inside the keystroke.
         val r = Runnable {
             lastSuggestWord = word
-            suggestions = predictionCore.computeSuggestions()   // shared candidate computation
-            updateSuggestionBar()
+            val w = predictionCore.currentWord()
+            val p = predictionCore.previousWord()
+            val gen = ++launcherPredictGeneration
+            runCatching { launcherPredictExecutor.execute {
+                val base = predictionCore.computeSuggestions(w, p)
+                val correction = if (w.length >= 2)
+                    autocorrectCore.computeCorrection(w, ngramRepo.cachedNextWords(p)) else null
+                handler.post {
+                    if (gen != launcherPredictGeneration) return@post   // user typed past this answer
+                    pendingLauncherCorrection = w to correction
+                    suggestions = base
+                    updateSuggestionBar()
+                }
+            } }
         }
         suggestDebounce = r
-        handler.postDelayed(r, 80)
+        handler.postDelayed(r, 40)
         // Spellchecker is a cross-process call — defer it to a slower cadence so it doesn't fire on
         // every keystroke during fast typing (its async result merges into the strip when it lands).
         val sc = Runnable { spellChecker?.getSuggestions(TextInfo(word), 5) }
@@ -12947,8 +13128,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // space) and the space handler adds the space, matching the previous behavior.
     private fun tryAutocorrect(live: Boolean = false) {
         if (live) return
-        autocorrectCore.correctBeforeCommit()
+        // Fast path: the prediction thread already decided this word's correction while it was
+        // being typed — apply the cached answer with zero dictionary work inside the keystroke.
+        val word = autocorrectCore.currentWord()
+        val pre = pendingLauncherCorrection
+        if (pre != null && pre.first == word) {
+            pre.second?.let { autocorrectCore.applyCorrection(word, it) }
+        } else {
+            autocorrectCore.correctBeforeCommit()
+        }
+        pendingLauncherCorrection = null
     }
+
+    // ── Background prediction pipeline (parity with the IME) ────────────────
+    // Suggestions and the space-bar correction decision compute here, never on the UI thread.
+    private val launcherPredictExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "launcher-predict").apply { priority = Thread.NORM_PRIORITY - 1 }
+    }
+    @Volatile private var launcherPredictGeneration = 0
+    private var pendingLauncherCorrection: Pair<String, String?>? = null   // main-thread only
 
     private var liveCorrectDebounce: Runnable? = null
 
@@ -13135,13 +13333,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 val clf = StatisticalGlideTypingClassifier()
                 clf.setWordData(adaptive.extendedWords, freqs)
+                // Engines index the dictionary in their constructor — build them here on IO,
+                // publish on Main (constructing them on the main thread stalled the first frame).
+                val engineUnion = PredictionEngine(freqs)
+                val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
                 // Make glide available immediately with the statistical classifier; the heavy neural
                 // ONNX load must not block it (that stalls glide for seconds on a real device).
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
                     wordlistFrequencies = freqs
-                    predictionEngine = PredictionEngine(freqs)
-                    predictionEnginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                    predictionEngine = engineUnion
+                    predictionEnginePrimary = enginePrimary
                     hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                     latentLanguageActive = false
                     updateGlideLayout()
@@ -16972,30 +17174,46 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshActive()
         }
 
+        // The notes used to re-invalidate every vsync for as long as music played — an unbounded
+        // 60 fps draw loop that kept the render pipeline (and the phone) hot through entire
+        // listening sessions. Same treatment as the weather views: animate a bounded burst on each
+        // activation (play/source change, return to home), then hold a static frame.
+        private var burstUntilMs = 0L
+
         fun refreshActive() {
             val active = target?.let { dockMusicNotesActive(it) } ?: false
             visibility = if (active) View.VISIBLE else View.GONE
             alpha = if (active) 1f else 0f
-            if (active) postInvalidateOnAnimation()
+            if (active) {
+                burstUntilMs = android.os.SystemClock.uptimeMillis() + DOCK_NOTES_BURST_MS
+                invalidate()
+            }
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             if (visibility != View.VISIBLE) return
+            val active = target?.let { dockMusicNotesActive(it) } ?: dockMusicNotesActive(musicTarget())
+            if (!active) { refreshActive(); return }
             val now = android.os.SystemClock.uptimeMillis()
+            val animating = now < burstUntilMs
+            // After the burst the notes freeze on a stable frame (keyed off the burst end).
+            val t = if (animating) now else burstUntilMs
             val w = width.toFloat().coerceAtLeast(1f)
             val h = height.toFloat().coerceAtLeast(1f)
             paint.textSize = h * 0.22f
             for (i in 0 until 3) {
-                val phase = ((now + i * 520L) % 1800L) / 1800f
+                val phase = ((t + i * 520L) % 1800L) / 1800f
                 val alpha = (kotlin.math.sin(phase * Math.PI).toFloat() * 0.58f).coerceIn(0f, 0.58f)
                 val x = w * (0.30f + i * 0.19f) + kotlin.math.sin((phase * 6.283f) + i).toFloat() * w * 0.055f
                 val y = h * (0.78f - phase * 0.70f)
                 paint.color = adjustAlpha(accent, alpha)
                 canvas.drawText(notes[i % notes.size].toString(), x, y, paint)
             }
-            val active = target?.let { dockMusicNotesActive(it) } ?: dockMusicNotesActive(musicTarget())
-            if (isShown && active) postInvalidateOnAnimation() else refreshActive()
+            // Media-session changes re-trigger refreshDockMusicNotes, but AudioManager-only
+            // sources (no session) have no callback — poll slowly while frozen so the notes
+            // still hide when that audio stops.
+            if (isShown) postInvalidateDelayed(if (animating) DOCK_NOTES_FRAME_MS else 2_500L)
         }
     }
 
@@ -22366,6 +22584,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val WEATHER_ANIMATION_BURST_MS = 6500L
         private const val WEATHER_AMBIENT_BURST_MS = 6500L
         private const val WEATHER_DRIP_BURST_MS = 6500L
+        private const val DOCK_NOTES_BURST_MS = 12_000L
+        private const val DOCK_NOTES_FRAME_MS = 33L // ~30 fps is plenty for bobbing glyphs
         private const val WIDGET_HOST_ID = 1407
         private const val WIDGET_BIND_REQUEST_CODE = 501
         private const val WIDGET_CONFIGURE_REQUEST_CODE = 502
