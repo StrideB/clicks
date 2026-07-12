@@ -16,6 +16,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # llama.cpp is a vendored local clone (gitignored), so it never exists on a fresh CI
+      # checkout — without this step CMake fails at add_subdirectory(llama.cpp). Pinned to a
+      # release tag so CI builds are reproducible; bump deliberately when updating the local clone.
+      - name: Vendor llama.cpp (pinned)
+        run: git clone --depth 1 --branch b9967 https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:

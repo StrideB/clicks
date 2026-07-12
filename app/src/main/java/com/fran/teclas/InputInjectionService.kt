@@ -31,6 +31,12 @@ class InputInjectionService : AccessibilityService() {
     private val endSessionRunnable = Runnable { endSearchSession() }
     private val prepareRetryRunnable = Runnable { retryPrepareField() }
 
+    // What we've typed into the user-focused field, tracked locally so we never re-read the app's
+    // placeholder (Telegram/WhatsApp "Message") and so fast keystrokes/deletes don't race the async
+    // ACTION_SET_TEXT read-modify-write. Reset when the target field changes.
+    private val focusedBuffer = StringBuilder()
+    private var focusedFieldKey: String? = null
+
     private val keystrokeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (!KeyboardSettings.isDocked(this@InputInjectionService)) return
@@ -56,6 +62,7 @@ class InputInjectionService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!KeyboardSettings.isDocked(this)) {
             focusedEditable = null
+            focusedFieldKey = null
             endSearchSession()
             DockedFreeform.externalAppInFront = false
             setDockedOverlayVisible(false)
@@ -179,26 +186,48 @@ class InputInjectionService : AccessibilityService() {
             return
         }
 
-        // Field the user focused themselves: append per keystroke.
+        // Field the user focused themselves. Track what we typed in a local buffer keyed to the
+        // field, so we never read (and re-append) the app's placeholder and deletes always clear.
         // Focus the field if it isn't already, so apps that search-as-you-type react to the input.
         if (!target.isFocused) {
             target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         }
-        target.refresh()   // fresh text + isShowingHintText before the read-modify-write
+        target.refresh()   // fresh text + isShowingHintText before we seed the buffer
         if (raw == KEY_ENTER && submitImeAction(target)) return
-        val before = target.editableText()
-        val next = when (raw) {
-            KEY_BACKSPACE -> if (before.isNotEmpty()) before.dropLast(1) else before
-            KEY_ENTER -> "$before\n"
-            else -> before + raw
+        val key = fieldFingerprint(target)
+        if (key != focusedFieldKey) {
+            // New field: seed the buffer from its real (placeholder-stripped) text once.
+            focusedFieldKey = key
+            focusedBuffer.setLength(0)
+            focusedBuffer.append(target.editableText())
         }
+        when (raw) {
+            KEY_BACKSPACE -> if (focusedBuffer.isNotEmpty()) focusedBuffer.deleteCharAt(focusedBuffer.length - 1)
+            KEY_ENTER -> focusedBuffer.append('\n')
+            else -> focusedBuffer.append(raw)
+        }
+        val next = focusedBuffer.toString()
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, next)
         }
         val success = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         if (!success && raw != KEY_BACKSPACE && raw != KEY_ENTER) {
             pasteText(target, raw)
+            focusedFieldKey = null   // paste path doesn't track cleanly — re-seed next keystroke
+            return
         }
+        // Keep the cursor at the end so the next character appends cleanly.
+        runCatching {
+            target.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, next.length)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, next.length)
+            })
+        }
+    }
+
+    private fun fieldFingerprint(node: AccessibilityNodeInfo): String {
+        val b = Rect(); node.getBoundsInScreen(b)
+        return "${node.packageName}|${node.viewIdResourceName ?: ""}|${b.left},${b.top},${b.right},${b.bottom}"
     }
 
     /** Fill the field that appeared after tapping search with the buffered characters. */
@@ -329,19 +358,21 @@ class InputInjectionService : AccessibilityService() {
     private fun AccessibilityNodeInfo.editableText(): String {
         // The field is empty and only showing its placeholder — treat as empty, so we don't append
         // to (or fail to delete) the hint text. This is what caused "Message" + typed char in apps
-        // like Telegram whose compose box exposes its placeholder as node.text.
+        // like Telegram/WhatsApp whose compose box exposes its placeholder as node.text.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isShowingHintText) return ""
         val value = text?.toString().orEmpty()
-        val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            hintText?.toString().orEmpty()
-        } else {
-            ""
-        }
         if (value.isBlank()) return ""
+        val hint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) hintText?.toString().orEmpty() else ""
+        val desc = contentDescription?.toString().orEmpty()
+        // Some apps set neither isShowingHintText nor hintText — the placeholder only appears as the
+        // node's text (or contentDescription). Match those against the app's own hint and a short list
+        // of well-known compose/search placeholders.
         if (hint.isNotBlank() && value.equals(hint, ignoreCase = true)) return ""
-        val lower = value.lowercase()
-        val looksLikeBrowserPlaceholder = lower.contains("search") &&
-            (lower.contains("google") || lower.contains("type") || lower.contains("url") || lower.contains("web"))
+        if (desc.isNotBlank() && value.equals(desc, ignoreCase = true)) return ""
+        val normalized = value.trim().trimEnd('.', '…', ' ').trim().lowercase()
+        if (normalized in PLACEHOLDER_TEXTS) return ""
+        val looksLikeBrowserPlaceholder = normalized.contains("search") &&
+            (normalized.contains("google") || normalized.contains("type") || normalized.contains("url") || normalized.contains("web"))
         return if (looksLikeBrowserPlaceholder) "" else value
     }
 
@@ -425,6 +456,12 @@ class InputInjectionService : AccessibilityService() {
         const val EXTRA_VISIBLE = "extra_visible"
         const val KEY_BACKSPACE = "__BACKSPACE__"
         const val KEY_ENTER = "__ENTER__"
+        // Placeholders some apps expose as the field's own text (no isShowingHintText / hintText),
+        // matched case-insensitively after trimming trailing punctuation. Treated as an empty field.
+        private val PLACEHOLDER_TEXTS = setOf(
+            "message", "type a message", "write a message", "send a message", "type message",
+            "your message", "message…", "search", "search messages", "type here", "aa"
+        )
         // How long to wait after tapping search for the app's field to appear before filling it.
         private const val SEARCH_OPEN_DELAY_MS = 450L
         // Idle gap after which a docked-typed search session ends (field returns to per-key edits).

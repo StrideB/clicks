@@ -26,6 +26,8 @@ class LiveWallpaperMotionController(
     private val angleChange = FloatArray(3)
     private var smoothX = 0f
     private var smoothY = 0f
+    private var sentX = Float.NaN
+    private var sentY = Float.NaN
     private var registered = false
 
     val isSupported: Boolean get() = rotationSensor != null
@@ -44,6 +46,8 @@ class LiveWallpaperMotionController(
         referenceMatrix = null
         smoothX = 0f
         smoothY = 0f
+        sentX = Float.NaN
+        sentY = Float.NaN
         onOffset(0f, 0f)
     }
 
@@ -69,6 +73,12 @@ class LiveWallpaperMotionController(
         smoothY += (targetY - smoothY) * 0.14f
 
         if (abs(smoothX) < 0.002f && abs(smoothY) < 0.002f) return
+        // Once the smoothing converges (device held steady), the offset stops changing — don't
+        // keep re-applying the same wallpaper matrix 30×/s; each call invalidates the full-screen
+        // wallpaper texture.
+        if (!sentX.isNaN() && abs(smoothX - sentX) < 0.0015f && abs(smoothY - sentY) < 0.0015f) return
+        sentX = smoothX
+        sentY = smoothY
         onOffset(smoothX, smoothY)
     }
 
