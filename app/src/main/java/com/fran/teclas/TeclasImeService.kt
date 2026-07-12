@@ -92,6 +92,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val selfCaretRing = IntArray(32)
     private var selfCaretIdx = 0
 
+    // ── Temporary keystroke-path instrumentation ───────────────────────────────────────────────
+    // Logs each hot-path step with the ms since the previous step, all under one tag. When the
+    // keyboard freezes, the LAST line printed (and any large "+Nms") pinpoints exactly which call
+    // hung. Capture with:  adb logcat -c ; <reproduce> ; adb logcat -d -s TeclasPerf:D
+    // Flip PERF_LOG to false to silence it once the culprit is found.
+    private var perfLastNanos = 0L
+    private fun plog(where: String) {
+        if (!PERF_LOG) return
+        val now = System.nanoTime()
+        val dt = if (perfLastNanos == 0L) 0L else (now - perfLastNanos) / 1_000_000
+        perfLastNanos = now
+        android.util.Log.d("TeclasPerf", "$where  +${dt}ms")
+    }
+
     private fun recordSelfCaret() {
         selfCaretRing[selfCaretIdx % selfCaretRing.size] = shadowCaret
         selfCaretIdx++
@@ -106,8 +120,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun seedShadow(caret: Int) {
         val ic = currentInputConnection
         if (ic == null) { shadowValid = false; return }
+        plog("seedShadow: getTextBeforeCursor IPC ->")
         val before = ic.getTextBeforeCursor(shadowWindow, 0)?.toString().orEmpty()
+        plog("seedShadow: getTextAfterCursor IPC ->")
         val after = ic.getTextAfterCursor(shadowWindow, 0)?.toString().orEmpty()
+        plog("seedShadow: IPC done")
         shadowBefore.setLength(0); shadowBefore.append(before)
         shadowAfter.setLength(0); shadowAfter.append(after)
         shadowCaret = caret.coerceAtLeast(0)
@@ -468,6 +485,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         candidatesEnd: Int
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        plog("onUpdateSelection old=$oldSelStart new=$newSelStart caret=$shadowCaret valid=$shadowValid")
         // Reconcile the shadow against the editor's ground-truth caret. A collapsed caret exactly
         // where our own edits left it → the mirror is still correct, keep it (no IPC). Anything else
         // — a range selection, or a caret that jumped somewhere we didn't drive (tap, autofill, the
@@ -801,7 +819,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         stopDeleteRepeat(clearFired = true)
                         if (repeated) return true
                     }
+                    plog("ACTION_UP -> resolveTapKey+handleKey")
                     handleKey(resolveTapKey(label, event.rawX, event.rawY))
+                    plog("handleKey returned")
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
@@ -900,12 +920,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             "." -> commitValue(".")
             else -> {
                 autocorrect.clearPending()
+                plog("letter: commitValue ->")
                 commitValue(if ((shifted || capsLock) && label.length == 1) label.uppercase() else label)
+                plog("letter: committed")
                 if (shifted && !capsLock && label.length == 1 && label[0].isLetter()) {
                     shifted = false
                     refreshKeyboardChrome()
+                    plog("letter: refreshKeyboardChrome done")
                 }
                 onTextChanged()
+                plog("letter: onTextChanged done")
             }
         }
     }
@@ -1240,6 +1264,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val r = Runnable {
             // Re-evaluate the active language every keystroke (not only on space) so mid-word
             // suggestions/corrections use the right dictionary while typing a secondary language.
+            plog("predict debounce fired")
             updateActiveLanguage()
             val before = shadowBeforeCursor(96)
             val fieldEmpty = before.isEmpty() && shadowAfterCursor(1).isEmpty()
@@ -1256,12 +1281,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev)) else null
                 handler.post {
                     if (gen != predictGeneration) return@post   // user typed past this answer
+                    plog("predict result -> updateStrip")
                     pendingCorrection = word to correction
                     suggestions = if (base.isEmpty()) {
                         // IME extra: notification quick-replies when the field is empty.
                         if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
                     } else base
                     updateStrip()
+                    plog("predict updateStrip done")
                 }
             } }
         }
@@ -1944,10 +1971,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 .trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
 
     private fun updateStrip() {
+        plog("updateStrip enter")
         val strip = suggestionStrip ?: return
         // Elevate command previews and working status into the elegant panel; it toggles the strip's
         // visibility. The strip is still populated below as the fallback surface when the panel idles.
         renderAgenticPanel()
+        plog("updateStrip: renderAgenticPanel done")
         // Legacy (rare) states rebuild the strip from scratch; the steady typing path below never
         // does — it recycles the fixed slot views in renderTypingStrip.
         val status = agenticStatus
@@ -3760,5 +3789,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Hot-path regexes, compiled once (these used to be re-compiled on every keystroke).
         private val WORD_RE = Regex("[A-Za-z]+")
         private val NON_LETTER_RE = Regex("[^\\p{L}]+")
+
+        // Temporary: keystroke-path timing to logcat (tag TeclasPerf) to localize the freeze.
+        private const val PERF_LOG = true
     }
 }
