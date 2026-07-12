@@ -312,6 +312,21 @@ class DockedKeyboardService : Service() {
     }
 
     private fun keyFaceBackground(label: String, pressed: Boolean): Drawable {
+        val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                theme,
+                label,
+                pressed = pressed,
+                darkMode = selectedNeuTokens().mode == NeuMode.DARK,
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) {
+                    if (pressed) brighten(goKeyColor()) else goKeyColor()
+                } else {
+                    KeyboardThemeDrawables.DEFAULT_ACCENT
+                }
+            )
+        }
         if (keyboardTheme() == KEYBOARD_THEME_SEEME) {
             return SeemeDrawables.key(label, pressed = pressed, density = resources.displayMetrics.density, goColor = if (pressed) brighten(goKeyColor()) else goKeyColor())
         }
@@ -338,6 +353,9 @@ class DockedKeyboardService : Service() {
 
     private fun deckBackground(): Drawable {
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.panel(this, theme, selectedNeuTokens().mode == NeuMode.DARK)
+        }
         if (theme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (theme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(16).toFloat(), NeuLevel.RAISED)
@@ -385,6 +403,7 @@ class DockedKeyboardService : Service() {
     private fun keyVerticalInset(): Int {
         val size = KeyboardSettings.keyboardSize(this)
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) return dp(8 + size * 4 / 100)
         return if (theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             dp(10 + size * 5 / 100)
         } else {
@@ -403,6 +422,21 @@ class DockedKeyboardService : Service() {
     private fun keyboardBottomPadding() = dp(2)
     private fun keyTextSize(label: String): Float {
         val size = KeyboardSettings.keyboardSize(this)
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
+            val base = when (label) {
+                "shift" -> 23f
+                "space" -> 18f
+                "123", "abc", "enter", "back", "." -> 13.5f
+                else -> 20f
+            }
+            val growth = when (label) {
+                "shift" -> 2f
+                "space" -> 2f
+                "123", "abc", "enter", "back", "." -> 1.4f
+                else -> 2.2f
+            }
+            return base + (size * growth / 100f)
+        }
         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
             val brushedBase = when (label) {
                 "shift", "." -> 22f
@@ -435,11 +469,19 @@ class DockedKeyboardService : Service() {
     }
 
     private fun goLegendColor(): Int =
-        if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
+            KeyboardThemeDrawables.textColor(keyboardVisualTheme(), "enter", selectedNeuTokens().mode == NeuMode.DARK)
+        } else if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
 
     private fun textColor(label: String): Int {
         if (label == "enter") return goLegendColor()
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return when (label) {
+                "shift", "back" -> KeyboardThemeDrawables.accent(theme, selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
+                else -> KeyboardThemeDrawables.textColor(theme, label, selectedNeuTokens().mode == NeuMode.DARK)
+            }
+        }
         if (isHyper3dTheme(theme)) {
             val visualTheme = hyper3dVisualTheme(theme)
             return when {
@@ -719,6 +761,9 @@ class DockedKeyboardService : Service() {
     }
 
     private fun keyboardLightMode(theme: String): Boolean {
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.isLight(theme, selectedNeuTokens().mode == NeuMode.DARK)
+        }
         if (keyboardTheme() == KEYBOARD_THEME_DEFAULT) return selectedNeuTokens().mode == NeuMode.LIGHT
         return selectedNeuTokens().mode == NeuMode.LIGHT && theme != KEYBOARD_THEME_HYPER3D_BLACK
     }
@@ -797,6 +842,7 @@ class DockedKeyboardService : Service() {
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
+        private const val KEYBOARD_THEME_TECLAS_GLASS = KeyboardThemeDrawables.TECLAS_GLASS
         private const val THEME_MODE_PREF = "theme_mode"
         private const val THEME_MODE_DARK = "dark"
         private const val THEME_MODE_LIGHT = "light"
