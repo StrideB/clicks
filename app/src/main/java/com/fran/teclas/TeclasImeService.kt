@@ -160,6 +160,31 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         return false
     }
 
+    // Frame-time monitor: the event handlers all measure 0ms, so if the keyboard still feels slow the
+    // cost is in the framework's per-frame measure/layout/draw (which runs AFTER our handlers return)
+    // or in dropped frames. This logs any frame interval that overran the ~16ms budget, so the file
+    // shows real jank ("frame Nms") even when every handler is 0ms. Self-reposting; runs only while
+    // an input view is up and PERF_LOG is on.
+    private var perfFrameLast = 0L
+    private var perfFrameRunning = false
+    private val perfFrameCallback = object : android.view.Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!perfFrameRunning) return
+            if (perfFrameLast != 0L) {
+                val ms = (frameTimeNanos - perfFrameLast) / 1_000_000
+                if (ms in 24..4000) perfLine("‼ frame ${ms}ms")
+            }
+            perfFrameLast = frameTimeNanos
+            android.view.Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+    private fun startFrameMonitor() {
+        if (!PERF_LOG || perfFrameRunning) return
+        perfFrameRunning = true
+        perfFrameLast = 0L
+        android.view.Choreographer.getInstance().postFrameCallback(perfFrameCallback)
+    }
+
     private fun seedShadow(caret: Int) {
         val ic = currentInputConnection
         if (ic == null) { shadowValid = false; return }
@@ -430,6 +455,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // Diagnostic on-screen readout of the slowest keystroke step (Vivo hides logcat).
             if (PERF_LOG) {
                 runCatching { diagExecutor.execute { runCatching { diagFile?.writeText("") } } }
+                startFrameMonitor()
                 perfOverlay = TextView(this@TeclasImeService).apply {
                     textSize = 9.5f
                     setTextColor(0xFF6BFF6B.toInt())
@@ -503,6 +529,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             hideImeSurface()
             return
         }
+        startFrameMonitor()
         // Seed the shadow mirror from the fresh editor so the first keystrokes read locally.
         seedShadow(info?.initialSelStart?.takeIf { it >= 0 } ?: 0)
         refreshChromeOrRebuild()
@@ -524,6 +551,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        perfFrameRunning = false   // stop the frame monitor while hidden
         invalidateShadow()   // leaving the field; the mirror no longer describes anything
         // Don't let the attach sheet or a share card linger across fields or when the keyboard hides.
         hideAttachPicker()
