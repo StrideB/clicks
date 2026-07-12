@@ -713,22 +713,211 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // Children before the key rows: suggestion strip, agentic panel, inline autofill row.
     private val chromeChildCount = 3
 
+    // ── Canvas keyboard (experimental, Stage 1) ─────────────────────────────────────────────────
+    // When active, ONE view draws the whole key grid into a bitmap buffer instead of ~30 child views
+    // in nested LinearLayouts — the AOSP/Gboard model, and the fix for the cold-open build cost.
+    // Gated to the Teclas theme for now while it's brought to visual/behavioral parity stage by stage.
+    private var canvasKeyboardView: TeclasCanvasKeyboardView? = null
+    private fun useCanvasKeyboard(): Boolean =
+        CANVAS_KB_TECLAS && keyboardVisualTheme() == KEYBOARD_THEME_TECLAS
+
+    // The row model both the view keyboard and the canvas keyboard lay out from (single source).
+    private fun currentKeyRows(): List<List<String>> = if (symbolsMode) listOf(
+        com.fran.teclas.keyboard.KeyboardSymbols.ROW_DIGITS,
+        com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_1,
+        com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"),
+        listOf("abc", "teclas", "space", ".", "enter")
+    ) else listOf(
+        "qwertyuiop".map { it.toString() },
+        "asdfghjkl".map { it.toString() },
+        listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"),
+        listOf("123", "teclas", "space", ".", "enter")
+    )
+
+    // The canvas view publishes its own key rects (screen coords) here — same downstream wiring the
+    // view keyboard's captureKeyBounds uses, so glide/flick/tap resolution are identical.
+    private fun setCanvasKeyBounds(fresh: LinkedHashMap<String, Rect>) {
+        if (fresh == keyBounds) return
+        keyBounds.clear(); keyBounds.putAll(fresh)
+        spatialScorer.setKeys(keyBounds)
+        updateGlideLayout()
+    }
+
     private fun addKeyRows(deck: LinearLayout) {
-        val rows = if (symbolsMode) listOf(
-            com.fran.teclas.keyboard.KeyboardSymbols.ROW_DIGITS,
-            com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_1,
-            com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"),
-            listOf("abc", "teclas", "space", ".", "enter")
-        ) else listOf(
-            "qwertyuiop".map { it.toString() },
-            "asdfghjkl".map { it.toString() },
-            listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"),
-            listOf("123", "teclas", "space", ".", "enter")
-        )
-        rows.forEachIndexed { rowIndex, row ->
+        if (useCanvasKeyboard()) {
+            val cv = TeclasCanvasKeyboardView().also { canvasKeyboardView = it }
+            val rowsHeight = keyRowHeight() * 4 - keyRowOverlap() * 3
+            deck.addView(cv, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, rowsHeight))
+            return
+        }
+        canvasKeyboardView = null
+        currentKeyRows().forEachIndexed { rowIndex, row ->
             deck.addView(keyRow(row, rowIndex), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight()).apply {
                 if (rowIndex > 0) topMargin = -keyRowOverlap()
             })
+        }
+    }
+
+    // One laid-out key in the canvas keyboard. [cell] is the full key rect (matching the old per-key
+    // view bounds, so keyBounds — and therefore glide/tap resolution — stay identical).
+    private class CanvasKeyCell(
+        val label: String,
+        val cell: Rect,
+        val idle: Drawable,
+        val pressed: Drawable,
+        val text: CharSequence,
+        val color: Int,
+        val textSizePx: Float,
+        val bold: Boolean
+    )
+
+    // ── Canvas keyboard view (Stage 1, Teclas theme) ────────────────────────────────────────────
+    // Draws the whole key grid once into an offscreen bitmap and blits it; the pressed key is drawn
+    // live on top so press/release never re-renders the buffer. Key backgrounds are the exact same
+    // Drawables the view keyboard builds (faithful Teclas look); labels reuse keyDisplayText. Taps are
+    // resolved by coordinate against the same keyBounds the glide engine reads — which this view
+    // publishes itself — so glide/flick/cursor-pan/delete are handled by the parent
+    // SwipeImeKeyboardLayout exactly as before. This view only handles discrete taps that fall through
+    // the deck's glide interception.
+    private inner class TeclasCanvasKeyboardView : View(this@TeclasImeService) {
+        private var keys: List<CanvasKeyCell> = emptyList()
+        private var pressedLabel: String? = null
+        private var buffer: android.graphics.Bitmap? = null
+        private val textPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG)
+
+        fun rebuild() { relayoutKeys(); invalidate() }
+        fun republishBounds() { publishBounds() }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            setMeasuredDimension(
+                MeasureSpec.getSize(widthMeasureSpec),
+                keyRowHeight() * 4 - keyRowOverlap() * 3
+            )
+        }
+
+        override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+            super.onLayout(changed, left, top, right, bottom)
+            relayoutKeys()
+            publishBounds()
+        }
+
+        // Mirror keyRow()'s LinearLayout math: per-row horizontal inset, fixed-square 123/enter keys,
+        // the rest sharing the remaining width by keyWeight; rows stacked with keyRowOverlap.
+        private fun relayoutKeys() {
+            val totalWidth = width
+            if (totalWidth <= 0) return
+            val rowH = keyRowHeight()
+            val overlap = keyRowOverlap()
+            val goSize = themedGoKeySize()
+            val density = resources.displayMetrics.scaledDensity
+            val out = ArrayList<CanvasKeyCell>(36)
+            currentKeyRows().forEachIndexed { rowIndex, row ->
+                val inset = when (rowIndex) { 1 -> dp(12); 2 -> dp(6); 3 -> dp(18); else -> 0 }
+                val rowTop = rowIndex * (rowH - overlap)
+                var weightSum = 0f
+                var fixedTotal = 0
+                row.forEach { lbl ->
+                    if (lbl == "enter" || lbl == "123") fixedTotal += goSize else weightSum += keyWeight(lbl)
+                }
+                val flexible = (totalWidth - inset * 2 - fixedTotal).coerceAtLeast(0)
+                var x = inset
+                row.forEach { lbl ->
+                    val square = lbl == "enter" || lbl == "123"
+                    val kw = if (square) goSize
+                        else if (weightSum > 0f) (flexible * keyWeight(lbl) / weightSum).toInt() else 0
+                    val cellTop = if (square) rowTop + (rowH - goSize) / 2 else rowTop
+                    val cellH = if (square) goSize else rowH
+                    out.add(CanvasKeyCell(
+                        lbl,
+                        Rect(x, cellTop, x + kw, cellTop + cellH),
+                        visualKeyBackground(lbl, pressed = false),
+                        visualKeyBackground(lbl, pressed = true),
+                        keyDisplayText(lbl),
+                        textColor(lbl),
+                        keyTextSize(lbl) * density,
+                        lbl == "enter"
+                    ))
+                    x += kw
+                }
+            }
+            keys = out
+            renderBuffer()
+        }
+
+        private fun renderBuffer() {
+            val w = width; val h = height
+            if (w <= 0 || h <= 0) return
+            val bmp = buffer?.takeIf { it.width == w && it.height == h }
+                ?: android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888).also { buffer = it }
+            val c = Canvas(bmp)
+            c.drawColor(Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            keys.forEach { drawKey(c, it, pressed = false) }
+        }
+
+        private fun drawKey(canvas: Canvas, k: CanvasKeyCell, pressed: Boolean) {
+            val d = if (pressed) k.pressed else k.idle
+            d.setBounds(k.cell.left, k.cell.top, k.cell.right, k.cell.bottom)
+            d.draw(canvas)
+            textPaint.color = k.color
+            textPaint.textSize = k.textSizePx
+            textPaint.typeface = if (k.bold) Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            val layout = android.text.StaticLayout.Builder
+                .obtain(k.text, 0, k.text.length, textPaint, k.cell.width().coerceAtLeast(1))
+                .setAlignment(android.text.Layout.Alignment.ALIGN_CENTER)
+                .setIncludePad(false)
+                .build()
+            canvas.save()
+            canvas.translate(k.cell.left.toFloat(), k.cell.top + (k.cell.height() - layout.height) / 2f)
+            layout.draw(canvas)
+            canvas.restore()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            buffer?.let { canvas.drawBitmap(it, 0f, 0f, null) }
+            // Pressed key drawn live over the cached buffer — a press never re-renders all 34 keys.
+            pressedLabel?.let { pl -> keys.firstOrNull { it.label == pl }?.let { drawKey(canvas, it, pressed = true) } }
+        }
+
+        private fun publishBounds() {
+            if (keys.isEmpty()) return
+            val loc = IntArray(2)
+            getLocationOnScreen(loc)
+            val fresh = LinkedHashMap<String, Rect>(keys.size)
+            keys.forEach { k ->
+                fresh[k.label] = Rect(loc[0] + k.cell.left, loc[1] + k.cell.top, loc[0] + k.cell.right, loc[1] + k.cell.bottom)
+            }
+            setCanvasKeyBounds(fresh)
+        }
+
+        private fun keyAtLocal(x: Float, y: Float): String? =
+            keys.firstOrNull { it.cell.contains(x.toInt(), y.toInt()) }?.label
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    val lbl = keyAtLocal(event.x, event.y) ?: return false
+                    pressedLabel = lbl
+                    keyHaptic(lbl)
+                    invalidate()
+                    return true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val lbl = pressedLabel
+                    pressedLabel = null
+                    invalidate()
+                    if (lbl != null && keyAtLocal(event.x, event.y) == lbl) {
+                        handleKey(resolveTapKey(lbl, event.rawX, event.rawY))
+                        armFrameSample()
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    pressedLabel = null
+                    invalidate()
+                    return true
+                }
+            }
+            return false
         }
     }
 
@@ -1187,6 +1376,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun captureKeyBounds() {
+        // Canvas keyboard owns its bounds (there are no per-key views to walk); have it republish so
+        // the deck's "recapture if the window moved" path on touch-down keeps working identically.
+        canvasKeyboardView?.let { it.republishBounds(); return }
         val fresh = linkedMapOf<String, Rect>()
         val loc = IntArray(2)
         keyViews.forEach { (label, view) ->
@@ -3038,6 +3230,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // constantly while typing) was wasted UI-thread allocation — the main IME sluggishness. Default
     // to a light text-only refresh.
     private fun refreshKeyboardChrome(rebuildBackgrounds: Boolean = false) {
+        // Canvas keyboard: labels/colors live in its bitmap buffer, so a shift/caps/theme change means
+        // re-rendering the buffer rather than walking per-key views.
+        canvasKeyboardView?.let {
+            if (rebuildBackgrounds) deckView?.background = deckBackground()
+            it.rebuild()
+            return
+        }
         deckView?.let { deck ->
             if (rebuildBackgrounds) deck.background = deckBackground()
             for (rowIndex in 0 until deck.childCount) {
@@ -4001,6 +4200,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private const val KEYBOARD_THEME_PREF = "keyboard_theme"
         private const val KEYBOARD_THEME_DEFAULT = "default"
         private const val KEYBOARD_THEME_TECLAS = "teclas"
+        // Experimental canvas keyboard (Stage 1), Teclas theme only. On for this testing branch so a
+        // debug install exercises it; flip to false (or wire a real setting) before any merge to main.
+        private const val CANVAS_KB_TECLAS = true
         private const val KEYBOARD_THEME_SKEUO = "skeuo"
         private const val KEYBOARD_THEME_GOKEYS = "gokeys"
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
