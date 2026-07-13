@@ -135,6 +135,18 @@ the full default browser. Detection is `InAppGoogleSearchEngine.urlFromQuery`
 Opening triggers only on tap/GO — never on keystroke, since a prefix of a URL
 is itself a valid URL.
 
+Phone numbers dial directly: typing a bare number ("5551234567", "(555)
+123-4567", "+1 555 123 4567" — digits plus phone-shaped separators, at most
+one leading `+`, no letters, 7-15 digits) surfaces a "Dial" card under People
+(`phoneNumberFromQuery`), skipped when a real saved contact already matched
+or the query also parsed as a URL (e.g. a bare IP). GO/tap fires `ACTION_DIAL`
+— lands in the system dialer pre-filled, one tap to call; no `CALL_PHONE`
+permission, matching every other call action in this app. The explicit
+`call`/`text` verb commands (`findPhoneContact`) fall back to the same raw-
+number dial/text when no saved contact matches the typed name, so
+"call 5551234567" and "text 5551234567 on my way" work even for numbers
+that aren't saved contacts.
+
 Search results read top-down in three zones: one instant answer, apps, then
 everything else grouped under headers ("People", "Web", "Because you're home",
 etc. — `searchZoneHeader`, sized as real headings, not tiny eyebrow labels).

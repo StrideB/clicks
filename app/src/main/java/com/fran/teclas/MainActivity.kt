@@ -19099,13 +19099,27 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         }
         // A typed URL ("theverge.com") is an unambiguous intent — rank opening the site itself
         // first, so GO fires it directly. Tap = in-launcher sheet, long-press = full browser.
-        InAppGoogleSearchEngine.urlFromQuery(q)?.let { url ->
+        val urlMatch = InAppGoogleSearchEngine.urlFromQuery(q)
+        urlMatch?.let { url ->
             val host = Uri.parse(url).host ?: q
             results.add(0, SearchResult(
                 "Open $host", "Website · hold for browser", 0xFF4285F4.toInt(), SearchKind.WEB, null,
                 action = { openUrlDirectly(url) },
                 longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser available") }
             ))
+        }
+        // A typed phone number is an unambiguous call intent — dial without opening the Phone
+        // app first. Skipped when a real contact already matched (more specific, stays on top)
+        // or the query also parsed as a URL (e.g. a bare IP address — don't show both).
+        if (urlMatch == null) {
+            phoneNumberFromQuery(q)?.let { number ->
+                val hasRealContactMatch = results.any { it.kind == SearchKind.CONTACT && it.title != "Connect contacts" }
+                if (!hasRealContactMatch) {
+                    results.add(0, SearchResult(q, "Dial", 0xFF5FD0C4.toInt(), SearchKind.CONTACT, null) {
+                        startSafeIntent(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(number)}")), "Phone isn't available here")
+                    })
+                }
+            }
         }
         if (q.length >= 2) {
             val directHits = results.isNotEmpty()
@@ -19162,6 +19176,19 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val lower = text.lowercase(Locale.US)
         return listOf("flight", "flights", "boarding", "boarding pass", "trip", "trips", "travel", "itinerary")
             .any { lower.contains(it) }
+    }
+
+    // A typed phone number ("5551234567", "(555) 123-4567", "+1 555 123 4567") — only digits
+    // plus phone-shaped separators and at most one leading '+', no letters, a plausible digit
+    // count. Returns the dialable tel: value (digits + optional leading +), or null.
+    private fun phoneNumberFromQuery(text: String): String? {
+        val clean = text.trim()
+        if (clean.isEmpty() || clean.any { it.isLetter() }) return null
+        if (!clean.all { it.isDigit() || it in " -().+" }) return null
+        if (clean.contains('+') && (!clean.startsWith('+') || clean.count { it == '+' } > 1)) return null
+        val digits = clean.filter { it.isDigit() }
+        if (digits.length !in 7..15) return null
+        return (if (clean.startsWith('+')) "+" else "") + digits
     }
 
     // ── Type-to-customize ────────────────────────────────────────────────────
@@ -20126,12 +20153,15 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
             arrayOf("%$name%"),
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
-        ) ?: return null
-        cursor.use {
+        )
+        val matched = cursor?.use {
             val nameIdx = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val valueIdx = it.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
-            return bestContactMatch(it, name, nameIdx, valueIdx)
+            bestContactMatch(it, name, nameIdx, valueIdx)
         }
+        // No saved contact by that name — if it reads as a bare phone number, dial it directly
+        // ("call 5551234567") instead of silently doing nothing.
+        return matched ?: phoneNumberFromQuery(name)?.let { ContactMatch(name, it) }
     }
 
     private fun findEmailContact(name: String, originalCommand: String): ContactMatch? {
