@@ -167,6 +167,27 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         } finally {
             perfLine("$label ${(System.nanoTime() - t0) / 1_000_000}ms")
         }
+        // Append to a pullable file (Vivo hides logcat), but ONLY meaningful lines — skip the flood of
+        // "… 0ms" so the per-line file I/O doesn't itself become a per-keystroke cost. Key/section
+        // markers and any non-zero timing are kept. Truncated on keyboard open.
+        //   adb pull /sdcard/Android/data/com.fran.teclas/files/teclas_perf.log
+        if (s.endsWith(" 0ms")) return
+        val f = diagFile ?: return
+        runCatching { diagExecutor.execute { runCatching { f.appendText(s + "\n") } } }
+    }
+    private fun perfReport(label: String, ms: Long) {
+        if (!PERF_LOG) return
+        if (ms > perfWorstMs) perfWorstMs = ms
+        perfLine("$label ${ms}ms" + if (perfIpcReads > 0) " ipc=$perfIpcReads" else "")
+    }
+    private inline fun <T> ptime(label: String, block: () -> T): T {
+        if (!PERF_LOG) return block()
+        val t0 = System.nanoTime()
+        try {
+            return block()
+        } finally {
+            perfReport(label, (System.nanoTime() - t0) / 1_000_000)
+        }
     }
 
     private fun recordSelfCaret() {
@@ -3799,11 +3820,19 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun symbolHintColor(): Int = (textColor("q") and 0x00FFFFFF) or (0x72 shl 24)
 
     private fun goLegendColor(): Int =
-        if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
+            KeyboardThemeDrawables.textColor(keyboardVisualTheme(), "enter", selectedNeuTokens().mode == NeuMode.DARK)
+        } else if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
 
     private fun textColor(label: String): Int {
         if (label == "enter") return goLegendColor()
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return when (label) {
+                "shift", "back" -> KeyboardThemeDrawables.accent(theme, selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
+                else -> KeyboardThemeDrawables.textColor(theme, label, selectedNeuTokens().mode == NeuMode.DARK)
+            }
+        }
         if (isHyper3dTheme(theme)) {
             val visualTheme = hyper3dVisualTheme(theme)
             return when {
@@ -3921,6 +3950,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun keyVerticalInset(): Int {
         val size = effectiveKeyboardSize()
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) return dp(8 + size * 4 / 100)
         if (theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             return dp(10 + size * 5 / 100)
         }
@@ -3934,6 +3964,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun keyTextSize(label: String): Float {
         val size = effectiveKeyboardSize()
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
+            val base = when (label) {
+                "shift" -> 23f
+                "space" -> 18f
+                "123", "abc", "enter", "back", "." -> 13.5f
+                else -> 20f
+            }
+            val growth = when (label) {
+                "shift" -> 2f
+                "space" -> 2f
+                "123", "abc", "enter", "back", "." -> 1.4f
+                else -> 2.2f
+            }
+            return base + (size * growth / 100f)
+        }
         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
             val brushedBase = when (label) {
                 "shift", "." -> 22f
@@ -3981,6 +4026,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun keyIdleBackground(label: String): Drawable {
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                theme,
+                label,
+                pressed = false,
+                darkMode = selectedNeuTokens().mode == NeuMode.DARK,
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) goKeyColor() else KeyboardThemeDrawables.DEFAULT_ACCENT
+            )
+        }
         if (theme == KEYBOARD_THEME_SEEME) {
             return SeemeDrawables.key(label, pressed = false, density = resources.displayMetrics.density, goColor = goKeyColor())
         }
@@ -4001,6 +4056,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun keyPressedBackground(label: String): Drawable {
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                theme,
+                label,
+                pressed = true,
+                darkMode = selectedNeuTokens().mode == NeuMode.DARK,
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) brighten(goKeyColor()) else KeyboardThemeDrawables.DEFAULT_ACCENT
+            )
+        }
         if (theme == KEYBOARD_THEME_SEEME) {
             return SeemeDrawables.key(label, pressed = true, density = resources.displayMetrics.density, goColor = brighten(goKeyColor()))
         }
@@ -4021,6 +4086,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun deckBackground(): Drawable {
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.panel(this, theme, selectedNeuTokens().mode == NeuMode.DARK)
+        }
         if (theme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (theme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(16).toFloat(), NeuLevel.RAISED)
@@ -4069,6 +4137,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun keyboardLightMode(theme: String): Boolean {
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.isLight(theme, selectedNeuTokens().mode == NeuMode.DARK)
+        }
         if (keyboardTheme() == KEYBOARD_THEME_DEFAULT) return false
         return selectedNeuTokens().mode == NeuMode.LIGHT && theme != KEYBOARD_THEME_HYPER3D_BLACK
     }
@@ -4380,6 +4451,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
+        private const val KEYBOARD_THEME_GOOGLE = KeyboardThemeDrawables.GOOGLE
+        private const val KEYBOARD_THEME_IOS = KeyboardThemeDrawables.IOS
+        private const val KEYBOARD_THEME_PIXEL_SAND = KeyboardThemeDrawables.PIXEL_SAND
+        private const val KEYBOARD_THEME_TECLAS_GLASS = KeyboardThemeDrawables.TECLAS_GLASS
         private const val GO_KEY_COLOR_PREF = "go_key_color"
 
         // Hot-path regexes, compiled once (these used to be re-compiled on every keystroke).
