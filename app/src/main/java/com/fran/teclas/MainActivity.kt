@@ -12131,7 +12131,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         "BLACK" to KEYBOARD_THEME_HYPER3D_BLACK,
                         "LIGHT" to KEYBOARD_THEME_HYPER3D_LIGHT,
                         "BRUSHED" to KEYBOARD_THEME_BRUSHED,
-                        "SEEME" to KEYBOARD_THEME_SEEME
+                        "SEEME" to KEYBOARD_THEME_SEEME,
+                        "GOOGLE" to KEYBOARD_THEME_GOOGLE,
+                        "IOS" to KEYBOARD_THEME_IOS,
+                        "PIXEL" to KEYBOARD_THEME_PIXEL_SAND,
+                        "GLASS" to KEYBOARD_THEME_TECLAS_GLASS
                     ).forEach { (label, value) ->
                         addView(TextView(context).apply {
                             text = label
@@ -12150,7 +12154,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                                 prefs().edit().putString(KEYBOARD_THEME_PREF, value).apply()
                                 haptic(this); render()
                             }
-                        }, LinearLayout.LayoutParams(dp(68), dp(28)).apply { marginStart = dp(6) })
+                        }, LinearLayout.LayoutParams(dp(if (label.length > 6) 78 else 68), dp(28)).apply { marginStart = dp(6) })
                     }
                 }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
             }, LinearLayout.LayoutParams(0, dp(32), 1f))
