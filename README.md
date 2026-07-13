@@ -164,6 +164,18 @@ row, so nothing in search reads as draggable. Tap/long-press stay search-
 specific (open app; long-press pins to dock or the active Space board), not
 the library's rename/hide icon menu.
 
+Tap invariant: the results list is torn down and rebuilt whenever async
+searches land (contacts/web/semantic arrive a beat after typing). If that
+rebuild fires between a card's finger-down and finger-up the card is removed
+mid-touch and its click is cancelled — so only long-press (which fires during
+the hold) would register. The three rebuild entry points
+(`refreshLibraryContent`, `refreshWidgetSearchContent`,
+`refreshUnfoldedLibraryContent`) therefore call `deferSearchRebuildWhileTouching()`
+first: while a finger is down on the results, the rebuild is held (pending) and
+flushed on finger-up (`trackSearchResultTouch`, run for every event at the top
+of `dispatchTouchEvent`). Do not rebuild the results view unconditionally from
+an async callback, or single taps break again.
+
 Search text size is user-controlled: Settings → `SEARCH TEXT SIZE` slider
 (0–100, default 50 = Medium, `SEARCH_FONT_SIZE_PREF`) scales zone headers,
 result titles/subtitles, and app-tile labels together via `searchFontScale()`.
