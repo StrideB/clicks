@@ -12595,6 +12595,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 // Hold go/enter to run the typed line as an agentic command (the powerful trigger).
                 label == "enter" -> { -> haptic(this@apply); runLauncherAgenticCommand() }
                 label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
+                // Dial-pad convention: hold 0 to type + (international prefix). Routes through
+                // handleKey so it inserts + refreshes exactly like a typed digit (cursor-aware).
+                label == "0" && numberPadOpen -> { -> haptic(this@apply); handleKey("+") }
                 // Space keeps cursor-drag; a stationary hold now offers Gemini smart-compose instead.
                 label == "space" -> { -> haptic(this@apply); triggerGeminiSmartCompose() }
                 isLetter -> { -> haptic(this@apply); handleLetterLongPress(label.lowercase(Locale.US)) }
