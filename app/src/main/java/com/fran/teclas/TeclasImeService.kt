@@ -724,6 +724,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // canvas renders every theme faithfully (SeeMe/Brushed use monospace; enter is always bold).
     private fun keyTypeface(label: String): Typeface {
         val theme = keyboardTheme()
+        KeyboardThemeDrawables.typeface(keyboardVisualTheme(), label)?.let { return it }
         return if (theme == KEYBOARD_THEME_SEEME || theme == KEYBOARD_THEME_BRUSHED) {
             Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
         } else if (label == "enter") Typeface.DEFAULT_BOLD
@@ -1197,7 +1198,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 opticalTextOffsetX = if (label == "back") -dp(4).toFloat() else 0f
             }
             textSize = keyTextSize(label)
-            typeface = if (keyboardTheme() == KEYBOARD_THEME_SEEME || keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+            typeface = KeyboardThemeDrawables.typeface(keyboardVisualTheme(), label) ?: if (keyboardTheme() == KEYBOARD_THEME_SEEME || keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                 Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
             } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
@@ -3855,7 +3856,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun goLegendColor(): Int =
         if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
-            KeyboardThemeDrawables.textColor(keyboardVisualTheme(), "enter", selectedNeuTokens().mode == NeuMode.DARK)
+            KeyboardThemeDrawables.textColor(keyboardVisualTheme(), "enter", selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
         } else if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
 
     private fun textColor(label: String): Int {

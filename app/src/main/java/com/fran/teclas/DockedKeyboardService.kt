@@ -175,7 +175,7 @@ class DockedKeyboardService : Service() {
                 opticalTextOffsetX = if (label == "back") -dp(4).toFloat() else 0f
             }
             textSize = keyTextSize(label)
-            typeface = if (keyboardTheme() == KEYBOARD_THEME_SEEME || keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
+            typeface = KeyboardThemeDrawables.typeface(keyboardVisualTheme(), label) ?: if (keyboardTheme() == KEYBOARD_THEME_SEEME || keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                 Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
             } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
@@ -470,7 +470,7 @@ class DockedKeyboardService : Service() {
 
     private fun goLegendColor(): Int =
         if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
-            KeyboardThemeDrawables.textColor(keyboardVisualTheme(), "enter", selectedNeuTokens().mode == NeuMode.DARK)
+            KeyboardThemeDrawables.textColor(keyboardVisualTheme(), "enter", selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
         } else if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
 
     private fun textColor(label: String): Int {

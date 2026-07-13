@@ -69,7 +69,7 @@ data class WeatherStyle(
 
 // Category section order for the picker gallery (Classic is rendered as its own lead section).
 // Add a new family's name here to give it a section; unknown families fall to the end.
-val WEATHER_CATEGORY_ORDER = listOf("Simple", "Dot Matrix", "Animated")
+val WEATHER_CATEGORY_ORDER = listOf("Simple", "Almanac", "Dot Matrix", "Animated")
 
 // The built-in native header keeps this id; only non-classic ids resolve through WEATHER_STYLES.
 const val WEATHER_STYLE_CLASSIC_ID = "header"
@@ -412,7 +412,7 @@ val ANIMATED_STYLES: List<WeatherStyle> = listOf(
 // Master registry the picker, placement flow and persistence all read. `by lazy` so it is
 // robust to cross-file top-level init order (SIMPLE/DOT_MATRIX_STYLES live in another file).
 val WEATHER_STYLES: List<WeatherStyle> by lazy {
-    ANIMATED_STYLES + SIMPLE_STYLES + DOT_MATRIX_STYLES
+    ANIMATED_STYLES + SIMPLE_STYLES + ALMANAC_STYLES + DOT_MATRIX_STYLES
 }
 
 fun weatherStyleById(id: String?): WeatherStyle =

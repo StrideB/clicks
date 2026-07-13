@@ -130,6 +130,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
 import com.fran.teclas.weather.WEATHER_STYLE_CLASSIC_ID
+import com.fran.teclas.weather.ALMANAC_STYLES
 import com.fran.teclas.weather.WeatherData
 import com.fran.teclas.weather.WeatherStylePickerSheet
 import com.fran.teclas.weather.conditionForWmoCode
@@ -4106,12 +4107,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             KEYBOARD_THEME_HYPER3D_BLACK,
             KEYBOARD_THEME_HYPER3D_LIGHT,
             KEYBOARD_THEME_BRUSHED,
-            KEYBOARD_THEME_SEEME,
-            KEYBOARD_THEME_GOOGLE,
-            KEYBOARD_THEME_IOS,
-            KEYBOARD_THEME_PIXEL_SAND,
-            KEYBOARD_THEME_TECLAS_GLASS
-        )
+            KEYBOARD_THEME_SEEME
+        ) + KeyboardThemeDrawables.cycleThemes
 
     private fun widgetThemeName(theme: String): String = when (theme) {
         KEYBOARD_THEME_TECLAS -> "TECLAS"
@@ -4126,7 +4123,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         KEYBOARD_THEME_IOS -> "IOS"
         KEYBOARD_THEME_PIXEL_SAND -> "PIXEL SAND"
         KEYBOARD_THEME_TECLAS_GLASS -> "TECLAS GLASS"
-        else -> "DEFAULT"
+        else -> KeyboardThemeDrawables.displayName(theme).uppercase(Locale.US).takeIf { it != theme.uppercase(Locale.US) } ?: "DEFAULT"
     }
 
     private fun keyboardSwapAnimationMode(): String =
@@ -12139,6 +12136,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 overScrollMode = View.OVER_SCROLL_NEVER
                 addView(LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
+                    (
                     listOf(
                         "DEFAULT" to KEYBOARD_THEME_DEFAULT,
                         "TECLAS" to KEYBOARD_THEME_TECLAS,
@@ -12149,10 +12147,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         "LIGHT" to KEYBOARD_THEME_HYPER3D_LIGHT,
                         "BRUSHED" to KEYBOARD_THEME_BRUSHED,
                         "SEEME" to KEYBOARD_THEME_SEEME,
-                        "GOOGLE" to KEYBOARD_THEME_GOOGLE,
-                        "IOS" to KEYBOARD_THEME_IOS,
-                        "PIXEL" to KEYBOARD_THEME_PIXEL_SAND,
-                        "GLASS" to KEYBOARD_THEME_TECLAS_GLASS
+                    ) + KeyboardThemeDrawables.cycleThemes.map { KeyboardThemeDrawables.displayName(it).uppercase(Locale.US) to it }
                     ).forEach { (label, value) ->
                         addView(TextView(context).apply {
                             text = label
@@ -12171,7 +12166,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                                 prefs().edit().putString(KEYBOARD_THEME_PREF, value).apply()
                                 haptic(this); render()
                             }
-                        }, LinearLayout.LayoutParams(dp(if (label.length > 6) 78 else 68), dp(28)).apply { marginStart = dp(6) })
+                        }, LinearLayout.LayoutParams(dp(if (label.length > 8) 92 else if (label.length > 6) 78 else 68), dp(28)).apply { marginStart = dp(6) })
                     }
                 }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
             }, LinearLayout.LayoutParams(0, dp(32), 1f))
@@ -12458,7 +12453,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             gravity = Gravity.CENTER
             textSize = keyTextSize(label)
-            typeface = if (keyboardTheme == KEYBOARD_THEME_SEEME || keyboardTheme == KEYBOARD_THEME_BRUSHED) {
+            typeface = KeyboardThemeDrawables.typeface(keyboardTheme, label) ?: if (keyboardTheme == KEYBOARD_THEME_SEEME || keyboardTheme == KEYBOARD_THEME_BRUSHED) {
                 Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
             } else {
                 Typeface.create("sans-serif", if (label == "shift" || label == "enter") Typeface.BOLD else Typeface.NORMAL)
@@ -19293,6 +19288,21 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             openWeatherStylePicker()
             refreshSearchSurfaces()
         })
+        ALMANAC_STYLES.forEach { style ->
+            entries.add(SettingSearchEntry(
+                "Weather: ${style.name}", "Almanac editorial widget",
+                listOf(
+                    "weather ${style.name.lowercase()}",
+                    "${style.name.lowercase()} weather",
+                    "almanac ${style.name.lowercase()}",
+                    "editorial weather",
+                    "weather print"
+                )
+            ) {
+                enterWeatherPlacementMode(style.id)
+                refreshSearchSurfaces()
+            })
+        }
         entries.add(SettingSearchEntry(
             "Haptic feedback", toggleStateLabel(hapticsEnabled),
             listOf("haptic", "haptics", "vibration", "feedback")
@@ -19336,7 +19346,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         })
         entries.add(SettingSearchEntry(
             "Keyboard theme", "${widgetThemeName(keyboardTheme)} · tap for next",
-            listOf("keyboard", "keys", "keyboard theme", "skeuo", "gokeys", "google", "ios", "pixel sand", "teclas glass")
+            listOf("keyboard", "keys", "keyboard theme", "skeuo", "gokeys") +
+                KeyboardThemeDrawables.cycleThemes.flatMap {
+                    listOf(it, KeyboardThemeDrawables.displayName(it).lowercase(Locale.US))
+                }
         ) {
             cycleKeyboardTheme()
             refreshSearchSurfaces()
@@ -19508,12 +19521,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun cycleKeyboardTheme() {
-        val order = listOf(
+        val order = (listOf(
             KEYBOARD_THEME_DEFAULT, KEYBOARD_THEME_TECLAS, KEYBOARD_THEME_SKEUO, KEYBOARD_THEME_GOKEYS,
             KEYBOARD_THEME_HYPER3D, KEYBOARD_THEME_HYPER3D_BLACK, KEYBOARD_THEME_HYPER3D_LIGHT,
-            KEYBOARD_THEME_BRUSHED, KEYBOARD_THEME_SEEME,
-            KEYBOARD_THEME_GOOGLE, KEYBOARD_THEME_IOS, KEYBOARD_THEME_PIXEL_SAND, KEYBOARD_THEME_TECLAS_GLASS
-        ).filter { it != KEYBOARD_THEME_SKEUO || ProManager.isUnlocked(this) }
+            KEYBOARD_THEME_BRUSHED, KEYBOARD_THEME_SEEME
+        ) + KeyboardThemeDrawables.cycleThemes)
+            .distinct()
+            .filter { it != KEYBOARD_THEME_SKEUO || ProManager.isUnlocked(this) }
         keyboardTheme = order[(order.indexOf(keyboardTheme) + 1).mod(order.size)]
         prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
         render()
@@ -22325,7 +22339,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             KEYBOARD_THEME_IOS -> KeyboardThemeDrawables.accent(value, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
             KEYBOARD_THEME_PIXEL_SAND -> KeyboardThemeDrawables.accent(value, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
             KEYBOARD_THEME_TECLAS_GLASS -> goKeyColor
-            else -> Accent
+            else -> if (KeyboardThemeDrawables.isAddedTheme(value)) {
+                KeyboardThemeDrawables.accent(value, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            } else Accent
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(accent), accent)).apply {
             cornerRadius = dp(10).toFloat()
@@ -22413,7 +22429,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun goLegendColor(): Int =
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
-            KeyboardThemeDrawables.textColor(keyboardTheme, "enter", activeNeuTokens.mode == NeuMode.DARK)
+            KeyboardThemeDrawables.textColor(keyboardTheme, "enter", activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
         } else if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
 
     private fun keyTextColor(label: String) = if (label == "enter") {
