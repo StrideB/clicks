@@ -13699,6 +13699,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Gemini keyboard suggestions ──────────────────────────────────────────
 
     private fun scheduleGeminiSuggestions() {
+        // Disabled in the launcher's own docked keyboard: the search/command field isn't prose, so
+        // LLM next-word suggestions add noise (and were the per-keystroke heat culprit). AI
+        // suggestions live only in the IME serving third-party apps — see TeclasImeService.scheduleGemini.
+        if (true) return
         if (!geminiConfigured() || !ProManager.isUnlocked(this)) return
         geminiSuggestJob?.cancel()
         geminiSuggestJob = mediaUiScope.launch {

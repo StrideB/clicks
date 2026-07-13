@@ -1757,6 +1757,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // On-device fills the strip instantly at 70ms; Gemini upgrades it a beat later.
     private fun scheduleGemini() {
         geminiDebounce?.let { handler.removeCallbacks(it) }
+        // Third-party apps only. Typing into the launcher's own editor is command/search text, not
+        // prose — no AI next-word suggestions there.
+        if (isLauncherEditorActive()) return
         if (!ProManager.isUnlocked(this) || !GeminiClient.configured(imePrefs())) return
         val ctx = shadowBeforeCursor(80).trim()
         if (ctx.length < 2) return
