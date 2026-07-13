@@ -138,6 +138,13 @@ import com.fran.teclas.brief.BriefItem
 import com.fran.teclas.brief.BriefRepository
 import com.fran.teclas.brief.TodayKeyboardMode
 import com.fran.teclas.brief.TodayPage
+import com.fran.teclas.brief.accentColorInt
+import com.fran.teclas.brief.backgroundDrawable
+import com.fran.teclas.brief.cardDrawable
+import com.fran.teclas.brief.cardFillColorInt
+import com.fran.teclas.brief.mutedColorInt
+import com.fran.teclas.brief.textColorInt
+import com.fran.teclas.brief.typeface
 import androidx.compose.ui.platform.ComposeView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -5595,7 +5602,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     internal fun briefThemeId(): String =
-        prefs().getString(homeScopedKey(BRIEF_THEME_PREF), BRIEF_THEME_GLASS) ?: BRIEF_THEME_GLASS
+        com.fran.teclas.brief.BriefThemes
+            .themeForPref(prefs().getString(homeScopedKey(BRIEF_THEME_PREF), BRIEF_THEME_GLASS))
+            .id
+            .toString()
 
     /** Open a source thread: the exact notification if still live, else the app, else say so. */
     private fun openThread(pkg: String, key: String) {
@@ -5657,18 +5667,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun buildBriefWidgetFrame(context: Context): View? {
         val edition = com.fran.teclas.brief.DailyBrief.current(prefs()) ?: return null
-        val dotTheme = briefThemeId() == BRIEF_THEME_DOT
+        val briefTheme = com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId())
+        val dotTheme = briefTheme.id == com.fran.teclas.brief.BRIEF_THEME_DOT_ID.toInt()
         val frame = BriefWidgetFrame(context)
-        val ink = Color.WHITE
-        val dim = 0xB3FFFFFF.toInt()
-        val faint = 0x82FFFFFF.toInt()
-        val accent = if (dotTheme) 0xFFE5342A.toInt() else goKeyColor   // Nothing red on the dot theme
+        val ink = briefTheme.textColorInt()
+        val dim = briefTheme.mutedColorInt()
+        val faint = dim
+        val accent = briefTheme.accentColorInt()
         val hasBack = edition.todos.isNotEmpty()
         var flip: (() -> Unit)? = null
 
         fun titleFace(): android.graphics.Typeface =
-            if (dotTheme) android.graphics.Typeface.MONOSPACE
-            else android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            briefTheme.typeface(android.graphics.Typeface.BOLD)
 
         // Header row shared by both faces: label (LED on dot theme) + optional flip + dismiss.
         fun header(label: String, showFlip: Boolean): View = LinearLayout(context).apply {
@@ -5792,10 +5802,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        if (dotTheme) {
-            content.background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat(); setColor(0xF00A0A0A.toInt()); setStroke(dp(1), 0x24FFFFFF)
+        if (!briefTheme.isBoxed || dotTheme || briefTheme.cardFillColorInt() != null) {
+            content.background = if (briefTheme.isBoxed) {
+                briefTheme.cardDrawable(context)
+            } else {
+                briefTheme.backgroundDrawable(context, 20)
             }
+        }
+        if (dotTheme || !briefTheme.effect.orEmpty().contains("blur", ignoreCase = true)) {
             frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         } else {
             // Blurred wallpaper backdrop, sized to the content so the panel's match-parent blur layer
@@ -16360,6 +16374,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         parent.addView(integrationRow("Spotify", "com.spotify.music", SPOTIFY_INTEGRATION_PREF))
         parent.addView(integrationRow("Apple Music", "com.apple.android.music", APPLE_MUSIC_INTEGRATION_PREF))
         parent.addView(geminiIntegrationRow())
+        parent.addView(aiModelsRow())
         parent.addView(braveIntegrationRow())
         parent.addView(gmailIntegrationRow())
         parent.addView(nativeIntegrationRow("Notifications", isNotificationAccessEnabled(), "MESSAGE, EMAIL, NEWS, MAPS WIDGETS") {
@@ -16518,6 +16533,105 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return integrationLikeRow("Gemini AI", state, if (enabled && reachable) 0xFF8AB4F8.toInt() else InkDim) { anchor ->
             showGeminiMenu(anchor)
         }
+    }
+
+    private fun aiModelsRow(): View {
+        val bonsai = com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this)
+        val embed = com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this)
+        val count = (if (bonsai) 1 else 0) + (if (embed) 1 else 0)
+        val state = when (count) { 2 -> "2 ON-DEVICE"; 1 -> "1 ON-DEVICE"; else -> "SET UP" }
+        return integrationLikeRow("AI Models", state, if (count > 0) 0xFFC9A7FF.toInt() else InkDim) {
+            showAiModelsDialog()
+        }
+    }
+
+    /** Always-visible manager for the on-device models: Bonsai (one-tap download, ungated) and
+     *  EmbeddingGemma (import — its files are licence-gated so can't auto-download). */
+    private fun showAiModelsDialog() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(18), dp(22), dp(8))
+        }
+        fun label(t: String, size: Float, color: Int) = TextView(this).apply {
+            text = t; textSize = size; setTextColor(color)
+        }
+
+        // ── Keyboard AI — Bonsai 1.7B (ungated, one-tap download) ────────────────
+        root.addView(label("Keyboard AI · Bonsai 1.7B", 15f, Ink).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        })
+        val bonsaiStatus = label(
+            if (com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this)) "Installed · runs the keyboard AI in any app, offline"
+            else "Not installed · 237 MB · powers polish, compose and GO everywhere",
+            12.5f, InkDim
+        ).apply { setPadding(0, dp(3), 0, dp(8)) }
+        root.addView(bonsaiStatus)
+        val bonsaiBtn = TextView(this).apply {
+            textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0xFFC9A7FF.toInt()) }
+            text = if (com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this@MainActivity)) "Re-download" else "Download (237 MB)"
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                text = "Starting…"; isEnabled = false
+                mediaUiScope.launch {
+                    val poll = object : Runnable {
+                        override fun run() {
+                            val eng = com.fran.teclas.llm.LocalLlmEngine
+                            if (eng.downloading) {
+                                val pct = (eng.downloadedBytes * 100 / eng.totalBytes).toInt()
+                                bonsaiStatus.text = "Downloading… $pct%  (${eng.downloadedBytes / 1_000_000} MB)"
+                                handler.postDelayed(this, 500)
+                            }
+                        }
+                    }
+                    handler.postDelayed(poll, 400)
+                    val ok = withContext(Dispatchers.IO) {
+                        runCatching { com.fran.teclas.llm.LocalLlmEngine.downloadModel(this@MainActivity) }.getOrDefault(false)
+                    }
+                    handler.removeCallbacks(poll)
+                    bonsaiStatus.text = if (ok) "Installed · runs the keyboard AI in any app, offline"
+                        else "Download failed — check your connection and try again"
+                    text = if (ok) "Re-download" else "Retry"
+                    isEnabled = true
+                }
+            }
+        }
+        root.addView(bonsaiBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // ── Semantic search — EmbeddingGemma (gated → import) ───────────────────
+        root.addView(label("Semantic search · EmbeddingGemma", 15f, Ink).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(0, dp(20), 0, 0)
+        })
+        root.addView(label(
+            if (com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this)) "Installed · natural-language search over apps, settings, messages"
+            else "Not installed · import the model + tokenizer (licence-gated, can't auto-download)",
+            12.5f, InkDim
+        ).apply { setPadding(0, dp(3), 0, dp(8)) })
+        val importBtn = TextView(this).apply {
+            textSize = 13f; setTextColor(Ink); gravity = Gravity.CENTER
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat(); setStroke(dp(1), 0x40FFFFFF); setColor(0x14FFFFFF)
+            }
+            text = "Import model files…"
+            isClickable = true
+            setOnClickListener { haptic(this); openSemanticModelPicker() }
+        }
+        root.addView(importBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(label(
+            "Get the files free at huggingface.co/litert-community/embeddinggemma-300m " +
+                "(accept the licence, then download the seq256 .tflite and sentencepiece.model).",
+            11f, InkDim
+        ).apply { setPadding(0, dp(8), 0, 0) })
+
+        AlertDialog.Builder(this)
+            .setTitle("AI Models")
+            .setView(androidx.core.widget.NestedScrollView(this).apply { addView(root) })
+            .setPositiveButton("Done", null)
+            .show()
     }
 
     private fun braveIntegrationRow(): View {

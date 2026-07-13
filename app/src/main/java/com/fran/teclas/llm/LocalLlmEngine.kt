@@ -38,6 +38,9 @@ object LocalLlmEngine {
     private fun modelFile(context: Context): File =
         File(File(context.filesDir, DIR).apply { mkdirs() }, MODEL_FILE)
 
+    /** Total download size, for progress UI. */
+    val totalBytes: Long get() = MODEL_BYTES
+
     fun modelInstalled(context: Context): Boolean = modelFile(context).length() == MODEL_BYTES
 
     fun ready(context: Context): Boolean = handle != 0L || modelInstalled(context)
