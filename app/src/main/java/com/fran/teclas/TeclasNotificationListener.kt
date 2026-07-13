@@ -279,11 +279,32 @@ class TeclasNotificationListener : NotificationListenerService() {
 
     private fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    data class IncomingMessage(val sender: String, val preview: String, val key: String, val whenMs: Long)
+
     companion object {
         private const val PREFS_NAME = "teclas"
         private const val HUB_MESSAGES_PREF = "hub_messages"
         private const val HUB_KIND_MESSAGE = "message"
         private const val HUB_KIND_EMAIL = "email"
+
+        /** Newest incoming person-message captured for [pkg] (or null). Reads the same shared hub
+         *  store the launcher uses — lets the IME see "what the person just asked" while you reply. */
+        fun latestConversation(context: Context, pkg: String): IncomingMessage? {
+            val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(HUB_MESSAGES_PREF, "[]") ?: return null
+            val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return null
+            var best: IncomingMessage? = null
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optString("packageName") != pkg) continue
+                if (o.optString("kind") != HUB_KIND_MESSAGE) continue
+                val whenMs = o.optLong("lastUpdated")
+                if (best == null || whenMs > best!!.whenMs) {
+                    best = IncomingMessage(o.optString("sender"), o.optString("preview"), o.optString("key"), whenMs)
+                }
+            }
+            return best
+        }
         private const val HUB_KIND_NEWS = "news"
         private const val HUB_KIND_MAPS = "maps"
         private const val MAX_MESSAGES = 12

@@ -653,29 +653,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             Toast.makeText(this, if (innerScope) "Inner wallpaper applied." else "Cover wallpaper applied.", Toast.LENGTH_SHORT).show()
             if (::rootView.isInitialized) render()
         }
-        semanticModelPickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val data = result.data ?: return@registerForActivityResult
-            val uris = mutableListOf<Uri>()
-            data.data?.let { uris.add(it) }
-            data.clipData?.let { clip -> repeat(clip.itemCount) { uris.add(clip.getItemAt(it).uri) } }
-            if (uris.isEmpty()) return@registerForActivityResult
-            mediaUiScope.launch {
-                val imported = withContext(Dispatchers.IO) {
-                    uris.mapNotNull { com.fran.teclas.semantic.SemanticSearchEngine.importModelFile(this@MainActivity, it) }
-                }
-                when {
-                    imported.isEmpty() ->
-                        Toast.makeText(this@MainActivity, "Couldn't recognize those files — need the .tflite model and sentencepiece.model.", Toast.LENGTH_LONG).show()
-                    com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this@MainActivity) -> {
-                        prefs().edit().putBoolean(SEMANTIC_SEARCH_PREF, true).apply()
-                        Toast.makeText(this@MainActivity, "Semantic search ready — building index…", Toast.LENGTH_SHORT).show()
-                        rebuildSemanticIndex()
-                    }
-                    else ->
-                        Toast.makeText(this@MainActivity, "Imported ${imported.joinToString()} — still missing ${if (imported.contains("tokenizer")) "the .tflite model" else "sentencepiece.model"}.", Toast.LENGTH_LONG).show()
-                }
-            }
-        }
+        // Semantic model is now an ungated auto-download (EmbedEngine) — no file import. The launcher
+        // is kept registered but unused so the field stays valid across the refactor.
+        semanticModelPickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
         appWidgetHost.startListening()
@@ -15098,6 +15078,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     query += char
                 }
                 // Secret dev code: force-generate a brief edition (preview/theming aid).
+                if (query.equals("embtest", ignoreCase = true)) {
+                    query = ""
+                    Toast.makeText(this, "Embedding self-test…", Toast.LENGTH_SHORT).show()
+                    mediaUiScope.launch {
+                        val res = withContext(Dispatchers.IO) {
+                            val e = com.fran.teclas.llm.EmbedEngine
+                            val q = e.embed(this@MainActivity, "where can we get thai food", isQuery = true)
+                            val a = e.embed(this@MainActivity, "Thai restaurants nearby", isQuery = false)
+                            val b = e.embed(this@MainActivity, "play some jazz music", isQuery = false)
+                            fun dot(x: FloatArray?, y: FloatArray?): Float {
+                                if (x == null || y == null || x.size != y.size) return -9f
+                                var s = 0f; for (i in x.indices) s += x[i] * y[i]; return s
+                            }
+                            "thai↔thai=%.3f  thai↔music=%.3f  dim=%d".format(dot(q, a), dot(q, b), q?.size ?: 0)
+                        }
+                        Toast.makeText(this@MainActivity, res, Toast.LENGTH_LONG).show()
+                        runCatching {
+                            java.io.File(filesDir, "nano_status.txt").appendText("[embtest] $res\n")
+                        }
+                    }
+                    renderRibbon(); return
+                }
                 if (query.equals("seedcommit", ignoreCase = true)) {
                     query = ""
                     com.fran.teclas.brief.CommitmentStore.add(prefs(), listOf(
@@ -15681,14 +15683,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return false
     }
 
-    private fun openSemanticModelPicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+    /** Auto-download the ungated nomic embedder (84MB), enable semantic search, build the index.
+     *  [onProgress] gets a status string; [onDone] fires with success. Runs off the main thread. */
+    private fun downloadSemanticModel(onProgress: (String) -> Unit = {}, onDone: (Boolean) -> Unit = {}) {
+        if (com.fran.teclas.llm.EmbedEngine.modelInstalled(this)) { onDone(true); return }
+        onProgress("Starting…")
+        mediaUiScope.launch {
+            val poll = object : Runnable {
+                override fun run() {
+                    val e = com.fran.teclas.llm.EmbedEngine
+                    if (e.downloading) {
+                        val pct = (e.downloadedBytes * 100 / e.totalBytes).toInt()
+                        onProgress("Downloading… $pct%")
+                        handler.postDelayed(this, 400)
+                    }
+                }
+            }
+            handler.postDelayed(poll, 300)
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { com.fran.teclas.llm.EmbedEngine.downloadModel(this@MainActivity) }.getOrDefault(false)
+            }
+            handler.removeCallbacks(poll)
+            if (ok) {
+                prefs().edit().putBoolean(SEMANTIC_SEARCH_PREF, true).apply()
+                rebuildSemanticIndex()
+            }
+            onDone(ok)
         }
-        runCatching { semanticModelPickerLauncher.launch(intent) }
-            .onFailure { Toast.makeText(this, "File picker isn't available here.", Toast.LENGTH_SHORT).show() }
     }
 
     private fun playSpotifyTrackFromSearch(track: SpotifyTrack) {
@@ -16597,10 +16618,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0xFFC9A7FF.toInt()) }
-            text = if (com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this@MainActivity)) "Re-download" else "Download (237 MB)"
+            text = if (com.fran.teclas.llm.LocalLlmEngine.fastInstalled(this@MainActivity)) "Re-download" else "Download (237 MB)"
             isClickable = true
             setOnClickListener {
                 haptic(this)
+                if (!ProManager.isUnlocked(this@MainActivity)) { requirePro(ProFeature.AI_CHAT); return@setOnClickListener }
                 text = "Starting…"; isEnabled = false
                 mediaUiScope.launch {
                     val poll = object : Runnable {
@@ -16627,32 +16649,88 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         root.addView(bonsaiBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // ── Semantic search — EmbeddingGemma (gated → import) ───────────────────
-        root.addView(label("Semantic search · EmbeddingGemma", 15f, Ink).apply {
+        // ── Semantic search — nomic-embed (ungated, one-tap download) ───────────
+        root.addView(label("Semantic search · nomic-embed", 15f, Ink).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setPadding(0, dp(20), 0, 0)
         })
-        root.addView(label(
-            if (com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this)) "Installed · natural-language search over apps, settings, messages"
-            else "Not installed · import the model + tokenizer (licence-gated, can't auto-download)",
+        val embedStatus = label(
+            if (com.fran.teclas.llm.EmbedEngine.modelInstalled(this)) "Installed · natural-language search over apps, settings, messages"
+            else "Not installed · 84 MB · type what you mean, find the right app or setting",
             12.5f, InkDim
-        ).apply { setPadding(0, dp(3), 0, dp(8)) })
-        val importBtn = TextView(this).apply {
-            textSize = 13f; setTextColor(Ink); gravity = Gravity.CENTER
+        ).apply { setPadding(0, dp(3), 0, dp(8)) }
+        root.addView(embedStatus)
+        val embedBtn = TextView(this).apply {
+            textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat(); setStroke(dp(1), 0x40FFFFFF); setColor(0x14FFFFFF)
-            }
-            text = "Import model files…"
+            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0xFFC9A7FF.toInt()) }
+            text = if (com.fran.teclas.llm.EmbedEngine.modelInstalled(this@MainActivity)) "Re-download" else "Download (84 MB)"
             isClickable = true
-            setOnClickListener { haptic(this); openSemanticModelPicker() }
+            setOnClickListener {
+                haptic(this)
+                if (!ProManager.isUnlocked(this@MainActivity)) { requirePro(ProFeature.AI_CHAT); return@setOnClickListener }
+                isEnabled = false; text = "Starting…"
+                downloadSemanticModel(
+                    onProgress = { embedStatus.text = it },
+                    onDone = { ok ->
+                        embedStatus.text = if (ok) "Installed · natural-language search over apps, settings, messages"
+                            else "Download failed — check your connection and try again"
+                        text = if (ok) "Re-download" else "Retry"; isEnabled = true
+                    }
+                )
+            }
         }
-        root.addView(importBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(label(
-            "Get the files free at huggingface.co/litert-community/embeddinggemma-300m " +
-                "(accept the licence, then download the seq256 .tflite and sentencepiece.model).",
-            11f, InkDim
-        ).apply { setPadding(0, dp(8), 0, 0) })
+        root.addView(embedBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        // ── Quality model — Gemma 3 4B (Pro, big) ───────────────────────────────
+        root.addView(label("Quality AI · Gemma 3 4B", 15f, Ink).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(0, dp(20), 0, 0)
+        })
+        val gemmaStatus = label(
+            if (com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this)) "Installed · a much smarter local model for the brief, chat and rewrites"
+            else "Optional · 2.5 GB · far better writing and reasoning than Bonsai (slower, Wi-Fi + storage)",
+            12.5f, InkDim
+        ).apply { setPadding(0, dp(3), 0, dp(8)) }
+        root.addView(gemmaStatus)
+        val gemmaBtn = TextView(this).apply {
+            textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0xFFC9A7FF.toInt()) }
+            text = if (com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity)) "Re-download" else "Download (2.5 GB)"
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                if (!ProManager.isUnlocked(this@MainActivity)) { requirePro(ProFeature.AI_CHAT); return@setOnClickListener }
+                text = "Starting…"; isEnabled = false
+                mediaUiScope.launch {
+                    val poll = object : Runnable {
+                        override fun run() {
+                            val eng = com.fran.teclas.llm.LocalLlmEngine
+                            if (eng.downloading) {
+                                val pct = (eng.downloadedBytes * 100 / eng.qualityBytes).toInt()
+                                gemmaStatus.text = "Downloading… $pct%  (${eng.downloadedBytes / 1_000_000} MB / 2489 MB)"
+                                handler.postDelayed(this, 700)
+                            }
+                        }
+                    }
+                    handler.postDelayed(poll, 500)
+                    val ok = withContext(Dispatchers.IO) {
+                        runCatching { com.fran.teclas.llm.LocalLlmEngine.downloadModel(this@MainActivity, quality = true) }.getOrDefault(false)
+                    }
+                    handler.removeCallbacks(poll)
+                    gemmaStatus.text = if (ok) "Installed · a much smarter local model for the brief, chat and rewrites"
+                        else "Download failed — needs Wi-Fi and ~2.5 GB free; try again"
+                    text = if (ok) "Re-download" else "Retry"; isEnabled = true
+                }
+            }
+        }
+        root.addView(gemmaBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        if (!ProManager.isUnlocked(this)) {
+            root.addView(label("On-device AI models are a Teclas Pro feature. Free users get the core launcher.", 11f, 0xFFC9A7FF.toInt())
+                .apply { setPadding(0, dp(16), 0, 0) })
+        }
 
         AlertDialog.Builder(this)
             .setTitle("AI Models")
@@ -19157,13 +19235,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         entries.add(SettingSearchEntry(
             "Semantic search",
             when {
-                !com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this) -> "Needs model files · tap to import"
+                !com.fran.teclas.llm.EmbedEngine.modelInstalled(this) -> "Download 84 MB model · tap to get"
                 else -> toggleStateLabel(semanticSearchEnabled())
             },
             listOf("semantic", "semantic search", "ai search", "smart search", "embedding", "natural search")
         ) {
-            if (!com.fran.teclas.semantic.SemanticSearchEngine.modelInstalled(this)) {
-                openSemanticModelPicker()
+            if (!ProManager.isUnlocked(this)) { requirePro(ProFeature.AI_CHAT); return@SettingSearchEntry }
+            if (!com.fran.teclas.llm.EmbedEngine.modelInstalled(this)) {
+                Toast.makeText(this, "Downloading semantic search model (84 MB)…", Toast.LENGTH_SHORT).show()
+                downloadSemanticModel(onDone = { ok ->
+                    Toast.makeText(this, if (ok) "Semantic search ready" else "Download failed", Toast.LENGTH_SHORT).show()
+                    if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(teclasSettingsTarget())
+                })
             } else {
                 val next = !semanticSearchEnabled()
                 prefs().edit().putBoolean(SEMANTIC_SEARCH_PREF, next).apply()

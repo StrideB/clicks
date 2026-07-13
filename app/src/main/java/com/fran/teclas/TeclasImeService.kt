@@ -2723,9 +2723,25 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Clipboard skills: a bare trigger word (mood, stock, notion…) runs a shared skill on the COPIED
         // text, not the field. Handled by the shared AgenticEngine so the launcher keyboard behaves identically.
         if (AgenticEngine.tryClipSkill(agenticHost, raw)) return
-        // Empty field: don't guess — show discoverable starter chips (Share location + top skills).
-        // Tapping one either runs it (location) or seeds its trigger so you just finish typing.
+        // Empty field: first try a conversation-aware chirp. If the person you're replying to just
+        // asked something ("what thai place should we try?"), read that incoming message and offer a
+        // ready action (Find place, Navigate, Web search). Falls back to starter chips.
         if (raw.isBlank()) {
+            val pkg = currentEditorPackage
+            val incoming = pkg?.let { TeclasNotificationListener.latestConversation(this, it) }
+            val fresh = incoming != null && System.currentTimeMillis() - incoming.whenMs < 20 * 60_000
+            if (fresh && ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs())) {
+                agenticStatus = "🤖 Reading the chat…"; updateStrip()
+                Thread {
+                    val cmd = runCatching { conversationChirp(incoming!!.preview) }.getOrNull()
+                    handler.post {
+                        agenticStatus = null
+                        if (cmd != null) { pendingCommandText = ""; pendingCommand = cmd; updateStrip() }
+                        else { val s = buildStarters(); if (s.isNotEmpty()) { agenticStarters = s; updateStrip() } }
+                    }
+                }.start()
+                return
+            }
             val starters = buildStarters()
             if (starters.isNotEmpty()) { agenticStarters = starters; updateStrip(); return }
         }
@@ -2771,6 +2787,34 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             return
         }
         flashAgenticStatus("Type a command \u2014 play, nearest, timer\u2026", 2200)
+    }
+
+    /**
+     * Read the person's latest message and suggest ONE actionable chirp \u2014 the Kelly/thai case:
+     * "what thai restaurant should we go to?" \u2192 a "Thai near you" chip that opens Maps. Grammar-free
+     * but validated against the real skill catalog, so it can only produce actions Teclas performs.
+     * On-device (Bonsai/Nano); blocking, call off the main thread. Returns null when nothing helps.
+     */
+    private fun conversationChirp(incoming: String): AgenticRouter.Command? {
+        if (incoming.isBlank()) return null
+        val prompt = """Someone just messaged the user. Suggest ONE helpful phone action to help them reply, or none.
+Their message: "${incoming.take(200)}"
+Reply ONLY as JSON: {"skill":"<Find place|Navigate|Web search|none>","query":"<what to search or find>","label":"<chip text, max 5 words>"}
+Use "Find place" for restaurants, venues or things nearby; "Navigate" for directions; "Web search" for facts or lookups; "none" if no action helps."""
+        val out = GeminiClient.generate(
+            GeminiClient.apiKey(imePrefs()), GeminiClient.model(imePrefs()), prompt,
+            maxTokens = 80, temperature = 0.1, json = true,
+        ) ?: return null
+        val inner = out.substringAfter('{', "").substringBeforeLast('}')
+        if (inner.isBlank()) return null
+        val obj = runCatching { org.json.JSONObject("{$inner}") }.getOrNull() ?: return null
+        val skill = obj.optString("skill").trim()
+        if (skill.isBlank() || skill.equals("none", ignoreCase = true)) return null
+        val query = obj.optString("query").trim()
+        if (query.isBlank()) return null
+        val label = obj.optString("label").trim()
+        val cmd = AgenticRouter.commandForSkill(skill, query) ?: return null
+        return if (label.isNotBlank()) cmd.copy(label = label) else cmd
     }
 
     // Starter chips for the held-go-over-empty-field case: Share location runs on tap; the rest seed

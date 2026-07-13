@@ -18,11 +18,20 @@ object LocalLlmEngine {
 
     private const val TAG = "LocalLlm"
     private const val DIR = "llm"
-    private const val MODEL_FILE = "bonsai-1.7b-q1_0.gguf"
-    private const val MODEL_URL =
-        "https://huggingface.co/prism-ml/Bonsai-1.7B-gguf/resolve/main/Bonsai-1.7B-Q1_0.gguf"
-    private const val MODEL_BYTES = 248_302_272L
     private const val N_CTX = 2048
+
+    // Two swappable generative models. Bonsai = small, fast, 1-bit (the free default). Gemma 3 4B =
+    // the quality tier (Pro): much better writing/reasoning, but ~2.5GB and slower. When both are
+    // downloaded the quality model wins.
+    private data class ModelSpec(val file: String, val url: String, val bytes: Long)
+    private val BONSAI = ModelSpec(
+        "bonsai-1.7b-q1_0.gguf",
+        "https://huggingface.co/prism-ml/Bonsai-1.7B-gguf/resolve/main/Bonsai-1.7B-Q1_0.gguf",
+        248_302_272L)
+    private val GEMMA = ModelSpec(
+        "gemma-3-4b-it-Q4_K_M.gguf",
+        "https://huggingface.co/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
+        2_489_894_016L)
 
     init {
         runCatching { System.loadLibrary("teclasllm") }
@@ -35,27 +44,37 @@ object LocalLlmEngine {
     @Volatile var downloadedBytes: Long = 0
         private set
 
-    private fun modelFile(context: Context): File =
-        File(File(context.filesDir, DIR).apply { mkdirs() }, MODEL_FILE)
+    private fun fileFor(context: Context, spec: ModelSpec): File =
+        File(File(context.filesDir, DIR).apply { mkdirs() }, spec.file)
 
-    /** Total download size, for progress UI. */
-    val totalBytes: Long get() = MODEL_BYTES
+    private fun installed(context: Context, spec: ModelSpec) = fileFor(context, spec).length() == spec.bytes
 
-    fun modelInstalled(context: Context): Boolean = modelFile(context).length() == MODEL_BYTES
+    /** Prefer the quality model when downloaded, else the fast one, else none. */
+    private fun activeSpec(context: Context): ModelSpec? =
+        if (installed(context, GEMMA)) GEMMA else if (installed(context, BONSAI)) BONSAI else null
+
+    fun modelInstalled(context: Context): Boolean = activeSpec(context) != null
+    fun fastInstalled(context: Context): Boolean = installed(context, BONSAI)
+    fun qualityInstalled(context: Context): Boolean = installed(context, GEMMA)
+    val totalBytes: Long get() = BONSAI.bytes
+    val qualityBytes: Long get() = GEMMA.bytes
 
     fun ready(context: Context): Boolean = handle != 0L || modelInstalled(context)
 
-    /** Download the model in the background (caller runs this on a worker thread). Safe to
-     *  re-invoke: resumes a partial file via HTTP Range. Returns true when complete. */
-    fun downloadModel(context: Context): Boolean {
-        if (modelInstalled(context)) return true
+    /** Download a model in the background (call off the main thread). [quality] picks Gemma 3 4B
+     *  (Pro) vs Bonsai. Resumable via HTTP Range. On success the active handle is reset so the new
+     *  model loads on the next call. Returns true when complete. */
+    fun downloadModel(context: Context, quality: Boolean = false): Boolean {
+        val spec = if (quality) GEMMA else BONSAI
+        if (installed(context, spec)) return true
         if (downloading) return false
         downloading = true
-        val target = modelFile(context)
-        val tmp = File(target.parentFile, "$MODEL_FILE.part")
+        downloadedBytes = 0
+        val target = fileFor(context, spec)
+        val tmp = File(target.parentFile, "${spec.file}.part")
         return try {
             val have = tmp.length()
-            val conn = (URL(MODEL_URL).openConnection() as HttpURLConnection).apply {
+            val conn = (URL(spec.url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15_000; readTimeout = 60_000
                 if (have > 0) setRequestProperty("Range", "bytes=$have-")
                 instanceFollowRedirects = true
@@ -75,8 +94,11 @@ object LocalLlmEngine {
                     }
                 }
             }
-            if (tmp.length() == MODEL_BYTES) { tmp.renameTo(target); true }
-            else { Log.w(TAG, "download incomplete: ${tmp.length()}/$MODEL_BYTES"); false }
+            if (tmp.length() == spec.bytes) {
+                tmp.renameTo(target)
+                synchronized(this) { if (handle != 0L) { runCatching { nativeFree(handle) }; handle = 0 } }
+                true
+            } else { Log.w(TAG, "download incomplete: ${tmp.length()}/${spec.bytes}"); false }
         } catch (e: Exception) {
             Log.w(TAG, "download failed: ${e.message}")
             false
@@ -125,8 +147,8 @@ object LocalLlmEngine {
     @Synchronized
     private fun loadedHandle(context: Context): Long? {
         if (handle != 0L) return handle
-        val f = modelFile(context)
-        if (f.length() != MODEL_BYTES) return null
+        val spec = activeSpec(context) ?: return null
+        val f = fileFor(context, spec)
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
         val t0 = System.currentTimeMillis()
         val h = runCatching { nativeLoad(f.absolutePath, N_CTX, threads) }.getOrDefault(0L)

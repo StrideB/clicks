@@ -4,6 +4,7 @@
 
 #include <jni.h>
 #include <android/log.h>
+#include <cmath>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -143,6 +144,91 @@ Java_com_fran_teclas_llm_LocalLlmEngine_nativeGenerate(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_fran_teclas_llm_LocalLlmEngine_nativeFree(JNIEnv *, jclass, jlong handle) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto *e = (Engine *) handle;
+    if (!e) return;
+    if (e->ctx) llama_free(e->ctx);
+    if (e->model) llama_model_free(e->model);
+    delete e;
+}
+
+// ── Embeddings: same runtime, an ungated BERT-style GGUF (nomic-embed). A context in
+// embeddings mode with MEAN pooling turns text into one L2-normalized vector. No tokenizer
+// file — the GGUF carries it — so semantic search auto-downloads with zero user setup.
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_fran_teclas_llm_EmbedEngine_nativeLoadEmbedder(JNIEnv *env, jclass, jstring jpath, jint nThreads) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    static bool backend_ready = false;
+    if (!backend_ready) { llama_backend_init(); backend_ready = true; }
+
+    const std::string path = jstr(env, jpath);
+    llama_model_params mparams = llama_model_default_params();
+    mparams.use_mmap = true;
+    llama_model *model = llama_model_load_from_file(path.c_str(), mparams);
+    if (!model) { LOGW("embedder load failed: %s", path.c_str()); return 0; }
+
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx = 512;
+    cparams.n_batch = 512;
+    cparams.n_ubatch = 512;
+    cparams.n_threads = nThreads;
+    cparams.n_threads_batch = nThreads;
+    cparams.embeddings = true;
+    cparams.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+    llama_context *ctx = llama_init_from_model(model, cparams);
+    if (!ctx) { llama_model_free(model); LOGW("embedder ctx init failed"); return 0; }
+
+    auto *e = new Engine{model, ctx};
+    return (jlong) e;
+}
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_fran_teclas_llm_EmbedEngine_nativeEmbed(JNIEnv *env, jclass, jlong handle, jstring jtext) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto *e = (Engine *) handle;
+    if (!e || !e->ctx) return nullptr;
+
+    const std::string text = jstr(env, jtext);
+    const llama_vocab *vocab = llama_model_get_vocab(e->model);
+
+    std::vector<llama_token> tokens(text.size() + 16);
+    int n_tok = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(),
+                               tokens.data(), (int32_t) tokens.size(), true, true);
+    if (n_tok < 0) {
+        tokens.resize(-n_tok);
+        n_tok = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(),
+                               tokens.data(), (int32_t) tokens.size(), true, true);
+    }
+    if (n_tok <= 0) return nullptr;
+    const int n_ctx = (int) llama_n_ctx(e->ctx);
+    if (n_tok > n_ctx) n_tok = n_ctx;
+    tokens.resize(n_tok);
+
+    llama_memory_clear(llama_get_memory(e->ctx), true);
+    if (llama_decode(e->ctx, llama_batch_get_one(tokens.data(), n_tok)) != 0) {
+        LOGW("embed decode failed");
+        return nullptr;
+    }
+
+    const int n_embd = llama_model_n_embd(e->model);
+    const float *emb = llama_get_embeddings_seq(e->ctx, 0);
+    if (!emb) emb = llama_get_embeddings_ith(e->ctx, n_tok - 1);
+    if (!emb) { LOGW("no embeddings produced"); return nullptr; }
+
+    double sum = 0.0;
+    for (int i = 0; i < n_embd; i++) sum += (double) emb[i] * emb[i];
+    const float inv = sum > 0.0 ? (float) (1.0 / std::sqrt(sum)) : 1.0f;
+    std::vector<float> norm(n_embd);
+    for (int i = 0; i < n_embd; i++) norm[i] = emb[i] * inv;
+
+    jfloatArray arr = env->NewFloatArray(n_embd);
+    env->SetFloatArrayRegion(arr, 0, n_embd, norm.data());
+    return arr;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_fran_teclas_llm_EmbedEngine_nativeFree(JNIEnv *, jclass, jlong handle) {
     std::lock_guard<std::mutex> lock(g_mutex);
     auto *e = (Engine *) handle;
     if (!e) return;

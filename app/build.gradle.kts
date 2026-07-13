@@ -68,20 +68,6 @@ android {
         compose = true
     }
 
-    packaging {
-        jniLibs {
-            // The RAG SDK bundles ~100MB of native libs; semantic search only uses the
-            // EmbeddingGemma JNI. Drop the generative LLM engine, the Gecko embedder, and
-            // the chunker/vector-store we replace with our own flat-file index.
-            excludes += listOf(
-                "lib/*/libllm_inference_engine_jni.so",
-                "lib/*/libgecko_embedding_model_jni.so",
-                "lib/*/libtext_chunker_jni.so",
-                "lib/*/libsqlite_vector_store_jni.so",
-            )
-        }
-    }
-
     lint {
         // Pre-modernization findings are frozen in the baseline; lint fails only on NEW issues.
         baseline = file("lint-baseline.xml")
@@ -139,10 +125,8 @@ dependencies {
     // Keyboard-safe on-device rewriting: AICore blocks the raw Prompt API when the IME types into
     // another app (ErrorCode 30), but the task-specific Rewriting API is built for keyboards.
     implementation(libs.mlkit.genai.rewriting)
-    // On-device semantic search: EmbeddingGemma via the AI Edge RAG SDK (GemmaEmbeddingModel).
-    // Model + tokenizer files are user-imported into filesDir/semantic/ — nothing bundled.
-    implementation(libs.localagents.rag)
-    implementation(libs.mediapipe.tasks.genai)
+    // Semantic search now runs on the app's own llama.cpp (nomic-embed GGUF, EmbedEngine) —
+    // no AI Edge RAG SDK, no license-gated model, no tokenizer file.
     // Shizuku: adb/root-privileged binder access so the launcher can pin apps into the docked
     // top region (setTaskWindowingMode + resizeTask) — freeform launchBounds alone don't survive
     // in-app navigation and are blocked outright on some OEMs. HiddenApiBypass reaches the hidden
