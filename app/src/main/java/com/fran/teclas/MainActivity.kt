@@ -15158,6 +15158,19 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 keyboardSettingsOpen = !keyboardSettingsOpen; query = ""; render(); return
             }
             "enter" -> {
+                // Number pad first: typing a digit auto-opens the library as the search surface
+                // (libraryOpen becomes true), so this MUST be checked before the libraryOpen branch
+                // below — otherwise GO falls into library search and the dial path never runs. In
+                // dial mode GO always calls: a saved contact matching the digits wins, else dial
+                // exactly what was typed (no length filter — short/extension numbers dial too).
+                if (numberPadOpen) {
+                    val contactNumber = searchContacts(query).firstOrNull()?.target?.deepLinkUri?.removePrefix("tel:")
+                    val typed = query.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+                    val number = contactNumber?.takeIf { it.isNotBlank() } ?: typed.takeIf { it.isNotBlank() }
+                    if (number != null) placeCall(number)
+                    else Toast.makeText(this, "Type a number to call", Toast.LENGTH_SHORT).show()
+                    return
+                }
                 if (isUnfoldedInnerLayoutActive() && openPane == null) {
                     if (executeTypeToDoCommand(query)) {
                         query = ""
@@ -15179,31 +15192,17 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     if (result != null) openSearchResult(result) else launchInAppGoogleSearch(query)
                     return
                 }
-                if (numberPadOpen) {
-                    // The number pad IS a dialer — the whole point is: type the number, press GO,
-                    // the phone calls. So place the call directly (placeCall → ACTION_CALL), no
-                    // hopping into the Phone app to press call again. A saved contact matching the
-                    // typed digits wins; otherwise dial exactly what was typed. No length filter
-                    // here — the user is explicitly in dial mode, so short/extension numbers dial
-                    // too (unlike the fuzzier search "Call" card, which keeps the 7-digit heuristic).
-                    val contactNumber = searchContacts(query).firstOrNull()?.target?.deepLinkUri?.removePrefix("tel:")
-                    val typed = query.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
-                    val number = contactNumber?.takeIf { it.isNotBlank() } ?: typed.takeIf { it.isNotBlank() }
-                    if (number != null) placeCall(number)
-                    else Toast.makeText(this, "Type a number to call", Toast.LENGTH_SHORT).show()
+                // (numberPadOpen handled at the top of this case.)
+                if (executeTypeToDoCommand(query)) {
+                    query = ""
+                    renderRibbon()
                     return
+                }
+                val ribbon = filteredRibbonEntries().firstOrNull()
+                if (ribbon != null && query.isNotBlank()) {
+                    if (ribbon.target.kind == PaneKind.MUSIC || ribbon.target.packageName == null) openHere(ribbon.target) else openExternal(ribbon.target)
                 } else {
-                    if (executeTypeToDoCommand(query)) {
-                        query = ""
-                        renderRibbon()
-                        return
-                    }
-                    val ribbon = filteredRibbonEntries().firstOrNull()
-                    if (ribbon != null && query.isNotBlank()) {
-                        if (ribbon.target.kind == PaneKind.MUSIC || ribbon.target.packageName == null) openHere(ribbon.target) else openExternal(ribbon.target)
-                    } else {
-                        launchInAppGoogleSearch(query)
-                    }
+                    launchInAppGoogleSearch(query)
                 }
             }
             else -> {
