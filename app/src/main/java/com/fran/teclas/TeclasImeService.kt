@@ -1203,7 +1203,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
             if (isLetter && this is com.fran.teclas.keyboard.DynamicFlickKeyView) {
-                setKeyFaceInsets(0, keyVerticalInset())
+                setKeyFaceInsets(keyHorizontalInset(), keyVerticalInset())
                 if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                     setLabelPlacement(
                         labelBias = 0.28f,
@@ -3985,11 +3985,17 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun keyVerticalInset(): Int {
         val size = effectiveKeyboardSize()
         val theme = keyboardVisualTheme()
-        if (KeyboardThemeDrawables.isAddedTheme(theme)) return dp(8 + size * 4 / 100)
+        if (theme == KEYBOARD_THEME_DEFAULT) return dp(7 + size * 4 / 100)
+        if (theme != KEYBOARD_THEME_TECLAS) return dp(10 + size * 5 / 100)
         if (theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             return dp(10 + size * 5 / 100)
         }
         return dp(7 + size * 4 / 100)
+    }
+
+    private fun keyHorizontalInset(): Int {
+        val theme = keyboardVisualTheme()
+        return if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) 0 else dp(3)
     }
 
     private fun themedGoKeySize(): Int {
@@ -4054,9 +4060,16 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun visualKeyBackground(label: String, pressed: Boolean): Drawable {
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
-        if (label == "enter" || label == "123") return base
+        val theme = keyboardVisualTheme()
+        if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) {
+            if (label == "enter" || label == "123") return base
+            val vInset = keyVerticalInset()
+            return InsetDrawable(base, keyHorizontalInset(), vInset, keyHorizontalInset(), vInset)
+        }
         val vInset = keyVerticalInset()
-        return InsetDrawable(base, dp(1), vInset, dp(1), vInset)
+        val fixedInset = dp(2)
+        val topBottom = if (label == "enter" || label == "123") fixedInset else vInset
+        return InsetDrawable(base, keyHorizontalInset(), topBottom, keyHorizontalInset(), topBottom)
     }
 
     private fun keyIdleBackground(label: String): Drawable {

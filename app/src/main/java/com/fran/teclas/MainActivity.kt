@@ -12573,9 +12573,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             isClickable = true
-            val needsInset = label != "enter" && label != "123"
-            fun idleBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyIdleBackground(label), hInset, vInset, hInset, vInset) else keyIdleBackground(label)
-            fun pressedBg() = if (needsInset) android.graphics.drawable.InsetDrawable(keyPressedBackground(label), hInset, vInset, hInset, vInset) else keyPressedBackground(label)
+            fun idleBg() = keyVisualBackground(label, pressed = false, hInset = hInset, vInset = vInset)
+            fun pressedBg() = keyVisualBackground(label, pressed = true, hInset = hInset, vInset = vInset)
             background = idleBg()
             if (keyboardTheme != KEYBOARD_THEME_DEFAULT) {
                 elevation = dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 5 else 3).toFloat()
@@ -22442,7 +22441,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun keyVerticalInset(): Int {
         val size = effectiveKeyboardSize()
-        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) return dp(8 + size * 4 / 100)
+        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return dp(7 + size * 4 / 100)
+        if (keyboardTheme != KEYBOARD_THEME_TECLAS) return dp(10 + size * 5 / 100)
         if (keyboardTheme == KEYBOARD_THEME_TECLAS || keyboardTheme == KEYBOARD_THEME_GOKEYS || keyboardTheme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme()) return dp(10 + size * 5 / 100)
         return dp(7 + size * 4 / 100)
     }
@@ -22453,7 +22453,18 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun keyHorizontalInset(): Int {
-        return 0
+        return if (keyboardTheme == KEYBOARD_THEME_DEFAULT || keyboardTheme == KEYBOARD_THEME_TECLAS) 0 else dp(3)
+    }
+
+    private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
+        val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
+        if (keyboardTheme == KEYBOARD_THEME_DEFAULT || keyboardTheme == KEYBOARD_THEME_TECLAS) {
+            val shouldInset = label != "enter" && label != "123"
+            return if (shouldInset) android.graphics.drawable.InsetDrawable(base, hInset, vInset, hInset, vInset) else base
+        }
+        val fixedInset = dp(2)
+        val topBottom = if (label == "enter" || label == "123") fixedInset else vInset
+        return android.graphics.drawable.InsetDrawable(base, hInset, topBottom, hInset, topBottom)
     }
 
     private fun goKeySize() = dp(43 + (effectiveKeyboardSize() * 8 / 100))

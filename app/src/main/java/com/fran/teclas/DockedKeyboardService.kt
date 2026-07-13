@@ -307,8 +307,14 @@ class DockedKeyboardService : Service() {
 
     private fun visualKeyBackground(label: String, pressed: Boolean): Drawable {
         val base = keyFaceBackground(label, pressed)
-        if (label == "enter") return base
-        return InsetDrawable(base, keyVisualHorizontalInset(label), keyVerticalInset(), keyVisualHorizontalInset(label), keyVerticalInset())
+        val theme = keyboardVisualTheme()
+        if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) {
+            if (label == "enter") return base
+            return InsetDrawable(base, keyVisualHorizontalInset(label), keyVerticalInset(), keyVisualHorizontalInset(label), keyVerticalInset())
+        }
+        val fixedInset = dp(2)
+        val topBottom = if (label == "enter" || label == "123") fixedInset else keyVerticalInset()
+        return InsetDrawable(base, keyVisualHorizontalInset(label), topBottom, keyVisualHorizontalInset(label), topBottom)
     }
 
     private fun keyFaceBackground(label: String, pressed: Boolean): Drawable {
@@ -403,7 +409,8 @@ class DockedKeyboardService : Service() {
     private fun keyVerticalInset(): Int {
         val size = KeyboardSettings.keyboardSize(this)
         val theme = keyboardVisualTheme()
-        if (KeyboardThemeDrawables.isAddedTheme(theme)) return dp(8 + size * 4 / 100)
+        if (theme == KEYBOARD_THEME_DEFAULT) return dp(7 + size * 4 / 100)
+        if (theme != KEYBOARD_THEME_TECLAS) return dp(10 + size * 5 / 100)
         return if (theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             dp(10 + size * 5 / 100)
         } else {
@@ -412,6 +419,8 @@ class DockedKeyboardService : Service() {
     }
 
     private fun keyVisualHorizontalInset(label: String): Int {
+        val theme = keyboardVisualTheme()
+        if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) return 0
         if (label == "space") return dp(3)
         if (label == "teclas") return dp(3)
         if (label == "123" || label == "back" || label == "shift" || label == ".") return dp(4)
