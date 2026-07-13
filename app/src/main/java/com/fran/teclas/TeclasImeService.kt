@@ -167,27 +167,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         } finally {
             perfLine("$label ${(System.nanoTime() - t0) / 1_000_000}ms")
         }
-        // Append to a pullable file (Vivo hides logcat), but ONLY meaningful lines — skip the flood of
-        // "… 0ms" so the per-line file I/O doesn't itself become a per-keystroke cost. Key/section
-        // markers and any non-zero timing are kept. Truncated on keyboard open.
-        //   adb pull /sdcard/Android/data/com.fran.teclas/files/teclas_perf.log
-        if (s.endsWith(" 0ms")) return
-        val f = diagFile ?: return
-        runCatching { diagExecutor.execute { runCatching { f.appendText(s + "\n") } } }
-    }
-    private fun perfReport(label: String, ms: Long) {
-        if (!PERF_LOG) return
-        if (ms > perfWorstMs) perfWorstMs = ms
-        perfLine("$label ${ms}ms" + if (perfIpcReads > 0) " ipc=$perfIpcReads" else "")
-    }
-    private inline fun <T> ptime(label: String, block: () -> T): T {
-        if (!PERF_LOG) return block()
-        val t0 = System.nanoTime()
-        try {
-            return block()
-        } finally {
-            perfReport(label, (System.nanoTime() - t0) / 1_000_000)
-        }
     }
 
     private fun recordSelfCaret() {
