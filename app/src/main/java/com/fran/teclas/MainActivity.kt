@@ -13699,10 +13699,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // ── Gemini keyboard suggestions ──────────────────────────────────────────
 
     private fun scheduleGeminiSuggestions() {
-        // Disabled in the launcher's own docked keyboard: the search/command field isn't prose, so
-        // LLM next-word suggestions add noise (and were the per-keystroke heat culprit). AI
-        // suggestions live only in the IME serving third-party apps — see TeclasImeService.scheduleGemini.
-        if (true) return
+        // Only when the launcher keyboard is DOCKED over a third-party app (typing into WhatsApp/
+        // Telegram/… via injection): there the launcher is foreground, so Nano serves fast. In the
+        // launcher's OWN search field it's off — that's command text, not prose (and was the
+        // per-keystroke heat culprit). fetchSuggestions is allowLocal=false, so it can never fall to
+        // the slow local model regardless — Nano/cloud only.
+        if (!DockedFreeform.externalAppInFront) return
         if (!geminiConfigured() || !ProManager.isUnlocked(this)) return
         geminiSuggestJob?.cancel()
         geminiSuggestJob = mediaUiScope.launch {

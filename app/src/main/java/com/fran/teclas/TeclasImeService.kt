@@ -2804,9 +2804,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 Their message: "${incoming.take(200)}"
 Reply ONLY as JSON: {"skill":"<Find place|Navigate|Web search|none>","query":"<what to search or find>","label":"<chip text, max 5 words>"}
 Use "Find place" for restaurants, venues or things nearby; "Navigate" for directions; "Web search" for facts or lookups; "none" if no action helps."""
+        // Strict grammar: the local model can ONLY emit {skill,query,label} with a real skill, so
+        // the chirp always parses into a runnable command (no silent "nothing happened").
+        val grammar = """
+            root ::= "{" ws "\"skill\"" ws ":" ws skill ws "," ws "\"query\"" ws ":" ws str ws "," ws "\"label\"" ws ":" ws str ws "}" ws
+            skill ::= "\"Find place\"" | "\"Navigate\"" | "\"Web search\"" | "\"none\""
+            str ::= "\"" ([^"\\] | "\\" (["\\bfnrt])){0,60} "\""
+            ws ::= [ \t\n]{0,6}
+        """.trimIndent()
         val out = GeminiClient.generate(
             GeminiClient.apiKey(imePrefs()), GeminiClient.model(imePrefs()), prompt,
-            maxTokens = 80, temperature = 0.1, json = true,
+            maxTokens = 80, temperature = 0.1, json = true, grammar = grammar,
         ) ?: return null
         val inner = out.substringAfter('{', "").substringBeforeLast('}')
         if (inner.isBlank()) return null
