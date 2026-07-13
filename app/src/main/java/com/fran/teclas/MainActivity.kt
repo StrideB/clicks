@@ -41,8 +41,15 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import com.fran.teclas.brief.accentColorInt
+import com.fran.teclas.brief.backgroundDrawable
+import com.fran.teclas.brief.cardDrawable
+import com.fran.teclas.brief.cardFillColorInt
 import com.fran.teclas.glide.KeyInfo
 import com.fran.teclas.glide.StatisticalGlideTypingClassifier
+import com.fran.teclas.brief.mutedColorInt
+import com.fran.teclas.brief.textColorInt
+import com.fran.teclas.brief.typeface
 import com.fran.teclas.keyboard.neural.TimedPoint
 import android.net.Uri
 import android.os.Build
@@ -4080,7 +4087,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             KEYBOARD_THEME_HYPER3D_BLACK,
             KEYBOARD_THEME_HYPER3D_LIGHT,
             KEYBOARD_THEME_BRUSHED,
-            KEYBOARD_THEME_SEEME
+            KEYBOARD_THEME_SEEME,
+            KEYBOARD_THEME_GOOGLE,
+            KEYBOARD_THEME_IOS,
+            KEYBOARD_THEME_PIXEL_SAND,
+            KEYBOARD_THEME_TECLAS_GLASS
         )
 
     private fun widgetThemeName(theme: String): String = when (theme) {
@@ -4092,6 +4103,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         KEYBOARD_THEME_HYPER3D_LIGHT -> "HYPER LIGHT"
         KEYBOARD_THEME_BRUSHED -> "BRUSHED"
         KEYBOARD_THEME_SEEME -> "SEEME"
+        KEYBOARD_THEME_GOOGLE -> "GOOGLE"
+        KEYBOARD_THEME_IOS -> "IOS"
+        KEYBOARD_THEME_PIXEL_SAND -> "PIXEL SAND"
+        KEYBOARD_THEME_TECLAS_GLASS -> "TECLAS GLASS"
         else -> "DEFAULT"
     }
 
@@ -14024,6 +14039,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private var screenX = 0f
         private var screenY = 0f
         private var glideBlockedByTypingStrip = false
+        // Whether the touch went DOWN on a letter key. Glide/flick/word-delete may only begin from a
+        // letter; a drag that starts on 123/space/back/etc. must do that key's job, not hijack the
+        // touch and (worst case) fire the left-swipe word delete. Mirrors the IME's downOnLetterKey
+        // gate — the fix for "dragging 123 deletes my text" on the docked keyboard.
+        private var downOnLetterKey = false
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -14120,13 +14140,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val loc = IntArray(2); getLocationOnScreen(loc)
                     screenX = loc[0].toFloat(); screenY = loc[1].toFloat()
                     trackpadActive = false
+                    val downKey = keyAtPoint(startRawX, startRawY)
+                    downOnLetterKey = downKey != null && downKey.length == 1 && downKey[0].isLetter()
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (glideBlockedByTypingStrip) return false
                     if (trackpadActive) return true
                     if (!tracking) {
-                        if (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart) {
+                        if (downOnLetterKey &&
+                            (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart)) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
@@ -19038,7 +19061,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         })
         entries.add(SettingSearchEntry(
             "Keyboard theme", "${widgetThemeName(keyboardTheme)} · tap for next",
-            listOf("keyboard", "keys", "keyboard theme", "skeuo", "gokeys")
+            listOf("keyboard", "keys", "keyboard theme", "skeuo", "gokeys", "google", "ios", "pixel sand", "teclas glass")
         ) {
             cycleKeyboardTheme()
             refreshSearchSurfaces()
@@ -19208,7 +19231,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val order = listOf(
             KEYBOARD_THEME_DEFAULT, KEYBOARD_THEME_TECLAS, KEYBOARD_THEME_SKEUO, KEYBOARD_THEME_GOKEYS,
             KEYBOARD_THEME_HYPER3D, KEYBOARD_THEME_HYPER3D_BLACK, KEYBOARD_THEME_HYPER3D_LIGHT,
-            KEYBOARD_THEME_BRUSHED, KEYBOARD_THEME_SEEME
+            KEYBOARD_THEME_BRUSHED, KEYBOARD_THEME_SEEME,
+            KEYBOARD_THEME_GOOGLE, KEYBOARD_THEME_IOS, KEYBOARD_THEME_PIXEL_SAND, KEYBOARD_THEME_TECLAS_GLASS
         ).filter { it != KEYBOARD_THEME_SKEUO || ProManager.isUnlocked(this) }
         keyboardTheme = order[(order.indexOf(keyboardTheme) + 1).mod(order.size)]
         prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
@@ -21809,6 +21833,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyboardDeckBackground(): Drawable {
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
+            return KeyboardThemeDrawables.panel(this, keyboardTheme, activeNeuTokens.mode == NeuMode.DARK)
+        }
         if (keyboardTheme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (keyboardTheme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.RAISED)
@@ -21844,6 +21871,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyboardLightMode(): Boolean {
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
+            return KeyboardThemeDrawables.isLight(keyboardTheme, activeNeuTokens.mode == NeuMode.DARK)
+        }
         return activeNeuTokens.mode == NeuMode.LIGHT && keyboardTheme != KEYBOARD_THEME_HYPER3D_BLACK
     }
 
@@ -21852,6 +21882,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyIdleBackground(label: String): Drawable {
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                keyboardTheme,
+                label,
+                pressed = false,
+                darkMode = activeNeuTokens.mode == NeuMode.DARK,
+                goColor = if (keyboardTheme == KEYBOARD_THEME_TECLAS_GLASS) goKeyColor else KeyboardThemeDrawables.DEFAULT_ACCENT
+            )
+        }
         if (keyboardTheme == KEYBOARD_THEME_SEEME) {
             return SeemeDrawables.key(label, pressed = false, density = resources.displayMetrics.density, goColor = goKeyColor)
         }
@@ -21871,6 +21911,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyPressedBackground(label: String): Drawable {
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                keyboardTheme,
+                label,
+                pressed = true,
+                darkMode = activeNeuTokens.mode == NeuMode.DARK,
+                goColor = if (keyboardTheme == KEYBOARD_THEME_TECLAS_GLASS) brighten(goKeyColor) else KeyboardThemeDrawables.DEFAULT_ACCENT
+            )
+        }
         if (keyboardTheme == KEYBOARD_THEME_SEEME) {
             return SeemeDrawables.key(label, pressed = true, density = resources.displayMetrics.density, goColor = brighten(goKeyColor))
         }
@@ -21973,6 +22023,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFFE7EAF0.toInt()
             KEYBOARD_THEME_BRUSHED -> if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFD2D6DB.toInt() else 0xFF4A4E55.toInt()
             KEYBOARD_THEME_SEEME -> 0xFFD71921.toInt()
+            KEYBOARD_THEME_GOOGLE -> KeyboardThemeDrawables.accent(value, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            KEYBOARD_THEME_IOS -> KeyboardThemeDrawables.accent(value, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            KEYBOARD_THEME_PIXEL_SAND -> KeyboardThemeDrawables.accent(value, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            KEYBOARD_THEME_TECLAS_GLASS -> goKeyColor
             else -> Accent
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(brighten(accent), accent)).apply {
@@ -21990,6 +22044,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun keyVerticalInset(): Int {
         val size = effectiveKeyboardSize()
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) return dp(8 + size * 4 / 100)
         if (keyboardTheme == KEYBOARD_THEME_TECLAS || keyboardTheme == KEYBOARD_THEME_GOKEYS || keyboardTheme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme()) return dp(10 + size * 5 / 100)
         return dp(7 + size * 4 / 100)
     }
@@ -22032,6 +22087,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun keyTextSize(label: String): Float {
         val size = effectiveKeyboardSize()
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + size * 2f / 100f
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
+            val base = when (label) { "shift" -> 23f; "space" -> 18f; "123", "teclas", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
+            val growth = when (label) { "shift" -> 2f; "space" -> 2f; "123", "teclas", "enter", "back", "period", "abc" -> 1.4f; else -> 2.2f }
+            return base + (size * growth / 100f)
+        }
         if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
             val brushedBase = when (label) {
                 "shift", "period" -> 22f
@@ -22054,10 +22114,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun goLegendColor(): Int =
-        if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
+            KeyboardThemeDrawables.textColor(keyboardTheme, "enter", activeNeuTokens.mode == NeuMode.DARK)
+        } else if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
 
     private fun keyTextColor(label: String) = if (label == "enter") {
         goLegendColor()
+    } else if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
+        when (label) {
+            "shift", "back" -> KeyboardThemeDrawables.accent(keyboardTheme, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            else -> KeyboardThemeDrawables.textColor(keyboardTheme, label, activeNeuTokens.mode == NeuMode.DARK)
+        }
     } else if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {
         BrushedDrawables.ink(label, selectedNeuTokens().mode == NeuMode.DARK)
     } else if (keyboardTheme == KEYBOARD_THEME_SEEME) {
@@ -23305,6 +23372,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
+        private const val KEYBOARD_THEME_GOOGLE = KeyboardThemeDrawables.GOOGLE
+        private const val KEYBOARD_THEME_IOS = KeyboardThemeDrawables.IOS
+        private const val KEYBOARD_THEME_PIXEL_SAND = KeyboardThemeDrawables.PIXEL_SAND
+        private const val KEYBOARD_THEME_TECLAS_GLASS = KeyboardThemeDrawables.TECLAS_GLASS
         private const val KEYBOARD_SWAP_ANIMATION_PREF = "keyboard_swap_animation"
         private const val KEYBOARD_SWAP_ANIMATION_DEFAULT = "default"
         private const val KEYBOARD_SWAP_ANIMATION_POPOUT = "pop_out"

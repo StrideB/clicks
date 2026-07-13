@@ -718,8 +718,40 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // in nested LinearLayouts — the AOSP/Gboard model, and the fix for the cold-open build cost.
     // Gated to the Teclas theme for now while it's brought to visual/behavioral parity stage by stage.
     private var canvasKeyboardView: TeclasCanvasKeyboardView? = null
-    private fun useCanvasKeyboard(): Boolean =
-        CANVAS_KB_TECLAS && keyboardVisualTheme() == KEYBOARD_THEME_TECLAS
+    private fun useCanvasKeyboard(): Boolean = CANVAS_KB
+
+    // Typeface for a key label, matching the view keyboard's keyView() per-theme choice exactly so the
+    // canvas renders every theme faithfully (SeeMe/Brushed use monospace; enter is always bold).
+    private fun keyTypeface(label: String): Typeface {
+        val theme = keyboardTheme()
+        return if (theme == KEYBOARD_THEME_SEEME || theme == KEYBOARD_THEME_BRUSHED) {
+            Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
+        } else if (label == "enter") Typeface.DEFAULT_BOLD
+        else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    }
+
+    // Brushed places letter labels differently (higher on the face, engraved symbol hints) and only
+    // uppercases on caps-lock; every other theme uses DynamicFlickKeyView's default placement. Returned
+    // as (labelBias, symbolBias, labelMaxScale, symbolScale, engraved) — mirrors setLabelPlacement().
+    private data class CanvasLabelSpec(
+        val labelBias: Float, val symbolBias: Float,
+        val labelMaxScale: Float, val symbolScale: Float, val engraved: Boolean
+    )
+    private fun canvasLetterSpec(): CanvasLabelSpec =
+        if (keyboardTheme() == KEYBOARD_THEME_BRUSHED)
+            CanvasLabelSpec(0.28f, 0.04f, 0.52f, 0.16f, engraved = true)
+        else CanvasLabelSpec(0.52f, 0.24f, 0.62f, 0.16f, engraved = false)
+
+    // Brushed function keys are drawn with a small optical vertical nudge (OpticalKeyTextView); this is
+    // that per-label offset table. Zero for every other theme (labels center normally).
+    private fun canvasOpticalOffset(label: String): Pair<Float, Float> {
+        if (keyboardTheme() != KEYBOARD_THEME_BRUSHED) return 0f to 0f
+        val y = dp(when (label) {
+            "enter" -> -2; "shift" -> -12; "back", "space" -> -16; "123", "abc", "." -> -5; else -> 0
+        }).toFloat()
+        val x = if (label == "back") -dp(4).toFloat() else 0f
+        return x to y
+    }
 
     // The row model both the view keyboard and the canvas keyboard lay out from (single source).
     private fun currentKeyRows(): List<List<String>> = if (symbolsMode) listOf(
@@ -773,7 +805,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val color: Int,
         val symbolColor: Int,
         val typeface: Typeface,
-        val textSizePx: Float
+        val textSizePx: Float,
+        // Theme-driven label geometry (see canvasLetterSpec / canvasOpticalOffset).
+        val labelBias: Float,
+        val symbolBias: Float,
+        val labelMaxScale: Float,
+        val symbolScale: Float,
+        val engraved: Boolean,
+        val offsetX: Float,
+        val offsetY: Float
     )
 
     // ── Canvas keyboard view (Stage 1, Teclas theme) ────────────────────────────────────────────
@@ -825,6 +865,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val goSize = themedGoKeySize()
             val density = resources.displayMetrics.scaledDensity
             val out = ArrayList<CanvasKeyCell>(36)
+            val spec = canvasLetterSpec()
+            val brushed = keyboardTheme() == KEYBOARD_THEME_BRUSHED
             currentKeyRows().forEachIndexed { rowIndex, row ->
                 val inset = when (rowIndex) { 1 -> dp(12); 2 -> dp(6); 3 -> dp(18); else -> 0 }
                 val rowTop = rowIndex * (rowH - overlap)
@@ -842,20 +884,28 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     val cellTop = if (square) rowTop + (rowH - goSize) / 2 else rowTop
                     val cellH = if (square) goSize else rowH
                     val flick = lbl.length == 1 && lbl[0].isLetter() && !symbolsMode
-                    val tf = if (lbl == "enter") Typeface.DEFAULT_BOLD
-                        else Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    // Brushed uppercases letters on caps-lock only and blanks the teclas key (its face
+                    // art carries the meaning); every other theme uses visualLabel (shift OR caps).
+                    val primary = when {
+                        flick && brushed -> if (capsLock) lbl.uppercase(Locale.US) else lbl.lowercase(Locale.US)
+                        brushed && lbl == "teclas" -> ""
+                        else -> visualLabel(lbl)
+                    }
+                    val (ox, oy) = if (flick) 0f to 0f else canvasOpticalOffset(lbl)
                     out.add(CanvasKeyCell(
                         lbl,
                         Rect(x, cellTop, x + kw, cellTop + cellH),
                         visualKeyBackground(lbl, pressed = false),
                         visualKeyBackground(lbl, pressed = true),
-                        visualLabel(lbl),
+                        primary,
                         if (flick) com.fran.teclas.keyboard.KeyboardSymbols.keyUp[lbl.lowercase(Locale.US)] else null,
                         flick,
                         textColor(lbl),
                         symbolHintColor(),
-                        tf,
-                        keyTextSize(lbl) * density
+                        keyTypeface(lbl),
+                        keyTextSize(lbl) * density,
+                        spec.labelBias, spec.symbolBias, spec.labelMaxScale, spec.symbolScale, spec.engraved,
+                        ox, oy
                     ))
                     x += kw
                 }
@@ -880,32 +930,46 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             d.draw(canvas)
             val cx = k.cell.exactCenterX()
             if (k.isFlickLetter) {
-                // Mirror DynamicFlickKeyView: symbol hint up-face (bias 0.24), letter mid-face (0.52),
-                // both inside a face inset by keyVerticalInset(), sizes scaled off the face height.
+                // Mirror DynamicFlickKeyView: symbol hint and letter each drawn at their own face bias,
+                // inside a face inset by keyVerticalInset(), with sizes scaled off the face height. The
+                // bias/scale/engrave values are theme-driven (canvasLetterSpec), so Brushed's higher,
+                // engraved placement and every other theme's default both render from one path.
                 val faceInset = keyVerticalInset().toFloat()
                 val faceTop = k.cell.top + faceInset
                 val faceHeight = (k.cell.height() - faceInset * 2).coerceAtLeast(1f)
                 k.symbolHint?.let { s ->
                     symbolPaint.color = k.symbolColor
-                    symbolPaint.textSize = faceHeight * 0.16f
+                    symbolPaint.textSize = faceHeight * k.symbolScale
                     val m = symbolPaint.fontMetrics
-                    val cy = faceTop + faceHeight * 0.24f
-                    canvas.drawText(s, cx, cy - (m.ascent + m.descent) / 2f, symbolPaint)
+                    val baseline = faceTop + faceHeight * k.symbolBias - (m.ascent + m.descent) / 2f
+                    if (k.engraved) {
+                        val original = symbolPaint.color
+                        symbolPaint.color = 0x99000000.toInt(); symbolPaint.alpha = 150
+                        canvas.drawText(s, cx, baseline + 1.4f, symbolPaint)
+                        symbolPaint.color = 0x66FFFFFF; symbolPaint.alpha = 80
+                        canvas.drawText(s, cx, baseline - 0.8f, symbolPaint)
+                        symbolPaint.color = original; symbolPaint.alpha = 215
+                    } else {
+                        symbolPaint.alpha = 230
+                    }
+                    canvas.drawText(s, cx, baseline, symbolPaint)
+                    symbolPaint.alpha = 255
                 }
                 labelPaint.color = k.color
                 labelPaint.typeface = k.typeface
-                labelPaint.textSize = minOf(k.textSizePx, faceHeight * 0.62f)
+                labelPaint.textSize = minOf(k.textSizePx, faceHeight * k.labelMaxScale)
                 val m = labelPaint.fontMetrics
-                val cy = faceTop + faceHeight * 0.52f
-                canvas.drawText(k.primaryText, cx, cy - (m.ascent + m.descent) / 2f, labelPaint)
-            } else {
-                // Plain keys: label centered in the cell (matches the view keyboard's gravity=CENTER).
+                val baseline = faceTop + faceHeight * k.labelBias - (m.ascent + m.descent) / 2f
+                canvas.drawText(k.primaryText, cx, baseline, labelPaint)
+            } else if (k.primaryText.isNotEmpty()) {
+                // Plain keys: label centered in the cell (matches gravity=CENTER), plus the theme's
+                // optical nudge (Brushed function keys; zero elsewhere).
                 labelPaint.color = k.color
                 labelPaint.typeface = k.typeface
                 labelPaint.textSize = k.textSizePx
                 val m = labelPaint.fontMetrics
                 val cy = k.cell.exactCenterY()
-                canvas.drawText(k.primaryText, cx, cy - (m.ascent + m.descent) / 2f, labelPaint)
+                canvas.drawText(k.primaryText, cx + k.offsetX, cy - (m.ascent + m.descent) / 2f + k.offsetY, labelPaint)
             }
         }
 
@@ -3735,11 +3799,19 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun symbolHintColor(): Int = (textColor("q") and 0x00FFFFFF) or (0x72 shl 24)
 
     private fun goLegendColor(): Int =
-        if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
+            KeyboardThemeDrawables.textColor(keyboardVisualTheme(), "enter", selectedNeuTokens().mode == NeuMode.DARK)
+        } else if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xFFFFFFFF.toInt() else 0xFF050506.toInt()
 
     private fun textColor(label: String): Int {
         if (label == "enter") return goLegendColor()
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return when (label) {
+                "shift", "back" -> KeyboardThemeDrawables.accent(theme, selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
+                else -> KeyboardThemeDrawables.textColor(theme, label, selectedNeuTokens().mode == NeuMode.DARK)
+            }
+        }
         if (isHyper3dTheme(theme)) {
             val visualTheme = hyper3dVisualTheme(theme)
             return when {
@@ -3857,6 +3929,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun keyVerticalInset(): Int {
         val size = effectiveKeyboardSize()
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) return dp(8 + size * 4 / 100)
         if (theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
             return dp(10 + size * 5 / 100)
         }
@@ -3870,6 +3943,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun keyTextSize(label: String): Float {
         val size = effectiveKeyboardSize()
+        if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
+            val base = when (label) {
+                "shift" -> 23f
+                "space" -> 18f
+                "123", "abc", "enter", "back", "." -> 13.5f
+                else -> 20f
+            }
+            val growth = when (label) {
+                "shift" -> 2f
+                "space" -> 2f
+                "123", "abc", "enter", "back", "." -> 1.4f
+                else -> 2.2f
+            }
+            return base + (size * growth / 100f)
+        }
         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
             val brushedBase = when (label) {
                 "shift", "." -> 22f
@@ -3917,6 +4005,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun keyIdleBackground(label: String): Drawable {
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                theme,
+                label,
+                pressed = false,
+                darkMode = selectedNeuTokens().mode == NeuMode.DARK,
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) goKeyColor() else KeyboardThemeDrawables.DEFAULT_ACCENT
+            )
+        }
         if (theme == KEYBOARD_THEME_SEEME) {
             return SeemeDrawables.key(label, pressed = false, density = resources.displayMetrics.density, goColor = goKeyColor())
         }
@@ -3937,6 +4035,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun keyPressedBackground(label: String): Drawable {
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                theme,
+                label,
+                pressed = true,
+                darkMode = selectedNeuTokens().mode == NeuMode.DARK,
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) brighten(goKeyColor()) else KeyboardThemeDrawables.DEFAULT_ACCENT
+            )
+        }
         if (theme == KEYBOARD_THEME_SEEME) {
             return SeemeDrawables.key(label, pressed = true, density = resources.displayMetrics.density, goColor = brighten(goKeyColor()))
         }
@@ -3957,6 +4065,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun deckBackground(): Drawable {
         val theme = keyboardVisualTheme()
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.panel(this, theme, selectedNeuTokens().mode == NeuMode.DARK)
+        }
         if (theme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (theme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(16).toFloat(), NeuLevel.RAISED)
@@ -4005,6 +4116,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun keyboardLightMode(theme: String): Boolean {
+        if (KeyboardThemeDrawables.isAddedTheme(theme)) {
+            return KeyboardThemeDrawables.isLight(theme, selectedNeuTokens().mode == NeuMode.DARK)
+        }
         if (keyboardTheme() == KEYBOARD_THEME_DEFAULT) return false
         return selectedNeuTokens().mode == NeuMode.LIGHT && theme != KEYBOARD_THEME_HYPER3D_BLACK
     }
@@ -4302,11 +4416,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private const val KEYBOARD_THEME_PREF = "keyboard_theme"
         private const val KEYBOARD_THEME_DEFAULT = "default"
         private const val KEYBOARD_THEME_TECLAS = "teclas"
-        // Canvas keyboard: the Teclas theme renders its key grid as a single bitmap-backed view
-        // (buildKeyboard ~55ms -> ~19ms) instead of ~30 child views. Validated on-device as a full
-        // drop-in (taps, glide, flick, long-press, space-drag, backspace-repeat, caps-lock). Other
-        // themes fall back to the view keyboard until each is brought to canvas parity in turn.
-        private const val CANVAS_KB_TECLAS = true
+        // Canvas keyboard: render the key grid as a single bitmap-backed view (buildKeyboard ~55ms ->
+        // ~19ms) instead of ~30 child views. Theme-generic — backgrounds (visualKeyBackground) and
+        // colors (textColor) already branch per theme; the canvas additionally drives typeface, letter
+        // placement, and Brushed's engraved hints / optical offsets from the same per-theme logic the
+        // view keyboard uses (keyTypeface, canvasLetterSpec, canvasOpticalOffset). Validated on Teclas;
+        // other themes render through the same faithful path.
+        private const val CANVAS_KB = true
         private const val KEYBOARD_THEME_SKEUO = "skeuo"
         private const val KEYBOARD_THEME_GOKEYS = "gokeys"
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
@@ -4314,6 +4430,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
+        private const val KEYBOARD_THEME_GOOGLE = KeyboardThemeDrawables.GOOGLE
+        private const val KEYBOARD_THEME_IOS = KeyboardThemeDrawables.IOS
+        private const val KEYBOARD_THEME_PIXEL_SAND = KeyboardThemeDrawables.PIXEL_SAND
+        private const val KEYBOARD_THEME_TECLAS_GLASS = KeyboardThemeDrawables.TECLAS_GLASS
         private const val GO_KEY_COLOR_PREF = "go_key_color"
 
         // Hot-path regexes, compiled once (these used to be re-compiled on every keystroke).
