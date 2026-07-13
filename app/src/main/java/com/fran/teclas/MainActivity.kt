@@ -15120,8 +15120,15 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     return
                 }
                 if (numberPadOpen) {
-                    val dialUri = searchContacts(query).firstOrNull()?.target?.deepLinkUri ?: if (query.isNotBlank()) "tel:$query" else null
-                    dialUri?.let { startActivity(Intent(Intent.ACTION_DIAL, Uri.parse(it))) }
+                    // The number pad is the only way to type digits at all, so this is the dial
+                    // path most users actually hit — a saved contact wins if one matches, else
+                    // clean/validate the typed digits the same way search's "Dial" card does
+                    // (handles stray formatting; rejects a blank/garbage query instead of building
+                    // a broken tel: URI). startSafeIntent avoids a silent failure if no dialer
+                    // app resolves ACTION_DIAL on this device.
+                    val dialUri = searchContacts(query).firstOrNull()?.target?.deepLinkUri
+                        ?: phoneNumberFromQuery(query)?.let { "tel:$it" }
+                    dialUri?.let { startSafeIntent(Intent(Intent.ACTION_DIAL, Uri.parse(it)), "Phone isn't available here") }
                 } else {
                     if (executeTypeToDoCommand(query)) {
                         query = ""
