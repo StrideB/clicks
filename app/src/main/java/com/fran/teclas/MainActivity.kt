@@ -308,6 +308,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var librarySwipeTriggered = false
     private var librarySwipeBlockedByWidget = false
     private var libraryDragActive = false
+    // Tap-vs-rebuild guard: the search results list is torn down + rebuilt on every async search
+    // callback (contacts/web/semantic land a beat after typing). If that rebuild happens between a
+    // result card's finger-down and finger-up, the card is removed mid-touch → its click is
+    // cancelled, so only a long-press (which fires during the hold, before the rebuild) registers.
+    // While a finger is down on the results, we defer rebuilds and flush them on release.
+    private var searchResultTouchActive = false
+    private var searchResultRefreshPending = false
     private var libraryDragStartedOpen = false
     private var libraryDragVertical = false
     private var libraryDragHapticStage = 0
@@ -1303,6 +1310,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        trackSearchResultTouch(event)   // must run for every event, before any early return
         if (widgetEditGestureLock()) return super.dispatchTouchEvent(event)
         detectDockedWallpaperTripleTap(event)   // passive: triple-tap docked home → change wallpaper
         if (innerWallpaperEditMode) return super.dispatchTouchEvent(event)
@@ -1329,6 +1337,51 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return true
         }
         return super.dispatchTouchEvent(event)
+    }
+
+    // True while search results are the interactive surface (docked library search, widget
+    // universal search, or unfolded search) with a live query.
+    private fun searchResultsInteractive(): Boolean =
+        query.isNotBlank() && (libraryOpen || isWidgetUniversalSearchActive() || isUnfoldedInnerLayoutActive())
+
+    // See searchResultTouchActive. Down on the results (not the keyboard) starts a defer window;
+    // up/cancel ends it and flushes any rebuild that was held back — the flush is posted so it runs
+    // AFTER this touch's click has been delivered to the card, so the tap actually fires.
+    private fun trackSearchResultTouch(event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                searchResultTouchActive = searchResultsInteractive() &&
+                    !isInsideKeyboard(event.rawX, event.rawY)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (searchResultTouchActive) {
+                    searchResultTouchActive = false
+                    if (searchResultRefreshPending) {
+                        searchResultRefreshPending = false
+                        if (::contentFrame.isInitialized) contentFrame.post { flushDeferredSearchRefresh() }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun flushDeferredSearchRefresh() {
+        when {
+            libraryOpen -> refreshLibraryContent()
+            isWidgetUniversalSearchActive() -> refreshWidgetSearchContent()
+            isUnfoldedInnerLayoutActive() -> refreshUnfoldedLibraryContent()
+        }
+    }
+
+    // Async search callbacks call this before rebuilding the results list. While a finger is down on
+    // the results, hold the rebuild (set pending) so the touched card isn't destroyed mid-tap; the
+    // rebuild is flushed on finger-up. Returns true when the caller should skip its rebuild.
+    private fun deferSearchRebuildWhileTouching(): Boolean {
+        if (searchResultTouchActive && query.isNotBlank()) {
+            searchResultRefreshPending = true
+            return true
+        }
+        return false
     }
 
     private fun keyboardGestureLockActive(): Boolean =
@@ -3920,6 +3973,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun refreshUnfoldedLibraryContent() {
+        if (deferSearchRebuildWhileTouching()) return
         val area = unfoldedLibraryContentArea ?: return
         area.removeAllViews()
         val child = if (query.isNotBlank()) {
@@ -8942,6 +8996,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun refreshLibraryContent() {
+        if (deferSearchRebuildWhileTouching()) return
         val area = libraryContentArea ?: run { showLibrary(animate = false); return }
         libraryPopulateRunnable?.let { handler.removeCallbacks(it) }
         libraryPopulateRunnable = null
@@ -9692,6 +9747,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             query.isNotBlank()
 
     private fun refreshWidgetSearchContent() {
+        if (deferSearchRebuildWhileTouching()) return
         val area = widgetSearchContentArea ?: return
         val glass = focusSurfaceGlassEnabled()
         val fresh = searchResultsList(widgetMode = true)
