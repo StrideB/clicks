@@ -291,11 +291,30 @@ Build the minified release APK (R8 + resource shrinking, arm64-only, signed with
 env JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleRelease
 ```
 
-Install on the current Vivo test device:
+Install on a connected test device (Vivo, Honor, etc.). Don't hard-code a
+device serial — wireless-adb transport names change every time the phone
+sleeps, switches Wi-Fi, or reboots, so a pinned `-s adb-…_tcp` serial goes
+stale and fails with "device not found". Look up the current device instead:
 
 ```sh
-/Users/fran/Library/Android/sdk/platform-tools/adb -s adb-10AG4A2FFS0029L-ZHx6Q9._adb-tls-connect._tcp install -r app/build/outputs/apk/debug/app-debug.apk
+ADB=/Users/fran/Library/Android/sdk/platform-tools/adb
+
+# See what's connected (empty? plug in USB + accept the debugging prompt, or
+# reconnect wireless: Developer options → Wireless debugging → adb connect <ip>:<port>)
+"$ADB" devices -l
+
+# One device connected: no serial needed
+"$ADB" install -r app/build/outputs/apk/debug/app-debug.apk
+
+# Multiple devices: copy the serial from the left column of `adb devices` above
+"$ADB" -s <serial> install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+After a package rename (e.g. an old `com.fran.clicks` build still installed),
+`install -r` won't upgrade across a different applicationId — uninstall the old
+package first (`"$ADB" uninstall com.fran.clicks`) or you'll get two launchers.
+On the first call/dial, allow the CALL_PHONE prompt; MagicOS/OriginOS may also
+need "Install via USB" enabled in Developer options.
 
 ## Design Rules For Future Agents
 
