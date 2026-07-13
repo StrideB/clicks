@@ -468,7 +468,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext).also { it.warmUp() }
         // llama.cpp tier: the only on-device path AICore can't block while we serve another app.
         if (GeminiClient.local == null) {
-            GeminiClient.local = { p, mt, t, j, g -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t, json = j, grammar = g) }
+            GeminiClient.local = { p, mt, t, j, g, q -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t, json = j, grammar = g, quality = q) }
             GeminiClient.localReady = { com.fran.teclas.llm.LocalLlmEngine.ready(applicationContext) }
         }
         ensureGlideClassifier()

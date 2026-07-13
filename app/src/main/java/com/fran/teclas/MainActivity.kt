@@ -738,7 +738,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (GeminiClient.nano == null) GeminiClient.nano = NanoPromptEngine(applicationContext)
         GeminiClient.nano?.warmUp()
         // Second on-device tier (llama.cpp/Bonsai): serves the IME where AICore refuses.
-        GeminiClient.local = { p, mt, t, j, g -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t, json = j, grammar = g) }
+        GeminiClient.local = { p, mt, t, j, g, q -> com.fran.teclas.llm.LocalLlmEngine.generateBlocking(applicationContext, p, mt, t, json = j, grammar = g, quality = q) }
         GeminiClient.localReady = { com.fran.teclas.llm.LocalLlmEngine.ready(applicationContext) }
         travelRepo = TravelRepository(gmailApi)
         if (spotifyAuth.isConnected) musicPaneHost.preloadSpotifyLibrary()

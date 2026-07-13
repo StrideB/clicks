@@ -96,7 +96,7 @@ object LocalLlmEngine {
             }
             if (tmp.length() == spec.bytes) {
                 tmp.renameTo(target)
-                synchronized(this) { if (handle != 0L) { runCatching { nativeFree(handle) }; handle = 0 } }
+                synchronized(this) { if (handle != 0L) { runCatching { nativeFree(handle) }; handle = 0; loadedSpec = null } }
                 true
             } else { Log.w(TAG, "download incomplete: ${tmp.length()}/${spec.bytes}"); false }
         } catch (e: Exception) {
@@ -126,16 +126,33 @@ object LocalLlmEngine {
      *  [json] constrains sampling with the JSON grammar; [grammar] overrides with a custom GBNF.
      *  Blocking and serialized; call from a background thread. */
     @Volatile private var generating = false
+    @Volatile private var loadedSpec: ModelSpec? = null
 
+    /** Which model to serve: [quality] prefers Gemma (better, slower), else Bonsai (fast). Falls
+     *  back to whichever is actually installed. */
+    private fun specFor(context: Context, quality: Boolean): ModelSpec? {
+        val preferred = if (quality) GEMMA else BONSAI
+        val other = if (quality) BONSAI else GEMMA
+        return when {
+            installed(context, preferred) -> preferred
+            installed(context, other) -> other
+            else -> null
+        }
+    }
+
+    /** One model loaded at a time. Interactive callers pass quality=false (fast Bonsai); the brief
+     *  passes quality=true (Gemma). If the requested tier differs from what's loaded, swap it in
+     *  (~1-2s) — cheap since the quality model is only wanted a couple of times a day. */
     fun generateBlocking(
         context: Context, prompt: String, maxTokens: Int, temperature: Double,
-        json: Boolean = false, grammar: String? = null,
+        json: Boolean = false, grammar: String? = null, quality: Boolean = false,
     ): String? {
         // Single-flight: llama.cpp generation takes seconds; if a call is already running, drop this
         // one instead of queueing on the native mutex. Piling requests up is what pinned every core
         // and heated the phone — one at a time, and callers get null (their own fallback) when busy.
         if (generating) { diag(context, "local generate SKIP (busy)"); return null }
-        val h = loadedHandle(context) ?: return null
+        val spec = specFor(context, quality) ?: return null
+        val h = loadedHandle(context, spec) ?: return null
         generating = true
         val t0 = System.currentTimeMillis()
         return try {
@@ -143,7 +160,7 @@ object LocalLlmEngine {
                 val gbnf = grammar ?: if (json) JSON_GRAMMAR else null
                 val out = nativeGenerate(h, prompt, maxTokens.coerceIn(1, 512), temperature.toFloat(), gbnf)
                     ?.trim()?.ifBlank { null }
-                diag(context, "local generate: ${if (out == null) "EMPTY" else "ok len=${out.length}"} in ${System.currentTimeMillis() - t0}ms")
+                diag(context, "local generate (${spec.file.take(6)}): ${if (out == null) "EMPTY" else "ok len=${out.length}"} in ${System.currentTimeMillis() - t0}ms")
                 out
             }.getOrElse {
                 Log.w(TAG, "generate failed: ${it.message}")
@@ -156,16 +173,18 @@ object LocalLlmEngine {
     }
 
     @Synchronized
-    private fun loadedHandle(context: Context): Long? {
-        if (handle != 0L) return handle
-        val spec = activeSpec(context) ?: return null
+    private fun loadedHandle(context: Context, spec: ModelSpec): Long? {
+        if (handle != 0L && loadedSpec == spec) return handle
+        // Different model wanted (or first load) — free the old one, load the requested spec.
+        if (handle != 0L) { runCatching { nativeFree(handle) }; handle = 0; loadedSpec = null }
         val f = fileFor(context, spec)
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
         val t0 = System.currentTimeMillis()
         val h = runCatching { nativeLoad(f.absolutePath, N_CTX, threads) }.getOrDefault(0L)
-        diag(context, "local model load: ${if (h == 0L) "FAILED" else "ok"} in ${System.currentTimeMillis() - t0}ms threads=$threads")
+        diag(context, "local model load (${spec.file.take(6)}): ${if (h == 0L) "FAILED" else "ok"} in ${System.currentTimeMillis() - t0}ms")
         if (h == 0L) { Log.w(TAG, "model load failed"); return null }
         handle = h
+        loadedSpec = spec
         return h
     }
 

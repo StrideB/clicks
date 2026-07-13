@@ -147,9 +147,11 @@ object DailyBrief {
                 }
             }.take(2400)
 
+            // The brief is worth quality + can wait (twice a day) → use the Gemma tier when it's
+            // downloaded. Interactive callers (chirp, GO) leave quality=false for the fast Bonsai.
             val out = GeminiClient.generate(
                 GeminiClient.apiKey(prefs), GeminiClient.model(prefs), prompt,
-                maxTokens = 240, temperature = 0.3, json = true,
+                maxTokens = 240, temperature = 0.3, json = true, quality = true,
             )
             val obj = out?.let { raw ->
                 val s = raw.indexOf('{'); val e = raw.lastIndexOf('}')

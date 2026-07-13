@@ -47,7 +47,7 @@ object GeminiClient {
      * context-agnostic. Tried after Nano, before any network.
      */
     @Volatile
-    var local: ((prompt: String, maxTokens: Int, temperature: Double, json: Boolean, grammar: String?) -> String?)? = null
+    var local: ((prompt: String, maxTokens: Int, temperature: Double, json: Boolean, grammar: String?, quality: Boolean) -> String?)? = null
     @Volatile
     var localReady: () -> Boolean = { false }
 
@@ -130,25 +130,31 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
     fun generate(
         apiKey: String, model: String, prompt: String,
         maxTokens: Int = 512, temperature: Double = 0.2, json: Boolean = false,
-        grammar: String? = null, allowLocal: Boolean = true,
-    ): String? = call(apiKey, model, prompt, maxTokens, temperature, json, grammar, allowLocal)
+        grammar: String? = null, allowLocal: Boolean = true, quality: Boolean = false,
+    ): String? = call(apiKey, model, prompt, maxTokens, temperature, json, grammar, allowLocal, quality)
 
     /** One request → the model's raw text reply, or null. Always disconnects. Blocking.
      *  [allowLocal] = false skips the slow in-process llama.cpp tier — set it for latency-sensitive
      *  or high-frequency callers (suggestions, background polling) so they never stall a core. */
     private fun call(
         apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double,
-        json: Boolean = false, grammar: String? = null, allowLocal: Boolean = true,
+        json: Boolean = false, grammar: String? = null, allowLocal: Boolean = true, quality: Boolean = false,
     ): String? {
-        // On-device first: Gemini Nano costs nothing and sends nothing. Any failure (device
-        // unsupported, model still downloading, inference error) falls through to the cloud paths.
+        // Quality tasks (the brief) prefer the big local model (Gemma) OVER Nano — Nano is smaller.
+        // They're rare and can wait, so the ~11s local generation is worth the better writing.
+        if (quality && allowLocal) local?.invoke(prompt, maxTokens, temperature, json, grammar, true)?.let { out ->
+            lastErrorMessage = null
+            return out
+        }
+        // Interactive/default: Gemini Nano first — fast, free, on-device. Any failure (unsupported,
+        // still downloading, background-blocked in another app) falls through.
         nano?.generateBlocking(prompt, maxTokens, temperature)?.let { out ->
             lastErrorMessage = null
             return out
         }
-        // Second on-device tier: in-process Bonsai/Gemma via llama.cpp — serves the IME inside other
-        // apps where AICore's foreground policy blocks Nano. Skipped for latency-sensitive callers.
-        if (allowLocal) local?.invoke(prompt, maxTokens, temperature, json, grammar)?.let { out ->
+        // In-process Bonsai via llama.cpp — serves the IME inside other apps where AICore blocks
+        // Nano. Skipped for latency-sensitive callers (allowLocal=false) and quality (tried above).
+        if (allowLocal && !quality) local?.invoke(prompt, maxTokens, temperature, json, grammar, false)?.let { out ->
             lastErrorMessage = null
             return out
         }
