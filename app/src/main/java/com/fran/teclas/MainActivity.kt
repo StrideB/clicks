@@ -511,6 +511,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private lateinit var contactsLauncher: ActivityResultLauncher<String>
+    private lateinit var callPhoneLauncher: ActivityResultLauncher<String>
+    private var pendingCallNumber: String? = null
     private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var calendarPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var weatherPermissionLauncher: ActivityResultLauncher<String>
@@ -612,6 +614,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val pending = pendingTypeToDoCommand
             pendingTypeToDoCommand = null
             if (pending != null) executeTypeToDoCommand(pending) else renderRibbon()
+        }
+        callPhoneLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val number = pendingCallNumber
+            pendingCallNumber = null
+            if (number == null) return@registerForActivityResult
+            // Granted → place the call directly; denied → fall back to the dialer (still one tap to call).
+            val action = if (granted) Intent.ACTION_CALL else Intent.ACTION_DIAL
+            startSafeIntent(Intent(action, Uri.parse("tel:${Uri.encode(number)}")), "Phone isn't available here")
         }
         smsPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) triggerSmsSeeding()
@@ -15120,15 +15130,18 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     return
                 }
                 if (numberPadOpen) {
-                    // The number pad is the only way to type digits at all, so this is the dial
-                    // path most users actually hit — a saved contact wins if one matches, else
-                    // clean/validate the typed digits the same way search's "Dial" card does
-                    // (handles stray formatting; rejects a blank/garbage query instead of building
-                    // a broken tel: URI). startSafeIntent avoids a silent failure if no dialer
-                    // app resolves ACTION_DIAL on this device.
-                    val dialUri = searchContacts(query).firstOrNull()?.target?.deepLinkUri
-                        ?: phoneNumberFromQuery(query)?.let { "tel:$it" }
-                    dialUri?.let { startSafeIntent(Intent(Intent.ACTION_DIAL, Uri.parse(it)), "Phone isn't available here") }
+                    // The number pad IS a dialer — the whole point is: type the number, press GO,
+                    // the phone calls. So place the call directly (placeCall → ACTION_CALL), no
+                    // hopping into the Phone app to press call again. A saved contact matching the
+                    // typed digits wins; otherwise dial exactly what was typed. No length filter
+                    // here — the user is explicitly in dial mode, so short/extension numbers dial
+                    // too (unlike the fuzzier search "Call" card, which keeps the 7-digit heuristic).
+                    val contactNumber = searchContacts(query).firstOrNull()?.target?.deepLinkUri?.removePrefix("tel:")
+                    val typed = query.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+                    val number = contactNumber?.takeIf { it.isNotBlank() } ?: typed.takeIf { it.isNotBlank() }
+                    if (number != null) placeCall(number)
+                    else Toast.makeText(this, "Type a number to call", Toast.LENGTH_SHORT).show()
+                    return
                 } else {
                     if (executeTypeToDoCommand(query)) {
                         query = ""
@@ -19115,15 +19128,16 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 longAction = { startSafeIntent(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "No browser available") }
             ))
         }
-        // A typed phone number is an unambiguous call intent — dial without opening the Phone
-        // app first. Skipped when a real contact already matched (more specific, stays on top)
-        // or the query also parsed as a URL (e.g. a bare IP address — don't show both).
+        // A typed phone number is an unambiguous call intent — place the call directly (placeCall
+        // → ACTION_CALL), not just open the dialer. Skipped when a real contact already matched
+        // (more specific, stays on top) or the query also parsed as a URL (e.g. a bare IP — don't
+        // show both).
         if (urlMatch == null) {
             phoneNumberFromQuery(q)?.let { number ->
                 val hasRealContactMatch = results.any { it.kind == SearchKind.CONTACT && it.title != "Connect contacts" }
                 if (!hasRealContactMatch) {
-                    results.add(0, SearchResult(q, "Dial", 0xFF5FD0C4.toInt(), SearchKind.CONTACT, null) {
-                        startSafeIntent(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(number)}")), "Phone isn't available here")
+                    results.add(0, SearchResult(q, "Tap to call", 0xFF5FD0C4.toInt(), SearchKind.CONTACT, null) {
+                        placeCall(number)
                     })
                 }
             }
@@ -20111,6 +20125,21 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     internal fun startSafeIntent(intent: Intent, failureMessage: String) {
         runCatching { startActivity(intent) }
             .onFailure { Toast.makeText(this, failureMessage, Toast.LENGTH_SHORT).show() }
+    }
+
+    // Place a call directly (ACTION_CALL) — the point of typing a number in the launcher is to
+    // call it, not to hop into the Phone app and press call again. When CALL_PHONE isn't granted
+    // yet, request it and place the call on grant; if the user declines, fall back to the dialer
+    // so the number is still pre-filled. `number` may include digits and +, *, #.
+    private fun placeCall(number: String) {
+        val clean = number.trim()
+        if (clean.isBlank()) return
+        if (checkSelfPermission(android.Manifest.permission.CALL_PHONE) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            startSafeIntent(Intent(Intent.ACTION_CALL, Uri.parse("tel:${Uri.encode(clean)}")), "Phone isn't available here")
+        } else {
+            pendingCallNumber = clean
+            callPhoneLauncher.launch(android.Manifest.permission.CALL_PHONE)
+        }
     }
 
     private fun requestContactsForCommand(originalCommand: String): Boolean {

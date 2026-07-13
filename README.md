@@ -135,17 +135,24 @@ the full default browser. Detection is `InAppGoogleSearchEngine.urlFromQuery`
 Opening triggers only on tap/GO — never on keystroke, since a prefix of a URL
 is itself a valid URL.
 
-Phone numbers dial directly: typing a bare number ("5551234567", "(555)
-123-4567", "+1 555 123 4567" — digits plus phone-shaped separators, at most
-one leading `+`, no letters, 7-15 digits) surfaces a "Dial" card under People
-(`phoneNumberFromQuery`), skipped when a real saved contact already matched
-or the query also parsed as a URL (e.g. a bare IP). GO/tap fires `ACTION_DIAL`
-— lands in the system dialer pre-filled, one tap to call; no `CALL_PHONE`
-permission, matching every other call action in this app. The explicit
-`call`/`text` verb commands (`findPhoneContact`) fall back to the same raw-
-number dial/text when no saved contact matches the typed name, so
-"call 5551234567" and "text 5551234567 on my way" work even for numbers
-that aren't saved contacts.
+Phone numbers call directly: the number pad ("123" key) is a dialer — type
+the digits, press GO, and the phone places the call itself (`placeCall` →
+`ACTION_CALL`), no hop into the Phone app to press call again. GO calls the
+matched saved contact if the typed digits match one, otherwise dials exactly
+what was typed (no length filter in dial mode — short/extension numbers dial
+too). Placing a call needs `CALL_PHONE`; it's requested on first use, and if
+the user declines, GO falls back to `ACTION_DIAL` (dialer pre-filled) so the
+call is still one tap away. `pendingCallNumber` bridges the request → the
+result callback places the call on grant.
+
+In universal search, a typed bare number ("5551234567", "(555) 123-4567",
+"+1 555 123 4567" — digits plus phone-shaped separators, at most one leading
+`+`, no letters, 7-15 digits) surfaces a "Tap to call" card under People
+(`phoneNumberFromQuery`, same `placeCall` path), skipped when a real saved
+contact already matched or the query also parsed as a URL (e.g. a bare IP).
+The explicit `call`/`text` verb commands (`findPhoneContact`) fall back to
+the raw typed number when no saved contact matches the name, so
+"call 5551234567" and "text 5551234567 on my way" work for unsaved numbers.
 
 Search results read top-down in three zones: one instant answer, apps, then
 everything else grouped under headers ("People", "Web", "Because you're home",
