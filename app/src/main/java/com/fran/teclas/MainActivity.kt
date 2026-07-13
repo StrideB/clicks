@@ -19288,6 +19288,34 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             openWeatherStylePicker()
             refreshSearchSurfaces()
         })
+        entries.add(SettingSearchEntry(
+            "Daily Brief themes",
+            "${com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId()).name} · tap to restyle",
+            listOf(
+                "brief", "brief theme", "brief themes", "daily brief", "daily brief theme",
+                "today brief", "today themes", "brief widget", "brief widget theme"
+            )
+        ) {
+            openBriefThemePicker()
+            refreshSearchSurfaces()
+        })
+        com.fran.teclas.brief.BriefThemes.all.forEach { theme ->
+            entries.add(SettingSearchEntry(
+                "Brief: ${theme.name}",
+                "Daily Brief widget theme",
+                listOf(
+                    "brief ${theme.name.lowercase(Locale.US)}",
+                    "${theme.name.lowercase(Locale.US)} brief",
+                    "daily brief ${theme.name.lowercase(Locale.US)}",
+                    "brief theme ${theme.name.lowercase(Locale.US)}"
+                )
+            ) {
+                prefs().edit().putString(homeScopedKey(BRIEF_THEME_PREF), theme.id.toString()).apply()
+                if (!libraryOpen && openPane == null) render()
+                refreshSearchSurfaces()
+                Toast.makeText(this, "Brief theme: ${theme.name}", Toast.LENGTH_SHORT).show()
+            })
+        }
         ALMANAC_STYLES.forEach { style ->
             entries.add(SettingSearchEntry(
                 "Weather: ${style.name}", "Almanac editorial widget",
