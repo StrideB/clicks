@@ -17717,13 +17717,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 adjustViewBounds = true
                 setPadding(appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding(), appIconInnerPadding())
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            addView(DockMusicNotesView(context).apply {
-                setTarget(app.target)
-                setAccent(app.accent)
-                refreshActive()
-                }, FrameLayout.LayoutParams((iconFrameSize * 1.45f).toInt(), (iconFrameSize * 1.95f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
-                    bottomMargin = -dp(10)
-                })
         }, FrameLayout.LayoutParams(iconFrameSize, iconFrameSize, Gravity.CENTER))
         setOnTouchListener { v, event ->
             when (event.actionMasked) {
@@ -23540,7 +23533,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private const val WEATHER_ANIMATION_BURST_MS = 6500L
         private const val WEATHER_AMBIENT_BURST_MS = 6500L
         private const val WEATHER_DRIP_BURST_MS = 6500L
-        private const val DOCK_NOTES_BURST_MS = 12_000L
+        private const val DOCK_NOTES_BURST_MS = 8_000L
         private const val DOCK_NOTES_FRAME_MS = 33L // ~30 fps is plenty for bobbing glyphs
         private const val WIDGET_HOST_ID = 1407
         private const val WIDGET_BIND_REQUEST_CODE = 501
