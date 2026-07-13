@@ -431,7 +431,12 @@ private fun gradientStops(spec: String): List<StopSpec> {
 }
 
 private fun gradientDrawableFromSpec(context: Context, spec: String, radiusDp: Int): GradientDrawable {
-    val colors = gradientStops(spec).map { it.color }.ifEmpty { listOf(parseCssColor(spec.substringBefore(' '), AndroidColor.TRANSPARENT)) }
+    val parsed = gradientStops(spec).map { it.color }.ifEmpty { listOf(parseCssColor(spec.substringBefore(' '), AndroidColor.TRANSPARENT)) }
+    // GradientDrawable's (orientation, colors) constructor builds a LinearGradient, which throws
+    // "needs >= 2 number of colors" the instant it draws if given fewer than 2. A solid-color spec
+    // (every non-"gradient(...)" theme, e.g. "#f6f4ee", "#12365e grid") parses to a single color —
+    // duplicate it so it renders as a flat fill instead of crashing the whole launcher on theme select.
+    val colors = if (parsed.size >= 2) parsed else List(2) { parsed.firstOrNull() ?: AndroidColor.TRANSPARENT }
     return GradientDrawable(GradientDrawable.Orientation.TL_BR, colors.toIntArray()).apply {
         cornerRadius = dp(context, radiusDp).toFloat()
     }
