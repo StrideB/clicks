@@ -13445,13 +13445,54 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    /** Read the person's latest message → one actionable chirp (Find place / Navigate / Web search),
+     *  grammar-locked so the local model always emits a runnable command. Blocking; off main thread. */
+    private fun conversationChirp(incoming: String): AgenticRouter.Command? {
+        if (incoming.isBlank()) return null
+        val prompt = """Someone just messaged the user. Suggest ONE helpful phone action to help them reply, or none.
+Their message: "${incoming.take(200)}"
+Reply ONLY as JSON: {"skill":"<Find place|Navigate|Web search|none>","query":"<what to search or find>","label":"<chip text, max 5 words>"}
+Use "Find place" for restaurants, venues or things nearby; "Navigate" for directions; "Web search" for facts or lookups; "none" if no action helps."""
+        val grammar = """
+            root ::= "{" ws "\"skill\"" ws ":" ws skill ws "," ws "\"query\"" ws ":" ws str ws "," ws "\"label\"" ws ":" ws str ws "}" ws
+            skill ::= "\"Find place\"" | "\"Navigate\"" | "\"Web search\"" | "\"none\""
+            str ::= "\"" ([^"\\] | "\\" (["\\bfnrt])){0,60} "\""
+            ws ::= [ \t\n]{0,6}
+        """.trimIndent()
+        val key = prefs().getString(GEMINI_API_KEY_PREF, null)?.trim().orEmpty()
+        val model = prefs().getString(GEMINI_MODEL_PREF, GEMINI_DEFAULT_MODEL)?.trim().orEmpty().ifBlank { GEMINI_DEFAULT_MODEL }
+        val out = GeminiClient.generate(key, model, prompt, maxTokens = 80, temperature = 0.1, json = true, grammar = grammar) ?: return null
+        val inner = out.substringAfter('{', "").substringBeforeLast('}')
+        if (inner.isBlank()) return null
+        val obj = runCatching { org.json.JSONObject("{$inner}") }.getOrNull() ?: return null
+        val skill = obj.optString("skill").trim()
+        if (skill.isBlank() || skill.equals("none", ignoreCase = true)) return null
+        val query = obj.optString("query").trim()
+        if (query.isBlank()) return null
+        val label = obj.optString("label").trim()
+        val cmd = AgenticRouter.commandForSkill(skill, query) ?: return null
+        return if (label.isNotBlank()) cmd.copy(label = label) else cmd
+    }
+
     private fun runLauncherAgenticCommand() {
         val raw = launcherCommandText()
         // Clip-skills (mood, stock, notion, attach…) run through the shared engine — identical to the IME.
         if (AgenticEngine.tryClipSkill(launcherAgenticHost, raw)) return
-        // Empty field: show discoverable starter chips (Share location + top skills) instead of
-        // silently classifying "" into the location command — the "selection of things to do".
+        // Empty field: first try a conversation-aware chirp — read the latest message someone sent
+        // (any messaging app; docked mode doesn't know the front app) and offer a ready action.
+        // Falls back to discoverable starter chips.
         if (raw.isBlank()) {
+            val incoming = TeclasNotificationListener.latestConversation(this, null)
+            val fresh = incoming != null && System.currentTimeMillis() - incoming.whenMs < 20 * 60_000
+            if (fresh && ProManager.isUnlocked(this) && geminiConfigured()) {
+                android.widget.Toast.makeText(this, "🤖 Reading the chat…", android.widget.Toast.LENGTH_SHORT).show()
+                mediaUiScope.launch {
+                    val cmd = withContext(Dispatchers.IO) { runCatching { conversationChirp(incoming!!.preview) }.getOrNull() }
+                    if (cmd != null) { pendingLauncherCommand = cmd; updateSuggestionBar() }
+                    else { val s = buildLauncherStarters(); if (s.isNotEmpty()) { pendingLauncherStarters = s; updateSuggestionBar() } }
+                }
+                return
+            }
             val starters = buildLauncherStarters()
             if (starters.isNotEmpty()) { pendingLauncherStarters = starters; updateSuggestionBar(); return }
         }
