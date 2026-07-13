@@ -14010,6 +14010,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private var screenX = 0f
         private var screenY = 0f
         private var glideBlockedByTypingStrip = false
+        // Whether the touch went DOWN on a letter key. Glide/flick/word-delete may only begin from a
+        // letter; a drag that starts on 123/space/back/etc. must do that key's job, not hijack the
+        // touch and (worst case) fire the left-swipe word delete. Mirrors the IME's downOnLetterKey
+        // gate — the fix for "dragging 123 deletes my text" on the docked keyboard.
+        private var downOnLetterKey = false
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -14106,13 +14111,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val loc = IntArray(2); getLocationOnScreen(loc)
                     screenX = loc[0].toFloat(); screenY = loc[1].toFloat()
                     trackpadActive = false
+                    val downKey = keyAtPoint(startRawX, startRawY)
+                    downOnLetterKey = downKey != null && downKey.length == 1 && downKey[0].isLetter()
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (glideBlockedByTypingStrip) return false
                     if (trackpadActive) return true
                     if (!tracking) {
-                        if (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart) {
+                        if (downOnLetterKey &&
+                            (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart)) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
