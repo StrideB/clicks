@@ -125,22 +125,33 @@ object LocalLlmEngine {
     /** One prompt → the local model's reply, or null (model missing / load failed / error).
      *  [json] constrains sampling with the JSON grammar; [grammar] overrides with a custom GBNF.
      *  Blocking and serialized; call from a background thread. */
+    @Volatile private var generating = false
+
     fun generateBlocking(
         context: Context, prompt: String, maxTokens: Int, temperature: Double,
         json: Boolean = false, grammar: String? = null,
     ): String? {
+        // Single-flight: llama.cpp generation takes seconds; if a call is already running, drop this
+        // one instead of queueing on the native mutex. Piling requests up is what pinned every core
+        // and heated the phone — one at a time, and callers get null (their own fallback) when busy.
+        if (generating) { diag(context, "local generate SKIP (busy)"); return null }
         val h = loadedHandle(context) ?: return null
+        generating = true
         val t0 = System.currentTimeMillis()
-        return runCatching {
-            val gbnf = grammar ?: if (json) JSON_GRAMMAR else null
-            val out = nativeGenerate(h, prompt, maxTokens.coerceIn(1, 512), temperature.toFloat(), gbnf)
-                ?.trim()?.ifBlank { null }
-            diag(context, "local generate: ${if (out == null) "EMPTY" else "ok len=${out.length}"} in ${System.currentTimeMillis() - t0}ms")
-            out
-        }.getOrElse {
-            Log.w(TAG, "generate failed: ${it.message}")
-            diag(context, "local generate failed: ${it.javaClass.simpleName}: ${it.message}")
-            null
+        return try {
+            runCatching {
+                val gbnf = grammar ?: if (json) JSON_GRAMMAR else null
+                val out = nativeGenerate(h, prompt, maxTokens.coerceIn(1, 512), temperature.toFloat(), gbnf)
+                    ?.trim()?.ifBlank { null }
+                diag(context, "local generate: ${if (out == null) "EMPTY" else "ok len=${out.length}"} in ${System.currentTimeMillis() - t0}ms")
+                out
+            }.getOrElse {
+                Log.w(TAG, "generate failed: ${it.message}")
+                diag(context, "local generate failed: ${it.javaClass.simpleName}: ${it.message}")
+                null
+            }
+        } finally {
+            generating = false
         }
     }
 

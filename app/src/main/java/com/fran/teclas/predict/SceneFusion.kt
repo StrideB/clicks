@@ -76,9 +76,11 @@ object SceneFusion {
                     if (calendarLines.isNotEmpty()) append("Upcoming calendar: ${calendarLines.take(3).joinToString("; ")}\n")
                     if (notificationLines.isNotEmpty()) append("Recent notifications: ${notificationLines.take(5).joinToString("; ")}\n")
                 }
+                // Background nicety — nano/cloud only. Never spin the slow local model for a
+                // Space guess the user didn't ask for.
                 val out = GeminiClient.generate(
                     GeminiClient.apiKey(prefs), GeminiClient.model(prefs), prompt,
-                    maxTokens = 60, temperature = 0.0, json = true,
+                    maxTokens = 60, temperature = 0.0, json = true, allowLocal = false,
                 ) ?: return@Thread
                 val inner = out.substringAfter('{', "").substringBeforeLast('}')
                 if (inner.isBlank()) return@Thread

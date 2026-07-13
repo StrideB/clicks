@@ -65,7 +65,11 @@ object GeminiClient {
         val prompt = """You are a keyboard autocomplete engine. Given this text the user is typing, reply with exactly 3 next-word predictions as a JSON array of strings. Nothing else — no explanation, just the array.
 Text: "$context"
 Reply format: ["word1","word2","word3"]"""
-        val text = call(apiKey, model, prompt, maxTokens = 24, temperature = 0.2) ?: return emptyList()
+        // NEVER the local llama.cpp tier: it takes seconds-to-minutes per call, which is ruinous
+        // for a per-keystroke path (calls pile up on the model mutex → cores pinned → the phone
+        // cooks). Suggestions are nano/cloud only; if neither serves, the on-device n-gram engine
+        // already covers it.
+        val text = call(apiKey, model, prompt, maxTokens = 24, temperature = 0.2, allowLocal = false) ?: return emptyList()
         return parseArray(text)
     }
 
@@ -126,13 +130,15 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
     fun generate(
         apiKey: String, model: String, prompt: String,
         maxTokens: Int = 512, temperature: Double = 0.2, json: Boolean = false,
-        grammar: String? = null,
-    ): String? = call(apiKey, model, prompt, maxTokens, temperature, json, grammar)
+        grammar: String? = null, allowLocal: Boolean = true,
+    ): String? = call(apiKey, model, prompt, maxTokens, temperature, json, grammar, allowLocal)
 
-    /** One request → the model's raw text reply, or null. Always disconnects. Blocking. */
+    /** One request → the model's raw text reply, or null. Always disconnects. Blocking.
+     *  [allowLocal] = false skips the slow in-process llama.cpp tier — set it for latency-sensitive
+     *  or high-frequency callers (suggestions, background polling) so they never stall a core. */
     private fun call(
         apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double,
-        json: Boolean = false, grammar: String? = null,
+        json: Boolean = false, grammar: String? = null, allowLocal: Boolean = true,
     ): String? {
         // On-device first: Gemini Nano costs nothing and sends nothing. Any failure (device
         // unsupported, model still downloading, inference error) falls through to the cloud paths.
@@ -140,9 +146,9 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
             lastErrorMessage = null
             return out
         }
-        // Second on-device tier: in-process Bonsai via llama.cpp — serves the IME inside other
-        // apps where AICore's foreground policy blocks Nano.
-        local?.invoke(prompt, maxTokens, temperature, json, grammar)?.let { out ->
+        // Second on-device tier: in-process Bonsai/Gemma via llama.cpp — serves the IME inside other
+        // apps where AICore's foreground policy blocks Nano. Skipped for latency-sensitive callers.
+        if (allowLocal) local?.invoke(prompt, maxTokens, temperature, json, grammar)?.let { out ->
             lastErrorMessage = null
             return out
         }
