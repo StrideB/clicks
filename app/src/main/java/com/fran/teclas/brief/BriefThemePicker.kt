@@ -117,6 +117,15 @@ fun BriefTheme.mutedColorInt(): Int = parseCssColor(mutedColor, applyAlpha(parse
 fun BriefTheme.accentColorInt(): Int = parseCssColor(accentColor, AndroidColor.WHITE)
 fun BriefTheme.titleColorInt(): Int = parseCssColor(titleColor, parseCssColor(textColor, AndroidColor.WHITE))
 fun BriefTheme.cardFillColorInt(): Int? = cardFill?.let { parseNullableCssColor(it) }
+fun BriefTheme.glassTintColorInt(): Int {
+    val base = cardFillColorInt()
+        ?: gradientStops(background).firstOrNull()?.color
+        ?: parseCssColor(background.substringBefore(' '), AndroidColor.WHITE)
+    val alpha = if (isDarkColor(base)) 0.24f else 0.30f
+    return applyAlpha(base, alpha)
+}
+fun BriefTheme.glassRimColorInt(): Int =
+    applyAlpha(parseBorder(cardBorder)?.color ?: accentColorInt(), if (isDarkColor(glassTintColorInt())) 0.34f else 0.42f)
 
 fun BriefTheme.typeface(weight: Int = Typeface.NORMAL): Typeface = when (font) {
     Font.MONO -> Typeface.MONOSPACE
@@ -225,8 +234,8 @@ fun DailyBriefCard(theme: BriefTheme, brief: BriefData, modifier: Modifier = Mod
                 .fillMaxWidth()
                 .themeCardEffect(theme)
                 .clip(shape)
-                .background(theme.cardBrush())
-                .then(themeBorder(theme, shape))
+                .background(theme.glassCardBrush())
+                .border(1.dp, Color(theme.glassRimColorInt()), shape)
                 .padding(12.dp)
         } else {
             Modifier.fillMaxWidth().padding(2.dp)
@@ -380,24 +389,21 @@ private fun Modifier.themeCardEffect(theme: BriefTheme): Modifier = when {
     else -> this
 }
 
-private fun themeBorder(theme: BriefTheme, shape: RoundedCornerShape): Modifier {
-    val border = parseBorder(theme.cardBorder) ?: return Modifier
-    return Modifier.border(border.widthDp.dp, Color(border.color), shape)
-}
+private fun BriefTheme.glassCardBrush(): Brush =
+    Brush.verticalGradient(listOf(Color(glassTintColorInt()), Color(glassTintColorInt()).copy(alpha = Color(glassTintColorInt()).alpha * 0.62f)))
 
-private fun BriefTheme.cardBrush(): Brush = cardFillColorInt()?.let { Brush.verticalGradient(listOf(Color(it), Color(it))) } ?: Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent))
 private fun BriefTheme.backgroundBrush(): Brush {
     val stops = gradientStops(background)
     if (stops.isNotEmpty()) {
         val angle = stops.first().angleRad.toDouble()
         return Brush.linearGradient(
-            stops.map { Color(it.color) },
+            stops.map { Color(applyAlpha(it.color, 0.28f)) },
             start = Offset.Zero,
             end = Offset(900f * cos(angle).toFloat(), 900f * sin(angle).toFloat())
         )
     }
     val c = parseCssColor(background.substringBefore(' '), AndroidColor.TRANSPARENT)
-    return Brush.verticalGradient(listOf(Color(c), Color(c)))
+    return Brush.verticalGradient(listOf(Color(applyAlpha(c, if (isDarkColor(c)) 0.30f else 0.26f)), Color(applyAlpha(c, if (isDarkColor(c)) 0.18f else 0.18f))))
 }
 
 private fun BriefTheme.composeText(): Color = Color(textColorInt())
@@ -479,6 +485,8 @@ private fun parseCssColor(raw: String, fallback: Int): Int {
 }
 
 private fun applyAlpha(color: Int, alpha: Float): Int = AndroidColor.argb((alpha.coerceIn(0f, 1f) * 255).toInt(), AndroidColor.red(color), AndroidColor.green(color), AndroidColor.blue(color))
+private fun isDarkColor(color: Int): Boolean =
+    (0.299f * AndroidColor.red(color) + 0.587f * AndroidColor.green(color) + 0.114f * AndroidColor.blue(color)) < 130f
 private fun dp(context: Context, value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
 
 private fun sampleBrief(): Brief = Brief(

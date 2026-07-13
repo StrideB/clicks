@@ -146,9 +146,8 @@ import com.fran.teclas.brief.BriefRepository
 import com.fran.teclas.brief.TodayKeyboardMode
 import com.fran.teclas.brief.TodayPage
 import com.fran.teclas.brief.accentColorInt
-import com.fran.teclas.brief.backgroundDrawable
-import com.fran.teclas.brief.cardDrawable
-import com.fran.teclas.brief.cardFillColorInt
+import com.fran.teclas.brief.glassRimColorInt
+import com.fran.teclas.brief.glassTintColorInt
 import com.fran.teclas.brief.mutedColorInt
 import com.fran.teclas.brief.textColorInt
 import com.fran.teclas.brief.typeface
@@ -5827,25 +5826,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        if (!briefTheme.isBoxed || dotTheme || briefTheme.cardFillColorInt() != null) {
-            content.background = if (briefTheme.isBoxed) {
-                briefTheme.cardDrawable(context)
-            } else {
-                briefTheme.backgroundDrawable(context, 20)
-            }
+        val tint = briefTheme.glassTintColorInt()
+        content.background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(tint, adjustAlpha(tint, 0.12f))
+        ).apply {
+            cornerRadius = dp(22).toFloat()
+            setStroke(dp(1), briefTheme.glassRimColorInt())
         }
-        if (dotTheme || !briefTheme.effect.orEmpty().contains("blur", ignoreCase = true)) {
-            frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-        } else {
-            // Blurred wallpaper backdrop, sized to the content so the panel's match-parent blur layer
-            // doesn't inflate the wrap-content host to full screen. Sits flat behind the flipping card.
-            val glass = NativeFoldGlassPanel(context, radiusDp = 22, blurScale = 0.42f)
-            frame.addView(glass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0))
-            frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-            content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                if (content.height > 0 && glass.layoutParams.height != content.height) {
-                    glass.layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, content.height)
-                }
+        // Every Daily Brief theme is glass: the theme only supplies the tint, rim, type, and accent.
+        // The native blur layer sits behind the translucent card for all themes, including the
+        // formerly solid/boxless styles.
+        val glass = NativeFoldGlassPanel(context, radiusDp = 22, blurScale = 0.42f)
+        frame.addView(glass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0))
+        frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            if (content.height > 0 && glass.layoutParams.height != content.height) {
+                glass.layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, content.height)
             }
         }
         frame.elevation = dp(8).toFloat()
