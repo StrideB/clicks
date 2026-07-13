@@ -441,6 +441,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var symbolsOpen = false
     private var lastMusicSourcePackage: String? = null
     private var lastMusicPlaying = false
+    // Scrobbling: Spotify already scrobbles to Last.fm itself, so only YouTube Music and
+    // Apple Music (no native Last.fm support) are scrobbled from here, to avoid duplicates.
+    private val scrobbleEligiblePackages = setOf("com.google.android.apps.youtube.music", "com.apple.android.music")
+    private var lastScrobbleTrackKey: String? = null
+    private var scrobbleJob: Job? = null
     internal lateinit var mediaSessionSource: MediaSessionSource
     internal val mediaUiScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -465,6 +470,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var billingClient: com.android.billingclient.api.BillingClient? = null
     lateinit var spotifyAuth: SpotifyAuth
     lateinit var spotifyApi: SpotifyWebApi
+    lateinit var lastFmAuth: LastFmAuth
     lateinit var gmailAuth: GmailAuth
     lateinit var gmailApi: GmailApi
     private val accountAuth by lazy { AccountAuth(this) }
@@ -729,6 +735,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         spotifyAuth = SpotifyAuth(this)
         spotifyApi = SpotifyWebApi(spotifyAuth)
+        lastFmAuth = LastFmAuth(this)
         gmailAuth = GmailAuth(this)
         gmailApi = GmailApi(gmailAuth)
         // Account mode: route AI through the proxy with the user's Google ID token (no device key).
@@ -782,6 +789,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lastMusicSourcePackage = src
                 lastMusicPlaying = info?.isPlaying == true
                 if (sourceChanged || playChanged) refreshDockMusicNotes()
+                maybeScrobble(info)
                 if (openPane?.kind == PaneKind.MUSIC) {
                     // Source change can flip wheel↔simple; play-state change updates the
                     // play/pause glyph on the simple / black transport docks.
@@ -796,6 +804,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                 }
             }
+        }
+    }
+
+    // Scrobbles the current track to Last.fm once it's played past Last.fm's own threshold
+    // (half the track, capped at 4 minutes; or 30s for tracks with no known duration).
+    // Only fires for sources Spotify doesn't already scrobble itself.
+    private fun maybeScrobble(info: NowPlayingInfo?) {
+        val trackKey = info?.let { "${it.sourcePackage}|${it.artist}|${it.title}" }
+        if (trackKey == lastScrobbleTrackKey) return
+        scrobbleJob?.cancel()
+        lastScrobbleTrackKey = trackKey
+        if (info == null || !info.isPlaying) return
+        if (info.sourcePackage !in scrobbleEligiblePackages) return
+        if (!lastFmAuth.isConnected || !lastFmAuth.scrobbleEnabled) return
+        if (info.artist.isBlank() || info.artist == "Unknown artist" || info.title.isBlank()) return
+        if (info.durationMs in 1 until 30_000L) return // Last.fm ignores sub-30s tracks
+        val thresholdMs = if (info.durationMs > 0) minOf(info.durationMs / 2, 240_000L) else 30_000L
+        val artist = info.artist
+        val title = info.title
+        scrobbleJob = mediaUiScope.launch {
+            delay(thresholdMs)
+            lastFmAuth.scrobble(artist, title)
         }
     }
 
@@ -16461,6 +16491,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         })
         parent.addView(integrationRow("Spotify", "com.spotify.music", SPOTIFY_INTEGRATION_PREF))
         parent.addView(integrationRow("Apple Music", "com.apple.android.music", APPLE_MUSIC_INTEGRATION_PREF))
+        parent.addView(lastFmIntegrationRow())
         parent.addView(geminiIntegrationRow())
         parent.addView(braveIntegrationRow())
         parent.addView(gmailIntegrationRow())
@@ -16621,6 +16652,83 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun lastFmIntegrationRow(): View {
+        val connected = lastFmAuth.isConnected
+        val state = when {
+            !lastFmAuth.isConfigured() -> "SET UP"
+            connected && !lastFmAuth.scrobbleEnabled -> "PAUSED"
+            connected -> "CONNECTED"
+            else -> "CONNECT"
+        }
+        return integrationLikeRow("Last.fm", state, if (connected && lastFmAuth.scrobbleEnabled) 0xFFD51007.toInt() else InkDim) {
+            if (!lastFmAuth.isConfigured()) {
+                Toast.makeText(this, "Add your Last.fm API key + shared secret to LastFmAuth.kt first.", Toast.LENGTH_LONG).show()
+                return@integrationLikeRow
+            }
+            promptLastFm()
+        }
+    }
+
+    private fun promptLastFm() {
+        val connected = lastFmAuth.isConnected
+        if (!connected) {
+            val userInput = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_TEXT
+                setSingleLine(true)
+                hint = "Last.fm username"
+                setTextColor(Ink)
+                setHintTextColor(InkDim)
+            }
+            val passInput = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                setSingleLine(true)
+                hint = "Password"
+                setTextColor(Ink)
+                setHintTextColor(InkDim)
+            }
+            val fields = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(20), dp(8), dp(20), dp(0))
+                addView(userInput)
+                addView(passInput)
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Connect Last.fm")
+                .setMessage("Scrobbles tracks played through YouTube Music and Apple Music. " +
+                    "Spotify already scrobbles on its own, so it's skipped here to avoid duplicates.")
+                .setView(fields)
+                .setPositiveButton("Connect") { _, _ ->
+                    val user = userInput.text?.toString()?.trim().orEmpty()
+                    val pass = passInput.text?.toString().orEmpty()
+                    if (user.isBlank() || pass.isBlank()) return@setPositiveButton
+                    mediaUiScope.launch {
+                        val ok = lastFmAuth.login(user, pass)
+                        Toast.makeText(this@MainActivity,
+                            if (ok) "Last.fm connected!" else "Last.fm connection failed. Check your username/password.",
+                            Toast.LENGTH_SHORT).show()
+                        if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(teclasSettingsTarget())
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            val toggleLabel = if (lastFmAuth.scrobbleEnabled) "Pause scrobbling" else "Resume scrobbling"
+            AlertDialog.Builder(this)
+                .setTitle("Last.fm")
+                .setMessage("Connected as ${lastFmAuth.username}.")
+                .setPositiveButton(toggleLabel) { _, _ ->
+                    lastFmAuth.scrobbleEnabled = !lastFmAuth.scrobbleEnabled
+                    if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(teclasSettingsTarget())
+                }
+                .setNeutralButton("Disconnect") { _, _ ->
+                    lastFmAuth.disconnect()
+                    if (openPane?.kind == PaneKind.SETTINGS) renderPaneContent(teclasSettingsTarget())
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
     }
 
     private fun gmailIntegrationRow(): View {
