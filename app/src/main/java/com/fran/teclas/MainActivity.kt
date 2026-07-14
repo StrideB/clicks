@@ -9929,9 +9929,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     // Zone order for the grouped "everything else" list (must match searchGroupLabel outputs).
-    private val SEARCH_GROUP_ORDER = listOf("People", "Messages", "Calendar", "Files", "Music", "Travel", "Settings", "Web", "Ask AI")
+    private val SEARCH_GROUP_ORDER = listOf("Rides", "People", "Messages", "Calendar", "Files", "Music", "Travel", "Settings", "Web", "Ask AI")
 
     private fun searchGroupLabel(kind: SearchKind): String = when (kind) {
+        SearchKind.RIDE -> "Rides"
         SearchKind.CONTACT, SearchKind.EMAIL -> "People"
         SearchKind.MESSAGE -> "Messages"
         SearchKind.CALENDAR -> "Calendar"
@@ -10154,6 +10155,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.SETTING -> goKeyColor
         SearchKind.WEB -> Neu.BLUE
         SearchKind.ANSWER -> 0xFFFB542B.toInt()   // Brave orange
+        SearchKind.RIDE -> 0xFF1FBAD6.toInt()      // ride/transport teal
     }
 
     private fun searchKindGlyph(kind: SearchKind): String = when (kind) {
@@ -10169,6 +10171,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         SearchKind.SETTING -> "⚙"
         SearchKind.WEB -> "W"
         SearchKind.ANSWER -> "✦"
+        SearchKind.RIDE -> "🚗"
     }
 
     private fun searchCommandPreview(): SearchCommandPreview? {
@@ -19194,6 +19197,19 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 }
             }
         }
+        // Ride intent ("take me to X", "go to X", "uber", "ride") → a top-ranked Uber card. Tap/GO
+        // opens the Uber app with pickup = the rider's current GPS and the destination preloaded
+        // (geocoded to coords in launchUber). Ranked first so GO fires it directly. Guard: if the
+        // destination is the name of an installed app ("go to youtube"), yield to the app instead —
+        // "go to" is broad, so a real app match wins over the ride reading.
+        uberDestinationFromQuery(q)?.let { dest ->
+            val matchesApp = dest.isNotBlank() && apps.any { it.label.equals(dest, ignoreCase = true) }
+            if (!matchesApp) {
+                val title = if (dest.isBlank()) "Open Uber" else "Uber to $dest"
+                val sub = if (dest.isBlank()) "Ride · pickup at your location" else "Ride · pickup at your location → destination preloaded"
+                results.add(0, SearchResult(title, sub, 0xFF1FBAD6.toInt(), SearchKind.RIDE, null) { launchUber(dest) })
+            }
+        }
         if (q.length >= 2) {
             val directHits = results.isNotEmpty()
             // Full results page in the in-launcher sheet (Brave when connected) — the old AI-pane
@@ -19262,6 +19278,58 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val digits = clean.filter { it.isDigit() }
         if (digits.length !in 7..15) return null
         return (if (clean.startsWith('+')) "+" else "") + digits
+    }
+
+    // ── Uber / rides ─────────────────────────────────────────────────────────
+    // A ride intent in the query. Returns the destination text ("" for a bare "uber"/"ride" with
+    // no destination — just open Uber), or null when it isn't a ride query. Longer prefixes are
+    // tested before their shorter forms ("uber to " before "uber ").
+    private fun uberDestinationFromQuery(text: String): String? {
+        val clean = text.trim()
+        val lower = clean.lowercase(Locale.US)
+        if (lower == "uber" || lower == "ride") return ""
+        val prefixes = listOf(
+            "take me to ", "get me a ride to ", "book a ride to ", "order an uber to ",
+            "ride to ", "uber to ", "go to ", "uber ", "ride "
+        )
+        for (p in prefixes) {
+            if (lower.startsWith(p)) return clean.substring(p.length).trim()
+        }
+        return null
+    }
+
+    // Open Uber with pickup = the rider's current location and the destination preloaded. Geocodes
+    // the destination to coordinates off the main thread (best accuracy); on failure, falls back to
+    // passing the raw address as dropoff[formatted_address]. Uses the uber:// scheme when the app is
+    // installed (most reliable preload), else the m.uber.com/ul universal link (app or web/install).
+    private fun launchUber(destination: String) {
+        val dest = destination.trim()
+        if (dest.isBlank()) { openUberRide(null, null, null); return }
+        Toast.makeText(this, "Setting up your ride…", Toast.LENGTH_SHORT).show()
+        mediaUiScope.launch(Dispatchers.IO) {
+            val hit = runCatching {
+                @Suppress("DEPRECATION")
+                android.location.Geocoder(this@MainActivity, Locale.getDefault())
+                    .getFromLocationName(dest, 1)?.firstOrNull()
+            }.getOrNull()
+            runOnUiThread { openUberRide(hit?.latitude, hit?.longitude, dest) }
+        }
+    }
+
+    private fun openUberRide(lat: Double?, lng: Double?, nickname: String?) {
+        val uberInstalled = runCatching { packageManager.getPackageInfo("com.ubercab", 0); true }.getOrDefault(false)
+        val base = if (uberInstalled) "uber://?action=setPickup&pickup=my_location" else "https://m.uber.com/ul/?action=setPickup&pickup=my_location"
+        val sb = StringBuilder(base)
+        if (lat != null && lng != null) {
+            sb.append("&dropoff[latitude]=").append(lat)
+            sb.append("&dropoff[longitude]=").append(lng)
+            if (!nickname.isNullOrBlank()) sb.append("&dropoff[nickname]=").append(Uri.encode(nickname))
+        } else if (!nickname.isNullOrBlank()) {
+            sb.append("&dropoff[formatted_address]=").append(Uri.encode(nickname))
+        }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(sb.toString())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (uberInstalled) intent.setPackage("com.ubercab")
+        startSafeIntent(intent, "Couldn't open Uber")
     }
 
     // ── Type-to-customize ────────────────────────────────────────────────────

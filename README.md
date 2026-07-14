@@ -165,6 +165,18 @@ The explicit `call`/`text` verb commands (`findPhoneContact`) fall back to
 the raw typed number when no saved contact matches the name, so
 "call 5551234567" and "text 5551234567 on my way" work for unsaved numbers.
 
+Rides open Uber directly: a ride intent — "take me to X", "go to X", "ride to
+X", "uber to X", or bare "uber"/"ride" (`uberDestinationFromQuery`) — surfaces
+a top-ranked "Uber to X" card under a "Rides" group (`SearchKind.RIDE`). Tap or
+GO calls `launchUber`, which geocodes the destination off the main thread
+(`Geocoder.getFromLocationName`) and opens Uber with `pickup=my_location` (the
+rider's own GPS — no location permission needed from Teclas) and the destination
+preloaded as `dropoff[latitude]/[longitude]/[nickname]`, falling back to
+`dropoff[formatted_address]` if geocoding misses. Uses the `uber://` scheme when
+the app is installed (best preload), else the `m.uber.com/ul` universal link
+(app or web). Guard: since "go to" is broad, a destination matching an installed
+app's name ("go to youtube") yields to the app instead of the ride card.
+
 Search results read top-down in three zones: one instant answer, apps, then
 everything else grouped under headers ("People", "Web", "Because you're home",
 etc. — `searchZoneHeader`, sized as real headings, not tiny eyebrow labels).
