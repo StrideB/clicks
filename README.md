@@ -3,9 +3,10 @@
 Teclas is a native Android launcher built around typing as the primary action. It is not the old icon-list scaffold, not the old Message Hub prototype, and not the left-column/right-ribbon communicator mockup. The current launcher is a centered premium homescreen with contextual widgets, a favorites dock, a custom on-screen keyboard, type-to-do search, app library, media controls, photos, and native Android integrations.
 
 Package: `com.fran.teclas`  
-Platform: Android app, Kotlin, Jetpack Compose (settings/panes) plus native views for the launcher core and IME  
+Platform: Android app, Kotlin, Jetpack Compose (settings, Today page, music player, widget stack, photos) plus native views for the launcher core and IME  
 SDK: `minSdk 31`, `targetSdk 37`, `compileSdk 37`  
-Toolchain: Gradle 9.6 (configuration cache), AGP 9.2 (built-in Kotlin), Kotlin 2.3, versions managed in `gradle/libs.versions.toml`
+Toolchain: Gradle 9.6 (configuration cache), AGP 9.2 (built-in Kotlin), Kotlin 2.3, versions managed in `gradle/libs.versions.toml`  
+Builds: debug (LeakCanary attached) and R8-minified release (~36 MB, arm64-only); lint gated by `app/lint-baseline.xml`
 
 ## Current Product Shape
 
@@ -47,12 +48,11 @@ Current homescreen layout rules:
 - Context belongs in the centered widget stack.
 - Typing belongs in the docked keyboard or the keyboard widget, depending on placement mode.
 
-The homescreen visual language is dark, premium, and glass-like:
+The homescreen visual language is neumorphic and token-driven, not hard-coded dark:
 
-- Raised glass cards use `#20232A -> #14161B` style gradients.
-- Nested widget rows use recessed dark trays.
-- Widget cards use colored accent spines.
-- Avatars, badges, and dock icons are domed/radial surfaces.
+- All surfaces derive from `Neu` tokens (`Neu.Dark` / `Neu.Light`, selected by the `theme_mode` pref), rendered as raised/recessed soft surfaces in views and via the `Modifier.neu()` extension in Compose.
+- The user's look is owned by the Theme Studio (see Theme System below): wallpaper, keyboard theme, icon style, brief/weather styles, and the `go_key_color` accent (brand default: Cursor Violet `#C9A7FF`).
+- Widget cards use colored accent spines; avatars, badges, and dock icons are domed/radial surfaces.
 
 Important: do not redesign this as the original hard-coded Message Hub/app ribbon prototype or as a plain app icon list.
 
@@ -65,6 +65,14 @@ wallpaper re-invalidation was a real heat/battery cost. Do not re-add tilt-
 driven dock or wallpaper motion. (The keyboard's separate "tilt lighting"
 setting/toggle is unrelated and untouched — it's keycap-highlight territory,
 not a homescreen effect, and out of scope here.)
+
+## Today (Daily Brief)
+
+Swiping right on the homescreen opens the Today page — a Compose live timeline (`brief/TodayPage.kt`, hosted by `TodayPaneHost`) built from notification signals, calendar, weather, and travel. The `brief/` package owns collection (`BriefRepository`, refreshed on resume and every 45 minutes while the launcher is foreground), classification, and Gemini-assisted summarization. It needs Notification Listener access for the richest content and degrades to an access prompt without it. Brief style/visibility is a themable layer with its own picker (`BriefThemePicker`).
+
+## Spaces (Contextual Prediction)
+
+The `predict/` package is an on-device bandit engine that rearranges the dock, drawer, and search suggestions around context (hour bucket, weekday, saved places, driving, headphones, charging). Spaces are user-editable in `SpacesSettingsActivity` (Compose): triggers, pinned/excluded apps, manual places (stored encrypted via `PlaceStore`), and per-Space learning resets. Place suggestions surface as actionable notifications (`PlaceSuggestionNotifier`). Everything is decided on-device; transition logs are Keystore-encrypted.
 
 ## Current Dimensions And Layout Constants
 
@@ -93,12 +101,15 @@ Shared behavior:
 - Space cursor movement.
 - Number/symbol modes.
 
-Keyboard themes:
+Keyboard themes (`KEYBOARD_THEME_*` constants; art in `KbThemes.kt` / `KeyboardThemeDrawables.kt`):
 
 - `default`
 - `teclas`
 - `skeuo`
 - `gokeys`
+- `brushed`
+- `seeme`
+- `hyper3d`, `hyper3d_black`, `hyper3d_light`
 
 The GoKeys reference keyboard geometry and visual treatment is scoped to the `gokeys` theme only. Do not apply GoKeys key geometry or labels globally.
 
@@ -182,6 +193,15 @@ result titles/subtitles, and app-tile labels together via `searchFontScale()`.
 Also reachable through type-to-customize by typing `search text size` or
 `font size`.
 
+## Search Backends
+
+Universal search composes several result sources into the three-zone layout above (`SearchKind`: APP, CONTACT, EMAIL, MESSAGE, CALENDAR, AI, TRAVEL, MUSIC, FILE, SETTING, WEB, ANSWER):
+
+- **Brave Search API** (`BraveSearchApi.kt`) is the web backend — inline result rows and rich answer cards rendered natively (no popups), with the required Brave attribution. Rich results cost 2 API requests; the free credit is ~1k requests/month, so web calls are debounced and only fire for query shapes that want the web.
+- **Semantic search** (`semantic/SemanticSearchEngine.kt` + `llm/EmbedEngine.kt`): on-device EmbeddingGemma embeddings over apps/contacts/settings for meaning-based matches ("photo editor" finds apps that never say those words). The model is user-imported; everything runs locally.
+- **Verticals**: sports live-score cards via ESPN (`SportsApi.kt`, e.g. "miami heat"), stocks (`StockApi.kt`), odds (`OddsApi.kt`) — the sports vertical is the template for adding new ones.
+- **Instant answers** (`SmartCompute`, dictionary via `DictionaryApi.kt`) fill the single ANSWER hero zone.
+
 ## Widget Stack
 
 The homescreen widget stack is contextual and live:
@@ -217,6 +237,16 @@ tapping the hidden-stack placeholder when everything is hidden), or through
 type-to-customize by typing `widgets` or a widget name. Card long-presses remain
 content actions; they are not used for configuration.
 
+## Theme System
+
+Teclas has a first-class Theme Studio (`com.fran.teclas.theme`) that bundles the launcher’s existing visual layers into one named `LauncherTheme`: Daily Brief style/visibility, weather style/visibility, keyboard theme, icon style/pack, wallpaper, and the `go_key_color` accent. Applying a theme writes through the same `teclas` SharedPreferences that the launcher, IME, brief widget, weather widget, dock, and icon-pack code already read. Built-in themes are read-only templates; editing a layer forks the active theme into a user “Custom” theme stored in `user_themes_json`.
+
+Curated defaults live in `DefaultThemes.kt`. To add another default theme, add a `LauncherTheme(builtIn = true)` there and make sure its `wallpaperId` resolves in `assets/wallpapers/` or gracefully falls back to the generated background.
+
+Wallpaper packs are asset-driven. Drop `.jpg`, `.jpeg`, `.png`, or `.webp` files into `app/src/main/assets/wallpapers/`; the runtime `WallpaperRegistry` scans that folder, uses the filename stem as the stable id, and title-cases it for the Theme Studio picker. User-picked wallpapers still use Android’s document picker and persist URI permission.
+
+Type-to-customize registers theme settings in `settingSearchEntries()`: `theme`, `themes`, `wallpaper`, `keyboard theme`, `icons`, `icon pack`, `accent`, `brief`, and `weather` surface actionable setting cards. These entries rank below app matches like the rest of launcher settings.
+
 ## Type-To-Customize
 
 Launcher settings are exposed as universal-search results (`SearchKind.SETTING`).
@@ -248,6 +278,20 @@ The launcher has an in-launcher Music experience:
 
 Music screen modes include art-focused and dark record/player-style presentations. Do not put old Spotify badges inside album art unless explicitly requested.
 
+Last.fm integration (`LastFmAuth.kt` / `LastFmApi.kt`) adds scrobbling (on by default once connected, `scrobble_enabled` pref) on top of whatever player is active.
+
+## On-Device AI
+
+- **Gemini API** (`GeminiClient.kt`) powers AI suggestions, smart compose, brief summaries, and travel parsing — via the user's own API key or the account-proxy mode (`AccountAuth`/`GeminiProxy`, Cloudflare worker in `server/gemini-proxy/`).
+- **Gemini Nano / AICore** (`NanoPromptEngine.kt`, ML Kit GenAI proofreading) runs free and offline on supported devices; the keyboard's Proofread mode uses it and hides itself elsewhere.
+- **Local models** (`llm/LocalLlmEngine.kt`, `llm/EmbedEngine.kt`): user-importable on-device LLM/embedding models backing semantic search, with no network dependency.
+- **Neural swipe typing** (`keyboard/neural/`): an original ONNX seq2seq glide decoder (trained on an MIT-licensed corpus — see `NeuralSwipeContract.kt`; no GPL code) blended with a statistical classifier.
+- **Agentic skills** (`AgenticEngine`/`AgenticRouter`/`AgenticPlanner`, managed in `AgenticSkillsActivity`): typed commands routed to built-in and user-defined skills (play music, navigate, timers, translate, custom `{q}` URL skills).
+
+## Grid Workspace Lab
+
+`grid/` is an isolated AOSP-style grid workspace test bench (drag-to-arrange, folders, its own widget host) behind a settings toggle that enables a separate HOME alias (`GridHomeAlias`). It is a lab, not the product homescreen — keep it isolated.
+
 ## ZEISS Optics / Photos
 
 Teclas includes a launcher photo experience:
@@ -272,8 +316,11 @@ Current Android integrations include:
 - Photos/media store
 - Installed app discovery
 - Icon packs
-- Gemini API configuration
+- Gemini API configuration (key or account-proxy mode)
 - Spotify OAuth/API
+- Last.fm (scrobbling)
+- Brave Search, ESPN sports, stocks, odds, dictionary APIs
+- Notion API (agentic skills)
 
 Permissions are requested as needed. Notification Listener access is required for the richest widget/message/media behavior.
 
@@ -315,6 +362,15 @@ After a package rename (e.g. an old `com.fran.clicks` build still installed),
 package first (`"$ADB" uninstall com.fran.clicks`) or you'll get two launchers.
 On the first call/dial, allow the CALL_PHONE prompt; MagicOS/OriginOS may also
 need "Install via USB" enabled in Developer options.
+
+## Code Map
+
+`MainActivity.kt` is still the launcher core (~24k lines) but is being decomposed into same-package hosts — follow the established `with(activity) { }` verbatim-move pattern when extracting more:
+
+- `TodayPaneHost`, `MusicPaneHost`, `TravelPaneHost` — pane hosting split out of MainActivity
+- `PaneModels`, `LauncherModels`, `ThemeDrawables` — types and pure drawing/geometry helpers
+- `TeclasImeService` — the system IME (shares the keyboard engine); `DockedKeyboardService` — overlay keyboard
+- Packages: `brief/` Today page · `predict/` Spaces · `semantic/` + `llm/` on-device search/AI · `theme/` Theme Studio · `weather/` weather styles/widget · `keyboard/` typing engine (+`neural/` glide) · `grid/` AOSP lab · `fold/` foldable posture · `db/` Room · `brand/` brand tokens · `glide/` statistical glide
 
 ## Design Rules For Future Agents
 
