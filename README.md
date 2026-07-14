@@ -177,6 +177,23 @@ the app is installed (best preload), else the `m.uber.com/ul` universal link
 (app or web). Guard: since "go to" is broad, a destination matching an installed
 app's name ("go to youtube") yields to the app instead of the ride card.
 
+The destination is context-resolved before geocoding (`resolveRideDestination`),
+in priority order: (1) saved places — "home"/"work"/"gym"/"airport" or a named
+place from `PlaceStore` resolve to their stored coordinates directly, no geocode;
+(2) calendar — "take me to hotel" ties to a calendar event whose title/location
+contains the word, and generic words ("my meeting", "reservation") tie to the
+next event with a location, using that event's address as the dropoff; (3) the
+raw typed text otherwise. The card subtitle names the source ("destination from
+your calendar" / "…saved places").
+
+Uber "Where to?" as a key shortcut: the launcher's per-letter long-press
+shortcuts (`letter_shortcut_<letter>`, set via `showLetterShortcutPicker`) can
+hold a special action, not only an app — pick "Uber ride — Where to?" and that
+key's long-press opens a destination prompt (`promptUberDestination`); typing a
+place (e.g. "Eiffel Tower") hands it to `launchUber` → same context-resolve +
+`pickup=my_location` + geocoded dropoff. Special shortcuts are stored as
+`action:<name>` to distinguish them from package-name app shortcuts.
+
 Search results read top-down in three zones: one instant answer, apps, then
 everything else grouped under headers ("People", "Web", "Because you're home",
 etc. — `searchZoneHeader`, sized as real headings, not tiny eyebrow labels).
