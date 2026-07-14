@@ -14,7 +14,9 @@ import org.json.JSONObject
 object CommitmentStore {
 
     private const val KEY = "commitments_v1"
-    private const val MAX = 60
+    // Effectively "don't forget": commitments are tiny text, so we keep a long history. A recorded
+    // commitment stays recallable; recency just decides ordering, not deletion.
+    private const val MAX = 500
 
     data class Commitment(
         val text: String,     // the task itself ("send the Q1 draft")
@@ -66,25 +68,41 @@ object CommitmentStore {
         "what", "was", "were", "did", "with", "the", "for", "did", "i", "do", "to", "supposed",
         "have", "had", "am", "is", "are", "my", "me", "about", "need", "should", "again", "and",
         "remind", "tell", "whats", "what's", "any", "todo", "todos",
+        // Temporal words are recency signals, not content — handled below, not matched as terms.
+        "today", "tonight", "now", "week", "this", "recent", "latest", "currently",
     )
 
     /**
-     * Rank stored commitments against [query] by token overlap (person + task). Keyword-based so it
-     * works with no model loaded; if a semantic index is later available it can layer on top. Returns
-     * best matches first, or empty when nothing meaningfully overlaps.
+     * Rank stored commitments against [query] by content overlap (person + task) AND recency, so a
+     * fresh "what do I need to do with kelly today?" surfaces the recent Kelly item — not a stale one
+     * — while still finding old commitments when nothing recent matches. Keyword-based (works with no
+     * model loaded); a semantic index could layer on later. Nothing is deleted; recency only orders.
      */
     fun search(prefs: SharedPreferences, query: String): List<Commitment> {
-        val terms = query.lowercase().split(Regex("[^a-z0-9]+"))
-            .filter { it.length >= 3 && it !in STOP }
+        val lower = query.lowercase()
+        val wantsRecent = listOf("today", "tonight", "now", "this week", "latest", "recent", "currently")
+            .any { lower.contains(it) }
+        val terms = lower.split(Regex("[^a-z0-9]+")).filter { it.length >= 3 && it !in STOP }
         if (terms.isEmpty()) return emptyList()
+        val now = System.currentTimeMillis()
         return all(prefs)
-            .map { c ->
+            .mapNotNull { c ->
                 val hay = "${c.person} ${c.text}".lowercase()
-                c to terms.count { hay.contains(it) }
+                val overlap = terms.count { hay.contains(it) }
+                if (overlap == 0) return@mapNotNull null
+                val ageHours = (now - c.whenMs) / 3_600_000f
+                // Recency ranks recent matches above stale ones with the same content overlap. A
+                // "today"/"now" query strongly favours the last ~2 days; older still shows if it's
+                // the only match ("unless specified").
+                val recency = when {
+                    ageHours < 24f -> 2f
+                    ageHours < 24f * 7 -> 1f
+                    else -> 0f
+                } + if (wantsRecent && ageHours < 48f) 3f else 0f
+                c to (overlap * 2f + recency)
             }
-            .filter { it.second > 0 }
-            .sortedWith(compareByDescending<Pair<Commitment, Int>> { it.second }.thenByDescending { it.first.whenMs })
+            .sortedWith(compareByDescending<Pair<Commitment, Float>> { it.second }.thenByDescending { it.first.whenMs })
             .map { it.first }
-            .take(4)
+            .take(5)
     }
 }
