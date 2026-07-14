@@ -15996,9 +15996,14 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // ── Letter shortcuts ─────────────────────────────────────────────────────
 
     private fun handleLetterLongPress(letter: String) {
-        val pkg = prefs().getString("letter_shortcut_$letter", null)
-        if (pkg != null) {
-            val intent = packageManager.getLaunchIntentForPackage(pkg)
+        val stored = prefs().getString("letter_shortcut_$letter", null)
+        if (stored != null) {
+            // Special action shortcuts (not an app launch): "action:<name>".
+            if (stored.startsWith("action:")) {
+                if (stored == "action:uber_ride") promptUberDestination()
+                return
+            }
+            val intent = packageManager.getLaunchIntentForPackage(stored)
             if (intent != null) { startActivity(intent); return }
             // Package gone — clear stale shortcut
             prefs().edit().remove("letter_shortcut_$letter").apply()
@@ -16008,17 +16013,48 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun showLetterShortcutPicker(letter: String) {
         val installed = apps.sortedBy { it.label }
-        val labels = arrayOf("— Clear shortcut —") + installed.map { it.label }.toTypedArray()
+        // Special actions surface above the app list so a key can hold a launcher action, not just
+        // an app — e.g. an Uber "Where to?" ride prompt bound to a key.
+        val specials = listOf("🚗  Uber ride — ask \"Where to?\"" to "action:uber_ride")
+        val labels = (listOf("— Clear shortcut —") + specials.map { it.first } + installed.map { it.label }).toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("Long-press \"${letter.uppercase(Locale.US)}\" opens...")
             .setItems(labels) { _, which ->
-                if (which == 0) {
-                    prefs().edit().remove("letter_shortcut_$letter").apply()
-                } else {
-                    prefs().edit().putString("letter_shortcut_$letter", installed[which - 1].packageName).apply()
+                val value = when {
+                    which == 0 -> null
+                    which <= specials.size -> specials[which - 1].second
+                    else -> installed[which - 1 - specials.size].packageName
                 }
+                if (value == null) prefs().edit().remove("letter_shortcut_$letter").apply()
+                else prefs().edit().putString("letter_shortcut_$letter", value).apply()
             }
             .show()
+    }
+
+    // Uber "Where to?" prompt — a key shortcut (or anywhere) can ask for a destination, then hand it
+    // straight to Uber: pickup = the rider's GPS, dropoff = the typed place (context-resolved +
+    // geocoded via launchUber). Enter in the field fires the ride.
+    private fun promptUberDestination() {
+        val input = android.widget.EditText(this).apply {
+            hint = "e.g. Eiffel Tower, the airport, home"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            setSingleLine()
+        }
+        val wrap = FrameLayout(this).apply { setPadding(dp(22), dp(8), dp(22), 0); addView(input) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("🚗  Uber — where to?")
+            .setView(wrap)
+            .setPositiveButton("Ride") { _, _ -> launchUber(input.text?.toString().orEmpty()) }
+            .setNegativeButton("Cancel", null)
+            .create()
+        input.setOnEditorActionListener { _, _, _ ->
+            dialog.dismiss(); launchUber(input.text?.toString().orEmpty()); true
+        }
+        dialog.setOnShowListener {
+            input.requestFocus()
+            dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        }
+        dialog.show()
     }
 
     // ── Pane / navigation ────────────────────────────────────────────────────
@@ -19205,9 +19241,18 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         uberDestinationFromQuery(q)?.let { dest ->
             val matchesApp = dest.isNotBlank() && apps.any { it.label.equals(dest, ignoreCase = true) }
             if (!matchesApp) {
-                val title = if (dest.isBlank()) "Open Uber" else "Uber to $dest"
-                val sub = if (dest.isBlank()) "Ride · pickup at your location" else "Ride · pickup at your location → destination preloaded"
-                results.add(0, SearchResult(title, sub, 0xFF1FBAD6.toInt(), SearchKind.RIDE, null) { launchUber(dest) })
+                // Context resolution: "take me to hotel" ties to the hotel in your calendar; "home"/
+                // "work"/"airport" tie to your saved places (with coords). Falls back to the raw text.
+                val resolved = resolveRideDestination(dest)
+                val title = if (resolved == null) "Open Uber" else "Uber to ${resolved.label}"
+                val sub = when {
+                    resolved == null -> "Ride · pickup at your location"
+                    resolved.contextNote != null -> "Ride · your location · ${resolved.contextNote}"
+                    else -> "Ride · pickup at your location → destination preloaded"
+                }
+                results.add(0, SearchResult(title, sub, 0xFF1FBAD6.toInt(), SearchKind.RIDE, null) {
+                    if (resolved == null) launchUber("") else launchUberResolved(resolved)
+                })
             }
         }
         if (q.length >= 2) {
@@ -19303,16 +19348,88 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // passing the raw address as dropoff[formatted_address]. Uses the uber:// scheme when the app is
     // installed (most reliable preload), else the m.uber.com/ul universal link (app or web/install).
     private fun launchUber(destination: String) {
-        val dest = destination.trim()
-        if (dest.isBlank()) { openUberRide(null, null, null); return }
+        // Context-resolve first (calendar / saved places), so a shortcut-prompt "hotel" also ties to
+        // the calendar, exactly like the search card does. Blank / nothing to go on → open Uber.
+        val resolved = resolveRideDestination(destination.trim())
+        if (resolved == null) { openUberRide(null, null, null); return }
+        launchUberResolved(resolved)
+    }
+
+    // A ride destination after context resolution: either exact coords (saved place / geocoded
+    // calendar hit) or an address string still to geocode. [label] is what the card shows.
+    private data class RideDest(
+        val label: String,
+        val lat: Double? = null,
+        val lng: Double? = null,
+        val address: String? = null,
+        val contextNote: String? = null
+    )
+
+    // Turn the typed destination into a real place using the user's own context, in priority order:
+    //   1. Saved places (Home / Work / Gym / Airport, or a named place) — already have coordinates.
+    //   2. Calendar — an event whose title/location matches (e.g. "hotel"), or the next event with a
+    //      location for generic words ("my meeting", "reservation"). Uses the event's location.
+    //   3. Raw text — geocode whatever was typed.
+    // Returns null only when there's nothing to go on (blank query, no imminent event) → open Uber.
+    private fun resolveRideDestination(raw: String): RideDest? {
+        val d = raw.trim()
+        matchSavedPlace(d)?.let { p -> return RideDest(p.name, p.lat, p.lng, contextNote = "destination from your saved places") }
+        matchCalendarDestination(d)?.let { return it }
+        if (d.isBlank()) return null
+        return RideDest(d, address = d)
+    }
+
+    private fun matchSavedPlace(dest: String): com.fran.teclas.predict.Place? {
+        val key = dest.trim().lowercase(Locale.US).removePrefix("the ").trim()
+        if (key.isBlank()) return null
+        val places = runCatching { com.fran.teclas.predict.PlaceStore.places(this) }.getOrDefault(emptyList())
+        if (places.isEmpty()) return null
+        val kindWord = mapOf(
+            "home" to com.fran.teclas.predict.PlaceKind.HOME,
+            "work" to com.fran.teclas.predict.PlaceKind.WORK,
+            "office" to com.fran.teclas.predict.PlaceKind.WORK,
+            "gym" to com.fran.teclas.predict.PlaceKind.GYM,
+            "airport" to com.fran.teclas.predict.PlaceKind.AIRPORT
+        )[key]
+        if (kindWord != null) places.firstOrNull { it.kind == kindWord }?.let { return it }
+        return places.firstOrNull {
+            val n = it.name.lowercase(Locale.US)
+            n == key || n.contains(key) || key.contains(n)
+        }
+    }
+
+    private fun matchCalendarDestination(dest: String): RideDest? {
+        val events = calendarEvents.filter { it.location.isNotBlank() }
+        if (events.isEmpty()) return null
+        val now = System.currentTimeMillis()
+        val upcoming = events.filter { it.endMs >= now }.sortedBy { it.beginMs }
+        val key = dest.trim().lowercase(Locale.US).removePrefix("the ").trim()
+        val generic = key.isBlank() || key in setOf(
+            "event", "my event", "next event", "meeting", "my meeting", "appointment",
+            "my appointment", "reservation", "my reservation", "booking"
+        )
+        val ev = if (generic) {
+            upcoming.firstOrNull()
+        } else {
+            (upcoming + events).firstOrNull { it.title.contains(key, true) || it.location.contains(key, true) }
+        } ?: return null
+        val label = ev.location.takeIf { it.length > 3 } ?: ev.title
+        return RideDest(label, address = ev.location, contextNote = "destination from your calendar")
+    }
+
+    // Fire the ride: exact coords open Uber immediately; an address geocodes off the main thread first.
+    private fun launchUberResolved(d: RideDest) {
+        if (d.lat != null && d.lng != null) { openUberRide(d.lat, d.lng, d.label); return }
+        val addr = (d.address ?: d.label).trim()
+        if (addr.isBlank()) { openUberRide(null, null, null); return }
         Toast.makeText(this, "Setting up your ride…", Toast.LENGTH_SHORT).show()
         mediaUiScope.launch(Dispatchers.IO) {
             val hit = runCatching {
                 @Suppress("DEPRECATION")
                 android.location.Geocoder(this@MainActivity, Locale.getDefault())
-                    .getFromLocationName(dest, 1)?.firstOrNull()
+                    .getFromLocationName(addr, 1)?.firstOrNull()
             }.getOrNull()
-            runOnUiThread { openUberRide(hit?.latitude, hit?.longitude, dest) }
+            runOnUiThread { openUberRide(hit?.latitude, hit?.longitude, d.label) }
         }
     }
 
