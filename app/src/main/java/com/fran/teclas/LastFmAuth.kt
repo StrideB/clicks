@@ -9,8 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 //   1. Go to https://www.last.fm/api/account/create → Create an application
 //   2. Copy the API Key and Shared Secret into the constants below
 // ─────────────────────────────────────────────────────────────────────────────
-const val LASTFM_API_KEY = "YOUR_LASTFM_API_KEY"
-const val LASTFM_SHARED_SECRET = "YOUR_LASTFM_SHARED_SECRET"
+const val LASTFM_API_KEY = "75a3678c7ac3f9462f33c820dd1075e4"
+const val LASTFM_SHARED_SECRET = "d01e63add885a10d6ae6f7ce008a5756"
 
 enum class LastFmConnectState { DISCONNECTED, CONNECTING, CONNECTED }
 

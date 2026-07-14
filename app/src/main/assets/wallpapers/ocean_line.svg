@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 2340" width="1080" height="2340">
+<defs><linearGradient id="osea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1ea6c4"/><stop offset="30%" stop-color="#0a5c7a"/><stop offset="100%" stop-color="#04212f"/></linearGradient>
+<radialGradient id="surf" cx="50%" cy="0%" r="70%"><stop offset="0%" stop-color="#bff2fb" stop-opacity=".45"/><stop offset="100%" stop-color="#bff2fb" stop-opacity="0"/></radialGradient></defs>
+<rect width="1080" height="2340" fill="url(#osea)"/>
+<g>
+<polygon points="120,0 160,0 340,2340 240,2340" fill="#8fe6f5" opacity="0.05"/>
+<polygon points="270,0 310,0 490,2340 390,2340" fill="#8fe6f5" opacity="0.065"/>
+<polygon points="420,0 460,0 640,2340 540,2340" fill="#8fe6f5" opacity="0.08"/>
+<polygon points="570,0 610,0 790,2340 690,2340" fill="#8fe6f5" opacity="0.095"/>
+<polygon points="720,0 760,0 940,2340 840,2340" fill="#8fe6f5" opacity="0.11"/>
+<polygon points="870,0 910,0 1090,2340 990,2340" fill="#8fe6f5" opacity="0.125"/>
+<polygon points="1020,0 1060,0 1240,2340 1140,2340" fill="#8fe6f5" opacity="0.14"/>
+</g>
+<rect width="1080" height="2340" fill="url(#surf)"/>
+</svg>

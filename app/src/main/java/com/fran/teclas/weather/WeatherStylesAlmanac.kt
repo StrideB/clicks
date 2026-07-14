@@ -130,6 +130,31 @@ private fun skyLine(d: WeatherData): String = when (d.condition) {
     EText("${d.place.lowercase()} · feels ${d.feelsLike}°", fontSize = 14.sp, fontStyle = FontStyle.Italic, color = dim)
 }
 
+@Composable private fun ReportSplit(d: WeatherData, accent: Color, m: Modifier) = Row(
+    m.width(286.dp),
+    verticalAlignment = Alignment.CenterVertically
+) {
+    Column(Modifier.weight(1f).padding(end = 14.dp)) {
+        EText("WEATHER REPORT", fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.8.sp, color = dim, maxLines = 1)
+        Spacer(Modifier.height(5.dp))
+        Rule(alpha = 0.34f)
+        Spacer(Modifier.height(7.dp))
+        EText("${d.conditionLabel} over ${d.place}", fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 23.sp, maxLines = 2)
+    }
+    Canvas(Modifier.width(1.dp).height(74.dp)) {
+        drawLine(rule.copy(alpha = 0.36f), Offset.Zero, Offset(0f, size.height), strokeWidth = 1.dp.toPx())
+    }
+    Column(
+        Modifier.width(100.dp).padding(start = 14.dp),
+        horizontalAlignment = Alignment.End
+    ) {
+        EText("${d.temp}°", fontSize = 54.sp, fontWeight = FontWeight.Bold, lineHeight = 50.sp, textAlign = TextAlign.End, maxLines = 1)
+        EText(d.place.uppercase(), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp, color = dim, textAlign = TextAlign.End, maxLines = 1)
+        Spacer(Modifier.height(3.dp))
+        EText("Feels like ${d.feelsLike}°", fontSize = 12.sp, fontStyle = FontStyle.Italic, color = dim, textAlign = TextAlign.End, maxLines = 1)
+    }
+}
+
 @Composable private fun Index(d: WeatherData, accent: Color, m: Modifier) = Column(m.width(270.dp)) {
     EText("TODAY AT A GLANCE", fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp)
     Spacer(Modifier.height(8.dp))
@@ -242,7 +267,11 @@ val ALMANAC_STYLES: List<WeatherStyle> = listOf(
     WeatherStyle("almanac_masthead", "Masthead", ALMANAC) { d, a, m -> Masthead(d, a, m) },
     WeatherStyle("almanac_dateline", "Dateline", ALMANAC) { d, a, m -> Dateline(d, a, m) },
     WeatherStyle("almanac_report", "Report", ALMANAC) { d, a, m -> Report(d, a, m) },
-    WeatherStyle("almanac_index", "Index", ALMANAC) { d, a, m -> Index(d, a, m) },
+    WeatherStyle("almanac_report_split", "Report Split", ALMANAC) { d, a, m -> ReportSplit(d, a, m) },
+    // Keep the existing persisted id on the redesigned split report, so saved
+    // demo scenes and older settings do not fall back to the previous table.
+    WeatherStyle("almanac_index", "Report Split", ALMANAC) { d, a, m -> ReportSplit(d, a, m) },
+    WeatherStyle("almanac_index_table", "Index Table", ALMANAC) { d, a, m -> Index(d, a, m) },
     WeatherStyle("almanac_big_number", "Big Number", ALMANAC) { d, a, m -> BigNumber(d, a, m) },
     WeatherStyle("almanac_broadsheet", "Broadsheet", ALMANAC) { d, a, m -> EditorialBroadsheet(d, a, m) },
     WeatherStyle("almanac_ornament", "Ornament", ALMANAC) { d, a, m -> Ornament(d, a, m) },

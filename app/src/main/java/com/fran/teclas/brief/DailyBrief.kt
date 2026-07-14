@@ -85,6 +85,44 @@ object DailyBrief {
         prefs.getString(KEY_EDITION, null)?.let { prefs.edit().putString(KEY_DISMISSED, it).apply() }
     }
 
+    /** Marketing/demo helper: render a forced morning edition with fictitious data only. */
+    fun seedDemoMorning(prefs: SharedPreferences) {
+        seedDemo(
+            prefs = prefs,
+            morning = true,
+            lede = "Good morning — family first, then the work that needs a reply.",
+            rows = listOf(
+                Row("✉", "Reply to Mom about dinner tonight", "Messages · she asked if 7 works"),
+                Row("›", "Send Sarah the Q3 deck", "Gmail · before 2pm"),
+                Row("◷", "Product sync starts at 9:30", "Calendar · Room B")
+            )
+        )
+    }
+
+    /** Marketing/demo helper: render a forced contextual edition with fictitious data only. */
+    fun seedDemo(prefs: SharedPreferences, morning: Boolean, lede: String, rows: List<Row>, todos: List<Todo> = emptyList()) {
+        val key = forcedKey(morning = morning)
+        prefs.edit()
+            .putBoolean(KEY_FORCED, true)
+            .remove(KEY_DISMISSED)
+            .putString(KEY_EDITION, key)
+            .putString(KEY_LEDE, lede)
+            .putString(KEY_ROWS, JSONArray(rows.map {
+                JSONObject()
+                    .put("g", it.glyph)
+                    .put("t", it.title)
+                    .put("s", it.sub)
+                    .put("p", it.pkg)
+                    .put("k", it.key)
+            }).toString())
+            .putString(KEY_TODOS, JSONArray(todos.map {
+                JSONObject()
+                    .put("x", it.text)
+                    .put("d", it.done)
+            }).toString())
+            .apply()
+    }
+
     /** Flip a todo's checkbox and persist (rewrites the stored list). */
     fun toggleTodo(prefs: SharedPreferences, index: Int) {
         val arr = runCatching { JSONArray(prefs.getString(KEY_TODOS, "[]")) }.getOrNull() ?: return

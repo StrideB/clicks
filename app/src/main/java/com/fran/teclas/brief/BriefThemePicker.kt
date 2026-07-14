@@ -65,7 +65,8 @@ data class BriefTheme(
     val cardBorder: String?,
     val cornerRadius: Int,
     val titleTreatment: TitleTreatment,
-    val effect: String? = null
+    val effect: String? = null,
+    val wallpaperId: String? = null
 )
 
 enum class Font { MONO, SERIF, SANS }
@@ -80,25 +81,25 @@ object BriefThemes {
     const val DEFAULT_ID = 1
 
     val all: List<BriefTheme> = listOf(
-        BriefTheme(1, "Sunset Glass", true, "gradient(160deg, #f7b26b@0%, #e77a5a@45%, #3a4a63@100%)", "#ffffff", "#b3ffffff", "#e8602c", "#ffffff", Font.SANS, "rgba(28,26,32,.55) blur", "1px solid #ffffff24", 14, TitleTreatment.PLAIN, "blur"),
+        BriefTheme(1, "Sunset Glass", true, "gradient(160deg, #f7b26b@0%, #e77a5a@45%, #3a4a63@100%)", "#ffffff", "#b3ffffff", "#e8602c", "#ffffff", Font.SANS, "rgba(28,26,32,.55) blur", "1px solid #ffffff24", 14, TitleTreatment.PLAIN, "blur", "sunset_glass"),
         BriefTheme(2, "Paper Mono", false, "#f6f4ee", "#1a1a1a", "#b31a1a1a", "#1a1a1a", "#1a1a1a", Font.MONO, null, null, 0, TitleTreatment.UNDERLINE, "underline:#cfcabd"),
         BriefTheme(3, "Terminal Green", true, "#0b0f0b", "#39ff86", "#b339ff86", "#39ff86", "#39ff86", Font.MONO, "#0d140d", "1px solid #1f5a37", 6, TitleTreatment.PLAIN, "glow:green"),
         BriefTheme(4, "Blueprint", false, "#12365e grid", "#dbe8f6", "#b3dbe8f6", "#7fb2e8", "#ffffff", Font.MONO, null, null, 0, TitleTreatment.LEFT_RULE, "grid:22"),
         BriefTheme(5, "Cream Editorial", true, "#efe7d8", "#2b2622", "#b32b2622", "#a8632c", "#2b2622", Font.SERIF, "#fbf7ee", "1px solid #d8ccb4", 2, TitleTreatment.PLAIN, "soft-shadow"),
         BriefTheme(6, "Neon Pop", true, "#120a2e", "#ffffff", "#b3ffffff", "#ffd84e", "#7cf3ff", Font.SANS, "#1e1147", "2px solid #ff4ecd", 16, TitleTreatment.PLAIN, "glow:magenta"),
-        BriefTheme(7, "Fog", false, "gradient(180deg, #cdd6dd, #aab6bf)", "#2c353c", "#b32c353c", "#5b6b76", "#2c353c", Font.SANS, null, null, 0, TitleTreatment.PLAIN),
+        BriefTheme(7, "Fog", false, "gradient(180deg, #cdd6dd, #aab6bf)", "#2c353c", "#b32c353c", "#5b6b76", "#2c353c", Font.SANS, null, null, 0, TitleTreatment.PLAIN, wallpaperId = "fog"),
         BriefTheme(8, "Amber CRT", true, "#1a1206", "#ffb648", "#b3ffb648", "#ffb648", "#ffb648", Font.MONO, "#241804", "1px dashed #7a5418", 4, TitleTreatment.PLAIN, "glow:amber"),
-        BriefTheme(9, "Rose Quartz", true, "gradient(160deg, #ffd9e4, #ffc2d1@60%, #c9b8ff)", "#5a2a44", "#b35a2a44", "#d65a8a", "#5a2a44", Font.SANS, "rgba(255,255,255,.55) blur", "1px solid #ffffffb3", 20, TitleTreatment.PLAIN, "blur"),
+        BriefTheme(9, "Rose Quartz", true, "gradient(160deg, #ffd9e4, #ffc2d1@60%, #c9b8ff)", "#5a2a44", "#b35a2a44", "#d65a8a", "#5a2a44", Font.SANS, "rgba(255,255,255,.55) blur", "1px solid #ffffffb3", 20, TitleTreatment.PLAIN, "blur", "rose_quartz"),
         BriefTheme(10, "Pure Ink", false, "#101010", "#f2f2f2", "#b3f2f2f2", "#f2f2f2", "#f2f2f2", Font.SANS, null, null, 0, TitleTreatment.PLAIN, "heavy"),
-        BriefTheme(11, "Forest Depth", true, "gradient(170deg, #1f3d2f, #0f261c)", "#d7efdc", "#b3d7efdc", "#7fe0a0", "#d7efdc", Font.SANS, "rgba(255,255,255,.08) blur", "1px solid #c8ffd22e", 12, TitleTreatment.PLAIN, "blur"),
+        BriefTheme(11, "Forest Depth", true, "gradient(170deg, #1f3d2f, #0f261c)", "#d7efdc", "#b3d7efdc", "#7fe0a0", "#d7efdc", Font.SANS, "rgba(255,255,255,.08) blur", "1px solid #c8ffd22e", 12, TitleTreatment.PLAIN, "blur", "forest_depth"),
         BriefTheme(12, "Dot Matrix", false, "#e8e4d8 dots", "#2a2a2a", "#b32a2a2a", "#2a2a2a", "#2a2a2a", Font.MONO, null, null, 0, TitleTreatment.INVERTED_CHIP, "dots:8"),
         BriefTheme(13, "Coral Block", true, "#ff6b4a", "#ffffff", "#b3ffffff", "#ffd84e", "#ff6b4a", Font.SANS, "#141210", null, 10, TitleTreatment.PLAIN),
         BriefTheme(14, "Slate Minimal", false, "#e4e6e9", "#25292e", "#b325292e", "#6a7178", "#25292e", Font.SANS, null, null, 0, TitleTreatment.PLAIN, "dividers:#c9cdd2"),
-        BriefTheme(15, "Midnight Glass", true, "gradient(160deg, #2b2d5e, #151633)", "#e6e8ff", "#b3e6e8ff", "#8f9bff", "#e6e8ff", Font.SANS, "rgba(255,255,255,.09) blur", "1px solid #ffffff29", 18, TitleTreatment.PLAIN, "blur"),
+        BriefTheme(15, "Midnight Glass", true, "gradient(160deg, #2b2d5e, #151633)", "#e6e8ff", "#b3e6e8ff", "#8f9bff", "#e6e8ff", Font.SANS, "rgba(255,255,255,.09) blur", "1px solid #ffffff29", 18, TitleTreatment.PLAIN, "blur", "midnight_glass"),
         BriefTheme(16, "Sunflower", true, "#ffd23f", "#3a2c00", "#b33a2c00", "#e8602c", "#3a2c00", Font.SANS, "#fff8e0", "2px solid #3a2c00", 12, TitleTreatment.PLAIN),
-        BriefTheme(17, "Vapor", false, "gradient(160deg, #8ee3ff, #c79bff@55%, #ff9ecb)", "#241b3a", "#b3241b3a", "#ffffff", "#ffffff", Font.SANS, null, null, 0, TitleTreatment.PLAIN, "heavy-shadow"),
+        BriefTheme(17, "Vapor", false, "gradient(160deg, #8ee3ff, #c79bff@55%, #ff9ecb)", "#241b3a", "#b3241b3a", "#ffffff", "#ffffff", Font.SANS, null, null, 0, TitleTreatment.PLAIN, "heavy-shadow", "vapor"),
         BriefTheme(18, "Newsprint", true, "#e6e2d6", "#1a1a1a", "#b31a1a1a", "#1a1a1a", "#1a1a1a", Font.SERIF, "#f4f1e8", "1px solid #1a1a1a", 0, TitleTreatment.PLAIN, "header-underline"),
-        BriefTheme(19, "Ocean Line", false, "gradient(180deg, #0a5c7a, #063245)", "#d6f0f8", "#b3d6f0f8", "#4fd0e8", "#d6f0f8", Font.SANS, null, null, 0, TitleTreatment.UNDERLINE, "underline:#4fd0e8"),
+        BriefTheme(19, "Ocean Line", false, "gradient(180deg, #0a5c7a, #063245)", "#d6f0f8", "#b3d6f0f8", "#4fd0e8", "#d6f0f8", Font.SANS, null, null, 0, TitleTreatment.UNDERLINE, "underline:#4fd0e8", "ocean_line"),
         BriefTheme(20, "Punchcard", true, "#1c1c1c", "#f5e6c8", "#b3f5e6c8", "#ff8a5c", "#f5e6c8", Font.MONO, "#242424", "2px solid #f5e6c8", 0, TitleTreatment.PLAIN, "offset-shadow")
     )
 
@@ -234,8 +235,8 @@ fun DailyBriefCard(theme: BriefTheme, brief: BriefData, modifier: Modifier = Mod
                 .fillMaxWidth()
                 .themeCardEffect(theme)
                 .clip(shape)
-                .background(theme.glassCardBrush())
-                .border(1.dp, Color(theme.glassRimColorInt()), shape)
+                .background(theme.cardBrush())
+                .then(theme.cardBorderModifier(shape))
                 .padding(12.dp)
         } else {
             Modifier.fillMaxWidth().padding(2.dp)
@@ -389,21 +390,28 @@ private fun Modifier.themeCardEffect(theme: BriefTheme): Modifier = when {
     else -> this
 }
 
-private fun BriefTheme.glassCardBrush(): Brush =
-    Brush.verticalGradient(listOf(Color(glassTintColorInt()), Color(glassTintColorInt()).copy(alpha = Color(glassTintColorInt()).alpha * 0.62f)))
+private fun BriefTheme.cardBrush(): Brush {
+    val fill = cardFillColorInt() ?: AndroidColor.TRANSPARENT
+    return Brush.verticalGradient(listOf(Color(fill), Color(fill)))
+}
+
+private fun BriefTheme.cardBorderModifier(shape: RoundedCornerShape): Modifier {
+    val border = parseBorder(cardBorder) ?: return Modifier
+    return Modifier.border(border.widthDp.dp, Color(border.color), shape)
+}
 
 private fun BriefTheme.backgroundBrush(): Brush {
     val stops = gradientStops(background)
     if (stops.isNotEmpty()) {
         val angle = stops.first().angleRad.toDouble()
         return Brush.linearGradient(
-            stops.map { Color(applyAlpha(it.color, 0.28f)) },
+            stops.map { Color(it.color) },
             start = Offset.Zero,
             end = Offset(900f * cos(angle).toFloat(), 900f * sin(angle).toFloat())
         )
     }
     val c = parseCssColor(background.substringBefore(' '), AndroidColor.TRANSPARENT)
-    return Brush.verticalGradient(listOf(Color(applyAlpha(c, if (isDarkColor(c)) 0.30f else 0.26f)), Color(applyAlpha(c, if (isDarkColor(c)) 0.18f else 0.18f))))
+    return Brush.verticalGradient(listOf(Color(c), Color(c)))
 }
 
 private fun BriefTheme.composeText(): Color = Color(textColorInt())

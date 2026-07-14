@@ -136,6 +136,9 @@ import com.fran.teclas.weather.WeatherStylePickerSheet
 import com.fran.teclas.weather.conditionForWmoCode
 import com.fran.teclas.weather.parseHourlyJson
 import com.fran.teclas.weather.weatherStyleById
+import com.fran.teclas.theme.DefaultThemes
+import com.fran.teclas.theme.ThemeRepository
+import com.fran.teclas.theme.WallpaperRegistry
 import com.fran.teclas.brief.Brief
 import com.fran.teclas.brief.BriefAction
 import com.fran.teclas.brief.BriefCategory
@@ -239,7 +242,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun isPasswordField(): Boolean = false
     override val hostHapticsEnabled: Boolean get() = hapticsEnabled
     override fun onAgenticCommand(text: String) { executeTypeToDoCommand(text) }
-    override fun openHostKeyboardSettings() { keyboardSettingsOpen = true; render() }
+    override fun openHostKeyboardSettings() { openTeclasSettingsFromKeyboard() }
+
+    private fun openTeclasSettingsFromKeyboard() {
+        keyboardSettingsOpen = false
+        query = ""
+        libraryOpen = false
+        openHere(teclasSettingsTarget())
+    }
 
     private val autocorrectCore by lazy {
         com.fran.teclas.keyboard.AutocorrectCore(
@@ -600,6 +610,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // True while a home widget (the movable weather widget) is being dragged — launcher gestures are
     // suppressed so the drag isn't hijacked/cancelled by a swipe.
     private var weatherWidgetDragging = false
+    private var applyingDemoStage = false
     private var pendingTrashPhotoId: Long? = null
     private val homeTileViews = mutableMapOf<String, FrameLayout>()
     private lateinit var sizeValueView: TextView
@@ -607,6 +618,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == HUB_MESSAGES_PREF) {
             runOnUiThread { refreshHubMessagesFromPrefs() }
+        } else if (key == ThemeRepository.ACTIVE_THEME_ID_PREF ||
+            key == ThemeRepository.THEME_WALLPAPER_ID_PREF ||
+            key == ThemeRepository.THEME_APPLY_VERSION_PREF
+        ) {
+            runOnUiThread {
+                keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, keyboardTheme) ?: keyboardTheme
+                goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, goKeyColor)
+                themeMode = prefs().getString(THEME_MODE_PREF, themeMode) ?: themeMode
+                homeWallpaperDrawable = null
+                maybeAutoSaveDemoStage(key)
+                render()
+            }
+        } else if (isDemoStagePref(key)) {
+            runOnUiThread {
+                homeWallpaperDrawable = null
+                maybeAutoSaveDemoStage(key)
+            }
         } else if (key == ACTIVE_ICON_PACK_PREF || key?.startsWith(ICON_OVERRIDE_PREFIX) == true) {
             runOnUiThread {
                 invalidateLibraryCaches()
@@ -672,6 +700,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 .putBoolean(homeScopedKey(HOME_SYSTEM_WALLPAPER_PREF), false)
                 .putString(activeWallpaperUriPref(innerScope), uri.toString())
                 .apply()
+            maybeAutoSaveDemoStage(activeWallpaperUriPref(innerScope))
             homeWallpaperDrawable = null
             Toast.makeText(this, if (innerScope) "Inner wallpaper applied." else "Cover wallpaper applied.", Toast.LENGTH_SHORT).show()
             if (::rootView.isInitialized) render()
@@ -779,9 +808,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncVivoDockedExperiment()
         observeFoldPosture { posture -> handleFoldPosture(posture) }
         render()
+        handleDemoShowcaseIntent(intent)
         handleKeyboardActionIntent(intent)
         rootView.post { maybeShowKeyboardPlacementIntro() }
-        refreshWeather(force = false)
+        if (demoModeEnabled()) updateClock() else refreshWeather(force = false)
         maybeRequestSmsPermission()
         mediaSessionSource.start()
         mediaUiScope.launch {
@@ -839,6 +869,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         syncVivoDockedExperiment()
+        if (handleDemoShowcaseIntent(intent)) return
         if (handleKeyboardActionIntent(intent)) return
         if (intent.hasCategory(Intent.CATEGORY_HOME)) {
             dismissToHome()
@@ -892,11 +923,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             TeclasKeyboardActions.OPEN_KEYBOARD_SETTINGS -> {
                 VivoDockedExperiment.clearViewportTruncation(this)
                 stopService(Intent(this, DockedKeyboardService::class.java))
-                openPane = null
                 libraryOpen = false
-                keyboardSettingsOpen = true
                 query = ""
-                render()
+                openTeclasSettingsFromKeyboard()
                 return true
             }
             TeclasKeyboardActions.SWITCH_TO_WIDGET_MODE -> {
@@ -938,8 +967,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         ensureBillingConnected()
         val now = System.currentTimeMillis()
-        if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now; scheduleSemanticIndexRefresh() }
-        if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now; scheduleSemanticIndexRefresh() }
+        if (demoModeEnabled()) {
+            applyDemoShowcaseData(loadVisualStage = false)
+        } else {
+            if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now; scheduleSemanticIndexRefresh() }
+            if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now; scheduleSemanticIndexRefresh() }
+        }
         // LLM scene fusion: precompute a Space verdict from the fresh signal bundle (debounced +
         // gated internally; the result is read lock-free by SpaceManager.detect).
         predictContext?.let { snap ->
@@ -974,7 +1007,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
             refreshDockMusicNotes()   // re-arm the bounded notes burst on return to home
-            refreshWeather(force = false)
+            if (demoModeEnabled()) updateClock() else refreshWeather(force = false)
         }
     }
 
@@ -2333,11 +2366,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
      *  when nothing changed. Wallpaper ids bump whenever the device wallpaper is replaced. */
     private fun deviceWallpaperSignature(): String {
         val uri = activeHomeWallpaperUri()?.toString().orEmpty()
+        val themeWallpaper = prefs().getString(ThemeRepository.THEME_WALLPAPER_ID_PREF, WallpaperRegistry.SYSTEM_WALLPAPER_ID).orEmpty()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return "$uri|legacy"
         val manager = WallpaperManager.getInstance(this)
         val sys = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_SYSTEM) }.getOrDefault(-1)
         val lock = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_LOCK) }.getOrDefault(-1)
-        return "$uri|$sys|$lock|${useLockscreenWallpaperOnHome()}"
+        return "$uri|$themeWallpaper|$sys|$lock|${useLockscreenWallpaperOnHome()}"
     }
 
     private fun loadHomeWallpaperDrawable(): Drawable? {
@@ -2351,6 +2385,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }.getOrNull()
         }
         if (selectedDrawable != null) return selectedDrawable
+        if (!useSystemWallpaperOnHome()) {
+            val themedWallpaper = prefs().getString(ThemeRepository.THEME_WALLPAPER_ID_PREF, WallpaperRegistry.SYSTEM_WALLPAPER_ID)
+                ?: WallpaperRegistry.SYSTEM_WALLPAPER_ID
+            if (themedWallpaper != WallpaperRegistry.SYSTEM_WALLPAPER_ID) {
+                WallpaperRegistry(this).loadDrawable(themedWallpaper)?.let { return it }
+            }
+        }
         if (!launcherWallpaperCanvasActive() && !useLockscreenWallpaperOnHome()) return null
         val manager = WallpaperManager.getInstance(this)
         fun fileDrawable(which: Int): Drawable? {
@@ -2630,7 +2671,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(mono(if (isUnfoldedInnerLayoutActive()) "INNER WALLPAPER" else "COVER WALLPAPER", 9f, activeNeuTokens.inkFaint).apply {
                 letterSpacing = 0.18f
                 gravity = Gravity.CENTER
-            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(22)))
         }
         fun addSlider(label: String, pref: String, value: Int, min: Int, max: Int) {
             panel.addView(TextView(this).apply {
@@ -2777,8 +2818,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
-            if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
-            if (!widgetSearchActive) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
+            if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
 
@@ -2832,8 +2873,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            if (!widgetSearchActive) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
-            if (!widgetSearchActive) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
+            if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
 
@@ -2920,10 +2961,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun contextDockStampView(context: Context): TextView = TextView(context).apply {
         gravity = Gravity.CENTER
         includeFontPadding = false
-        textSize = 10.5f
-        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        letterSpacing = 0.12f
-        setPadding(dp(13), 0, dp(13), 0)
+        textSize = 9.8f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        letterSpacing = 0.08f
+        setPadding(dp(12), 0, dp(12), 0)
         isClickable = false
         isFocusable = false
     }
@@ -3500,6 +3541,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     })
 
     private fun activeSpaceForUi(): Space? {
+        if (demoModeEnabled()) {
+            demoSpaceForScene(demoSceneId())?.let { return it }
+        }
         val locked = SpaceManager.lockedSpaceId(this)?.let { SpaceManager.space(this, it) }
         if (locked != null) return locked
         return predictContext?.let { SpaceManager.detect(this, it).space }
@@ -3513,6 +3557,592 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         invalidateLibraryCaches()
         refreshPredictContext(rerender = false)
         render()
+    }
+
+    private data class DemoMusic(val title: String, val artist: String, val sourceApp: String, val sourceColor: Int)
+    private data class DemoVisuals(val keyboardTheme: String, val briefTheme: String, val weatherStyle: String, val wallpaperId: String)
+
+    private fun demoModeEnabled(): Boolean = prefs().getBoolean(DEMO_MODE_PREF, false)
+
+    private fun demoSceneId(): String =
+        prefs().getString(DEMO_SCENE_PREF, "home")?.lowercase(Locale.US)?.trim().orEmpty()
+            .ifBlank { "home" }
+            .let { if (it == "gym") "fitness" else it }
+
+    private fun demoSpaceForScene(scene: String): Space? {
+        val id = if (scene == "gym") "fitness" else scene
+        return SpaceManager.space(this, id)
+            ?: SpaceManager.spaces(this).firstOrNull { it.enabled && it.id == "home" }
+            ?: SpaceManager.spaces(this).firstOrNull { it.enabled }
+    }
+
+    private fun handleDemoShowcaseCommand(rawQuery: String): Boolean {
+        val clean = rawQuery.trim().lowercase(Locale.US)
+        when (clean) {
+            "demosave" -> {
+                saveDemoSceneSnapshot(demoSceneId())
+                query = ""
+                Toast.makeText(this, "Saved demo stage: ${demoSceneId()}", Toast.LENGTH_SHORT).show()
+                return true
+            }
+            "demoweather" -> {
+                pinCurrentWeatherForDemoScene()
+                query = ""
+                return true
+            }
+            "demoreset" -> {
+                resetDemoSceneSnapshot(demoSceneId())
+                query = ""
+                Toast.makeText(this, "Reset demo stage: ${demoSceneId()}", Toast.LENGTH_SHORT).show()
+                return true
+            }
+            "demolist" -> {
+                val saved = DEMO_SCENES.filter { prefs().contains(demoSceneSnapshotKey(it)) }
+                query = ""
+                Toast.makeText(this, "Saved stages: ${saved.ifEmpty { listOf("none") }.joinToString(", ")}", Toast.LENGTH_LONG).show()
+                return true
+            }
+        }
+        val isSceneCommand = clean.startsWith("demo ") || (clean.startsWith("demo") && clean.length > 4)
+        if (clean !in DEMO_COMMANDS && !isSceneCommand) return false
+        val scene = clean.removePrefix("demo").trim().ifBlank { demoSceneId() }.let {
+            if (it == "gym") "fitness" else it
+        }
+        when {
+            clean == "demooff" || clean == "demo off" -> setDemoShowcaseMode(false)
+            scene in DEMO_SCENES -> setDemoShowcaseMode(true, scene)
+            clean == "demomode" -> setDemoShowcaseMode(!demoModeEnabled(), demoSceneId())
+            else -> Toast.makeText(this, "Demo commands: demowork, demodriving, demofitness, demotravel, demonight, demooff", Toast.LENGTH_LONG).show()
+        }
+        query = ""
+        return true
+    }
+
+    private fun handleDemoShowcaseIntent(intent: Intent?): Boolean {
+        if (intent?.action != DEMO_SHOWCASE_ACTION) return false
+        val enabled = intent.getBooleanExtra("enabled", true)
+        val scene = intent.getStringExtra("scene")
+            ?.lowercase(Locale.US)
+            ?.trim()
+            ?.let { if (it == "gym") "fitness" else it }
+            ?: demoSceneId()
+        intent.getStringExtra("mode")?.lowercase(Locale.US)?.trim()?.let { mode ->
+            val next = when (mode) {
+                "light", "day" -> THEME_MODE_LIGHT
+                "dark", "night" -> THEME_MODE_DARK
+                "system" -> THEME_MODE_SYSTEM
+                else -> null
+            }
+            if (next != null) {
+                themeMode = next
+                prefs().edit().putString(THEME_MODE_PREF, next).apply()
+                refreshSystemThemeIfNeeded(animated = false, forceRender = false)
+            }
+        }
+        if (intent.getBooleanExtra("widget", true) && keyboardPlacement != KEYBOARD_PLACEMENT_WIDGET) {
+            setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
+        }
+        widgetKeyboardHidden = false
+        query = ""
+        openPane = null
+        libraryOpen = false
+        keyboardSettingsOpen = false
+        prefs().edit()
+            .putBoolean(COVER_WIDGET_KEYBOARD_HIDDEN_PREF, false)
+            .putBoolean(INNER_WIDGET_KEYBOARD_HIDDEN_PREF, false)
+            .apply()
+        setDemoShowcaseMode(enabled, scene)
+        return true
+    }
+
+    private fun setDemoShowcaseMode(enabled: Boolean, scene: String = demoSceneId()) {
+        val normalized = if (scene == "gym") "fitness" else scene
+        prefs().edit()
+            .putBoolean(DEMO_MODE_PREF, enabled)
+            .putString(DEMO_SCENE_PREF, normalized.takeIf { it in DEMO_SCENES } ?: "home")
+            .apply()
+        if (enabled) {
+            applyDemoShowcaseData(normalized, loadVisualStage = true)
+            setDockPinnedOverrideSpace(null)
+            favoritesDockContextPreferred = true
+            setFavoritesDockContextShowing(true, preferContext = true)
+            Toast.makeText(this, "Demo scene: ${demoSpaceForScene(normalized)?.name ?: normalized}", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Demo mode off", Toast.LENGTH_SHORT).show()
+        }
+        invalidateLibraryCaches()
+        if (spaceBoardOverlay != null) {
+            closeSpaceBoard()
+            if (enabled) handler.postDelayed({ openSpaceBoard() }, 180)
+        }
+        updateLauncherTheme(animated = false, forceRender = true)
+    }
+
+    private fun applyDemoShowcaseData(scene: String = demoSceneId(), loadVisualStage: Boolean = true) {
+        val normalized = if (scene == "gym") "fitness" else scene
+        val now = System.currentTimeMillis()
+        messages = demoHubMessages(normalized, now)
+        calendarEvents = demoCalendarEvents(normalized, now)
+        if (loadVisualStage) {
+            applyingDemoStage = true
+            try {
+                if (!restoreDemoSceneSnapshot(normalized)) {
+                    applyDemoVisuals(normalized)
+                    seedDemoBriefForScene(normalized)
+                }
+            } finally {
+                applyingDemoStage = false
+            }
+        }
+        // Demo weather is pinned independently from the scene's visual snapshot.
+        // Changing the weather widget style must never let live/local weather leak
+        // into a staged city such as Paris.
+        applyDemoWeather(normalized)
+        lastHubLoadMs = now
+        lastCalendarLoadMs = now
+        scheduleSemanticIndexRefresh()
+        if (::briefRepository.isInitialized) briefRepository.refreshDebounced(100)
+    }
+
+    private fun demoSceneSnapshotKey(scene: String): String = "showcase_demo_scene_snapshot_${if (scene == "gym") "fitness" else scene}"
+
+    private fun demoSnapshotBaseKeys(): Set<String> =
+        DEMO_SNAPSHOT_STRING_KEYS.toSet() + DEMO_SNAPSHOT_INT_KEYS.toSet() + DEMO_SNAPSHOT_BOOLEAN_KEYS.toSet()
+
+    private fun isDemoStagePref(key: String?): Boolean {
+        if (key.isNullOrBlank()) return false
+        if (key == ThemeRepository.ACTIVE_THEME_ID_PREF || key == ThemeRepository.THEME_APPLY_VERSION_PREF) return true
+        if (key.startsWith("showcase_demo_")) return false
+        val bases = demoSnapshotBaseKeys()
+        if (key in bases) return true
+        if (key.endsWith(DOCKED_HOME_SUFFIX) && key.removeSuffix(DOCKED_HOME_SUFFIX) in bases) return true
+        return false
+    }
+
+    private fun maybeAutoSaveDemoStage(changedKey: String?) {
+        if (!demoModeEnabled() || applyingDemoStage || !isDemoStagePref(changedKey)) return
+        saveDemoSceneSnapshot(demoSceneId())
+    }
+
+    private fun saveDemoSceneSnapshot(scene: String) {
+        val p = prefs()
+        val snapshot = JSONObject()
+        DEMO_SNAPSHOT_STRING_KEYS.forEach { key ->
+            if (p.contains(key)) snapshot.put(key, p.getString(key, null))
+        }
+        DEMO_SNAPSHOT_STRING_KEYS.map { homeScopedKey(it) }.forEach { key ->
+            if (p.contains(key)) snapshot.put(key, p.getString(key, null))
+        }
+        DEMO_SNAPSHOT_INT_KEYS.forEach { key ->
+            if (p.contains(key)) snapshot.put(key, p.getInt(key, 0))
+        }
+        DEMO_SNAPSHOT_INT_KEYS.map { homeScopedKey(it) }.forEach { key ->
+            if (p.contains(key)) snapshot.put(key, p.getInt(key, 0))
+        }
+        DEMO_SNAPSHOT_BOOLEAN_KEYS.forEach { key ->
+            if (p.contains(key)) snapshot.put(key, p.getBoolean(key, false))
+        }
+        DEMO_SNAPSHOT_BOOLEAN_KEYS.map { homeScopedKey(it) }.forEach { key ->
+            if (p.contains(key)) snapshot.put(key, p.getBoolean(key, false))
+        }
+        p.edit().putString(demoSceneSnapshotKey(scene), snapshot.toString()).apply()
+    }
+
+    private fun resetDemoSceneSnapshot(scene: String) {
+        prefs().edit()
+            .remove(demoSceneSnapshotKey(scene))
+            .remove(demoWeatherSnapshotKey(scene))
+            .apply()
+        applyDemoShowcaseData(scene)
+        updateLauncherTheme(animated = false, forceRender = true)
+    }
+
+    private fun restoreDemoSceneSnapshot(scene: String): Boolean {
+        val raw = prefs().getString(demoSceneSnapshotKey(scene), null) ?: return false
+        val snapshot = runCatching { JSONObject(raw) }.getOrNull() ?: return false
+        val edit = prefs().edit()
+        snapshot.keys().forEach { key ->
+            when (val value = snapshot.opt(key)) {
+                is String -> edit.putString(key, value)
+                is Int -> edit.putInt(key, value)
+                is Boolean -> edit.putBoolean(key, value)
+                is Number -> edit.putInt(key, value.toInt())
+                JSONObject.NULL -> edit.remove(key)
+            }
+        }
+        edit.apply()
+        keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, keyboardTheme) ?: keyboardTheme
+        widgetCommittedTheme = keyboardTheme
+        widgetPreviewTheme = keyboardTheme
+        themeMode = prefs().getString(THEME_MODE_PREF, themeMode) ?: themeMode
+        homeWallpaperDrawable = null
+        homeWallpaperSourceSig = null
+        return true
+    }
+
+    private fun seedDemoBriefForScene(scene: String) {
+        fun briefRow(glyph: String, title: String, sub: String, pkg: String = "com.google.android.gm", key: String = "") =
+            com.fran.teclas.brief.DailyBrief.Row(glyph, title, sub, pkg, key)
+        val personalKey = "demo:$scene:personal_gmail"
+        val workKey = "demo:$scene:work_gmail"
+        val rows = when (scene) {
+            "work" -> listOf(
+                briefRow("✉", "Send Sarah the revised launch deck", "Work Gmail · Atlas Studio · before 2pm", key = workKey),
+                briefRow("↳", "Reply to finance about Q3 numbers", "Work Gmail · Mateo Reyes", key = "demo:$scene:finance_gmail"),
+                briefRow("◷", "Join product standup", "Calendar · Room B")
+            )
+            "driving" -> listOf(
+                briefRow("⌖", "Leave for dinner via Riverside", "Maps · 22 minutes · rain easing", "com.google.android.apps.maps", "demo:$scene:maps"),
+                briefRow("✉", "Confirm gate change with Delta", "Personal Gmail · flight update", key = personalKey),
+                briefRow("↳", "Reply to Mara with ETA", "Messages · valet entrance", "org.telegram.messenger", "demo:$scene:mara")
+            )
+            "fitness" -> listOf(
+                briefRow("◷", "Start strength block at 6:30", "Calendar · North Gym"),
+                briefRow("✉", "Review trainer plan after workout", "Personal Gmail · Coach Ana", key = personalKey),
+                briefRow("♪", "Cue Workout Mix", "Spotify · Run The Set", "com.spotify.music", "demo:$scene:music")
+            )
+            "travel" -> listOf(
+                briefRow("✈", "Check Terminal B before leaving", "Travel · Paris weather · partly cloudy", "com.google.android.apps.maps", "demo:$scene:maps"),
+                briefRow("✉", "Forward hotel check-in to Mara", "Personal Gmail · Hotel Desk", key = personalKey),
+                briefRow("↳", "Send flight number", "Telegram · Mara", "org.telegram.messenger", "demo:$scene:mara")
+            )
+            "night" -> listOf(
+                briefRow("✉", "Reply to Mom tomorrow morning", "Personal Gmail · family dinner note", key = personalKey),
+                briefRow("◷", "Prepare for investor call", "Calendar · tomorrow 10:00"),
+                briefRow("☾", "Wind down the work inbox", "Work Gmail · no urgent asks", key = workKey)
+            )
+            else -> listOf(
+                briefRow("✉", "Reply to Mom about dinner tonight", "Personal Gmail · she asked if 7 works", key = personalKey),
+                briefRow("›", "Send Sarah the Q3 deck", "Work Gmail · Sarah Chen · before 2pm", key = workKey),
+                briefRow("◷", "School pickup starts at 3:15", "Calendar · main entrance")
+            )
+        }
+        val lede = when (scene) {
+            "work" -> "Work mode — the deck, finance note, and standup are the only things asking for action."
+            "driving" -> "On the move — route first, then the two replies that keep dinner and travel clean."
+            "fitness" -> "Gym window — train now, then review the plan and keep music ready."
+            "travel" -> "Travel mode — gate, hotel, and one reply before you move."
+            "night" -> "Tonight — quiet the inbox, keep tomorrow visible, and leave family replies parked."
+            else -> "Morning at home — family first, then the work email with a deadline."
+        }
+        com.fran.teclas.brief.DailyBrief.seedDemo(
+            prefs = prefs(),
+            morning = scene !in setOf("night"),
+            lede = lede,
+            rows = rows
+        )
+    }
+
+    private fun applyDemoVisuals(scene: String) {
+        val visuals = demoVisualsForScene(scene)
+        keyboardTheme = visuals.keyboardTheme
+        widgetCommittedTheme = visuals.keyboardTheme
+        widgetPreviewTheme = visuals.keyboardTheme
+        prefs().edit()
+            .putString(KEYBOARD_THEME_PREF, visuals.keyboardTheme)
+            .putString(BRIEF_THEME_PREF, visuals.briefTheme)
+            .putString(homeScopedKey(BRIEF_THEME_PREF), visuals.briefTheme)
+            .putString(WEATHER_WIDGET_STYLE_PREF, visuals.weatherStyle)
+            .putString(homeScopedKey(WEATHER_WIDGET_STYLE_PREF), visuals.weatherStyle)
+            .putString(ThemeRepository.THEME_WALLPAPER_ID_PREF, visuals.wallpaperId)
+            .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, false)
+            .putBoolean(homeScopedKey(HOME_SYSTEM_WALLPAPER_PREF), false)
+            .putBoolean(ThemeRepository.WEATHER_VISIBLE_PREF, true)
+            .putBoolean(homeScopedKey(ThemeRepository.WEATHER_VISIBLE_PREF), true)
+            .putBoolean(ThemeRepository.BRIEF_VISIBLE_PREF, true)
+            .putBoolean(homeScopedKey(ThemeRepository.BRIEF_VISIBLE_PREF), true)
+            .apply()
+        applyDemoWidgetLayout()
+        homeWallpaperDrawable = null
+        homeWallpaperSourceSig = null
+    }
+
+    private fun applyDemoWidgetLayout() {
+        val weatherX = dp(46)
+        val weatherY = dp(46)
+        val briefX = dp(18)
+        val briefY = dp(170)
+        prefs().edit()
+            .putInt(WEATHER_WIDGET_POS_X_PREF, weatherX)
+            .putInt(WEATHER_WIDGET_POS_Y_PREF, weatherY)
+            .putInt(homeScopedKey(WEATHER_WIDGET_POS_X_PREF), weatherX)
+            .putInt(homeScopedKey(WEATHER_WIDGET_POS_Y_PREF), weatherY)
+            .putInt(BRIEF_POS_X_PREF, briefX)
+            .putInt(BRIEF_POS_Y_PREF, briefY)
+            .putInt(homeScopedKey(BRIEF_POS_X_PREF), briefX)
+            .putInt(homeScopedKey(BRIEF_POS_Y_PREF), briefY)
+            .apply()
+    }
+
+    private fun demoVisualsForScene(scene: String): DemoVisuals = when (scene) {
+        "work" -> DemoVisuals(KEYBOARD_THEME_HYPER3D_BLACK, "4", "almanac_report_split", "slate")
+        "driving" -> DemoVisuals(KEYBOARD_THEME_SEEME, "19", "almanac_big_number", "ocean_line")
+        "fitness" -> DemoVisuals(KEYBOARD_THEME_BRUSHED, "11", "almanac_broadsheet", "forest_depth")
+        "travel" -> DemoVisuals(KEYBOARD_THEME_GOKEYS, "9", "almanac_forecast", "vapor")
+        "night" -> DemoVisuals(KEYBOARD_THEME_SKEUO, "15", "almanac_quotation", "midnight_glass")
+        else -> DemoVisuals(KEYBOARD_THEME_TECLAS, "1", "almanac_masthead", "sunset_glass")
+    }
+
+    private fun demoWeatherSnapshotKey(scene: String): String =
+        "showcase_demo_weather_${if (scene == "gym") "fitness" else scene}"
+
+    private fun defaultDemoWeatherSnapshot(scene: String): WeatherSnapshot =
+        when (scene) {
+            "driving" -> WeatherSnapshot(76, 80, 72, 9, 61, "Rain easing", hiF = 79, loF = 68, place = "Bogota")
+            "fitness" -> WeatherSnapshot(84, 89, 66, 8, 1, "Clear", hiF = 88, loF = 76, place = "Miami")
+            "travel" -> WeatherSnapshot(63, 62, 64, 12, 2, "Partly cloudy", hiF = 67, loF = 55, place = "Paris")
+            "work" -> WeatherSnapshot(72, 73, 58, 5, 3, "Cloudy", hiF = 75, loF = 64, place = "New York")
+            "night" -> WeatherSnapshot(67, 67, 71, 3, 0, "Quiet night", hiF = 77, loF = 65, place = "Italy")
+            else -> WeatherSnapshot(82, 88, 61, 4, 0, "Clear", hiF = 86, loF = 74, place = "Miami")
+        }
+
+    private fun encodeWeatherSnapshot(snapshot: WeatherSnapshot): String =
+        JSONObject()
+            .put("tempF", snapshot.tempF)
+            .put("feelsLikeF", snapshot.feelsLikeF)
+            .put("humidity", snapshot.humidity)
+            .put("windMph", snapshot.windMph)
+            .put("code", snapshot.code)
+            .put("label", snapshot.label)
+            .put("hiF", snapshot.hiF)
+            .put("loF", snapshot.loF)
+            .put("hourlyJson", snapshot.hourlyJson)
+            .put("place", snapshot.place)
+            .toString()
+
+    private fun decodeWeatherSnapshot(raw: String?): WeatherSnapshot? =
+        runCatching {
+            val json = JSONObject(raw ?: return null)
+            WeatherSnapshot(
+                tempF = json.optInt("tempF", 68),
+                feelsLikeF = json.optInt("feelsLikeF", json.optInt("tempF", 68)),
+                humidity = json.optInt("humidity", 50),
+                windMph = json.optInt("windMph", 5),
+                code = json.optInt("code", 0),
+                label = json.optString("label", weatherCodeLabel(json.optInt("code", 0))),
+                hiF = json.optInt("hiF", json.optInt("tempF", 68)),
+                loF = json.optInt("loF", json.optInt("tempF", 68)),
+                hourlyJson = json.optString("hourlyJson", "[]"),
+                place = json.optString("place", "Local")
+            )
+        }.getOrNull()
+
+    private fun demoWeatherSnapshotForScene(scene: String): WeatherSnapshot =
+        decodeWeatherSnapshot(prefs().getString(demoWeatherSnapshotKey(scene), null))
+            ?: defaultDemoWeatherSnapshot(scene)
+
+    private fun writeWeatherSnapshot(snapshot: WeatherSnapshot, persistDemoScene: String? = null) {
+        prefs().edit()
+            .putString(WEATHER_TEMP_PREF, "${snapshot.tempF}°")
+            .putString(WEATHER_META_PREF, snapshot.place.uppercase(Locale.US))
+            .putString(WEATHER_FEELS_PREF, "Feels ${snapshot.feelsLikeF}°")
+            .putString(WEATHER_STATS_PREF, "${snapshot.label} · ${snapshot.humidity}% RH · ${snapshot.windMph} mph")
+            .putInt(WEATHER_CODE_PREF, snapshot.code)
+            .putInt(WEATHER_TEMP_F_PREF, snapshot.tempF)
+            .putInt(WEATHER_FEELS_F_PREF, snapshot.feelsLikeF)
+            .putInt(WEATHER_HUMIDITY_PREF, snapshot.humidity)
+            .putInt(WEATHER_WIND_MPH_PREF, snapshot.windMph)
+            .putInt(WEATHER_HI_PREF, snapshot.hiF)
+            .putInt(WEATHER_LO_PREF, snapshot.loF)
+            .putString(WEATHER_HOURLY_PREF, snapshot.hourlyJson)
+            .putString(WEATHER_PLACE_PREF, snapshot.place)
+            .also { edit ->
+                if (persistDemoScene != null) {
+                    edit.putString(demoWeatherSnapshotKey(persistDemoScene), encodeWeatherSnapshot(snapshot))
+                }
+            }
+            .apply()
+    }
+
+    private fun applyDemoWeather(scene: String) {
+        val normalized = if (scene == "gym") "fitness" else scene
+        writeWeatherSnapshot(demoWeatherSnapshotForScene(normalized))
+    }
+
+    private fun pinCurrentWeatherForDemoScene() {
+        if (!demoModeEnabled()) {
+            Toast.makeText(this, "Turn on a demo scene first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!hasWeatherPermission()) {
+            Toast.makeText(this, "Weather permission needed", Toast.LENGTH_SHORT).show()
+            weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+            return
+        }
+        val scene = demoSceneId()
+        val location = bestLastKnownLocation()
+        if (location == null) {
+            Toast.makeText(this, "No recent location yet", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "Saving live weather for $scene...", Toast.LENGTH_SHORT).show()
+        mediaUiScope.launch(Dispatchers.IO) {
+            val snapshot = runCatching { fetchWeather(location) }.getOrNull()
+            runOnUiThread {
+                if (snapshot == null) {
+                    Toast.makeText(this@MainActivity, "Weather unavailable", Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                writeWeatherSnapshot(snapshot, persistDemoScene = scene)
+                updateClock()
+                render()
+                Toast.makeText(this@MainActivity, "Saved ${snapshot.place} weather for $scene", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun demoHubMessages(scene: String, now: Long): List<HubMessage> {
+        fun msg(key: String, sender: String, preview: String, pkg: String, kind: String, color: Int, minutesAgo: Int) =
+            HubMessage("demo:$scene:$key", sender, preview, pkg, kind, color, now - minutesAgo * 60_000L)
+        val common = listOf(
+            msg("mom", "Mom", "Dinner tonight at 7?", "com.whatsapp", HUB_KIND_MESSAGE, 0xFF5FD0C4.toInt(), 4),
+            msg("personal_gmail", "Personal Gmail · Mom", "Dinner tonight at 7?", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 9),
+            msg("work_gmail", "Work Gmail · Sarah Chen", "Can you send the Q3 deck before 2pm?", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 12)
+        )
+        return when (scene) {
+            "work" -> common + listOf(
+                msg("slack", "#launch-room", "@you review the build notes before standup", "com.Slack", HUB_KIND_MESSAGE, 0xFF7DB7FF.toInt(), 2),
+                msg("finance_gmail", "Work Gmail · Mateo Reyes", "Q3 numbers need your approval before the 4pm close", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 6),
+                msg("news", "Market Brief", "Cloud stocks open higher after earnings", "com.google.android.apps.magazines", HUB_KIND_NEWS, 0xFF8AB4F8.toInt(), 20)
+            )
+            "driving" -> listOf(
+                msg("maps", "Maps", "22 minutes to the studio · faster via 95", "com.google.android.apps.maps", HUB_KIND_MAPS, 0xFF57C98A.toInt(), 1),
+                msg("mara", "Mara", "I'll meet you by the valet entrance", "org.telegram.messenger", HUB_KIND_MESSAGE, 0xFF5FD0C4.toInt(), 7),
+                msg("personal_gmail", "Personal Gmail · Delta", "Gate changed to B18", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 18),
+                msg("work_gmail", "Work Gmail · Sarah Chen", "Deck received — review when you're parked", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 22)
+            )
+            "fitness" -> listOf(
+                msg("coach", "Coach Ana", "Leg day moved to 6:30", "com.whatsapp", HUB_KIND_MESSAGE, 0xFF8FD694.toInt(), 6),
+                msg("personal_gmail", "Personal Gmail · Coach Ana", "Updated the strength plan for tonight", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 10),
+                msg("work_gmail", "Work Gmail · Ops", "Daily report is ready for later", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 18),
+                msg("music", "Spotify", "Workout Mix is ready", "com.spotify.music", HUB_KIND_NEWS, 0xFF1DB954.toInt(), 14),
+                msg("calendar", "Calendar", "Training block starts in 25 minutes", "com.google.android.calendar", HUB_KIND_MESSAGE, 0xFFF5C451.toInt(), 22)
+            )
+            "travel" -> listOf(
+                msg("maps", "Maps", "Leave in 18 minutes for Terminal 2", "com.google.android.apps.maps", HUB_KIND_MAPS, 0xFF57C98A.toInt(), 3),
+                msg("personal_gmail", "Personal Gmail · Hotel Desk", "Your room is ready for mobile check-in", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 11),
+                msg("work_gmail", "Work Gmail · Atlas Studio", "Client notes can wait until landing", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 16),
+                msg("mara", "Mara", "Send me the flight number", "org.telegram.messenger", HUB_KIND_MESSAGE, 0xFF5FD0C4.toInt(), 19)
+            )
+            "night" -> listOf(
+                msg("mom", "Mom", "Made it home. Love you.", "com.whatsapp", HUB_KIND_MESSAGE, 0xFF5FD0C4.toInt(), 8),
+                msg("personal_gmail", "Personal Gmail · Mom", "Recipe for tomorrow attached", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 12),
+                msg("work_gmail", "Work Gmail · Sarah Chen", "No rush — deck feedback tomorrow morning", "com.google.android.gm", HUB_KIND_EMAIL, 0xFFEA4335.toInt(), 26),
+                msg("reader", "Longform", "Saved story: designing calmer phones", "com.google.android.apps.magazines", HUB_KIND_NEWS, 0xFFC4B5FF.toInt(), 32),
+                msg("calendar", "Calendar", "Tomorrow: investor call at 10", "com.google.android.calendar", HUB_KIND_MESSAGE, 0xFFF5C451.toInt(), 40)
+            )
+            else -> common + listOf(
+                msg("calendar", "Calendar", "School pickup window starts at 3:15", "com.google.android.calendar", HUB_KIND_MESSAGE, 0xFFF5C451.toInt(), 25),
+                msg("maps", "Maps", "Light traffic to home", "com.google.android.apps.maps", HUB_KIND_MAPS, 0xFF57C98A.toInt(), 31)
+            )
+        }
+    }
+
+    private fun demoCalendarEvents(scene: String, now: Long): List<CalendarEvent> {
+        fun ev(offsetMin: Long, durationMin: Long, title: String, location: String, day: String = "TODAY"): CalendarEvent {
+            val begin = now + offsetMin * 60_000L
+            val end = begin + durationMin * 60_000L
+            val start = java.text.SimpleDateFormat("h:mm a", Locale.US).format(java.util.Date(begin))
+            val finish = java.text.SimpleDateFormat("h:mm a", Locale.US).format(java.util.Date(end))
+            return CalendarEvent(begin / 1000L, title, "$start-$finish", location, begin, end, day)
+        }
+        return when (scene) {
+            "work" -> listOf(ev(18, 30, "Product standup", "Room B"), ev(95, 45, "Deck review with Sarah", "Meet"))
+            "driving" -> listOf(ev(24, 60, "Dinner with Mara", "Downtown"), ev(160, 20, "Call Mom", "CarPlay"))
+            "fitness" -> listOf(ev(20, 55, "Strength training", "Demo Gym"), ev(92, 15, "Protein pickup", "Market"))
+            "travel" -> listOf(ev(42, 90, "Flight to New York", "Gate B18"), ev(220, 30, "Hotel check-in", "SoHo"))
+            "night" -> listOf(ev(720, 45, "Investor call", "Tomorrow · Meet", "TOMORROW"))
+            else -> listOf(ev(35, 30, "School pickup", "Main entrance"), ev(180, 60, "Dinner with Mom", "Home"))
+        }
+    }
+
+    private fun demoNowPlayingForScene(): DemoMusic? {
+        if (!demoModeEnabled()) return null
+        return when (demoSceneId()) {
+            "driving" -> DemoMusic("Late Night Drive", "Teclas Demo Radio", "Spotify", 0xFF1DB954.toInt())
+            "fitness" -> DemoMusic("Run The Set", "Workout Mix", "Spotify", 0xFF1DB954.toInt())
+            "travel" -> DemoMusic("Terminal Lounge", "Focus Beats", "Apple Music", 0xFFFA2D48.toInt())
+            "night" -> DemoMusic("Low Lights", "Evening Queue", "Teclas Music", 0xFF8F9BFF.toInt())
+            else -> DemoMusic("Corner of My Sky", "Kelly Lee Owens", "Spotify", 0xFF1DB954.toInt())
+        }
+    }
+
+    private fun demoContextDockApps(scene: String): List<LibraryApp> {
+        val pool = (builtInLauncherApps() + apps.map { it.toLibraryApp() }).distinctBy { it.target.id }
+        val keywordGroups = when (scene) {
+            "work" -> listOf(
+                listOf("gmail", "outlook", "mail"),
+                listOf("calendar"),
+                listOf("slack", "teams", "telegram"),
+                listOf("chrome", "browser"),
+                listOf("drive", "docs", "notes")
+            )
+            "driving" -> listOf(
+                listOf("maps", "waze"),
+                listOf("spotify", "music"),
+                listOf("phone", "dialer"),
+                listOf("messages", "whatsapp", "telegram"),
+                listOf("weather")
+            )
+            "fitness" -> listOf(
+                listOf("spotify", "music"),
+                listOf("clock", "timer"),
+                listOf("health", "fit"),
+                listOf("calendar"),
+                listOf("notes")
+            )
+            "travel" -> listOf(
+                listOf("uber"),
+                listOf("maps", "waze"),
+                listOf("gmail", "mail"),
+                listOf("calendar"),
+                listOf("camera", "photos", "zeiss")
+            )
+            "night" -> listOf(
+                listOf("music", "spotify"),
+                listOf("messages", "whatsapp", "telegram"),
+                listOf("clock"),
+                listOf("photos", "zeiss"),
+                listOf("calendar")
+            )
+            else -> listOf(
+                listOf("whatsapp", "messages", "telegram"),
+                listOf("calendar"),
+                listOf("music", "spotify"),
+                listOf("photos", "camera", "zeiss"),
+                listOf("chrome", "browser")
+            )
+        }
+        val selected = linkedMapOf<String, LibraryApp>()
+        keywordGroups.forEach { group ->
+            demoFindApp(pool, group)?.let { selected[it.target.id] = it }
+        }
+        val preferredCategories = when (scene) {
+            "work" -> setOf("Productivity", "Tools", "News")
+            "driving", "travel" -> setOf("Maps", "Music & Audio", "Travel", "Tools")
+            "fitness" -> setOf("Music & Audio", "Health", "Tools")
+            "night" -> setOf("Music & Audio", "Video", "Social", "Photos")
+            else -> setOf("Social", "Music & Audio", "Photos", "Productivity")
+        }
+        if (selected.size < DOCK_APP_LIMIT) {
+            pool.filter { categoryNameForLibraryApp(it) in preferredCategories }
+                .forEach { selected.putIfAbsent(it.target.id, it) }
+        }
+        if (selected.size < DOCK_APP_LIMIT) pool.forEach { selected.putIfAbsent(it.target.id, it) }
+        return selected.values.take(DOCK_APP_LIMIT)
+    }
+
+    private fun demoFindApp(pool: List<LibraryApp>, keywords: List<String>): LibraryApp? {
+        fun haystack(app: LibraryApp) = listOf(
+            app.name,
+            app.target.id,
+            app.target.packageName.orEmpty(),
+            app.componentName?.packageName.orEmpty()
+        ).joinToString(" ").lowercase(Locale.US)
+        return keywords.firstNotNullOfOrNull { key ->
+            val normalized = key.lowercase(Locale.US)
+            pool.firstOrNull { haystack(it).contains(normalized) }
+        }
     }
 
     private fun briefAccent(category: BriefCategory): Int = when (category) {
@@ -4177,7 +4807,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         KEYBOARD_THEME_IOS -> "IOS"
         KEYBOARD_THEME_PIXEL_SAND -> "PIXEL SAND"
         KEYBOARD_THEME_TECLAS_GLASS -> "TECLAS GLASS"
-        else -> KeyboardThemeDrawables.displayName(theme).uppercase(Locale.US).takeIf { it != theme.uppercase(Locale.US) } ?: "DEFAULT"
+        else -> KeyboardThemeDrawables.displayName(theme).uppercase(Locale.US).ifBlank { theme.uppercase(Locale.US) }
     }
 
     private fun keyboardSwapAnimationMode(): String =
@@ -5354,6 +5984,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun weatherWidgetStyleName(): String =
         if (weatherWidgetStyleId() == WEATHER_STYLE_CLASSIC_ID) "Classic" else weatherStyleById(weatherWidgetStyleId()).name
 
+    private fun weatherWidgetVisible(): Boolean =
+        prefs().getBoolean(homeScopedKey(ThemeRepository.WEATHER_VISIBLE_PREF), true)
+
+    private fun briefWidgetVisible(): Boolean =
+        prefs().getBoolean(homeScopedKey(ThemeRepository.BRIEF_VISIBLE_PREF), true)
+
     private fun weatherWidgetHasCustomPos(): Boolean =
         prefs().contains(homeScopedKey(WEATHER_WIDGET_POS_X_PREF)) && prefs().contains(homeScopedKey(WEATHER_WIDGET_POS_Y_PREF))
 
@@ -5887,26 +6523,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        val tint = briefTheme.glassTintColorInt()
-        content.background = GradientDrawable(
-            GradientDrawable.Orientation.TOP_BOTTOM,
-            intArrayOf(tint, adjustAlpha(tint, 0.12f))
-        ).apply {
-            cornerRadius = dp(22).toFloat()
-            setStroke(dp(1), briefTheme.glassRimColorInt())
+        frame.background = briefTheme.backgroundDrawable(context, if (briefTheme.isBoxed) 22 else 0)
+        content.background = if (briefTheme.isBoxed) {
+            briefTheme.cardDrawable(context, briefTheme.cornerRadius)
+        } else {
+            null
         }
-        // Every Daily Brief theme is glass: the theme only supplies the tint, rim, type, and accent.
-        // The native blur layer sits behind the translucent card for all themes, including the
-        // formerly solid/boxless styles.
-        val glass = NativeFoldGlassPanel(context, radiusDp = 22, blurScale = 0.42f)
-        frame.addView(glass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, 0))
-        frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-        content.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            if (content.height > 0 && glass.layoutParams.height != content.height) {
-                glass.layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, content.height)
+        content.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+        if (!briefTheme.isBoxed && briefTheme.id in setOf(10, 17, 19)) {
+            fun applyShadow(v: View) {
+                when (v) {
+                    is TextView -> v.setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.30f))
+                    is ViewGroup -> for (i in 0 until v.childCount) applyShadow(v.getChildAt(i))
+                }
             }
+            applyShadow(content)
         }
-        frame.elevation = dp(8).toFloat()
+        frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        frame.elevation = if (briefTheme.isBoxed) dp(8).toFloat() else 0f
         return frame
     }
 
@@ -6287,6 +6921,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 return
             }
             prefs().edit().putString(homeScopedKey(WEATHER_WIDGET_STYLE_PREF), styleId).apply()
+            if (demoModeEnabled()) applyDemoWeather(demoSceneId())
             saveWeatherWidgetPos(resolved.first, resolved.second)
             haptic(this)
             exitWeatherPlacementMode()
@@ -6372,14 +7007,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         setContent {
             val media by mediaSessionSource.nowPlaying.collectAsState()
             val current = media
+            val demoMusic = demoNowPlayingForScene()
             HomeWidgetStack(
                 tokens = activeNeuTokens,
                 visible = homeWidgetStackVisible(),
-                isMusicPlaying = current?.isPlaying == true,
-                title = current?.title.orEmpty(),
-                artist = current?.artist.orEmpty(),
-                sourceApp = current?.sourceApp.orEmpty(),
-                sourceColor = current?.appIconColor ?: 0xFF57C98A.toInt(),
+                isMusicPlaying = demoMusic != null || current?.isPlaying == true,
+                title = demoMusic?.title ?: current?.title.orEmpty(),
+                artist = demoMusic?.artist ?: current?.artist.orEmpty(),
+                sourceApp = demoMusic?.sourceApp ?: current?.sourceApp.orEmpty(),
+                sourceColor = demoMusic?.sourceColor ?: current?.appIconColor ?: 0xFF57C98A.toInt(),
                 albumArt = current?.albumArt,
                 calendarEvents = calendarEvents,
                 recentPeople = recentPeople(),
@@ -9189,6 +9825,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
      * them how. Everything below is theirs to fill with widgets.
      */
     private fun spaceBoardSeedApps(space: Space): List<com.fran.teclas.grid.SpaceBoardSeed.SeedApp> {
+        if (demoModeEnabled()) {
+            return demoContextDockApps(demoSceneId()).take(com.fran.teclas.grid.GRID_COLS).mapNotNull {
+                val component = it.componentName ?: return@mapNotNull null
+                com.fran.teclas.grid.SpaceBoardSeed.SeedApp(component.packageName, component.className, it.name.take(8))
+            }
+        }
         val byPkg = apps.associateBy { it.packageName }
         return space.pinned.mapNotNull { byPkg[it] }.take(com.fran.teclas.grid.GRID_COLS).map {
             com.fran.teclas.grid.SpaceBoardSeed.SeedApp(it.packageName, it.componentName.className, it.shortName)
@@ -12107,6 +12749,192 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 keyboardSettingsOpen = false
                 openHere(teclasSettingsTarget())
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
+        }
+    }
+
+    private fun keyboardThemeGallerySetting(): View {
+        val themes = widgetSwapThemes
+            .distinct()
+            .filter { it != KEYBOARD_THEME_SKEUO || ProManager.isUnlocked(this) }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(2), 0, 0)
+            addView(LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(mono("KEYBOARD THEMES", 9.5f, InkDim).apply { letterSpacing = 0.12f },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(mono(widgetThemeName(keyboardTheme), 9f, Accent2).apply {
+                    gravity = Gravity.RIGHT
+                    letterSpacing = 0.08f
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(22))
+            addView(HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    themes.forEach { theme ->
+                        addView(keyboardThemePreviewCard(theme), LinearLayout.LayoutParams(dp(104), dp(92)).apply {
+                            marginEnd = dp(10)
+                        })
+                    }
+                }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+    }
+
+    private fun keyboardThemePreviewCard(themeValue: String): View {
+        val selected = keyboardTheme == themeValue
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(dp(9), dp(8), dp(9), dp(8))
+            background = keyboardThemePreviewCardBackground(themeValue, selected)
+            setOnClickListener {
+                if (themeValue == KEYBOARD_THEME_SKEUO && !ProManager.isUnlocked(this@MainActivity)) {
+                    showUpgradeSheet(ProFeature.SKEUO_THEME)
+                    return@setOnClickListener
+                }
+                keyboardTheme = themeValue
+                prefs().edit().putString(KEYBOARD_THEME_PREF, themeValue).apply()
+                haptic(this)
+                render()
+            }
+            addView(TextView(context).apply {
+                text = widgetThemeName(themeValue)
+                gravity = Gravity.CENTER_VERTICAL
+                textSize = 9.2f
+                letterSpacing = 0.05f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(if (selected) Ink else InkDim)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(18)))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(5), 0, 0)
+                listOf(
+                    listOf("q", "w", "e"),
+                    listOf("a", "s", "d"),
+                    listOf("123", "space", "GO")
+                ).forEachIndexed { rowIndex, labels ->
+                    val row = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER
+                        labels.forEach { label ->
+                            addView(TextView(context).apply {
+                                text = label
+                                gravity = Gravity.CENTER
+                                textSize = if (label == "space") 6.8f else 7.5f
+                                letterSpacing = if (label == "GO") 0.08f else 0.01f
+                                typeface = Typeface.create(Typeface.DEFAULT, if (label == "GO") Typeface.BOLD else Typeface.NORMAL)
+                                setTextColor(keyboardThemePreviewInk(themeValue, label))
+                                background = keyboardThemePreviewKeyBackground(themeValue, label)
+                            }, LinearLayout.LayoutParams(if (label == "space") dp(34) else dp(22), dp(16)).apply {
+                                marginStart = if (label == labels.first()) 0 else dp(4)
+                            })
+                        }
+                    }
+                    addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(18)).apply {
+                        if (rowIndex > 0) topMargin = dp(3)
+                    })
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+    }
+
+    private fun keyboardThemePreviewCardBackground(themeValue: String, selected: Boolean): Drawable {
+        val accent = keyboardThemeAccent(themeValue)
+        val top = if (selected) adjustAlpha(brighten(accent), 0.30f) else adjustAlpha(activeNeuTokens.baseHi, 0.52f)
+        val bottom = if (selected) adjustAlpha(accent, 0.18f) else adjustAlpha(activeNeuTokens.baseLo, 0.72f)
+        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, bottom)).apply {
+            cornerRadius = dp(18).toFloat()
+            setStroke(dp(if (selected) 2 else 1), if (selected) adjustAlpha(brighten(accent), 0.88f) else adjustAlpha(activeNeuTokens.baseHi, 0.18f))
+        }
+    }
+
+    private fun keyboardThemePreviewKeyBackground(themeValue: String, label: String): Drawable {
+        val accent = keyboardThemeAccent(themeValue)
+        val dark = activeNeuTokens.mode == NeuMode.DARK
+        val colors = when {
+            label == "GO" -> intArrayOf(brighten(goKeyColor), goKeyColor)
+            themeValue == KEYBOARD_THEME_SEEME -> intArrayOf(0x66323844, 0x4D090A0D)
+            themeValue == KEYBOARD_THEME_BRUSHED -> if (dark) intArrayOf(0xFF60646A.toInt(), 0xFF2F3339.toInt()) else intArrayOf(0xFFE5E8ED.toInt(), 0xFFB7BEC8.toInt())
+            themeValue == KEYBOARD_THEME_GOKEYS -> if (dark) intArrayOf(0xFF242830.toInt(), 0xFF090A0C.toInt()) else intArrayOf(0xFFF5F6F8.toInt(), 0xFFC5CBD4.toInt())
+            themeValue == KEYBOARD_THEME_TECLAS -> intArrayOf(0xFF262A31.toInt(), 0xFF07080B.toInt())
+            themeValue == KEYBOARD_THEME_SKEUO -> intArrayOf(0xFF34373E.toInt(), 0xFF0B0C10.toInt())
+            themeValue.startsWith("hyper3d") -> intArrayOf(0xFF333844.toInt(), 0xFF101319.toInt())
+            KeyboardThemeDrawables.isAddedTheme(themeValue) -> intArrayOf(adjustAlpha(KeyboardThemeDrawables.accent(themeValue, dark, goKeyColor), 0.55f), adjustAlpha(KeyboardThemeDrawables.accent(themeValue, dark, goKeyColor), 0.20f))
+            else -> intArrayOf(activeNeuTokens.baseHi, activeNeuTokens.baseLo)
+        }
+        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, colors).apply {
+            cornerRadius = dp(if (themeValue == KEYBOARD_THEME_BRUSHED) 5 else 7).toFloat()
+            setStroke(dp(1), adjustAlpha(if (label == "GO") brighten(goKeyColor) else accent, if (label == "GO") 0.72f else 0.24f))
+        }
+    }
+
+    private fun keyboardThemePreviewInk(themeValue: String, label: String): Int = when {
+        label == "GO" -> goLegendColor()
+        themeValue == KEYBOARD_THEME_GOKEYS && activeNeuTokens.mode == NeuMode.LIGHT -> 0xFF202733.toInt()
+        themeValue == KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF1E2633.toInt()
+        themeValue == KEYBOARD_THEME_SEEME -> 0xFFF4F4F4.toInt()
+        activeNeuTokens.mode == NeuMode.LIGHT && themeValue == KEYBOARD_THEME_DEFAULT -> 0xFF202733.toInt()
+        else -> 0xFFF2F2F2.toInt()
+    }
+
+    private fun keyboardThemeAccent(themeValue: String): Int = when (themeValue) {
+        KEYBOARD_THEME_TECLAS -> Accent2
+        KEYBOARD_THEME_SKEUO -> 0xFF8FD694.toInt()
+        KEYBOARD_THEME_GOKEYS -> 0xFFF2691E.toInt()
+        KEYBOARD_THEME_HYPER3D -> 0xFF6C89D8.toInt()
+        KEYBOARD_THEME_HYPER3D_BLACK -> 0xFFFF6B6B.toInt()
+        KEYBOARD_THEME_HYPER3D_LIGHT -> 0xFF6D7FFF.toInt()
+        KEYBOARD_THEME_BRUSHED -> if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFF9FA7B2.toInt() else 0xFFC9CED6.toInt()
+        KEYBOARD_THEME_SEEME -> 0xFFD71921.toInt()
+        KEYBOARD_THEME_GOOGLE,
+        KEYBOARD_THEME_IOS,
+        KEYBOARD_THEME_PIXEL_SAND,
+        KEYBOARD_THEME_TECLAS_GLASS -> KeyboardThemeDrawables.accent(themeValue, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+        else -> if (KeyboardThemeDrawables.isAddedTheme(themeValue)) {
+            KeyboardThemeDrawables.accent(themeValue, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+        } else Accent
+    }
+
+    private fun keyboardSizeSettingRow(): View {
+        var valueView: TextView? = null
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(8), dp(2), 0)
+            addView(mono("KEYBOARD SIZE", 9.5f, InkDim).apply {
+                letterSpacing = 0.10f
+                gravity = Gravity.CENTER_VERTICAL
+            }, LinearLayout.LayoutParams(dp(112), ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(SeekBar(context).apply {
+                max = 100
+                progress = keyboardSize
+                thumbTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressTintList = android.content.res.ColorStateList.valueOf(Accent)
+                progressBackgroundTintList = android.content.res.ColorStateList.valueOf(KeyEdge)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        keyboardSize = p
+                        valueView?.text = p.toString()
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(s: SeekBar?) {
+                        prefs().edit().putInt(KEYBOARD_SIZE_PREF, keyboardSize).apply()
+                        s?.let { haptic(it) }
+                        render()
+                    }
+                })
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(10)
+                marginEnd = dp(8)
+            })
+            valueView = mono(keyboardSize.toString(), 9f, Accent2).apply { gravity = Gravity.RIGHT }
+            addView(valueView, LinearLayout.LayoutParams(dp(30), ViewGroup.LayoutParams.WRAP_CONTENT))
         }
     }
 
@@ -15158,7 +15986,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     else closeLibrary()
                     return
                 }
-                keyboardSettingsOpen = !keyboardSettingsOpen; query = ""; render(); return
+                openTeclasSettingsFromKeyboard(); return
             }
             "enter" -> {
                 // Number pad first: typing a digit auto-opens the library as the search surface
@@ -15262,6 +16090,16 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     scheduleBriefGeneration(force = true, forceMorning = fm)
                     renderRibbon(); return
                 }
+                if (query.equals("briefdemo", ignoreCase = true)) {
+                    query = ""
+                    com.fran.teclas.brief.DailyBrief.seedDemoMorning(prefs())
+                    Toast.makeText(this, "Demo morning brief ready.", Toast.LENGTH_SHORT).show()
+                    if (!libraryOpen && openPane == null) render()
+                    renderRibbon(); return
+                }
+                if (handleDemoShowcaseCommand(query)) {
+                    renderRibbon(); return
+                }
                 // Secret dev unlock code
                 if (query == "devpro!!") {
                     query = ""
@@ -15346,7 +16184,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             "teclas" -> {
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
                 else if (openPane != null) { keyboardSettingsOpen = false; refreshKeyboardDock() }
-                else { keyboardSettingsOpen = !keyboardSettingsOpen; render() }
+                else openTeclasSettingsFromKeyboard()
                 return
             }
             "enter" -> {
@@ -15946,7 +16784,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             "teclas" -> {
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
                 else if (openPane != null) { keyboardSettingsOpen = false; refreshKeyboardDock() }
-                else { keyboardSettingsOpen = !keyboardSettingsOpen; render() }
+                else openTeclasSettingsFromKeyboard()
                 return
             }
             "enter" -> postComposeBubble(pane)
@@ -16021,6 +16859,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // ── Pane / navigation ────────────────────────────────────────────────────
 
     private fun openHere(target: PaneTarget) {
+        if (target.id == THEME_STUDIO_TARGET_ID) {
+            openThemeStudio()
+            return
+        }
         if (!target.id.startsWith("reply:")) replyingToKey = null
         closeCategoryFolder()
         libraryOpen = false
@@ -16470,24 +17312,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             if (::weatherIconView.isInitialized) weatherIconView.setAnimationEnabled(next)
             renderPaneContent(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-        parent.addView(settingToggle("GLASS EFFECTS", glassEffectsEnabled()) {
-            val next = !glassEffectsEnabled()
-            prefs().edit().putBoolean(GLASS_EFFECTS_PREF, next).apply()
-            haptic(this)
-            libraryView?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
-            libraryView = null
-            libraryContentArea = null
-            libraryViewMode = null
-            libraryViewGlass = null
-            libraryViewDirty = true
-            libraryContentReady = false
-            render()
-            openHere(teclasSettingsTarget())
-        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-        parent.addView(settingAction("LAUNCHER LOOK   ${themeModeName().uppercase(Locale.US)}") {
-            haptic(this)
-            showLauncherLookMenu(this)
-        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingToggle("GRID WORKSPACE LAB", gridWorkspaceLabEnabled()) {
             val next = !gridWorkspaceLabEnabled()
             prefs().edit().putBoolean(GRID_WORKSPACE_LAB_PREF, next).apply()
@@ -16510,6 +17334,19 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 renderPaneContent(teclasSettingsTarget())
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         }
+
+        parent.addView(mono("THEMES", 10f, Accent).apply {
+            letterSpacing = 0.22f
+            setPadding(0, dp(18), 0, dp(8))
+        })
+        parent.addView(settingAction("THEME STUDIO   ${ThemeRepository(this).active().name.uppercase(Locale.US)} →") {
+            haptic(this)
+            openThemeStudio()
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingAction("LAUNCHER LOOK   ${themeModeName().uppercase(Locale.US)}") {
+            haptic(this)
+            showLauncherLookMenu(this)
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingAction(if (useSystemWallpaperOnHome()) "SYSTEM WALLPAPER   ON" else "USE SYSTEM WALLPAPER") {
             // Let Android draw the actual system/live wallpaper behind Teclas. Custom launcher
             // image URIs are cleared so stale uploaded wallpapers cannot cover the live wallpaper.
@@ -16532,6 +17369,49 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(themeColorSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
+        parent.addView(keyboardThemeGallerySetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(132))
+        parent.addView(settingAction("DAILY BRIEF THEMES   ${com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId()).name.uppercase(Locale.US)} →") {
+            haptic(this)
+            openBriefThemePicker()
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("GLASS EFFECTS", glassEffectsEnabled()) {
+            val next = !glassEffectsEnabled()
+            prefs().edit().putBoolean(GLASS_EFFECTS_PREF, next).apply()
+            haptic(this)
+            libraryView?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
+            libraryView = null
+            libraryContentArea = null
+            libraryViewMode = null
+            libraryViewGlass = null
+            libraryViewDirty = true
+            libraryContentReady = false
+            render()
+            openHere(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+
+        parent.addView(mono("KEYBOARD", 10f, Accent).apply {
+            letterSpacing = 0.22f
+            setPadding(0, dp(18), 0, dp(8))
+        })
+        parent.addView(keyboardSizeSettingRow(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
+        parent.addView(keyboardPlacementSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(38))
+        parent.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(settingToggle("HAPTIC", hapticsEnabled) {
+                hapticsEnabled = !hapticsEnabled
+                prefs().edit().putBoolean(HAPTICS_PREF, hapticsEnabled).apply()
+                haptic(this)
+                renderPaneContent(teclasSettingsTarget())
+            }, LinearLayout.LayoutParams(0, dp(32), 1f))
+            addView(settingToggle("TILT LIGHT", keyboardTiltLighting) {
+                keyboardTiltLighting = !keyboardTiltLighting
+                prefs().edit().putBoolean(KBD_TILT_LIGHT_PREF, keyboardTiltLighting).apply()
+                haptic(this)
+                renderPaneContent(teclasSettingsTarget())
+            }, LinearLayout.LayoutParams(0, dp(32), 1f).apply { marginStart = dp(12) })
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
+
         parent.addView(keyboardSwapAnimationSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
         if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()) {
             parent.addView(settingToggle("APPS IN TOP REGION", DockedFreeform.isFeatureEnabled(this)) {
@@ -16551,7 +17431,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         if (devExperimentsEnabled() && VivoDockedExperiment.isAvailable(this)) {
             parent.addView(vivoDockedExperimentSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(40))
         }
-        parent.addView(themeColorSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
 
         parent.addView(mono("GESTURES", 10f, Accent).apply {
             letterSpacing = 0.22f
@@ -17811,6 +18690,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
      * is still warming up (no snapshot yet), so the dock is never empty.
      */
     private fun currentContextDockApps(): List<LibraryApp> {
+        if (demoModeEnabled()) return demoContextDockApps(demoSceneId())
         val eligible = apps.filter { it.packageName != packageName }
         val predicted = predictedPackages(eligible.map { it.packageName }, DOCK_APP_LIMIT)
         if (!predicted.isNullOrEmpty()) {
@@ -17869,32 +18749,25 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun updateContextDockStamp() {
         favoritesDockContextStampView?.let { stamp ->
             val accent = currentContextDockAccent()
-            stamp.text = currentContextDockLabel()
-            stamp.setTextColor(activeNeuTokens.ink)
+            stamp.text = "●  ${currentContextDockLabel()}"
+            stamp.setTextColor(activeNeuTokens.inkDim)
             stamp.background = contextDockStampBackground(accent)
         }
     }
 
     private fun contextDockStampBackground(accent: Int): Drawable {
         val radius = dp(14).toFloat()
-        val tray = Neu.drawable(activeNeuTokens, radius, NeuLevel.RAISED_SM)
-        val wash = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(
-            adjustAlpha(accent, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.16f else 0.24f),
-            adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.40f else 0.34f),
-            adjustAlpha(accent, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.08f else 0.14f)
+        val tray = Neu.drawable(activeNeuTokens, radius, NeuLevel.PRESSED_SM)
+        val wash = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.62f else 0.46f),
+            adjustAlpha(activeNeuTokens.base, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.88f else 0.76f),
+            adjustAlpha(activeNeuTokens.baseLo, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.44f else 0.54f)
         )).apply {
             cornerRadius = radius
-            setStroke(dp(1), adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.30f else 0.12f))
+            setStroke(dp(1), adjustAlpha(accent, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.24f else 0.18f))
         }
-        val spine = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
-            brighten(accent),
-            accent
-        )).apply {
-            cornerRadius = dp(2).toFloat()
-        }
-        return LayerDrawable(arrayOf(tray, wash, spine)).apply {
+        return LayerDrawable(arrayOf(tray, wash)).apply {
             setLayerInset(1, dp(2), dp(2), dp(2), dp(2))
-            setLayerInset(2, dp(8), dp(8), dp(8), dp(18))
         }
     }
 
@@ -19025,7 +19898,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun builtInLauncherApps(): List<LibraryApp> =
-        listOf(teclasSettingsLibraryApp(), musicLibraryApp(), photosLibraryApp())
+        listOf(teclasSettingsLibraryApp(), themeStudioLibraryApp(), musicLibraryApp(), photosLibraryApp())
 
     private fun builtInLauncherSearchResults(rawQuery: String): List<SearchResult> {
         val q = rawQuery.trim()
@@ -19046,7 +19919,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val name = app.name.lowercase(Locale.US)
         val id = app.target.id.lowercase(Locale.US)
         val aliases = when (app.target.kind) {
-            PaneKind.SETTINGS -> listOf("settings", "teclas settings", "preferences", "customize", "launcher settings")
+            PaneKind.SETTINGS -> if (app.target.id == THEME_STUDIO_TARGET_ID) {
+                listOf("theme", "themes", "theme studio", "studio", "wallpaper", "keyboard theme", "brief themes", "weather themes")
+            } else {
+                listOf("settings", "teclas settings", "preferences", "customize", "launcher settings")
+            }
             PaneKind.MUSIC -> listOf("music", "teclas music", "player", "now playing")
             PaneKind.PHOTOS -> listOf("photos", "zeiss", "zeiss optics", "camera roll", "pictures")
             else -> emptyList()
@@ -19299,6 +20176,34 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun settingSearchEntries(): List<SettingSearchEntry> {
         val entries = mutableListOf<SettingSearchEntry>()
         entries.add(SettingSearchEntry(
+            "Theme Studio", "${ThemeRepository(this).active().name} · mix every layer",
+            listOf("theme", "themes", "theme studio", "customize", "wallpaper", "keyboard theme", "brief", "weather", "icons", "accent")
+        ) {
+            openThemeStudio()
+            refreshSearchSurfaces()
+        })
+        DefaultThemes.all.forEach { theme ->
+            entries.add(SettingSearchEntry(
+                "Theme: ${theme.name}",
+                "Apply wallpaper, keys, widgets, icons, accent",
+                listOf(
+                    "theme ${theme.name.lowercase(Locale.US)}",
+                    "${theme.name.lowercase(Locale.US)} theme",
+                    theme.name.lowercase(Locale.US)
+                )
+            ) {
+                applyLauncherThemeBundle(theme.id)
+                refreshSearchSurfaces()
+            })
+        }
+        entries.add(SettingSearchEntry(
+            "Wallpaper Studio", "Pick asset pack or file",
+            listOf("wallpaper", "wallpapers", "background", "theme wallpaper", "wallpaper pack")
+        ) {
+            openThemeStudio()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Cards View", toggleStateLabel(cardsViewEnabled()),
             listOf("cards", "cards view", "card", "card view", "board animation", "experimental")
         ) {
@@ -19330,6 +20235,26 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Icon pack", "${activeIconPackLabel()} · open settings",
+            listOf("icon pack", "icons", "pack", "change icons", "vera")
+        ) {
+            openHere(teclasSettingsTarget())
+        })
+        entries.add(SettingSearchEntry(
+            "Icon size", "${iconSizeLabel()} · tap for next",
+            listOf("icon size", "icons", "size", "home icons", "dock icons")
+        ) {
+            cycleIconSize()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Search text size", "${searchFontSizeLabel()} · tap for next",
+            listOf("search text size", "search font", "font size", "text size", "large search")
+        ) {
+            cycleSearchFontSize()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Animated weather", toggleStateLabel(animatedWeatherEnabled()),
             listOf("weather", "animated weather", "animation", "rain")
         ) {
@@ -19346,6 +20271,38 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Weather visibility", toggleStateLabel(weatherWidgetVisible()),
+            listOf("weather", "show weather", "hide weather", "weather visible")
+        ) {
+            val next = !weatherWidgetVisible()
+            prefs().edit().putBoolean(homeScopedKey(ThemeRepository.WEATHER_VISIBLE_PREF), next).apply()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Use system wallpaper",
+            if (useSystemWallpaperOnHome()) "On · Android wallpaper" else "Tap to use Android wallpaper",
+            listOf("wallpaper", "system wallpaper", "android wallpaper", "background", "home wallpaper")
+        ) {
+            prefs().edit()
+                .putBoolean(homeScopedKey(HOME_SYSTEM_WALLPAPER_PREF), true)
+                .remove(homeScopedKey(HOME_COVER_WALLPAPER_URI_PREF))
+                .remove(HOME_INNER_WALLPAPER_URI_PREF)
+                .apply()
+            homeWallpaperDrawable = null
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Lockscreen wallpaper", toggleStateLabel(useLockscreenWallpaperOnHome()),
+            listOf("lockscreen wallpaper", "lock screen wallpaper", "wallpaper", "background")
+        ) {
+            prefs().edit().putBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), !useLockscreenWallpaperOnHome()).apply()
+            homeWallpaperDrawable = loadHomeWallpaperDrawable()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Daily Brief themes",
             "${com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId()).name} · tap to restyle",
             listOf(
@@ -19354,6 +20311,15 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             )
         ) {
             openBriefThemePicker()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Daily Brief visibility", toggleStateLabel(briefWidgetVisible()),
+            listOf("brief", "daily brief", "show brief", "hide brief", "brief visible")
+        ) {
+            val next = !briefWidgetVisible()
+            prefs().edit().putBoolean(homeScopedKey(ThemeRepository.BRIEF_VISIBLE_PREF), next).apply()
+            render()
             refreshSearchSurfaces()
         })
         com.fran.teclas.brief.BriefThemes.all.forEach { theme ->
@@ -19371,6 +20337,21 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 if (!libraryOpen && openPane == null) render()
                 refreshSearchSurfaces()
                 Toast.makeText(this, "Brief theme: ${theme.name}", Toast.LENGTH_SHORT).show()
+            })
+        }
+        GO_COLORS.forEach { option ->
+            entries.add(SettingSearchEntry(
+                "Theme color: ${option.name}",
+                if (option.color == goKeyColor) "Selected" else "Tap to apply",
+                listOf(
+                    "theme color ${option.name.lowercase(Locale.US)}",
+                    "accent ${option.name.lowercase(Locale.US)}",
+                    "go color ${option.name.lowercase(Locale.US)}",
+                    option.name.lowercase(Locale.US)
+                )
+            ) {
+                applyGoKeyColor(option.color, refreshSettings = false)
+                refreshSearchSurfaces()
             })
         }
         ALMANAC_STYLES.forEach { style ->
@@ -19397,6 +20378,14 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Tilt lighting", toggleStateLabel(keyboardTiltLighting),
+            listOf("tilt", "tilt lighting", "keyboard lighting", "lighting")
+        ) {
+            keyboardTiltLighting = !keyboardTiltLighting
+            prefs().edit().putBoolean(KBD_TILT_LIGHT_PREF, keyboardTiltLighting).apply()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "App Library as home", toggleStateLabel(appLibraryDefaultHome()),
             listOf("library", "app library", "library home")
         ) {
@@ -19406,12 +20395,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
-            "Lockscreen wallpaper", toggleStateLabel(useLockscreenWallpaperOnHome()),
-            listOf("wallpaper", "lockscreen", "background")
+            "Grid workspace lab", toggleStateLabel(gridWorkspaceLabEnabled()),
+            listOf("grid", "grid workspace", "workspace lab", "workspace")
         ) {
-            prefs().edit().putBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), !useLockscreenWallpaperOnHome()).apply()
-            homeWallpaperDrawable = loadHomeWallpaperDrawable()
-            render()
+            prefs().edit().putBoolean(GRID_WORKSPACE_LAB_PREF, !gridWorkspaceLabEnabled()).apply()
+            renderPaneContent(teclasSettingsTarget())
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
@@ -19425,10 +20413,23 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             "Launcher look", launcherLookSearchState(),
             listOf("dark", "light", "look", "mode", "theme", "dark mode", "light mode")
         ) {
-            setThemeMode(THEME_MODE_SYSTEM, animated = true)
-            Toast.makeText(this, "Launcher follows system theme", Toast.LENGTH_SHORT).show()
+            cycleThemeMode()
             refreshSearchSurfaces()
         })
+        listOf(
+            "System" to THEME_MODE_SYSTEM,
+            "Dark" to THEME_MODE_DARK,
+            "Light" to THEME_MODE_LIGHT
+        ).forEach { (label, value) ->
+            entries.add(SettingSearchEntry(
+                "Launcher look: $label",
+                if (themeMode == value) "Selected" else "Tap to apply",
+                listOf("launcher look ${label.lowercase(Locale.US)}", "${label.lowercase(Locale.US)} mode", "theme ${label.lowercase(Locale.US)}")
+            ) {
+                setThemeMode(value, animated = true)
+                refreshSearchSurfaces()
+            })
+        }
         entries.add(SettingSearchEntry(
             "Keyboard theme", "${widgetThemeName(keyboardTheme)} · tap for next",
             listOf("keyboard", "keys", "keyboard theme", "skeuo", "gokeys") +
@@ -19439,6 +20440,25 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             cycleKeyboardTheme()
             refreshSearchSurfaces()
         })
+        widgetSwapThemes.distinct()
+            .filter { it != KEYBOARD_THEME_SKEUO || ProManager.isUnlocked(this) }
+            .forEach { theme ->
+                val name = widgetThemeName(theme)
+                entries.add(SettingSearchEntry(
+                    "Keyboard: $name",
+                    if (keyboardTheme == theme) "Selected" else "Tap to apply",
+                    listOf(
+                        "keyboard ${name.lowercase(Locale.US)}",
+                        "keyboard theme ${name.lowercase(Locale.US)}",
+                        "keys ${name.lowercase(Locale.US)}",
+                        name.lowercase(Locale.US),
+                        theme.lowercase(Locale.US)
+                    )
+                ) {
+                    selectKeyboardTheme(theme)
+                    refreshSearchSurfaces()
+                })
+            }
         entries.add(SettingSearchEntry(
             "Keyboard placement",
             if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) "Docked · tap for widget" else "Widget · tap for docked",
@@ -19450,24 +20470,27 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             )
         })
         entries.add(SettingSearchEntry(
-            "Icon size", "${iconSizeLabel()} · tap for next",
-            listOf("icon size", "icons", "size")
+            "Keyboard size", "${keyboardSizeLabel()} · tap for next",
+            listOf("keyboard size", "key size", "bigger keyboard", "smaller keyboard", "keys size")
         ) {
-            cycleIconSize()
+            cycleKeyboardSize()
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
-            "Icon pack", "${activeIconPackLabel()} · tap for next",
-            listOf("icon pack", "icons", "pack")
+            "Keyboard pop out",
+            if (keyboardSwapPopOutEnabled()) "Pop out" else "Default",
+            listOf("pop out", "keyboard pop out", "keyboard animation", "theme change animation")
         ) {
-            cycleIconPack()
+            val next = if (keyboardSwapPopOutEnabled()) KEYBOARD_SWAP_ANIMATION_DEFAULT else KEYBOARD_SWAP_ANIMATION_POPOUT
+            prefs().edit().putString(KEYBOARD_SWAP_ANIMATION_PREF, next).apply()
+            renderPaneContent(teclasSettingsTarget())
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
-            "Search text size", "${searchFontSizeLabel()} · tap for next",
-            listOf("search text size", "search font", "font size", "text size")
+            "Keyboard languages", "Tap to choose language chips",
+            listOf("keyboard language", "keyboard languages", "langs", "language", "dictionary")
         ) {
-            cycleSearchFontSize()
+            openHere(teclasSettingsTarget())
             refreshSearchSurfaces()
         })
         WidgetStackModes.WIDGET_IDS.forEach { id ->
@@ -19559,6 +20582,23 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun currentGoColorName(): String =
         GO_COLORS.firstOrNull { it.color == goKeyColor }?.name?.lowercase(Locale.US)?.replaceFirstChar { it.uppercase() } ?: "Custom"
 
+    private fun openThemeStudio() {
+        startActivity(Intent(this, com.fran.teclas.theme.ThemeStudioActivity::class.java))
+    }
+
+    private fun applyLauncherThemeBundle(themeId: String) {
+        val applied = ThemeRepository(this).applyBuiltIn(themeId)
+        keyboardTheme = prefs().getString(KEYBOARD_THEME_PREF, keyboardTheme) ?: keyboardTheme
+        goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, goKeyColor)
+        homeWallpaperDrawable = null
+        invalidateLibraryCaches()
+        libraryViewDirty = true
+        libraryContentReady = false
+        renderFavoritesDock()
+        updateLauncherTheme(animated = true, forceRender = true)
+        Toast.makeText(this, "${applied.name} theme applied", Toast.LENGTH_SHORT).show()
+    }
+
     private fun cycleGoColor() {
         val idx = GO_COLORS.indexOfFirst { it.color == goKeyColor }
         applyGoKeyColor(GO_COLORS[(idx + 1).mod(GO_COLORS.size)].color, refreshSettings = false)
@@ -19615,6 +20655,29 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             .filter { it != KEYBOARD_THEME_SKEUO || ProManager.isUnlocked(this) }
         keyboardTheme = order[(order.indexOf(keyboardTheme) + 1).mod(order.size)]
         prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
+        render()
+    }
+
+    private fun selectKeyboardTheme(theme: String) {
+        if (theme == KEYBOARD_THEME_SKEUO && !ProManager.isUnlocked(this)) {
+            showUpgradeSheet(ProFeature.SKEUO_THEME)
+            return
+        }
+        keyboardTheme = theme
+        prefs().edit().putString(KEYBOARD_THEME_PREF, theme).apply()
+        render()
+    }
+
+    private fun keyboardSizeLabel(): String = when {
+        keyboardSize >= 75 -> "Large"
+        keyboardSize >= 35 -> "Medium"
+        else -> "Compact"
+    }
+
+    private fun cycleKeyboardSize() {
+        val presets = listOf(0, 50, 100)
+        keyboardSize = presets.firstOrNull { it > keyboardSize } ?: presets.first()
+        prefs().edit().putInt(KEYBOARD_SIZE_PREF, keyboardSize).apply()
         render()
     }
 
@@ -19795,6 +20858,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun openSearchResult(result: SearchResult) {
+        clearSearchAfterResultLaunch()
         result.action?.invoke()?.let { return }
         val target = result.target ?: return
         when {
@@ -19805,6 +20869,14 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 openExternal(target)
             }
         }
+    }
+
+    private fun clearSearchAfterResultLaunch() {
+        query = ""
+        suggestions = emptyList()
+        updateSuggestionBar()
+        renderRibbon()
+        refreshSearchSurfaces()
     }
 
     private fun bestLauncherResultForGo(): SearchResult? {
@@ -20649,6 +21721,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun teclasSettingsLibraryApp() = LibraryApp("Teclas Settings", Accent, teclasSettingsTarget(), null)
 
+    private fun themeStudioLibraryApp() = LibraryApp("Theme Studio", CursorViolet, themeStudioTarget(), null)
+
     private fun musicLibraryApp() = LibraryApp("Music", 0xFF57C98A.toInt(), musicTarget(), null)
 
     private fun photosLibraryApp() = LibraryApp("ZEISS Optics", 0xFFDCE6FF.toInt(), photosTarget(), null)
@@ -20896,6 +21970,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun teclasSettingsTarget() = PaneTarget("teclas-settings", "Teclas Settings", Accent, PaneKind.SETTINGS, null, null, "Integrations")
+    private fun themeStudioTarget() = PaneTarget(THEME_STUDIO_TARGET_ID, "Theme Studio", CursorViolet, PaneKind.SETTINGS, null, null, "Themes")
 
     private fun musicTarget() = PaneTarget("teclas-music", "Music", 0xFF57C98A.toInt(), PaneKind.MUSIC, null, null, "Now playing")
     private fun photosTarget() = PaneTarget("teclas-photos", "ZEISS Optics", 0xFFDCE6FF.toInt(), PaneKind.PHOTOS, null, null, "Latest photos")
@@ -20952,6 +22027,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun refreshWeather(force: Boolean) {
         if (!::weatherTempView.isInitialized) return
+        if (demoModeEnabled()) {
+            applyDemoWeather(demoSceneId())
+            updateClock()
+            return
+        }
         if (!hasWeatherPermission()) {
             showWeatherNeedsPermission()
             return
@@ -21232,6 +22312,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun categoryContextBucket(): String {
+        if (demoModeEnabled()) return demoSceneId()
         val now = java.util.Calendar.getInstance()
         val hour = now.get(java.util.Calendar.HOUR_OF_DAY)
         val day = now.get(java.util.Calendar.DAY_OF_WEEK)
@@ -23755,6 +24836,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         private const val Key = 0xFF23262E.toInt()
         private const val KeyEdge = 0xFF34373F.toInt()
         private const val KeyHighlight = 0xFF3A3E4A.toInt()
+        private const val THEME_STUDIO_TARGET_ID = "theme-studio"
         private const val PREFS_NAME = "teclas"
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
@@ -23918,6 +25000,45 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         private const val HUB_KIND_EMAIL = "email"
         private const val HUB_KIND_NEWS = "news"
         private const val HUB_KIND_MAPS = "maps"
+        private const val DEMO_MODE_PREF = "showcase_demo_mode"
+        private const val DEMO_SCENE_PREF = "showcase_demo_scene"
+        private const val DEMO_SHOWCASE_ACTION = "com.fran.teclas.action.DEMO_SHOWCASE"
+        private val DEMO_SCENES = setOf("home", "work", "driving", "fitness", "travel", "night")
+        private val DEMO_COMMANDS = setOf("demomode", "demooff", "demo off")
+        private val DEMO_SNAPSHOT_STRING_KEYS = listOf(
+            KEYBOARD_THEME_PREF,
+            THEME_MODE_PREF,
+            ThemeRepository.THEME_WALLPAPER_ID_PREF,
+            HOME_COVER_WALLPAPER_URI_PREF,
+            HOME_INNER_WALLPAPER_URI_PREF,
+            BRIEF_THEME_PREF,
+            WEATHER_WIDGET_STYLE_PREF,
+            "brief_edition_key",
+            "brief_edition_lede",
+            "brief_edition_rows",
+            "brief_edition_todos",
+            "brief_dismissed_key"
+        )
+        private val DEMO_SNAPSHOT_INT_KEYS = listOf(
+            GO_KEY_COLOR_PREF,
+            HOME_COVER_WALLPAPER_ZOOM_PREF,
+            HOME_COVER_WALLPAPER_OFFSET_X_PREF,
+            HOME_COVER_WALLPAPER_OFFSET_Y_PREF,
+            HOME_INNER_WALLPAPER_ZOOM_PREF,
+            HOME_INNER_WALLPAPER_OFFSET_X_PREF,
+            HOME_INNER_WALLPAPER_OFFSET_Y_PREF,
+            WEATHER_WIDGET_POS_X_PREF,
+            WEATHER_WIDGET_POS_Y_PREF,
+            BRIEF_POS_X_PREF,
+            BRIEF_POS_Y_PREF
+        )
+        private val DEMO_SNAPSHOT_BOOLEAN_KEYS = listOf(
+            HOME_SYSTEM_WALLPAPER_PREF,
+            HOME_LOCK_WALLPAPER_PREF,
+            ThemeRepository.WEATHER_VISIBLE_PREF,
+            ThemeRepository.BRIEF_VISIBLE_PREF,
+            "brief_edition_forced"
+        )
         private val SUMMARY_SENDER_WORDS = setOf("Found", "Stocks", "News", "Updates", "Promotions", "Social", "Primary")
         private val SUMMARY_SENDER_PATTERNS = listOf(
             Regex("\\bnew\\b", RegexOption.IGNORE_CASE),

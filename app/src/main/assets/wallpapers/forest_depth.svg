@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 2340" width="1080" height="2340">
+<defs><linearGradient id="fsky" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3b6b55"/><stop offset="55%" stop-color="#1f3d2f"/><stop offset="100%" stop-color="#0c1f16"/></linearGradient>
+<radialGradient id="haze" cx="50%" cy="30%" r="55%"><stop offset="0%" stop-color="#bfe6cf" stop-opacity=".35"/><stop offset="100%" stop-color="#bfe6cf" stop-opacity="0"/></radialGradient></defs>
+<rect width="1080" height="2340" fill="url(#fsky)"/>
+<rect width="1080" height="2340" fill="url(#haze)"/>
+<path d="M0 760 Q 270 620 540 720 T 1080 670 L1080 2340 L0 2340 Z" fill="#1c3a2c" opacity=".9"/>
+<path d="M0 1080 Q 270 940 540 1040 T 1080 990 L1080 2340 L0 2340 Z" fill="#152e22" opacity=".92"/>
+<path d="M0 1420 Q 270 1280 540 1380 T 1080 1330 L1080 2340 L0 2340 Z" fill="#102419" opacity=".95"/>
+<path d="M0 1780 Q 270 1640 540 1740 T 1080 1690 L1080 2340 L0 2340 Z" fill="#0a1a12" opacity="1"/>
+</svg>

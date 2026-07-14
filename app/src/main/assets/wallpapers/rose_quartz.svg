@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 2340" width="1080" height="2340">
+<defs><filter id="mesh" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="120"/></filter></defs>
+<rect width="1080" height="2340" fill="#ffe6ef"/>
+<g filter="url(#mesh)" opacity=".9">
+<circle cx="280" cy="420" r="520" fill="#ffd9e4"/>
+<circle cx="820" cy="700" r="560" fill="#ffc2d1"/>
+<circle cx="400" cy="1300" r="600" fill="#c9b8ff"/>
+<circle cx="760" cy="1800" r="560" fill="#ffd0e8"/>
+<circle cx="300" cy="2100" r="520" fill="#d7c4ff"/>
+</g>
+</svg>
