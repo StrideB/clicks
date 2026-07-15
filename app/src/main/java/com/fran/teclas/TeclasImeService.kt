@@ -388,6 +388,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
     private var suggestionStrip: LinearLayout? = null
+    private var suggestionStripExpanded = false
     private var agenticPanel: LinearLayout? = null
     private var spellChecker: android.view.textservice.SpellCheckerSession? = null
     private var lastSpellWord: String = ""
@@ -414,6 +415,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
     private val keyUpSymbols get() = com.fran.teclas.keyboard.KeyboardSymbols.keyUp
     private var suggestions: List<String> = emptyList()
+    private val teclasLogoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
     // True right after a glide commits a word, while the strip shows the swipe's other decodings as
     // tap-to-correct alternatives. Any physical key press clears it (back to normal typing/next-word).
     private var glideJustCommitted = false
@@ -618,6 +622,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (!restarting) {
             val want = desiredSymbolsModeFor(info)
             if (want != symbolsMode) { symbolsMode = want; rebuildKeyRows() }
+            suggestions = emptyList()
+            smartChips = emptyList()
+            pendingProofread = null
+            pendingActions = emptyList()
+            pendingCommand = null
+            pendingCommandText = ""
+            agenticStatus = null
         }
         updateInputViewShown()
         clearInlineSuggestions()
@@ -730,7 +741,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             minimumHeight = imeKeyboardHeight()
             // Per-component open-cost breakdown (RENDER_LOG): buildKeyboard's total was ~19ms after
             // the canvas switch; these localize whatever remains (strip vs chrome vs key grid).
-            addView(renderTime("open strip") { buildSuggestionStrip() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+            addView(renderTime("open strip") { buildSuggestionStrip() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0))
             addView(renderTime("open agentic") { buildAgenticPanel() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 leftMargin = dp(4); rightMargin = dp(4); topMargin = dp(1); bottomMargin = dp(2)
             })
@@ -922,7 +933,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     // art carries the meaning); every other theme uses visualLabel (shift OR caps).
                     val primary = when {
                         flick && brushed -> if (capsLock) lbl.uppercase(Locale.US) else lbl.lowercase(Locale.US)
-                        brushed && lbl == "teclas" -> ""
+                        lbl == "teclas" -> ""
                         else -> visualLabel(lbl)
                     }
                     val (ox, oy) = if (flick) 0f to 0f else canvasOpticalOffset(lbl)
@@ -996,6 +1007,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 val m = labelPaint.fontMetrics
                 val baseline = faceTop + faceHeight * k.labelBias - (m.ascent + m.descent) / 2f
                 canvas.drawText(k.primaryText, cx, baseline, labelPaint)
+            } else if (k.label == "teclas") {
+                drawTeclasLauncherMark(canvas, cx + k.offsetX, k.cell.exactCenterY() + k.offsetY, minOf(k.cell.width(), k.cell.height()).toFloat() * 0.92f, k.color)
             } else if (k.primaryText.isNotEmpty()) {
                 // Plain keys: label centered in the cell (matches gravity=CENTER), plus the theme's
                 // optical nudge (Brushed function keys; zero elsewhere).
@@ -1217,12 +1230,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun keyView(label: String): TextView {
         val isLetter = label.length == 1 && label[0].isLetter() && !symbolsMode
         val useBrushedOpticalKey = keyboardTheme() == KEYBOARD_THEME_BRUSHED && !isLetter && label != "teclas"
-        return (if (isLetter) com.fran.teclas.keyboard.DynamicFlickKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
+        return (if (isLetter) com.fran.teclas.keyboard.DynamicFlickKeyView(this) else if (label == "teclas") TeclasLogoKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
             tag = label
-            text = if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "teclas") "" else if (isLetter) visualLabel(label) else keyDisplayText(label)
-            if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "teclas") {
-                contentDescription = "Undocked, tap to dock"
-            }
+            text = if (label == "teclas") "" else if (isLetter) visualLabel(label) else keyDisplayText(label)
+            if (label == "teclas") contentDescription = "Teclas dock key"
             gravity = Gravity.CENTER
             includeFontPadding = false
             setPadding(0, 0, 0, 0)
@@ -1277,6 +1288,27 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             setOnTouchListener(ImeKeyTouchListener(label))
             keyViews[label] = this
         }
+    }
+
+    private inner class TeclasLogoKeyView(context: Context) : TextView(context) {
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val size = minOf(width, height).toFloat() * 0.92f
+            drawTeclasLauncherMark(canvas, width / 2f, height / 2f, size, textColor("teclas"))
+        }
+    }
+
+    private fun drawTeclasLauncherMark(canvas: Canvas, cx: Float, cy: Float, viewportSize: Float, ink: Int) {
+        val scale = viewportSize / 108f
+        canvas.save()
+        canvas.translate(cx - 54f * scale, cy - 54f * scale)
+        canvas.scale(scale, scale)
+        teclasLogoPaint.color = ink
+        canvas.drawRect(42f, 31f, 54f, 77f, teclasLogoPaint)
+        canvas.drawRect(32f, 41f, 64f, 52f, teclasLogoPaint)
+        teclasLogoPaint.color = 0xFFC9A7FF.toInt()
+        canvas.drawRect(62f, 59f, 77f, 77f, teclasLogoPaint)
+        canvas.restore()
     }
 
     private val touchSlopPx by lazy { ViewConfiguration.get(this).scaledTouchSlop }
@@ -2124,7 +2156,27 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         suggestionStrip = strip
         updateStrip()
+        strip.post { updateStrip() }
         return strip
+    }
+
+    private fun setSuggestionStripExpanded(expanded: Boolean) {
+        val strip = suggestionStrip ?: return
+        if (suggestionStripExpanded != expanded) {
+            suggestionStripExpanded = expanded
+            deckView?.minimumHeight = imeKeyboardHeight()
+        }
+        val targetHeight = if (expanded) dp(38) else 0
+        (strip.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (lp.height != targetHeight) {
+                lp.height = targetHeight
+                strip.layoutParams = lp
+            }
+        }
+        strip.visibility = if (expanded) View.VISIBLE else View.GONE
+        if (!expanded) strip.background = null
+        strip.requestLayout()
+        deckView?.requestLayout()
     }
 
     // One well-background instance for the strip's lifetime; setBackground(same instance) is a
@@ -2298,7 +2350,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun clearInlineSuggestions() {
         inlineRow?.removeAllViews()
         inlineScroll?.visibility = View.GONE
-        if (agenticPanel?.visibility != View.VISIBLE) suggestionStrip?.visibility = View.VISIBLE
+        if (agenticPanel?.visibility != View.VISIBLE) updateStrip()
     }
 
     override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest {
@@ -2331,7 +2383,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         row.removeAllViews()
         if (suggestions.isEmpty()) { clearInlineSuggestions(); return false }
         inlineScroll?.visibility = View.VISIBLE
-        suggestionStrip?.visibility = View.GONE
+        setSuggestionStripExpanded(false)
         agenticPanel?.visibility = View.GONE
         val size = Size(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40))
         for (suggestion in suggestions) {
@@ -2444,7 +2496,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 panel.removeAllViews()
                 panel.visibility = View.GONE
                 panel.background = null
-                suggestionStrip?.visibility = View.VISIBLE
             }
             return
         }
@@ -2466,7 +2517,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val wasHidden = panel.visibility != View.VISIBLE
             panel.visibility = View.VISIBLE
             panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
-            suggestionStrip?.visibility = View.GONE
+            setSuggestionStripExpanded(false)
             panel.addView(View(this).apply {
                 background = GradientDrawable().apply { setColor(violet); cornerRadius = dp(2).toFloat() }
             }, LinearLayout.LayoutParams(dp(3), dp(30)).apply { marginEnd = dp(11) })
@@ -2506,7 +2557,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val wasHidden = panel.visibility != View.VISIBLE
             panel.visibility = View.VISIBLE
             panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
-            suggestionStrip?.visibility = View.GONE
+            setSuggestionStripExpanded(false)
             panel.addView(TextView(this).apply {
                 text = "TRY"; gravity = Gravity.CENTER; textSize = 8.8f; letterSpacing = 0.12f
                 setTextColor(kickerInk); setPadding(dp(2), 0, dp(6), 0)
@@ -2547,7 +2598,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             else -> {
                 panel.visibility = View.GONE
                 panel.background = null
-                suggestionStrip?.visibility = View.VISIBLE
                 return
             }
         }
@@ -2555,7 +2605,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val wasHidden = panel.visibility != View.VISIBLE
         panel.visibility = View.VISIBLE
         panel.background = agenticCardBackground(cardTop, cardBottom, cardStroke)
-        suggestionStrip?.visibility = View.GONE
+        setSuggestionStripExpanded(false)
 
         panel.addView(View(this).apply {
             background = GradientDrawable().apply { setColor(accent); cornerRadius = dp(2).toFloat() }
@@ -2616,10 +2666,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Elevate command previews and working status into the elegant panel; it toggles the strip's
         // visibility. The strip is still populated below as the fallback surface when the panel idles.
         ptime("renderAgenticPanel") { renderAgenticPanel() }
+        if (agenticPanel?.visibility == View.VISIBLE) {
+            setSuggestionStripExpanded(false)
+            return
+        }
         // Legacy (rare) states rebuild the strip from scratch; the steady typing path below never
         // does — it recycles the fixed slot views in renderTypingStrip.
         val status = agenticStatus
         if (status != null) {
+            setSuggestionStripExpanded(true)
             strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
@@ -2631,6 +2686,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         val pending = pendingCommand
         if (pending != null) {
+            setSuggestionStripExpanded(true)
             strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
@@ -2657,6 +2713,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         val proof = pendingProofread
         if (proof != null) {
+            setSuggestionStripExpanded(true)
             strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
@@ -2686,6 +2743,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             return
         }
         if (polishing) {
+            setSuggestionStripExpanded(true)
             strip.removeAllViews()
             strip.background = stripWellBackground()
             strip.addView(TextView(this).apply {
@@ -2696,6 +2754,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             return
         }
         if (pendingActions.isNotEmpty()) {
+            setSuggestionStripExpanded(true)
             strip.removeAllViews()
             strip.background = stripWellBackground()
             pendingActions.forEachIndexed { i, action ->
@@ -2724,22 +2783,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         if (shown.isEmpty() && !canPolish && chips.isEmpty() && !showFix) {
             renderTypingStrip(emptyList(), emptyList(), showFix = false, canPolish = false)
-            strip.background = null
-            // Nothing to show: blank the strip when the field is empty (fresh keyboard / not typing);
-            // INVISIBLE, not GONE — collapsing the row resized the whole IME window on the first
-            // keystroke, a guaranteed jank right when typing starts. The reserved row keeps the
-            // keyboard's height constant for the entire session.
-            if (agenticHud == null && agenticStatus == null && pendingCommand == null &&
-                inlineScroll?.visibility != View.VISIBLE) {
-                val fieldEmpty = shadowBeforeCursor(1).isEmpty() && shadowAfterCursor(1).isEmpty()
-                suggestionStrip?.visibility = if (fieldEmpty) View.INVISIBLE else View.VISIBLE
-            }
+            val fieldEmpty = shadowBeforeCursor(1).isEmpty() && shadowAfterCursor(1).isEmpty()
+            strip.background = if (fieldEmpty) null else stripWellBackground()
+            if (inlineScroll?.visibility != View.VISIBLE) setSuggestionStripExpanded(!fieldEmpty)
             return
         }
         // The strip was being populated but stayed invisible whenever inline autofill (or the panel)
         // had hidden it. Once we have real word suggestions/chips to show, make the strip visible and
         // stand down the autofill row — typing a word takes priority.
-        suggestionStrip?.visibility = View.VISIBLE
+        setSuggestionStripExpanded(true)
         inlineScroll?.visibility = View.GONE
         strip.background = stripWellBackground()
         ptime("renderTypingStrip") { renderTypingStrip(shown, chips, showFix, canPolish) }
@@ -3565,8 +3617,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     } else {
                         // Only touch TextView.text when the label actually changed — setText always
                         // invalidates and can trigger a layout pass across the row.
-                        val newText = keyDisplayText(raw)
-                        if (key.text?.toString() != newText.toString()) key.text = newText
+                        if (raw == "teclas") {
+                            if (key.text?.isNotEmpty() == true) key.text = ""
+                            key.invalidate()
+                        } else {
+                            val newText = keyDisplayText(raw)
+                            if (key.text?.toString() != newText.toString()) key.text = newText
+                        }
                     }
                     if (rebuildBackgrounds) key.background = visualKeyBackground(raw, pressed = false)
                 }
@@ -4061,7 +4118,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun imeKeyboardHeight(): Int {
         val rowCount = 4
-        return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6) + dp(38)
+        val stripHeight = if (suggestionStripExpanded) dp(38) else 0
+        return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6) + stripHeight
     }
 
     private fun keyRowHeight(): Int {
