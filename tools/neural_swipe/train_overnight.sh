@@ -11,8 +11,9 @@
 #   python3 -m venv venv && source venv/bin/activate
 #   pip install torch numpy onnx onnxruntime pyarrow huggingface_hub
 #
-# Add YOUR OWN captured swipes (from the collector web app) before training — they personalize it:
-#   cat ~/Downloads/teclas_swipes_*.jsonl >> futo_data/train.jsonl
+# Add YOUR OWN captured swipes (collector web app export or GlideLearningStore pull) — they are
+# OVERSAMPLED into training (~10% of samples) rather than drowned in the million-row corpus:
+#   OWN="~/Downloads/teclas_swipes_*.jsonl" ./train_overnight.sh
 #
 # Run:
 #   ./train_overnight.sh                 # sensible big config
@@ -31,6 +32,9 @@ DMODEL="${DMODEL:-192}"
 LAYERS="${LAYERS:-4}"
 NHEAD="${NHEAD:-6}"
 FF="${FF:-384}"
+SYNTH_MIX="${SYNTH_MIX:-0.25}"   # fraction of synthetic batches (long-tail vocab coverage)
+OWN="${OWN:-}"                   # optional glob of your own collected swipes (jsonl)
+DEV_EVERY=200                    # every Nth corpus line is held out for evaluation
 OUT="model_candidate"
 
 # 1. Get the real data (once).
@@ -39,16 +43,26 @@ if [ ! -f futo_data/train.jsonl ]; then
   python futo_data.py --download
 fi
 
-# 2. Train on the GPU. Bigger than the CPU proof run (d_model 192, 4 layers).
-echo "== training on real swipes: steps=$STEPS limit=$LIMIT batch=$BATCH =="
+# 2. Carve the held-out dev split (once) — training excludes these exact rows (--exclude-every),
+#    so evaluate.py measures on swipes the model has never seen.
+if [ ! -f futo_data/dev.jsonl ]; then
+  echo "== creating held-out dev split (every ${DEV_EVERY}th swipe) =="
+  python futo_data.py --make-dev futo_data/train.jsonl --dev-every "$DEV_EVERY"
+fi
+
+# 3. Train on the GPU: real swipes (minus the dev split) + synthetic long-tail mix (+ your own
+#    swipes oversampled, if provided).
+echo "== training: steps=$STEPS limit=$LIMIT batch=$BATCH synth-mix=$SYNTH_MIX own='${OWN}' =="
 mkdir -p "$OUT"
 python export_seq2seq.py \
   --wordlist ../../app/src/main/assets/dict/en_wordlist.txt \
-  --futo futo_data/train.jsonl --futo-limit "$LIMIT" \
+  --futo futo_data/train.jsonl --futo-limit "$LIMIT" --exclude-every "$DEV_EVERY" \
+  --synth-mix "$SYNTH_MIX" \
+  ${OWN:+--own "$OWN"} \
   --steps "$STEPS" --batch "$BATCH" --d-model "$DMODEL" --nhead "$NHEAD" --layers "$LAYERS" --ff "$FF" \
   --out "$OUT"
 
-# 3. Prove it beats what's shipped (held-out real swipes) BEFORE you ship it.
+# 4. Prove it beats what's shipped (held-out real swipes) BEFORE you ship it.
 echo "== evaluating candidate vs the shipped model =="
 python evaluate.py "$OUT" ../../app/src/main/assets
 
