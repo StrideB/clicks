@@ -85,6 +85,22 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
         return out
     }
 
+    /** One ranked correction/completion candidate: the dictionary word, its keyboard-aware
+     *  Damerau–Levenshtein distance from what was typed, and its global frequency. */
+    data class Candidate(val word: String, val distance: Double, val freq: Float)
+
+    /**
+     * The candidate-generation half of this engine, exposed for the unified ranker: every
+     * dictionary word within [maxDist] weighted edit distance of [typed], best-first, with the
+     * same first-letter bucketing and evaluation budget as [getSuggestions]/[bestCorrection].
+     * Pure and immutable — safe from any thread.
+     */
+    fun candidatesFor(typed: String, maxDist: Double): List<Candidate> =
+        rank(typed, maxDist).map { (w, d) -> Candidate(w, d, wordFrequencies[w] ?: 0f) }
+
+    /** Global frequency of [word] (0 when not in the dictionary). */
+    fun frequencyOf(word: String): Float = wordFrequencies[word.lowercase()] ?: 0f
+
     /**
      * Predictions for the suggestion strip / live routing. [ngramBoost] holds personalized
      * next-word predictions for the *preceding* word (from the n-gram store). With nothing typed

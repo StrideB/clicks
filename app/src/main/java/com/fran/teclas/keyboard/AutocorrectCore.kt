@@ -21,7 +21,9 @@ class AutocorrectCore(
     private val engine: () -> PredictionEngine,
     private val contextNextWords: (prevWord: String) -> List<String>,
     private val extendedEngine: () -> PredictionEngine? = { null },
-    private val useFallback: Boolean = false
+    private val useFallback: Boolean = false,
+    /** When set, the unified ranker picks corrections instead of the engine's heuristics. */
+    private val ranker: () -> com.fran.teclas.keyboard.unified.UnifiedRanker? = { null }
 ) {
     private val rejected = HashMap<String, MutableSet<String>>()
     private var pendingOriginal: String? = null
@@ -53,7 +55,11 @@ class AutocorrectCore(
     fun computeCorrection(word: String, ctx: List<String>): String? {
         if (word.length < 2) return null
         extendedEngine()?.let { if (it.isDictWord(word)) return null }   // valid in another language
-        val corrected = engine().bestCorrection(word, ctx) ?: run {
+        // The unified ranker replaces the engine's correction pick 1:1 when wired; its null means
+        // "leave the word alone" (same contract), so we fall through to the loose fallback, never
+        // to the engine's pick (double-guessing would reintroduce the disagreements it unifies).
+        val r = ranker()
+        val corrected = (if (r != null) r.bestCorrection(word.lowercase(Locale.US), ctx) else engine().bestCorrection(word, ctx)) ?: run {
             if (!useFallback) return null
             val g = engine().getSuggestions(word, 1).firstOrNull() ?: return null
             if (levenshtein(word.lowercase(Locale.US), g.lowercase(Locale.US)) > 1) return null

@@ -251,16 +251,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         openHere(teclasSettingsTarget())
     }
 
+    // Unified keyboard algorithm — same composite scorer as the IME, reading the same shared
+    // "teclas" prefs, so both keyboards rank and learn identically.
+    private val personalFreq by lazy { com.fran.teclas.keyboard.unified.PersonalFrequencyStore(prefs()) }
+    private val unifiedRanker by lazy {
+        com.fran.teclas.keyboard.unified.UnifiedRanker(
+            engine = { predictionEngine },
+            personalBoost = { personalFreq.boost(it) }
+        )
+    }
     private val autocorrectCore by lazy {
         com.fran.teclas.keyboard.AutocorrectCore(
             host = this,
             engine = { predictionEngine },
             contextNextWords = { ngramRepo.cachedNextWords(it) },
-            useFallback = true
+            useFallback = true,
+            ranker = { unifiedRanker }
         )
     }
     private val predictionCore by lazy {
-        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
+        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker })
     }
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
 
@@ -14168,6 +14178,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // what you actually choose, and warm next-word predictions for it.
         val accepted = (if (pane?.kind == PaneKind.CHAT) composeText else query).trim().split(" ").filter { it.isNotEmpty() }
         if (accepted.size >= 2) ngramRepo.recordWord(accepted.last(), accepted[accepted.size - 2])
+        accepted.lastOrNull()?.let { personalFreq.noteCommitted(it) }
         ngramRepo.prefetchNextWords(word)
         launcherEmojiTriggerWord = ""
         launcherEmojiChips = emptyList()
@@ -14944,6 +14955,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // context re-ranking keep improving as you swipe.
         val toks = (if (pane?.kind == PaneKind.CHAT) composeText else query).trim().split(" ").filter { it.isNotEmpty() }
         if (toks.size >= 2) ngramRepo.recordWord(toks.last(), toks[toks.size - 2])
+        personalFreq.noteCommitted(topWord)
         ngramRepo.prefetchNextWords(topWord)
         suggestions = (listOf(topWord) + results.filter { it != topWord }).distinct().take(3)
         glideJustCommitted = true   // strip now shows tap-to-correct alternatives
@@ -15946,6 +15958,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     } else {
                         val words = query.trimEnd().split(" ")
                         if (words.size >= 2) ngramRepo.recordWord(words.last(), words[words.size - 2])
+                        words.lastOrNull()?.let { personalFreq.noteCommitted(it) }
                         tryAutocorrect()  // autocorrect current word before adding space
                         if (!query.endsWith(" ")) query += " "  // tryAutocorrect may have already appended the space
                         // Surface personalized next-word predictions for the word just committed

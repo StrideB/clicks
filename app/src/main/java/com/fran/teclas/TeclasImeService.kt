@@ -345,17 +345,29 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val spatialScorer = SpatialScorer()
     private val ngramRepo by lazy { NgramRepository(this) }
     private val hapticEngine by lazy { com.fran.teclas.keyboard.CustomHapticEngine(this) }
+    // ── Unified keyboard algorithm ──────────────────────────────────────────────────────────────
+    // One composite scorer (edit distance + frequency + personal usage + context + phonetics +
+    // morphology) that both the suggestion strip and autocorrect route through. Personal usage is
+    // learned on-device into the shared "teclas" prefs, so both keyboards learn as one.
+    private val personalFreq by lazy { com.fran.teclas.keyboard.unified.PersonalFrequencyStore(imePrefs()) }
+    private val unifiedRanker by lazy {
+        com.fran.teclas.keyboard.unified.UnifiedRanker(
+            engine = { predictionEngine },
+            personalBoost = { personalFreq.boost(it) }
+        )
+    }
     private val autocorrect by lazy {
         com.fran.teclas.keyboard.AutocorrectCore(
             host = this,
             engine = { predictionEngine },
             contextNextWords = { ngramRepo.cachedNextWords(it) },
             extendedEngine = { predictionEngineExtended },
-            useFallback = true   // match the launcher: accept edit-distance-1 corrections, not only strict
+            useFallback = true,  // match the launcher: accept edit-distance-1 corrections, not only strict
+            ranker = { unifiedRanker }
         )
     }
     private val predictionCore by lazy {
-        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
+        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker })
     }
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
     private var suggestionStrip: LinearLayout? = null
@@ -2030,7 +2042,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val tokens = wordsBeforeCursor()
         if (tokens.size >= 2) ngramRepo.recordWord(tokens[tokens.size - 1], tokens[tokens.size - 2])
         val last = tokens.lastOrNull().orEmpty()
-        if (last.isNotEmpty()) ngramRepo.prefetchNextWords(last)
+        if (last.isNotEmpty()) {
+            ngramRepo.prefetchNextWords(last)
+            // Unified-ranker learning: the user's own committed words rise in ranking over time.
+            personalFreq.noteCommitted(last)
+        }
     }
 
     private fun learnAndPredictAfterSpace() {
