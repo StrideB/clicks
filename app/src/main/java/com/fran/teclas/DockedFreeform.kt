@@ -56,8 +56,7 @@ internal object DockedFreeform {
         val minH = (360 * dm.density).toInt()
         val visualBottom = lastKeyboardTopPx.takeIf { it in minH..dm.heightPixels }
             ?: (dm.heightPixels - keyboardHeightPx(context)).coerceAtLeast(minH)
-        val bottom = (visualBottom + DockedKeyboardMetrics.freeformTargetNudgePx(context))
-            .coerceIn(minH, dm.heightPixels)
+        val bottom = visualBottom.coerceIn(minH, dm.heightPixels)
         return Rect(0, 0, dm.widthPixels, bottom)
     }
 
@@ -146,6 +145,21 @@ internal object DockedFreeform {
         "adb shell pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS"
 
     /**
+     * Resolve the bottom edge for docked freeform apps from launcher-owned measurements.
+     *
+     * MainActivity owns the keyboard View, so it passes the measured top and deterministic computed
+     * top in; this object owns the bounds tuning/clamping so freeform geometry does not live in the
+     * activity. The small gap keeps the app clear of the physical keyboard deck.
+     */
+    fun resolveKeyboardTop(context: Context, measuredTopPx: Int?, computedTopPx: Int?): Int? {
+        val screenH = context.resources.displayMetrics.heightPixels
+        val targetTop = listOfNotNull(measuredTopPx, computedTopPx).minOrNull()
+            ?.minus(freeformGapPx(context))
+        val minTop = minOf(context.dp(320), screenH - 1)
+        return targetTop?.coerceIn(minTop, screenH - 1)
+    }
+
+    /**
      * Top rectangle the launched app should occupy: full width, from the top of the display down to
      * the top of the docked keyboard. [keyboardTopPx] is the keyboard band's actual on-screen top
      * (from the launcher's laid-out dock view) for a pixel-perfect fit; when null/unusable it falls
@@ -159,8 +173,7 @@ internal object DockedFreeform {
         } else {
             (dm.heightPixels - keyboardHeightPx(context)).coerceAtLeast(minHeight)
         }
-        val bottom = (visualBottom + DockedKeyboardMetrics.freeformTargetNudgePx(context))
-            .coerceIn(minHeight, dm.heightPixels)
+        val bottom = visualBottom.coerceIn(minHeight, dm.heightPixels)
         return Rect(0, 0, dm.widthPixels, bottom)
     }
 
@@ -184,6 +197,10 @@ internal object DockedFreeform {
     private fun keyboardHeightPx(context: Context): Int {
         return DockedKeyboardMetrics.externalReservedBandHeightPx(context)
     }
+
+    private fun freeformGapPx(context: Context): Int = context.dp(43)
+
+    private fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

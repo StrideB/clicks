@@ -19735,16 +19735,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             loc[1].takeIf { it > 0 && keyboardDockView.height > 0 }
         } else null
         val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift()).takeIf { it in 1 until screenH }
-        val keyboardTopPx = listOfNotNull(measured, computed).minOrNull()
-            ?.plus(dockedExternalDockCoverExtension())
-            ?.minus(dp(10))
-            ?.coerceAtMost(screenH - dp(420))
+        val keyboardTopPx = DockedFreeform.resolveKeyboardTop(this, measured, computed)
         // Share the top with the accessibility service so it can re-pin via Shizuku on window changes.
         keyboardTopPx?.let { DockedFreeform.lastKeyboardTopPx = it }
         return keyboardTopPx
     }
-
-    private fun dockedExternalDockCoverExtension(): Int = dp(99)
 
     // ---- Docked keyboard → foreground app typing (via the accessibility injector) ----
 
