@@ -698,14 +698,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             setPadding(dp(10), dp(10), dp(10), dp(8))
             background = deckBackground()
             minimumHeight = imeKeyboardHeight()
-            addView(buildSuggestionStrip(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
-            addView(buildAgenticPanel(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            // Per-component open-cost breakdown (RENDER_LOG): buildKeyboard's total was ~19ms after
+            // the canvas switch; these localize whatever remains (strip vs chrome vs key grid).
+            addView(renderTime("open strip") { buildSuggestionStrip() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+            addView(renderTime("open agentic") { buildAgenticPanel() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
                 leftMargin = dp(4); rightMargin = dp(4); topMargin = dp(1); bottomMargin = dp(2)
             })
-            addView(buildInlineAutofillRow(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply {
+            addView(renderTime("open autofill") { buildInlineAutofillRow() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply {
                 leftMargin = dp(4); rightMargin = dp(4)
             })
-            addKeyRows(this)
+            renderTime("open keyRows") { addKeyRows(this) }
             post { captureKeyBounds() }
         }
     }
@@ -840,7 +842,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private var longPressFired = false
         private var longPressRunnable: Runnable? = null
 
-        fun rebuild() { relayoutKeys(); invalidate() }
+        fun rebuild() { relayoutKeys(); publishBounds(); invalidate() }
         fun republishBounds() { publishBounds() }
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -858,7 +860,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
         // Mirror keyRow()'s LinearLayout math: per-row horizontal inset, fixed-square 123/enter keys,
         // the rest sharing the remaining width by keyWeight; rows stacked with keyRowOverlap.
-        private fun relayoutKeys() {
+        private fun relayoutKeys() = renderTime("canvas relayout") { relayoutKeysInner() }
+        private fun relayoutKeysInner() {
             val totalWidth = width
             if (totalWidth <= 0) return
             val rowH = keyRowHeight()
@@ -896,8 +899,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     out.add(CanvasKeyCell(
                         lbl,
                         Rect(x, cellTop, x + kw, cellTop + cellH),
-                        visualKeyBackground(lbl, pressed = false),
-                        visualKeyBackground(lbl, pressed = true),
+                        cachedKeyBackground(lbl, pressed = false),
+                        cachedKeyBackground(lbl, pressed = true),
                         primary,
                         if (flick) com.fran.teclas.keyboard.KeyboardSymbols.keyUp[lbl.lowercase(Locale.US)] else null,
                         flick,
@@ -915,7 +918,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             renderBuffer()
         }
 
-        private fun renderBuffer() {
+        private fun renderBuffer() = renderTime("canvas bitmap") { renderBufferInner() }
+        private fun renderBufferInner() {
             val w = width; val h = height
             if (w <= 0 || h <= 0) return
             val bmp = buffer?.takeIf { it.width == w && it.height == h }
@@ -1103,6 +1107,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun rebuildKeyRows() {
         val deck = deckView ?: run { rebuildDeck(); return }
         keyPreview.dismiss()
+        // Canvas path: the grid is ONE persistent view — swap the rows by re-laying-out its cells and
+        // repainting the buffer in place. The old path detached the canvas and constructed a fresh one
+        // (new bitmap, full layout pass) on every 123/abc tap, re-paying most of the open cost.
+        canvasKeyboardView?.takeIf { it.parent === deck }?.let { cv ->
+            cv.rebuild()
+            return
+        }
         while (deck.childCount > chromeChildCount) deck.removeViewAt(deck.childCount - 1)
         keyViews.clear()
         addKeyRows(deck)
@@ -2207,6 +2218,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // Centered children, so skip the baseline measure pass (same as the strip/key rows).
+            isBaselineAligned = false
             visibility = View.GONE
             setPadding(dp(12), dp(8), dp(10), dp(8))
         }
@@ -2221,7 +2234,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // dedicated row above the keys. Teclas never sees the credentials — the fill goes provider->field.
 
     private fun buildInlineAutofillRow(): HorizontalScrollView {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; isBaselineAligned = false }
         val scroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             visibility = View.GONE
@@ -2835,12 +2848,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // a preview card. No seed-text starters (the "insert `play ` then re-hold go" flow was clunky).
     private fun buildStarters(): List<HudAction> {
         val chips = ArrayList<HudAction>()
-        // Run-now chirps.
         chips.add(HudAction("\ud83c\udfb5 Song") { AgenticEngine.shareSong(agenticHost) })
         chips.add(HudAction("\ud83d\udccd My location") { AgenticEngine.sharePlace(agenticHost) })
         if (canAttachHere()) chips.add(HudAction("\ud83d\udcce Attach") { showAttachPicker() })
-        // The real skill catalog \u2014 GO used to offer only the chirps above, which is why it felt
-        // empty. Tapping one seeds its trigger into the field so you just finish the thought.
+        // The real skill catalog — GO used to offer only the chirps above. Tap seeds the trigger.
         AgenticRouter.starters(limit = 12).forEach { s ->
             chips.add(HudAction(s.label) {
                 agenticStarters = emptyList()
@@ -4080,6 +4091,20 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val fixedInset = dp(2)
         val topBottom = if (label == "enter" || label == "123") fixedInset else vInset
         return InsetDrawable(base, keyHorizontalInset(), topBottom, keyHorizontalInset(), topBottom)
+    }
+
+    // Canvas-keyboard drawable cache. visualKeyBackground constructs multi-layer drawables from
+    // scratch, and the canvas relayout asks for 72 of them (idle+pressed × ~36 keys) on every
+    // keyboard-open, 123/abc swap, and rotation. Keyed by everything that changes their look and
+    // cleared automatically when that signature changes (theme swap, dark-mode flip, go-key recolor,
+    // caps-lock toggle — Brushed's shift face differs under caps-lock). Safe to share one instance
+    // across rebuilds: the canvas sets bounds before every draw and no View owns these drawables.
+    private val keyBgCache = HashMap<String, Drawable>()
+    private var keyBgCacheSig: String? = null
+    private fun cachedKeyBackground(label: String, pressed: Boolean): Drawable {
+        val sig = "${keyboardVisualTheme()}|${selectedNeuTokens().mode}|${goKeyColor()}|$capsLock"
+        if (sig != keyBgCacheSig) { keyBgCache.clear(); keyBgCacheSig = sig }
+        return keyBgCache.getOrPut("$label|$pressed") { visualKeyBackground(label, pressed) }
     }
 
     private fun keyIdleBackground(label: String): Drawable {

@@ -944,9 +944,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onResume() {
         super.onResume()
-        // Demo spoof: if a demo location is set (and the mock-location op is granted), push it into
-        // the system providers so Uber/Maps see the demo city too. No-op otherwise.
-        MockLocationInjector.sync(this)
         // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
         DockedFreeform.externalAppInFront = false
         dockedForegroundDraft.clear()
@@ -4089,10 +4086,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             )
             "fitness" -> listOf(
                 listOf("spotify", "music"),
-                listOf("strava"),
-                listOf("fitbod"),
+                listOf("clock", "timer"),
+                listOf("health", "fit"),
                 listOf("calendar"),
-                listOf("clock", "timer")
+                listOf("notes")
             )
             "travel" -> listOf(
                 listOf("uber"),
@@ -4102,10 +4099,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 listOf("camera", "photos", "zeiss")
             )
             "night" -> listOf(
-                listOf("spotify", "music"),
-                listOf("whatsapp", "messages", "telegram"),
-                listOf("clock", "alarm"),
-                listOf("photos", "zeiss", "gallery"),
+                listOf("music", "spotify"),
+                listOf("messages", "whatsapp", "telegram"),
+                listOf("clock"),
+                listOf("photos", "zeiss"),
                 listOf("calendar")
             )
             else -> listOf(
@@ -10486,13 +10483,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                     bottomMargin = dp(14)
                 })
-                // A ride offer belongs WITH the landmark answer — render it right under the hero
-                // card (not down in the kind-grouped zone, where it'd sink below music).
-                searchRideOffer()?.let { ride ->
-                    addView(braveRideCard(ride), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                        bottomMargin = dp(14)
-                    })
-                }
             }
 
             val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
@@ -10670,7 +10660,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(searchResultIcon(result), LinearLayout.LayoutParams(iconFrame, iconFrame))
             }
             addView(TextView(context).apply {
-                text = highlightedLabel(result.title, query, activeNeuTokens.ink)
+                text = highlightedLabel(result.title, query)
                 textSize = 10.5f * searchFontScale()
                 gravity = Gravity.CENTER
                 setTextColor(activeNeuTokens.inkDim)
@@ -10704,7 +10694,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 addView(TextView(context).apply {
-                    text = highlightedLabel(result.title, query, activeNeuTokens.ink)
+                    text = highlightedLabel(result.title, query)
                     textSize = 14f * searchFontScale()
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     setTextColor(activeNeuTokens.ink)
@@ -10920,62 +10910,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     /** The Brave rich answer for the live query, or null once the query moves on. */
     private fun searchRichAnswer(): BraveSearchApi.RichAnswer? =
         braveRichAnswer?.takeIf { braveRichQuery == query.trim() }
-
-    /** The ride offer to render under the landmark hero card — set only when the answer is a
-     *  landmark and the user is within ride range of it (see resolveLandmarkRide). */
-    private fun searchRideOffer(): RideOffer? =
-        braveRideOffer?.takeIf { braveRichQuery == query.trim() && braveRichAnswer?.vertical == "landmark" }
-
-    /** Uber ride card shown directly under a landmark answer. Tap opens Uber with the landmark
-     *  preloaded as the destination and pickup at the rider's location. */
-    private fun braveRideCard(ride: RideOffer): View {
-        val uberColor = if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFF000000.toInt() else activeNeuTokens.ink
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            isClickable = true
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = searchCardBackground(SearchKind.RIDE, false, 16)
-            addView(TextView(context).apply {
-                text = "🚗"
-                gravity = Gravity.CENTER
-                textSize = 15f
-                includeFontPadding = false
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(adjustAlpha(uberColor, 0.12f))
-                }
-            }, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(12) })
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(TextView(context).apply {
-                    text = "Ride to ${ride.name}"
-                    textSize = 14.5f * searchFontScale()
-                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                    setTextColor(activeNeuTokens.ink)
-                    includeFontPadding = false
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                })
-                addView(TextView(context).apply {
-                    text = "Uber · pickup at your location"
-                    textSize = 11.5f * searchFontScale()
-                    setTextColor(activeNeuTokens.inkDim)
-                    includeFontPadding = false
-                    setPadding(0, dp(2), 0, 0)
-                })
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(mono("GO", 10f, uberColor).apply {
-                gravity = Gravity.CENTER
-                setPadding(dp(12), dp(6), dp(12), dp(6))
-                background = Neu.drawable(activeNeuTokens, dp(10).toFloat(), NeuLevel.RAISED_SM)
-            })
-            setOnClickListener {
-                haptic(this)
-                openUberRide(ride.lat, ride.lng, ride.name)
-            }
-        }
-    }
 
     private fun searchSportsCard(): SportsApi.ScoreCard? =
         sportsCard?.takeIf { sportsQuery == query.trim() }
@@ -11369,7 +11303,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             addView(TextView(context).apply {
-                text = highlightedLabel(app.name, query, activeNeuTokens.ink)
+                text = highlightedLabel(app.name, query)
                 textSize = 12.5f
                 gravity = Gravity.CENTER
                 maxLines = 1
@@ -13357,6 +13291,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val row = LinearLayout(context).apply {
             tag = "key_row"
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            // Keys are centered, not baseline-aligned; skipping the baseline pass trims the measure
+            // cost of every key row (same fix as the IME keyboard's keyRow()).
+            isBaselineAligned = false
             clipChildren = false
             clipToPadding = false
             setPadding(horizontalInset, 0, horizontalInset, 0)
@@ -13757,6 +13694,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // Chips are centered, not baseline-aligned; skip the baseline measure pass — this strip
+            // re-measures on every word boundary, so the saving repeats per keystroke burst.
+            isBaselineAligned = false
             setPadding(dp(10), dp(2), dp(10), dp(2))
             visibility = if (launcherSuggestionStripLayoutHeight() > 0) View.VISIBLE else View.GONE
             alpha = if (launcherSuggestionStripAnimatedHeight > 0) 1f else 0f
@@ -14525,8 +14465,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // Run-now chirps.
         chips.add("🎵 Song" to { AgenticEngine.shareSong(launcherAgenticHost) })
         chips.add("📍 My location" to { AgenticEngine.sharePlace(launcherAgenticHost) })
-        // The real skill catalog — previously GO only ever offered the two chirps above, which is why
-        // it felt empty. Tapping one seeds its trigger so you just finish the thought.
+        // The real skill catalog — GO previously offered only the two chirps above, which is why it
+        // felt empty. Tapping one seeds its trigger so you just finish the thought.
         AgenticRouter.starters(limit = 12).forEach { s ->
             chips.add(s.label to {
                 query = s.insert
@@ -16588,10 +16528,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 if (query.trim() != q) return@launch   // query moved on
                 braveRichQuery = q
                 braveRichAnswer = answer
-                // A landmark card offers a ride ONLY when the user is actually in that city —
-                // searching "eiffel tower" to read about it shouldn't push an Uber unless you're
-                // standing in Paris. Resolved off-main: geocode the landmark, measure the distance.
-                braveRideOffer = if (answer?.vertical == "landmark") resolveLandmarkRide(answer.headline) else null
                 if (answer != null) refreshSearchResultsUi()
             }
         }
@@ -16599,28 +16535,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         handler.postDelayed(r, 450L)
     }
 
-    /** A ride offer for a landmark the user is near, or null when they're elsewhere / no fix.
-     *  Blocking (geocoder) — call off the main thread. */
-    private fun resolveLandmarkRide(name: String): RideOffer? {
-        val here = AgenticLocation.lastKnown(this) ?: return null
-        val there = runCatching {
-            @Suppress("DEPRECATION")
-            android.location.Geocoder(this, Locale.getDefault()).getFromLocationName(name, 1)?.firstOrNull()
-        }.getOrNull() ?: return null
-        val out = FloatArray(1)
-        android.location.Location.distanceBetween(here.latitude, here.longitude, there.latitude, there.longitude, out)
-        // Within ~40 km reads as "in the same city / metro" — the case where a ride makes sense.
-        return if (out[0] <= 40_000f) RideOffer(name, there.latitude, there.longitude) else null
-    }
-
-    private data class RideOffer(val name: String, val lat: Double, val lng: Double)
-    private var braveRideOffer: RideOffer? = null
-
     /** Cheap main-thread pre-gate: could [q] resolve to a rich lookup at all? */
     private fun mayHaveRichIntent(q: String): Boolean {
         val lower = q.lowercase(Locale.US)
         return lower in BraveSearchApi.CRYPTO_TERMS || lower in BraveSearchApi.STOCK_TERMS ||
-            looksLikeTicker(q) || looksLikeLocalIntent(lower) || BraveSearchApi.matchesLandmark(lower) ||
+            looksLikeTicker(q) || looksLikeLocalIntent(lower) ||
             ((lower == "weather" || lower == "forecast") && AgenticLocation.hasPermission(this)) ||
             looksLikeRichIntent(q)
     }
@@ -16666,7 +16585,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             lower in BraveSearchApi.CRYPTO_TERMS -> "$lower price"
             lower in BraveSearchApi.STOCK_TERMS || looksLikeTicker(q) -> "$lower stock"
             looksLikeLocalIntent(lower) -> q   // POI lookup: the locations block answers it
-            BraveSearchApi.matchesLandmark(lower) -> q   // landmark: the infobox answers it
             lower == "weather" || lower == "forecast" -> {
                 val city = richWeatherCity ?: AgenticLocation.lastKnown(this)?.let { loc ->
                     runCatching {
@@ -20181,11 +20099,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // "serendipity" keeps its web results below the card.
         // A command intent suppresses them entirely: "play jazz" wants music, not links.
         val richCard = searchRichAnswer()
-        // Definitions and landmarks are "learn more" context — keep the web results below them.
-        // Finance/weather/crypto/POI cards ARE the answer, so they suppress the web rows.
-        val richIsTheAnswer = richCard != null && richCard.vertical !in setOf("definitions", "landmark")
-        // (The landmark ride offer is rendered as a card in Zone 1, directly under the hero —
-        // see searchRideOffer()/braveRideCard() — not added to this kind-grouped list.)
+        val richIsTheAnswer = richCard != null && richCard.vertical != "definitions"
         if (webFallbackQuery == q && !richIsTheAnswer && searchSportsCard() == null && !commandIntent) {
             results.addAll(webFallbackResults)
         }
@@ -20416,15 +20330,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun openUberRide(lat: Double?, lng: Double?, nickname: String?) {
         val uberInstalled = runCatching { packageManager.getPackageInfo("com.ubercab", 0); true }.getOrDefault(false)
-        val host = if (uberInstalled) "uber://" else "https://m.uber.com/ul/"
-        // Pickup: use the app's known location explicitly (which honors the demo-location override,
-        // so a Paris demo has a Paris pickup — not the phone's real GPS). Fall back to Uber's
-        // "my_location" only when we have no fix at all.
-        val here = AgenticLocation.lastKnown(this)
-        val pickup = if (here != null)
-            "pickup[latitude]=${here.latitude}&pickup[longitude]=${here.longitude}"
-        else "pickup=my_location"
-        val sb = StringBuilder("${host}?action=setPickup&$pickup")
+        val base = if (uberInstalled) "uber://?action=setPickup&pickup=my_location" else "https://m.uber.com/ul/?action=setPickup&pickup=my_location"
+        val sb = StringBuilder(base)
         if (lat != null && lng != null) {
             sb.append("&dropoff[latitude]=").append(lat)
             sb.append("&dropoff[longitude]=").append(lng)
@@ -22406,8 +22313,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun bestLastKnownLocation(): Location? {
-        // Honor the demo-location override so home weather matches the rest of the demo.
-        AgenticLocation.lastKnown(this)?.let { return it }
         val manager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         if (!hasWeatherPermission()) return null
         val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER, LocationManager.PASSIVE_PROVIDER)
