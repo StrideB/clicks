@@ -15021,15 +15021,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         }
         private val trailPath = Path()
         private var glidePersisting = false
-        private var glideFadeRunnable: Runnable? = null
 
-        // Keep the finished glide trail on screen briefly (recolored to the matched app / theme),
-        // then fade it out — so it "stays after finishing" instead of vanishing the instant you lift.
+        // Kick the evaporating-trail draw loop after release: dispatchDraw's sliding time-window
+        // drains the remaining trail tail-first within ~one window (the Gboard glide-out), replacing
+        // the old timed full-clear that made the trail linger and then blink away all at once.
         private fun fadeGlideTrail() {
-            glideFadeRunnable?.let { handler.removeCallbacks(it) }
-            val r = Runnable { glidePersisting = false; trailLocal.clear(); trailTimes.clear(); glideRecognizedColor = null; invalidate() }
-            glideFadeRunnable = r
-            handler.postDelayed(r, 900)
+            postInvalidateOnAnimation()
         }
 
         private fun clearGlideTouchState() {
@@ -15056,10 +15053,25 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
             if ((tracking || glidePersisting) && trailLocal.size > 1) {
+                // Gboard-style evaporating trail (parity with the IME): only the last
+                // GLIDE_TRAIL_WINDOW_MS of the path is drawn, so the tail melts away behind the
+                // finger mid-glide and the remainder glides out within one window after release.
+                // Draw-only — the decoders snapshot the full stored path at UP.
+                val cutoff = android.os.SystemClock.uptimeMillis() - GLIDE_TRAIL_WINDOW_MS
+                var first = 0
+                while (first < trailTimes.size && trailTimes[first] < cutoff) first++
+                if (first >= trailLocal.size - 1) {
+                    if (glidePersisting) {
+                        glidePersisting = false
+                        trailLocal.clear(); trailTimes.clear()
+                        glideRecognizedColor = null
+                    }
+                    return
+                }
                 trailPath.reset()
-                trailPath.moveTo(trailLocal[0].first, trailLocal[0].second)
-                for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
-                val start = trailLocal.first()
+                trailPath.moveTo(trailLocal[first].first, trailLocal[first].second)
+                for (i in first + 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
+                val start = trailLocal[first]
                 val end = trailLocal.last()
                 val colors = glideTrailColors()
                 trailPaint.shader = android.graphics.LinearGradient(
@@ -15074,6 +15086,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 canvas.drawPath(trailPath, trailPaint)
                 trailPaint.shader = null
                 trailPaint.alpha = 255
+                // Drive the melt between touch events (and after release) at display rate.
+                postInvalidateOnAnimation()
             }
         }
 
@@ -15104,7 +15118,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX; startRawY = ev.rawY
                     glideBlockedByTypingStrip = isInsideTypingStrip(ev.rawX, ev.rawY)
-                    glideFadeRunnable?.let { handler.removeCallbacks(it) }
                     glidePersisting = false; glideRecognizedColor = null
                     tracking = false; traced.clear(); trailLocal.clear(); trailTimes.clear()
                     val loc = IntArray(2); getLocationOnScreen(loc)
@@ -25042,6 +25055,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         private const val KeyHighlight = 0xFF3A3E4A.toInt()
         private const val THEME_STUDIO_TARGET_ID = "theme-studio"
         private const val PREFS_NAME = "teclas"
+        // Visible lifetime of each glide-trail point (Gboard-style tail evaporation; see the IME's
+        // twin constant — keep them equal so both keyboards' glides feel identical).
+        private const val GLIDE_TRAIL_WINDOW_MS = 320L
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
         private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"

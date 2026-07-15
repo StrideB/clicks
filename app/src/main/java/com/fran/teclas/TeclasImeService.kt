@@ -3572,8 +3572,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // movement (instead of every frame) keeps the visual identical without per-frame allocation.
         private var trailShaderEndX = Float.NaN
         private var trailShaderEndY = Float.NaN
+        private var trailShaderStartX = Float.NaN
+        private var trailShaderStartY = Float.NaN
         private var glidePersisting = false
-        private var glideFadeRunnable: Runnable? = null
         private val touchSlop = ViewConfiguration.get(this@TeclasImeService).scaledTouchSlop
         // A glide must clearly outrun a normal tap's finger-drift before it steals the touch from the
         // key, otherwise a tap with a little slide reads as a phantom swipe and eats the keystroke.
@@ -3613,16 +3614,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             return true
         }
 
+        // Kick the evaporating-trail draw loop after release: dispatchDraw's sliding time-window
+        // drains the remaining trail tail-first within ~one window (the Gboard glide-out), replacing
+        // the old timed full-clear that made the trail linger and then blink away all at once.
         private fun fadeGlideTrail() {
-            glideFadeRunnable?.let { handler.removeCallbacks(it) }
-            val r = Runnable {
-                glidePersisting = false
-                trailLocal.clear()
-                trailTimes.clear()
-                invalidate()
-            }
-            glideFadeRunnable = r
-            handler.postDelayed(r, 900L)
+            postInvalidateOnAnimation()
         }
 
         private fun clearGlideTouchState() {
@@ -3634,6 +3630,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             trailPaint.shader = null
             trailShaderEndX = Float.NaN
             trailShaderEndY = Float.NaN
+            trailShaderStartX = Float.NaN
+            trailShaderStartY = Float.NaN
             glideClassifier?.clear()
             invalidate()
         }
@@ -3651,15 +3649,35 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
             if ((tracking || glidePersisting) && trailLocal.size > 1) {
+                // Gboard-style evaporating trail: only the last GLIDE_TRAIL_WINDOW_MS of the path
+                // is drawn, so the tail continuously melts away behind the finger mid-glide, and
+                // the remainder glides out on its own within one window after release. Draw-only —
+                // the full path stays stored (the decoders snapshot it at UP).
+                val cutoff = android.os.SystemClock.uptimeMillis() - GLIDE_TRAIL_WINDOW_MS
+                var first = 0
+                while (first < trailTimes.size && trailTimes[first] < cutoff) first++
+                if (first >= trailLocal.size - 1) {
+                    // Fully evaporated. After release that's the end of the gesture's visuals.
+                    if (glidePersisting) {
+                        glidePersisting = false
+                        trailLocal.clear()
+                        trailTimes.clear()
+                    }
+                    return
+                }
                 trailPath.reset()
-                trailPath.moveTo(trailLocal[0].first, trailLocal[0].second)
-                for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
-                val start = trailLocal.first()
+                trailPath.moveTo(trailLocal[first].first, trailLocal[first].second)
+                for (i in first + 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
+                val start = trailLocal[first]
                 val end = trailLocal.last()
                 val colors = trailColorsCache ?: glideTrailColors().also { trailColorsCache = it }
-                val endMoved = (end.first - trailShaderEndX).let { it * it } +
-                    (end.second - trailShaderEndY).let { it * it }
-                if (trailPaint.shader == null || endMoved.isNaN() || endMoved > 36f) {
+                // Rebuild the gradient only after either visible endpoint moves ~6px — the tail
+                // now moves every frame, so this throttle is what keeps evaporation allocation-light.
+                val moved = (end.first - trailShaderEndX).let { it * it } +
+                    (end.second - trailShaderEndY).let { it * it } +
+                    (start.first - trailShaderStartX).let { it * it } +
+                    (start.second - trailShaderStartY).let { it * it }
+                if (trailPaint.shader == null || moved.isNaN() || moved > 36f) {
                     trailPaint.shader = android.graphics.LinearGradient(
                         start.first,
                         start.second,
@@ -3671,6 +3689,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     )
                     trailShaderEndX = end.first
                     trailShaderEndY = end.second
+                    trailShaderStartX = start.first
+                    trailShaderStartY = start.second
                 }
                 trailPaint.strokeWidth = dp(12).toFloat()
                 trailPaint.alpha = 58
@@ -3680,6 +3700,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 canvas.drawPath(trailPath, trailPaint)
                 trailPaint.shader = null
                 trailPaint.alpha = 255
+                // Drive the melt between touch events (and after release) at display rate.
+                postInvalidateOnAnimation()
             }
         }
 
@@ -3691,7 +3713,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX
                     startRawY = ev.rawY
-                    glideFadeRunnable?.let { handler.removeCallbacks(it) }
                     glidePersisting = false
                     tracking = false
                     traced.clear()
@@ -4551,6 +4572,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // Hot-path regexes, compiled once (these used to be re-compiled on every keystroke).
         private val WORD_RE = Regex("[A-Za-z]+")
         private val NON_LETTER_RE = Regex("[^\\p{L}]+")
+
+        // Visible lifetime of each glide-trail point: the tail melts away this long after the
+        // finger passed through (Gboard-style), instead of the whole trail lingering then blinking
+        // out. Also how long the trail takes to fully glide out after release.
+        private const val GLIDE_TRAIL_WINDOW_MS = 320L
 
         // Temporary: keystroke-path timing to logcat (tag TeclasPerf) to localize the freeze.
         private const val PERF_LOG = false
