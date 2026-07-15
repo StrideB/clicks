@@ -2851,6 +2851,14 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         chips.add(HudAction("\ud83c\udfb5 Song") { AgenticEngine.shareSong(agenticHost) })
         chips.add(HudAction("\ud83d\udccd My location") { AgenticEngine.sharePlace(agenticHost) })
         if (canAttachHere()) chips.add(HudAction("\ud83d\udcce Attach") { showAttachPicker() })
+        // The real skill catalog — GO used to offer only the chirps above. Tap seeds the trigger.
+        AgenticRouter.starters(limit = 12).forEach { s ->
+            chips.add(HudAction(s.label) {
+                agenticStarters = emptyList()
+                currentInputConnection?.commitText(s.insert, 1)
+                onTextChanged()
+            })
+        }
         return chips
     }
 

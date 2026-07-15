@@ -3,11 +3,21 @@ package com.fran.teclas
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.location.Geocoder
 import android.media.MediaMetadata
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.tan
 
 /**
  * Data sources for the share cards: the "drop a complete thing into the conversation" flow behind the
@@ -104,6 +114,58 @@ object ShareContent {
                 append(address.ifBlank { "%.6f,%.6f".format(Locale.US, lat, lng) }).append(" ").append(mapsUrl)
             }
     }
+
+    /**
+     * Static map thumbnail for the location share card. The card used to pass art = null, so the
+     * preview had an empty image well — it read as a broken/blank map. Built by compositing OSM
+     * tiles (no API key; staticmap.openstreetmap.de is defunct). Network: call off the main thread.
+     * Null on any failure, and the card then renders without art rather than an empty frame.
+     */
+    fun mapThumb(lat: Double, lng: Double, zoom: Int = 15, wPx: Int = 420, hPx: Int = 220): Bitmap? = runCatching {
+        val scale = 1 shl zoom
+        val latRad = Math.toRadians(lat)
+        // Slippy-map projection → global pixel coords at this zoom.
+        val gx = (lng + 180.0) / 360.0 * scale * TILE
+        val gy = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * scale * TILE
+        val left = gx - wPx / 2.0
+        val top = gy - hPx / 2.0
+        val out = Bitmap.createBitmap(wPx, hPx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(0xFFE8E4DC.toInt())   // map-paper base showing through any missing tile
+        val tx0 = floor(left / TILE).toInt(); val tx1 = floor((left + wPx) / TILE).toInt()
+        val ty0 = floor(top / TILE).toInt();  val ty1 = floor((top + hPx) / TILE).toInt()
+        var drew = false
+        for (tx in tx0..tx1) for (ty in ty0..ty1) {
+            val wrapX = ((tx % scale) + scale) % scale
+            if (ty < 0 || ty >= scale) continue
+            val tile = fetchTile(zoom, wrapX, ty) ?: continue
+            canvas.drawBitmap(tile, (tx * TILE - left).toFloat(), (ty * TILE - top).toFloat(), null)
+            tile.recycle()
+            drew = true
+        }
+        if (!drew) return@runCatching null
+        // Pin at the exact spot (dead centre).
+        val cx = wPx / 2f; val cy = hPx / 2f
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.color = 0x33000000; canvas.drawCircle(cx, cy + 1f, 9f, p)
+        p.color = 0xFFE5342A.toInt(); canvas.drawCircle(cx, cy, 7f, p)
+        p.color = 0xFFFFFFFF.toInt(); canvas.drawCircle(cx, cy, 2.5f, p)
+        out
+    }.getOrNull()
+
+    private const val TILE = 256
+
+    private fun fetchTile(z: Int, x: Int, y: Int): Bitmap? = runCatching {
+        val conn = (URL("https://tile.openstreetmap.org/$z/$x/$y.png").openConnection() as HttpURLConnection).apply {
+            connectTimeout = 5_000; readTimeout = 7_000; instanceFollowRedirects = true
+            // OSM tile policy requires an identifying UA.
+            setRequestProperty("User-Agent", "Teclas-Launcher/1.0 (on-device share card)")
+        }
+        try {
+            if (conn.responseCode !in 200..299) null
+            else conn.inputStream.use { BitmapFactory.decodeStream(it) }
+        } finally { conn.disconnect() }
+    }.getOrNull()
 
     /** The user's current spot as a card (last-known fix + reverse geocode). Null without permission/fix. */
     fun myPlace(context: Context): PlaceCard? {

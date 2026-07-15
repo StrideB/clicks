@@ -14462,8 +14462,20 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // a complete thing via a preview, not command verbs that seed text and eject the user.
     private fun buildLauncherStarters(): List<Pair<String, () -> Unit>> {
         val chips = ArrayList<Pair<String, () -> Unit>>()
+        // Run-now chirps.
         chips.add("🎵 Song" to { AgenticEngine.shareSong(launcherAgenticHost) })
         chips.add("📍 My location" to { AgenticEngine.sharePlace(launcherAgenticHost) })
+        // The real skill catalog — GO previously offered only the two chirps above, which is why it
+        // felt empty. Tapping one seeds its trigger so you just finish the thought.
+        AgenticRouter.starters(limit = 12).forEach { s ->
+            chips.add(s.label to {
+                query = s.insert
+                cursorPos = null
+                pendingLauncherStarters = emptyList()
+                renderRibbon()
+                scheduleLibraryRefresh()
+            })
+        }
         return chips
     }
 
