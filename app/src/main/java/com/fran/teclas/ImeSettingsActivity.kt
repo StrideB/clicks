@@ -196,6 +196,10 @@ class ImeSettingsActivity : ComponentActivity() {
                 Div(t)
                 InputRow(t, "Google Search engine ID (cx)", GoogleSearchApi.CX_PREF, "programmablesearchengine.google.com", secret = false)
                 Div(t)
+                InputRow(t, "Google Places key — nearby", PlacesApi.KEY_PREF, "Places API (New) · ~5k free/mo", secret = true)
+                Text("Powers “restaurants near me” — a nearby card with ratings, open-now and distance. Its own free tier, separate from Brave.",
+                    Modifier.padding(top = 4.dp), color = t.inkDimCompose, fontSize = 12.sp)
+                Div(t)
                 InputRow(t, "Brave Search key — web search", BraveSearchApi.KEY_PREF, "api-dashboard.search.brave.com ($5/mo free credit)", secret = true)
                 Text("Real web results inside the launcher, plus instant answers — weather, stocks, conversions, definitions, scores. ~1,000 free searches/month.",
                     Modifier.padding(top = 4.dp), color = t.inkDimCompose, fontSize = 12.sp)

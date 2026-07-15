@@ -178,8 +178,11 @@ internal class SearchResultsHost(private val activity: MainActivity) {
             }
 
             // ZONE 1 — a single instant answer. Only the strongest vertical becomes the hero.
+            val places = searchPlaces()
             val hero: View? = when {
                 sports != null -> sportsScoreCard(sports)
+                // "restaurants near me" — Places answers local intent better than a Brave POI.
+                places != null -> nearbyPlacesCard(places)
                 rich != null -> braveRichCard(rich)
                 aiInline != null -> searchAiAnswerCard(aiInline)
                 else -> null
@@ -680,6 +683,137 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     internal fun searchSportsCard(): SportsApi.ScoreCard? = with(activity) {
         sportsCard?.takeIf { sportsQuery == query.trim() }
     }
+
+    /** Nearby-places hero card (Google Places): one row per place with rating, price, open-now
+     *  and distance; tapping a row opens that exact place in Google Maps by place_id. The
+     *  "Google Maps" footer is REQUIRED attribution under Places' terms — don't drop it. */
+    private fun nearbyPlacesCard(places: List<PlacesApi.Place>): View { with(activity) {
+        val accent = 0xFF4285F4.toInt()   // Google blue
+        val here = AgenticLocation.lastKnown(this)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(11))
+            background = searchCardBackground(SearchKind.ANSWER, true, 18)
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = "📍"
+                    gravity = Gravity.CENTER
+                    textSize = 13f
+                    includeFontPadding = false
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(adjustAlpha(accent, 0.14f))
+                    }
+                }, LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(9) })
+                addView(TextView(context).apply {
+                    val intent = searchPlaceIntent()
+                    val sel = searchPlacesRefinement()
+                    text = listOfNotNull(intent?.label ?: "Nearby", sel).joinToString(" · ")
+                    textSize = 13f * searchFontScale()
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(30)))
+
+            // The follow-up question, answered instantly: a broad intent ("food") offers
+            // refinements as chips instead of waiting on a model to ask what you're in the mood for.
+            // They behave as TABS — they stay put while a selection loads, and only the rows swap.
+            val chips = searchPlaceIntent()?.chips.orEmpty()
+            val selected = searchPlacesRefinement()
+            if (chips.isNotEmpty()) {
+                addView(android.widget.HorizontalScrollView(context).apply {
+                    isHorizontalScrollBarEnabled = false
+                    clipToPadding = false
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        chips.forEach { chip ->
+                            val on = chip == selected
+                            addView(TextView(context).apply {
+                                text = chip
+                                textSize = 11.5f * searchFontScale()
+                                setTextColor(if (on) activeNeuTokens.base else activeNeuTokens.ink)
+                                typeface = if (on) Typeface.create("sans-serif-medium", Typeface.NORMAL) else Typeface.DEFAULT
+                                includeFontPadding = false
+                                isClickable = true
+                                gravity = Gravity.CENTER
+                                setPadding(dp(12), dp(6), dp(12), dp(6))
+                                background = if (on) GradientDrawable().apply {
+                                    cornerRadius = dp(99).toFloat()
+                                    setColor(activeNeuTokens.ink)
+                                } else Neu.drawable(activeNeuTokens, dp(99).toFloat(), NeuLevel.RAISED_SM)
+                                setOnClickListener { haptic(this); applySearchChip(chip) }
+                            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                                if (chip != chips.first()) marginStart = dp(6)
+                            })
+                        }
+                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(2); bottomMargin = dp(2)
+                })
+            }
+
+            places.take(4).forEachIndexed { index, place ->
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    isClickable = true
+                    setPadding(dp(11), dp(9), dp(11), dp(9))
+                    background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.PRESSED_SM)
+                    addView(LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        addView(TextView(context).apply {
+                            text = place.name
+                            textSize = 14f * searchFontScale()
+                            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                            setTextColor(activeNeuTokens.ink)
+                            includeFontPadding = false
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                        place.rating?.let { r ->
+                            addView(mono("★ ${String.format(Locale.US, "%.1f", r)}", 10f, 0xFFF5A623.toInt()).apply {
+                                setPadding(dp(6), 0, 0, 0)
+                            })
+                        }
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                    // Secondary line: open/closed · price · distance · type — only what we have.
+                    val bits = mutableListOf<String>()
+                    place.openNow?.let { bits.add(if (it) "Open" else "Closed") }
+                    if (place.priceLevel.isNotBlank()) bits.add(place.priceLevel)
+                    if (here != null && place.lat != null && place.lng != null) {
+                        val out = FloatArray(1)
+                        android.location.Location.distanceBetween(here.latitude, here.longitude, place.lat, place.lng, out)
+                        bits.add(if (out[0] < 1000) "${out[0].toInt()} m" else String.format(Locale.US, "%.1f km", out[0] / 1000f))
+                    }
+                    place.type.takeIf { it.isNotBlank() }?.let { bits.add(it) }
+                    addView(TextView(context).apply {
+                        text = bits.joinToString("  ·  ")
+                        textSize = 11f * searchFontScale()
+                        setTextColor(if (place.openNow == false) activeNeuTokens.inkFaint else activeNeuTokens.inkDim)
+                        includeFontPadding = false
+                        setPadding(0, dp(2), 0, 0)
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                    setOnClickListener {
+                        haptic(this)
+                        openUrlDirectly(place.mapsUrl())
+                    }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = if (index == 0) dp(4) else dp(6)
+                })
+            }
+            // Required by the Places terms when rendering outside a Google Map.
+            addView(mono("DATA · ${PlacesApi.ATTRIBUTION.uppercase(Locale.US)}", 7.5f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.1f
+                setPadding(0, dp(9), 0, 0)
+            })
+        }
+    } }
 
     /** Hero-style instant-answer card (Brave rich data): the value floats big over a full-bleed
      *  chart at the card's bottom edge, with a tinted change pill and a circular vertical badge.

@@ -282,8 +282,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             useFallback = true,
             ranker = { unifiedRanker },
             rejectedPersist = { t, c -> rejectedStore.add(t, c) },
-            rejectedContains = { t, c -> rejectedStore.contains(t, c) }
+            rejectedContains = { t, c -> rejectedStore.contains(t, c) },
+            isProtectedWord = { w -> isSearchVocabulary(w) }
         )
+    }
+
+    /**
+     * Tokens the search pipeline treats as meaningful, so autocorrect must leave them alone:
+     * currency codes, coin symbols, tickers, and installed app names. These are exactly the words
+     * a dictionary "fixes" into something else ("usd"→"use", "aapl"→"Wall"), which silently broke
+     * the very searches they were typed for.
+     */
+    internal fun isSearchVocabulary(word: String): Boolean {
+        val w = word.trim().lowercase(Locale.US)
+        if (w.length < 2) return false
+        if (w in CurrencyApi.TERMS || w in CryptoApi.TERMS) return true
+        if (w in BraveSearchApi.STOCK_TERMS) return true
+        // Deliberately capitalized short token reads as a ticker ("AAPL", "TSLA").
+        if (looksLikeTicker(word)) return true
+        // Never rewrite an app the user could be launching ("Zara" → "Zara", not "Zaha").
+        if (apps.any { it.label.equals(w, ignoreCase = true) || it.shortName.equals(w, ignoreCase = true) }) return true
+        return false
     }
     private val predictionCore by lazy {
         com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker })
@@ -15386,6 +15405,85 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         scheduleBraveRichSearch()
         scheduleBraveWebSearch()
         scheduleSportsSearch()
+        schedulePlacesSearch()
+    }
+
+    /** The resolved place intent for the live query — "hungry" → restaurants, "drinks" → bars —
+     *  modulated by the detected Space. Pure lexicon lookup, so it's free to call per keystroke. */
+    internal fun searchPlaceIntent(q: String = query.trim()): SearchIntent.PlaceIntent? {
+        val explicit = looksLikeLocalIntent(q.lowercase(Locale.US))
+        val space = predictContext?.let { runCatching { SpaceManager.detect(this, it).space.id }.getOrNull() }
+        val intent = SearchIntent.of(q, space)
+        // "restaurants near me" has no lexicon word but IS local intent — fall back to the raw
+        // subject so explicit phrasing keeps working.
+        if (intent == null && explicit) {
+            return SearchIntent.PlaceIntent(PlacesApi.subjectOf(q), "Nearby", emptyList(), false, false)
+        }
+        return intent
+    }
+
+    /** Debounced nearby-places lookup. Fires on resolved INTENT ("hungry"), not just on explicit
+     *  "near me" phrasing — the lexicon does that resolution in microseconds so the card lands
+     *  as fast as the network allows. Google's free tier is its own per-month bucket, so this
+     *  never eats the Brave credit. Needs a location (real or demo) to bias against. */
+    private fun schedulePlacesSearch(immediate: Boolean = false) {
+        placesDebounce?.let { handler.removeCallbacks(it) }
+        val q = query.trim()
+        // Typing something new drops the selected chip; re-running for a chip tap keeps it.
+        if (q != placesBaseQuery) { placesBaseQuery = q; placesRefinement = null }
+        val key = prefs().getString(PlacesApi.KEY_PREF, null)?.trim().orEmpty()
+        val intent = if (key.isBlank()) null else searchPlaceIntent(q)
+        if (q.length < 3 || intent == null) {
+            if (placesResults.isNotEmpty()) { placesResults = emptyList(); placesQuery = ""; placesRefinement = null }
+            return
+        }
+        val refinement = placesRefinement
+        // A chip narrows the base subject: "Sushi" + restaurants → "sushi restaurants".
+        val subject = refinement?.let { "${it.lowercase(Locale.US)} ${intent.subject}" } ?: intent.subject
+        val fetchKey = "$q ${refinement.orEmpty()}"
+        if (fetchKey == placesQuery) return
+        val r = Runnable {
+            placesDebounce = null
+            mediaUiScope.launch {
+                val hits = withContext(Dispatchers.IO) {
+                    val loc = AgenticLocation.lastKnown(this@MainActivity) ?: return@withContext emptyList()
+                    runCatching { PlacesApi.search(subject, key, loc.latitude, loc.longitude, limit = 8) }
+                        .getOrDefault(emptyList())
+                }
+                if (query.trim() != q || placesRefinement != refinement) return@launch   // moved on
+                placesQuery = fetchKey
+                // "best steak" → rank by rating, but ignore a 5.0 with three reviews.
+                var out = if (intent.rankByRating) {
+                    hits.sortedWith(compareByDescending<PlacesApi.Place> {
+                        if (it.ratingCount >= 20) (it.rating ?: 0.0) else 0.0
+                    }.thenByDescending { it.ratingCount })
+                } else hits
+                if (intent.openNowOnly) {
+                    val open = out.filter { it.openNow != false }
+                    if (open.isNotEmpty()) out = open
+                }
+                if (out.isNotEmpty()) { placesResults = out; refreshSearchResultsUi() }
+            }
+        }
+        placesDebounce = r
+        // Chip taps feel like switching a tab, so they fire now; typing still debounces.
+        handler.postDelayed(r, if (immediate) 0L else 500L)
+    }
+
+    /** Places for the live query. Gated on the BASE query, not the refinement, so the card stays
+     *  on screen (chips and all) while a chip's results load — it swaps rows, never disappears. */
+    internal fun searchPlaces(): List<PlacesApi.Place>? =
+        placesResults.takeIf { it.isNotEmpty() && placesBaseQuery == query.trim() }
+
+    /** The selected chip, so the card can render it as the active tab. */
+    internal fun searchPlacesRefinement(): String? = placesRefinement
+
+    /** Tapping a chip switches the card's tab in place: the typed query and the chip row stay,
+     *  only the rows underneath swap. Tapping the active chip again clears it. */
+    internal fun applySearchChip(chip: String) {
+        placesRefinement = if (placesRefinement == chip) null else chip
+        refreshSearchResultsUi()      // highlight the tab immediately, keep the old rows visible
+        schedulePlacesSearch(immediate = true)
     }
 
     /** Re-render whichever surface is currently showing search results — async quick-source
@@ -15623,15 +15721,16 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         handler.postDelayed(r, 300L)
     }
 
-    /** Debounced Brave rich-answer lookup. Populates [braveRichAnswer] for the current query so
-     *  universalSearchResults() can pin an instant answer on top. Every fire is TWO paid API
-     *  requests against a ~1,000/month credit, so it only runs when the query reads as
-     *  rich intent ("weather", "aapl stock", "3 miles in km") — casual typing stays free. */
+    /** Debounced rich-answer lookup. Free keyless sources answer first (weather, crypto, currency,
+     *  definitions) — those work on a fresh install with no setup and cost nothing. Brave is the
+     *  fallback for what only it does, and every Brave fire is TWO metered requests against a
+     *  ~1,000/month credit, so it stays gated on intent. */
     private fun scheduleBraveRichSearch() {
         braveRichDebounce?.let { handler.removeCallbacks(it) }
         val q = query.trim()
         val key = prefs().getString(BraveSearchApi.KEY_PREF, null)?.trim().orEmpty()
-        if (q.length < 2 || !(mayHaveRichIntent(q) || dictionaryWordFor(q) != null)) {
+        val freeIntent = freeAnswerIntent(q) != null
+        if (q.length < 2 || !(freeIntent || mayHaveRichIntent(q) || dictionaryWordFor(q) != null)) {
             if (braveRichAnswer != null || braveRichQuery.isNotEmpty()) { braveRichAnswer = null; braveRichQuery = "" }
             return
         }
@@ -15640,10 +15739,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             braveRichDebounce = null
             mediaUiScope.launch {
                 val answer = withContext(Dispatchers.IO) {
-                    // Word-shaped queries hit the free dictionary first — no Brave credit spent.
+                    // ── Free, keyless sources first. No key, no metering, works out of the box. ──
+                    freeAnswer(q)?.let { return@withContext it }
+                    // Word-shaped queries hit the free dictionary — no Brave credit spent.
                     dictionaryWordFor(q)?.let { word ->
                         runCatching { DictionaryApi.define(word) }.getOrNull()?.let { return@withContext it }
                     }
+                    // ── Brave: only for verticals no free API covers (stocks, landmarks, POI). ──
                     if (key.isBlank() || !mayHaveRichIntent(q)) return@withContext null
                     // Resolved off the main thread: bare "weather" may need a geocoder round-trip.
                     val effective = resolveBraveRichQuery(q) ?: return@withContext null
@@ -15682,32 +15784,84 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     internal data class RideOffer(val name: String, val lat: Double, val lng: Double)
     internal var braveRideOffer: RideOffer? = null
 
-    /** Cheap main-thread pre-gate: could [q] resolve to a rich lookup at all? */
+    // Nearby places (Google Places) for the live query. Held in memory only — Google's terms
+    // permit storing place IDs but not the rest of the payload.
+    private var placesDebounce: Runnable? = null
+    private var placesQuery: String = ""            // fetch key (query + refinement) — dedupes calls
+    private var placesBaseQuery: String = ""        // the typed query the card belongs to
+    private var placesRefinement: String? = null    // selected chip, e.g. "Sushi" — acts as a tab
+    private var placesResults: List<PlacesApi.Place> = emptyList()
+
+    /** Which free keyless source (if any) answers [q]. Pure string work — safe per keystroke. */
+    private enum class FreeAnswer { WEATHER, CRYPTO, CURRENCY }
+
+    private fun freeAnswerIntent(q: String): FreeAnswer? {
+        val lower = q.lowercase(Locale.US).trim()
+        if (lower.isBlank()) return null
+        if (CurrencyApi.parse(lower) != null) return FreeAnswer.CURRENCY
+        val words = lower.split(' ').filter { it.isNotBlank() }
+        // "btc", "bitcoin price" — a coin term, alone or with a price/quote qualifier.
+        val coinWord = words.firstOrNull { CryptoApi.idFor(it) != null }
+        if (coinWord != null && words.all {
+                it == coinWord || it in setOf("price", "quote", "value", "chart", "usd", "rate")
+            }) return FreeAnswer.CRYPTO
+        if (lower == "weather" || lower == "forecast" ||
+            lower.startsWith("weather ") || lower.startsWith("forecast ") ||
+            lower.startsWith("weather in ") || lower.contains(" weather")) return FreeAnswer.WEATHER
+        return null
+    }
+
+    /** Resolve [q] via a free keyless API. Blocking — call off the main thread. */
+    private fun freeAnswer(q: String): BraveSearchApi.RichAnswer? {
+        val lower = q.lowercase(Locale.US).trim()
+        return when (freeAnswerIntent(q)) {
+            FreeAnswer.CURRENCY -> CurrencyApi.parse(lower)?.let { runCatching { CurrencyApi.card(it) }.getOrNull() }
+            FreeAnswer.CRYPTO -> lower.split(' ').firstNotNullOfOrNull { w ->
+                if (CryptoApi.idFor(w) != null) runCatching { CryptoApi.card(w) }.getOrNull() else null
+            }
+            FreeAnswer.WEATHER -> {
+                // "weather in bogota" → that city; bare "weather" → wherever you are.
+                val place = lower.removePrefix("weather in ").removePrefix("forecast in ")
+                    .removePrefix("weather ").removePrefix("forecast ")
+                    .removeSuffix(" weather").removeSuffix(" forecast").trim()
+                    .takeIf { it.isNotBlank() && it != "weather" && it != "forecast" }
+                val loc = if (place == null) AgenticLocation.lastKnown(this) else null
+                if (place == null && loc == null) null
+                else runCatching { WeatherApi.card(place, loc?.latitude, loc?.longitude) }.getOrNull()
+            }
+            null -> null
+        }
+    }
+
+    /** Cheap main-thread pre-gate: could [q] resolve to a BRAVE lookup at all? Anything a free
+     *  keyless API already answers is excluded here — Brave's metered credit is reserved for the
+     *  verticals only it covers (stocks, landmarks, POI without a Places key). */
     private fun mayHaveRichIntent(q: String): Boolean {
         val lower = q.lowercase(Locale.US)
-        return lower in BraveSearchApi.CRYPTO_TERMS || lower in BraveSearchApi.STOCK_TERMS ||
+        // Free sources own these outright — never spend two Brave requests on them.
+        if (freeAnswerIntent(q) != null) return false
+        // Local intent goes to Places when it's configured — richer answer, and its free tier is
+        // separate, so don't spend two Brave requests on a POI Places does better.
+        val localToPlaces = looksLikeLocalIntent(lower) && PlacesApi.isConfigured(prefs())
+        if (localToPlaces) return false
+        return lower in BraveSearchApi.STOCK_TERMS ||
             looksLikeTicker(q) || looksLikeLocalIntent(lower) || BraveSearchApi.matchesLandmark(lower) ||
-            ((lower == "weather" || lower == "forecast") && AgenticLocation.hasPermission(this)) ||
             looksLikeRichIntent(q)
     }
 
-    /** The word to define for [q], or null. Bare lowercase words ("serendipity") and explicit
-     *  "define X" both qualify; finance/weather/sports terms and installed app names don't —
-     *  those have better answers than a dictionary entry. */
+    /** The word to define for [q], or null. Definitions are OPT-IN only — "define:word" (or the
+     *  spoken forms "define word" / "meaning of word"). A bare word used to define itself, which
+     *  meant ordinary searches got a dictionary card they never asked for; typing a word is
+     *  almost always launch/search intent, not vocabulary curiosity. */
     private fun dictionaryWordFor(q: String): String? {
-        val lower = q.lowercase(Locale.US)
+        val lower = q.lowercase(Locale.US).trim()
         val word = when {
+            lower.startsWith("define:") -> lower.removePrefix("define:").trim()
             lower.startsWith("define ") -> lower.removePrefix("define ").trim()
             lower.startsWith("meaning of ") -> lower.removePrefix("meaning of ").trim()
-            q.length >= 3 && q.all { it.isLetter() && it.isLowerCase() } -> lower
             else -> return null
         }
         if (word.length < 3 || !word.all { it.isLetter() }) return null
-        if (word in BraveSearchApi.CRYPTO_TERMS || word in BraveSearchApi.STOCK_TERMS) return null
-        if (word == "weather" || word == "forecast") return null
-        if (SportsApi.hasSportsIntent(word)) return null
-        // Typing an app's name is launch intent, not vocabulary curiosity.
-        if (apps.any { it.label.equals(word, ignoreCase = true) || it.shortName.equals(word, ignoreCase = true) }) return null
         return word
     }
 
@@ -15822,7 +15976,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun looksLikeRichIntent(q: String): Boolean {
         val lower = q.lowercase(Locale.US)
         if (lower.contains("weather") || lower.contains("forecast")) return true
-        if (lower.startsWith("define ") || lower.startsWith("meaning of ")) return true
+        // Definitions are opt-in ("define:word") — the free dictionary answers these, so Brave
+        // never needs to spend two requests on a word.
+        if (lower.startsWith("define:") || lower.startsWith("define ") || lower.startsWith("meaning of ")) return false
         // "aapl stock", "bitcoin price", "eur to usd", "100 usd in eur"
         if (lower.endsWith(" stock") || lower.endsWith(" price") || lower.endsWith(" quote")) return true
         val words = lower.split(' ').filter { it.isNotBlank() }
@@ -19171,7 +19327,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val richIsTheAnswer = richCard != null && richCard.vertical !in setOf("definitions", "landmark")
         // (The landmark ride offer is rendered as a card in Zone 1, directly under the hero —
         // see searchRideOffer()/braveRideCard() — not added to this kind-grouped list.)
-        if (webFallbackQuery == q && !richIsTheAnswer && searchResultsHost.searchSportsCard() == null && !commandIntent) {
+        // A nearby-places card IS the answer for local intent — web rows under it are noise.
+        if (webFallbackQuery == q && !richIsTheAnswer && searchResultsHost.searchSportsCard() == null &&
+            searchPlaces() == null && !commandIntent) {
             results.addAll(webFallbackResults)
         }
         // A typed URL ("theverge.com") is an unambiguous intent — rank opening the site itself

@@ -26,7 +26,13 @@ class AutocorrectCore(
     private val ranker: () -> com.fran.teclas.keyboard.unified.UnifiedRanker? = { null },
     /** Persistent rejection memory hooks (RejectedCorrectionsStore) — session memory works without them. */
     private val rejectedPersist: (typed: String, corrected: String) -> Unit = { _, _ -> },
-    private val rejectedContains: (typed: String, corrected: String) -> Boolean = { _, _ -> false }
+    private val rejectedContains: (typed: String, corrected: String) -> Boolean = { _, _ -> false },
+    /**
+     * Words the host says are deliberate and must never be "fixed" — currency codes, tickers,
+     * coin symbols, app names. Without this the dictionary silently eats real input: "usd to eur"
+     * became "use ti eur" and "aapl" became "Wall", which broke the searches they were typed for.
+     */
+    private val isProtectedWord: (String) -> Boolean = { false }
 ) {
     private val rejected = HashMap<String, MutableSet<String>>()
     private var pendingOriginal: String? = null
@@ -58,6 +64,7 @@ class AutocorrectCore(
      */
     fun computeCorrection(word: String, ctx: List<String>, prevWord: String = ""): String? {
         if (word.length < 2) return null
+        if (isProtectedWord(word)) return null                          // deliberate token, not a typo
         extendedEngine()?.let { if (it.isDictWord(word)) return null }   // valid in another language
         // The unified ranker replaces the engine's correction pick 1:1 when wired; its null means
         // "leave the word alone" (same contract), so we fall through to the loose fallback, never
