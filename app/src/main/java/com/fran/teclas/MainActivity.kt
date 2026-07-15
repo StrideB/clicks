@@ -13291,6 +13291,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val row = LinearLayout(context).apply {
             tag = "key_row"
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            // Keys are centered, not baseline-aligned; skipping the baseline pass trims the measure
+            // cost of every key row (same fix as the IME keyboard's keyRow()).
+            isBaselineAligned = false
             clipChildren = false
             clipToPadding = false
             setPadding(horizontalInset, 0, horizontalInset, 0)
@@ -13691,6 +13694,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // Chips are centered, not baseline-aligned; skip the baseline measure pass — this strip
+            // re-measures on every word boundary, so the saving repeats per keystroke burst.
+            isBaselineAligned = false
             setPadding(dp(10), dp(2), dp(10), dp(2))
             visibility = if (launcherSuggestionStripLayoutHeight() > 0) View.VISIBLE else View.GONE
             alpha = if (launcherSuggestionStripAnimatedHeight > 0) 1f else 0f
