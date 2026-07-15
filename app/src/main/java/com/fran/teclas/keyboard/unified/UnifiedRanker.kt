@@ -3,20 +3,27 @@ package com.fran.teclas.keyboard.unified
 import com.fran.teclas.keyboard.PredictionEngine
 
 /**
- * The unified keyboard algorithm (Phase 1): ONE composite scorer that ranks every candidate word
- * by the weighted sum of independent signals, replacing the separate prediction / correction /
- * fallback heuristics with a single tunable brain. Candidate *generation* stays in
- * [PredictionEngine] (first-letter buckets, budget-capped keyboard-aware edit distance); this
- * class decides which candidate wins and how confident we are.
+ * The unified keyboard algorithm: ONE composite scorer that ranks every candidate word by the
+ * weighted sum of independent signals, replacing the separate prediction / correction / fallback
+ * heuristics with a single tunable brain. Candidate *generation* stays in [PredictionEngine]
+ * (first-letter buckets, budget-capped keyboard-aware edit distance); this class decides which
+ * candidate wins and how confident we are.
+ *
+ * This is a score-fusion architecture: rather than running decode → spell-correct → language-model
+ * in sequence, the spatial signal (keyboard-aware edit distance), the language signals (global
+ * frequency + contextual bigram LM), and the personal signals (on-device usage + n-gram habits)
+ * are fused into one probability-like score per candidate.
  *
  * Signals (each normalized to 0..1 before weighting):
  *  - edit distance   — how close the candidate is to what was typed (keyboard-aware: fat-finger
  *                      substitutions and transpositions are cheap)
  *  - global frequency— how common the word is in the language (normalized within the candidate set,
  *                      so the scorer is independent of the wordlist's frequency scale)
- *  - personal usage  — how often THIS user commits the word (the learning hook; grows on-device)
+ *  - personal usage  — how often THIS user commits the word (learned on-device)
  *  - context         — whether the user actually types this word after the preceding word
- *                      (n-gram store), fixing homophone-class slips a string metric can't
+ *                      (personal n-gram store), fixing homophone-class slips
+ *  - language model  — how strongly the LANGUAGE continues the previous word with this word
+ *                      (compact on-device bigram LM; the personal-agnostic context leg)
  *  - completion      — the candidate extends what's typed (a prediction, not a rewrite)
  *  - phonetic        — curated common-misspelling table (teh→the, recieve→receive, …)
  *  - morphology      — deterministic affix repairs (runing→running, happyness→happiness, …)
@@ -30,30 +37,52 @@ class UnifiedRanker(
     private val personalBoost: (String) -> Float = { 0f },
     /** Learning hook: pairs the user has explicitly rejected (typed→candidate) never win again. */
     private val isRejectedPair: (typed: String, candidate: String) -> Boolean = { _, _ -> false },
-    private val weights: ScoreWeights = ScoreWeights()
+    /** Contextual language model: relative strength (0..1) of `word` continuing `prev` (see ContextModel). */
+    private val lmProb: (prev: String, word: String) -> Float = { _, _ -> 0f },
+    /** Weights supplier — a provider so adapted weights (AdaptiveWeights) apply live. */
+    private val weights: () -> ScoreWeights = { ScoreWeights() }
 ) {
+
+    /** Raw (unweighted, 0..1) signal values for one candidate — the input to scoring AND to the
+     *  weight-adaptation learner, which compares the signals of the word the user picked against
+     *  the word we ranked first. Indices follow [ScoreWeights.asArray]. */
+    class Signals(
+        val editDistance: Double,
+        val frequency: Double,
+        val personal: Double,
+        val context: Double,
+        val languageModel: Double,
+        val completion: Double,
+        val phonetic: Double,
+        val morphology: Double
+    ) {
+        fun asArray(): DoubleArray = doubleArrayOf(
+            editDistance, frequency, personal, context, languageModel, completion, phonetic, morphology
+        )
+    }
 
     /**
      * Suggestion-strip candidates for [typed]: completions, corrections, and (via [ngramBoost])
-     * personalized next-word predictions that extend what's typed. Drop-in replacement for
-     * [PredictionEngine.getSuggestions] — same contract, unified scoring.
+     * personalized next-word predictions that extend what's typed. [prevWord] feeds the bigram LM.
      */
-    fun suggestions(typed: String, maxCount: Int = 3, ngramBoost: List<String> = emptyList()): List<String> {
+    fun suggestions(
+        typed: String,
+        maxCount: Int = 3,
+        ngramBoost: List<String> = emptyList(),
+        prevWord: String = ""
+    ): List<String> {
         if (typed.length < 2) return ngramBoost.take(maxCount)
         val t = typed.lowercase()
         val maxDist = if (t.length <= 4) 1.6 else 2.4
         val cands = engine().candidatesFor(t, maxDist)
+        val w = weights()
+        val maxFreq = cands.maxOfOrNull { it.freq } ?: 0f
         val phonetic = PhoneticPatterns.fix(t)
         val morphs = Morphology.repairs(t)
-        val maxFreq = cands.maxOfOrNull { it.freq } ?: 0f
+        val prev = prevWord.lowercase()
         val scored = cands.map { c ->
-            var s = weights.editDistance * (1.0 - c.distance / (maxDist + 1e-3)).coerceIn(0.0, 1.0) +
-                weights.frequency * freqSignal(c.freq, maxFreq) +
-                weights.personal * personalBoost(c.word).toDouble()
-            if (c.word.length > t.length && c.word.startsWith(t)) s += weights.completion
-            if (c.word == phonetic) s += weights.phonetic
-            if (c.word in morphs) s += weights.morphology
-            c.word to s
+            val sig = signalsFor(c, t, maxDist, maxFreq, emptySet(), prev, phonetic, morphs)
+            c.word to score(sig, w)
         }.sortedByDescending { it.second }.map { it.first }
         // N-gram continuations of the previous word that extend what's typed lead the list — parity
         // with the engine's behavior (they're the strongest personalization signal we have).
@@ -62,11 +91,15 @@ class UnifiedRanker(
     }
 
     /**
-     * High-confidence correction for [typed], or null when we shouldn't touch it. Drop-in
-     * replacement for [PredictionEngine.bestCorrection] — same guards (never rewrites a dictionary
-     * word, refuses ambiguous ties), with the phonetic/morphology/personal signals folded in.
+     * High-confidence correction for [typed], or null when we shouldn't touch it. Same guards as
+     * the engine's heuristic (never rewrites a dictionary word, refuses ambiguous ties), with the
+     * phonetic/morphology/personal/LM signals folded in. [prevWord] feeds the bigram LM.
      */
-    fun bestCorrection(typed: String, contextNextWords: List<String> = emptyList()): String? {
+    fun bestCorrection(
+        typed: String,
+        contextNextWords: List<String> = emptyList(),
+        prevWord: String = ""
+    ): String? {
         if (typed.length < 3) return null
         val t = typed.lowercase()
         if (!t.all { it in 'a'..'z' }) return null
@@ -83,14 +116,13 @@ class UnifiedRanker(
         val maxAccept = if (t.length >= 6) 2.2 else 1.35
         val cands = eng.candidatesFor(t, maxAccept).filter { it.distance <= maxAccept && !isRejectedPair(t, it.word) }
         if (cands.isEmpty()) return null
+        val w = weights()
         val ctx = contextNextWords.mapTo(HashSet()) { it.lowercase() }
+        val prev = prevWord.lowercase()
         val maxFreq = cands.maxOfOrNull { it.freq } ?: 0f
         val scored = cands.map { c ->
-            val s = weights.editDistance * (1.0 - c.distance / (maxAccept + 1e-3)).coerceIn(0.0, 1.0) +
-                weights.frequency * freqSignal(c.freq, maxFreq) +
-                weights.personal * personalBoost(c.word).toDouble() +
-                weights.context * (if (c.word in ctx) 1.0 else 0.0)
-            Triple(c, s, c.freq)
+            val sig = signalsFor(c, t, maxAccept, maxFreq, ctx, prev, phonetic = null, morphs = emptyList())
+            Triple(c, score(sig, w), c.freq)
         }.sortedByDescending { it.second }
         val best = scored.first()
         if (best.first.word == t) return null
@@ -101,8 +133,56 @@ class UnifiedRanker(
         return best.first.word
     }
 
-    private fun freqSignal(freq: Float, maxFreq: Float): Double =
-        if (maxFreq <= 0f) 0.0 else (freq / maxFreq).toDouble()
+    /**
+     * Raw signal values for [word] as a candidate for [typed] — the introspection the adaptive
+     * learner uses to compare a user's pick against our top-ranked word. Returns null when [word]
+     * isn't reachable as a candidate (out of edit-distance range).
+     */
+    fun explain(typed: String, word: String, ngramBoost: List<String> = emptyList(), prevWord: String = ""): Signals? {
+        if (typed.length < 2) return null
+        val t = typed.lowercase()
+        val maxDist = if (t.length <= 4) 1.6 else 2.4
+        val cands = engine().candidatesFor(t, maxDist)
+        val c = cands.firstOrNull { it.word == word.lowercase() } ?: return null
+        val maxFreq = cands.maxOfOrNull { it.freq } ?: 0f
+        return signalsFor(
+            c, t, maxDist, maxFreq,
+            ngramBoost.mapTo(HashSet()) { it.lowercase() },
+            prevWord.lowercase(),
+            PhoneticPatterns.fix(t),
+            Morphology.repairs(t)
+        )
+    }
+
+    private fun signalsFor(
+        c: PredictionEngine.Candidate,
+        typed: String,
+        maxDist: Double,
+        maxFreq: Float,
+        ctx: Set<String>,
+        prev: String,
+        phonetic: String?,
+        morphs: List<String>
+    ): Signals = Signals(
+        editDistance = (1.0 - c.distance / (maxDist + 1e-3)).coerceIn(0.0, 1.0),
+        frequency = if (maxFreq <= 0f) 0.0 else (c.freq / maxFreq).toDouble(),
+        personal = personalBoost(c.word).toDouble().coerceIn(0.0, 1.0),
+        context = if (c.word in ctx) 1.0 else 0.0,
+        languageModel = if (prev.isEmpty()) 0.0 else lmProb(prev, c.word).toDouble().coerceIn(0.0, 1.0),
+        completion = if (c.word.length > typed.length && c.word.startsWith(typed)) 1.0 else 0.0,
+        phonetic = if (c.word == phonetic) 1.0 else 0.0,
+        morphology = if (c.word in morphs) 1.0 else 0.0
+    )
+
+    private fun score(s: Signals, w: ScoreWeights): Double =
+        w.editDistance * s.editDistance +
+            w.frequency * s.frequency +
+            w.personal * s.personal +
+            w.context * s.context +
+            w.languageModel * s.languageModel +
+            w.completion * s.completion +
+            w.phonetic * s.phonetic +
+            w.morphology * s.morphology
 
     private companion object {
         // Composite-score gap under which two candidates count as "tied" for the ambiguity guard.
@@ -111,18 +191,30 @@ class UnifiedRanker(
 }
 
 /**
- * Tunable weights for [UnifiedRanker]'s composite score. Defaults hand-set for Phase 1; the
- * learning system (Phase 4) adapts them per user within bounded ranges.
+ * Tunable weights for [UnifiedRanker]'s composite score. Defaults hand-set; [AdaptiveWeights]
+ * nudges them per user within bounded ranges as pick/rejection evidence accumulates.
  */
 data class ScoreWeights(
-    val editDistance: Double = 0.40,
-    val frequency: Double = 0.25,
+    val editDistance: Double = 0.36,
+    val frequency: Double = 0.22,
     val personal: Double = 0.12,
-    val context: Double = 0.10,
+    val context: Double = 0.09,
+    val languageModel: Double = 0.08,
     val completion: Double = 0.08,
     val phonetic: Double = 0.03,
     val morphology: Double = 0.02
-)
+) {
+    fun asArray(): DoubleArray = doubleArrayOf(
+        editDistance, frequency, personal, context, languageModel, completion, phonetic, morphology
+    )
+
+    companion object {
+        fun fromArray(a: DoubleArray): ScoreWeights = ScoreWeights(
+            a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]
+        )
+        const val SIZE = 8
+    }
+}
 
 /**
  * Curated common-misspelling table — the classic English typos whose fixes are NOT the
@@ -169,7 +261,7 @@ object Morphology {
             val last = stem.last()
             // Missing doubled consonant: "runing" → "running", "stoped" → "stopped".
             if (last.isConsonant()) out.add(stem + last + suffix)
-            // y→i before suffix: "happyness" → "happiness", "beautyful" → skip (not a suffix here).
+            // y→i before suffix: "happyness" → "happiness".
             if (last == 'y') out.add(stem.dropLast(1) + "i" + suffix)
             // Undropped silent e: "takeing" → "taking", "hopeing" → "hoping".
             if (last == 'e') out.add(stem.dropLast(1) + suffix)

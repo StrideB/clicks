@@ -346,15 +346,30 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val ngramRepo by lazy { NgramRepository(this) }
     private val hapticEngine by lazy { com.fran.teclas.keyboard.CustomHapticEngine(this) }
     // ── Unified keyboard algorithm ──────────────────────────────────────────────────────────────
-    // One composite scorer (edit distance + frequency + personal usage + context + phonetics +
-    // morphology) that both the suggestion strip and autocorrect route through. Personal usage is
-    // learned on-device into the shared "teclas" prefs, so both keyboards learn as one.
+    // One composite scorer (edit distance + frequency + personal usage + n-gram context + bigram
+    // LM + phonetics + morphology) that both the suggestion strip and autocorrect route through.
+    // All learning state lives in the shared "teclas" prefs, so both keyboards learn as one:
+    // personal word usage, rejected corrections, and the adapted signal weights.
     private val personalFreq by lazy { com.fran.teclas.keyboard.unified.PersonalFrequencyStore(imePrefs()) }
+    private val rejectedStore by lazy { com.fran.teclas.keyboard.unified.RejectedCorrectionsStore(imePrefs()) }
+    private val adaptiveWeights by lazy { com.fran.teclas.keyboard.unified.AdaptiveWeights(imePrefs()) }
+    private val contextModel = com.fran.teclas.keyboard.unified.ContextModel()
     private val unifiedRanker by lazy {
         com.fran.teclas.keyboard.unified.UnifiedRanker(
             engine = { predictionEngine },
-            personalBoost = { personalFreq.boost(it) }
+            personalBoost = { personalFreq.boost(it) },
+            isRejectedPair = { t, c -> rejectedStore.contains(t, c) },
+            lmProb = { prev, w -> contextModel.prob(prev, w) },
+            weights = { adaptiveWeights.weights() }
         )
+    }
+    // Load the bigram LM off-main AFTER the keyboard is already visible: cold-open cost stays
+    // zero; until it lands, lmProb returns 0 and ranking simply runs without the LM signal.
+    private fun warmContextModel() {
+        if (contextModel.isLoaded) return
+        runCatching { predictExecutor.execute {
+            runCatching { assets.open("dict/en_bigrams.txt").use { contextModel.load(it) } }
+        } }
     }
     private val autocorrect by lazy {
         com.fran.teclas.keyboard.AutocorrectCore(
@@ -363,7 +378,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             contextNextWords = { ngramRepo.cachedNextWords(it) },
             extendedEngine = { predictionEngineExtended },
             useFallback = true,  // match the launcher: accept edit-distance-1 corrections, not only strict
-            ranker = { unifiedRanker }
+            ranker = { unifiedRanker },
+            rejectedPersist = { t, c -> rejectedStore.add(t, c) },
+            rejectedContains = { t, c -> rejectedStore.contains(t, c) }
         )
     }
     private val predictionCore by lazy {
@@ -585,6 +602,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         currentEditorPackage = info?.packageName?.toString() ?: currentEditorPackage
+        warmContextModel()        // lazy bigram-LM load, off-main, no-op once loaded
         ensureGlideClassifier()   // retry if a previous load failed (onCreateInputView runs only once)
         if (shouldDeferToDeck()) {
             hideImeSurface()
@@ -1833,7 +1851,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 val tooLong = word.length > 18
                 val base = if (tooLong) emptyList() else predictionCore.computeSuggestions(word, prev)
                 val correction = if (!tooLong && word.length >= 2)
-                    autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev)) else null
+                    autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) else null
                 val computeMs = (System.nanoTime() - t0) / 1_000_000
                 handler.post {
                     if (gen != predictGeneration) return@post   // user typed past this answer
@@ -2057,9 +2075,25 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         updateStrip()
     }
 
+    // Weight-adaptation telemetry: which rank the user picked, and — when they overrode our #1 —
+    // the signal vectors of their pick vs ours, so AdaptiveWeights can learn which signals to
+    // trust more for this user. Runs on the prediction thread; the tap itself pays nothing.
+    private fun recordSuggestionPick(picked: String, typedBefore: String, shown: List<String>) {
+        val rank = shown.indexOf(picked)
+        if (rank < 0) return
+        val prev = predictionCore.previousWord()
+        runCatching { predictExecutor.execute {
+            val overrode = rank > 0 && typedBefore.length >= 2
+            val pickedSig = if (overrode) unifiedRanker.explain(typedBefore, picked, prevWord = prev) else null
+            val topSig = if (overrode) shown.firstOrNull()?.let { unifiedRanker.explain(typedBefore, it, prevWord = prev) } else null
+            adaptiveWeights.onSuggestionPicked(rank.coerceAtMost(2), pickedSig, topSig)
+        } }
+    }
+
     private fun acceptSuggestion(word: String) {
         if (currentInputConnection == null) return
         val before = predictionCore.currentWord()
+        recordSuggestionPick(word, before, suggestions.toList())
         when {
             // Mid-word: the strip shows completions/corrections of the partial word → replace it.
             before.isNotEmpty() -> predictionCore.replaceCurrentWord(word)

@@ -252,13 +252,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     // Unified keyboard algorithm — same composite scorer as the IME, reading the same shared
-    // "teclas" prefs, so both keyboards rank and learn identically.
+    // "teclas" prefs, so both keyboards rank and learn identically (personal usage, rejected
+    // corrections, adapted weights all shared).
     private val personalFreq by lazy { com.fran.teclas.keyboard.unified.PersonalFrequencyStore(prefs()) }
+    private val rejectedStore by lazy { com.fran.teclas.keyboard.unified.RejectedCorrectionsStore(prefs()) }
+    private val adaptiveWeights by lazy { com.fran.teclas.keyboard.unified.AdaptiveWeights(prefs()) }
+    private val contextModel = com.fran.teclas.keyboard.unified.ContextModel()
     private val unifiedRanker by lazy {
         com.fran.teclas.keyboard.unified.UnifiedRanker(
             engine = { predictionEngine },
-            personalBoost = { personalFreq.boost(it) }
+            personalBoost = { personalFreq.boost(it) },
+            isRejectedPair = { t, c -> rejectedStore.contains(t, c) },
+            lmProb = { prev, w -> contextModel.prob(prev, w) },
+            weights = { adaptiveWeights.weights() }
         )
+    }
+    // Lazy bigram-LM load, off-main, no-op once loaded — cold start pays nothing.
+    private fun warmContextModel() {
+        if (contextModel.isLoaded) return
+        runCatching { launcherPredictExecutor.execute {
+            runCatching { assets.open("dict/en_bigrams.txt").use { contextModel.load(it) } }
+        } }
     }
     private val autocorrectCore by lazy {
         com.fran.teclas.keyboard.AutocorrectCore(
@@ -266,7 +280,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             engine = { predictionEngine },
             contextNextWords = { ngramRepo.cachedNextWords(it) },
             useFallback = true,
-            ranker = { unifiedRanker }
+            ranker = { unifiedRanker },
+            rejectedPersist = { t, c -> rejectedStore.add(t, c) },
+            rejectedContains = { t, c -> rejectedStore.contains(t, c) }
         )
     }
     private val predictionCore by lazy {
@@ -12651,6 +12667,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyboard(): View {
+        warmContextModel()   // lazy bigram-LM load, off-main, no-op once loaded
         syncLauncherSuggestionStripHeightForBuild()
         val overlayLayer = FrameLayout(this)
         predictionOverlay.overlayLayer = overlayLayer
@@ -14556,7 +14573,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 if (gen != launcherPredictGeneration) return@execute
                 val base = predictionCore.computeSuggestions(w, p)
                 val correction = if (w.length >= 2)
-                    autocorrectCore.computeCorrection(w, ngramRepo.cachedNextWords(p)) else null
+                    autocorrectCore.computeCorrection(w, ngramRepo.cachedNextWords(p), p) else null
                 handler.post {
                     if (gen != launcherPredictGeneration) return@post   // user typed past this answer
                     pendingLauncherCorrection = w to correction

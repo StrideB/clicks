@@ -47,7 +47,7 @@ class PredictionCore(
         ngram.prefetchNextWords(word)
         val chord = AbbreviationExpander.expand(word)
         val boost = ngram.cachedNextWords(prev)
-        val base = ranker()?.suggestions(word, 3, ngramBoost = boost)
+        val base = ranker()?.suggestions(word, 3, ngramBoost = boost, prevWord = prev)
             ?: engine().getSuggestions(word, 3, ngramBoost = boost)
         return ((if (chord != null) listOf(chord) else emptyList()) + base).distinct().take(3)
     }

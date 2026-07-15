@@ -23,7 +23,10 @@ class AutocorrectCore(
     private val extendedEngine: () -> PredictionEngine? = { null },
     private val useFallback: Boolean = false,
     /** When set, the unified ranker picks corrections instead of the engine's heuristics. */
-    private val ranker: () -> com.fran.teclas.keyboard.unified.UnifiedRanker? = { null }
+    private val ranker: () -> com.fran.teclas.keyboard.unified.UnifiedRanker? = { null },
+    /** Persistent rejection memory hooks (RejectedCorrectionsStore) — session memory works without them. */
+    private val rejectedPersist: (typed: String, corrected: String) -> Unit = { _, _ -> },
+    private val rejectedContains: (typed: String, corrected: String) -> Boolean = { _, _ -> false }
 ) {
     private val rejected = HashMap<String, MutableSet<String>>()
     private var pendingOriginal: String? = null
@@ -41,7 +44,8 @@ class AutocorrectCore(
     /** Corrects the just-finished word in place (call right before committing a space/period). */
     fun correctBeforeCommit(): Boolean {
         val word = currentWord()
-        val corrected = computeCorrection(word, contextNextWords(previousWord())) ?: return false
+        val prev = previousWord()
+        val corrected = computeCorrection(word, contextNextWords(prev), prev) ?: return false
         return applyCorrection(word, corrected)
     }
 
@@ -52,14 +56,14 @@ class AutocorrectCore(
      * the cached answer instantly when space lands (the Gboard pipeline: decode while typing,
      * commit on the keystroke).
      */
-    fun computeCorrection(word: String, ctx: List<String>): String? {
+    fun computeCorrection(word: String, ctx: List<String>, prevWord: String = ""): String? {
         if (word.length < 2) return null
         extendedEngine()?.let { if (it.isDictWord(word)) return null }   // valid in another language
         // The unified ranker replaces the engine's correction pick 1:1 when wired; its null means
         // "leave the word alone" (same contract), so we fall through to the loose fallback, never
         // to the engine's pick (double-guessing would reintroduce the disagreements it unifies).
         val r = ranker()
-        val corrected = (if (r != null) r.bestCorrection(word.lowercase(Locale.US), ctx) else engine().bestCorrection(word, ctx)) ?: run {
+        val corrected = (if (r != null) r.bestCorrection(word.lowercase(Locale.US), ctx, prevWord) else engine().bestCorrection(word, ctx)) ?: run {
             if (!useFallback) return null
             val g = engine().getSuggestions(word, 1).firstOrNull() ?: return null
             if (levenshtein(word.lowercase(Locale.US), g.lowercase(Locale.US)) > 1) return null
@@ -77,6 +81,7 @@ class AutocorrectCore(
     fun applyCorrection(word: String, corrected: String): Boolean {
         if (word.isEmpty() || corrected.equals(word, ignoreCase = true)) return false
         if (rejected[word.lowercase(Locale.US)]?.contains(corrected.lowercase(Locale.US)) == true) return false
+        if (rejectedContains(word.lowercase(Locale.US), corrected.lowercase(Locale.US))) return false
         val cased = preserveCase(word, corrected)
         host.deleteBeforeCursor(word.length)
         host.commitText(cased)
@@ -96,6 +101,7 @@ class AutocorrectCore(
         host.deleteBeforeCursor(corr.length + if (hasSpace) 1 else 0)
         host.commitText(orig)
         rejected.getOrPut(orig.lowercase(Locale.US)) { HashSet() }.add(corr.lowercase(Locale.US))
+        rejectedPersist(orig.lowercase(Locale.US), corr.lowercase(Locale.US))
         return true
     }
 

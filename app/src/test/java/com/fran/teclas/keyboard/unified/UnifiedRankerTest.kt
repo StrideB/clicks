@@ -24,17 +24,21 @@ class UnifiedRankerTest {
             "hello" to 1.0f,
             "help" to 0.6f,
             "fam" to 0.001f,
-            "farm" to 0.5f
+            "farm" to 0.5f,
+            "store" to 0.5f,
+            "stork" to 0.5f
         )
     )
 
     private fun ranker(
         personal: Map<String, Float> = emptyMap(),
-        rejected: Set<Pair<String, String>> = emptySet()
+        rejected: Set<Pair<String, String>> = emptySet(),
+        lm: Map<String, Float> = emptyMap()   // key "prev word" → strength
     ) = UnifiedRanker(
         engine = { engine },
         personalBoost = { personal[it] ?: 0f },
-        isRejectedPair = { t, c -> (t to c) in rejected }
+        isRejectedPair = { t, c -> (t to c) in rejected },
+        lmProb = { prev, w -> lm["$prev $w"] ?: 0f }
     )
 
     // ── Correction guards (engine parity) ──────────────────────────────────────────────────────
@@ -60,8 +64,7 @@ class UnifiedRankerTest {
 
     @Test fun phoneticFix_skippedWhenTargetNotInDictionary() {
         // "tommorow"→"tomorrow" is in the table but not in this test dictionary; the ranker must
-        // not introduce a word the active language doesn't have. (No dict candidate is close
-        // enough either, so the result is null, not a phantom word.)
+        // not introduce a word the active language doesn't have.
         assertNull(ranker().bestCorrection("tommorow"))
     }
 
@@ -94,22 +97,23 @@ class UnifiedRankerTest {
     }
 
     @Test fun contextSignal_breaksHomophoneTie() {
-        // Both "there" and "their" are near "thier"; the phonetic table says "their", and context
-        // agreeing must not flip it.
         assertEquals("their", ranker().bestCorrection("thier", contextNextWords = listOf("their")))
     }
 
+    @Test fun languageModel_breaksSpatialTie() {
+        // "stora" is equidistant-ish from "store" and "stork" (same frequency here). The bigram
+        // LM saying "the store" is a strong continuation must decide it.
+        val r = ranker(lm = mapOf("the store" to 1.0f))
+        assertEquals("store", r.bestCorrection("stora", prevWord = "the"))
+    }
+
     @Test fun personalUsage_liftsUsersWordInSuggestions() {
-        // "fam" is globally rare next to "farm". With personal usage, the user's word must rank
-        // at least as a completion candidate for its own typed prefix.
-        val cold = ranker().suggestions("fam")
         val warm = ranker(personal = mapOf("fam" to 0.9f)).suggestions("fam")
-        assertTrue(warm.indexOf("fam") <= cold.indexOf("fam").let { if (it < 0) Int.MAX_VALUE else it })
         assertTrue("fam" in warm)
+        assertEquals("fam", warm.first())
     }
 
     @Test fun personalUsage_cannotOverturnCorrectionOfClearTypo() {
-        // Even a heavily-used personal word must not stop a deterministic morphology repair.
         val r = ranker(personal = mapOf("ruining" to 0.95f))
         assertEquals("running", r.bestCorrection("runing"))
     }
@@ -118,8 +122,15 @@ class UnifiedRankerTest {
 
     @Test fun rejectedPair_neverWinsAgain() {
         val r = ranker(rejected = setOf("teh" to "the"))
-        val fix = r.bestCorrection("teh")
-        assertTrue(fix != "the")
+        assertTrue(r.bestCorrection("teh") != "the")
+    }
+
+    @Test fun explain_returnsSignalsForReachableCandidate() {
+        val sig = ranker(lm = mapOf("the store" to 1.0f)).explain("stor", "store", prevWord = "the")
+        assertTrue(sig != null)
+        assertTrue(sig!!.completion == 1.0)
+        assertTrue(sig.languageModel == 1.0)
+        assertNull(ranker().explain("stor", "zzz"))
     }
 
     // ── Suggestions ─────────────────────────────────────────────────────────────────────────────
