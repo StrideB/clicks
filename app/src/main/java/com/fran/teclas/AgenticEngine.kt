@@ -63,7 +63,8 @@ object AgenticEngine {
         val t = raw.trim().lowercase()
         val skill = when {
             t == "mood" || t == "emotion" || t == "vibe" || t == "vibe check" || t == "read mood" -> "mood"
-            t == "translate" || t == "translate this" || t == "translate clipboard" || t == "tl" -> "translate"
+            t == "translate" || t == "translate this" || t == "translate clipboard" || t == "tl" ||
+                t.startsWith("translate ") || t.startsWith("tl ") -> "translate"
             t == "xreply" || t.startsWith("xreply ") || t.startsWith("x reply") || t.startsWith("reply x") -> "xreply"
             t.startsWith("stock ") || t.startsWith("ticker ") ||
                 (t.startsWith("$") && t.length in 2..6 && t.drop(1).all { it.isLetterOrDigit() }) -> "stock"
@@ -81,7 +82,8 @@ object AgenticEngine {
         host.clearField(raw)
         when (skill) {
             "mood" -> emotion(host)
-            "translate" -> translate(host)
+            "translate" -> translate(host, t.removePrefix("translate this").removePrefix("translate clipboard")
+                .removePrefix("translate").removePrefix("tl").trim())
             "xreply" -> xReply(host, t.removePrefix("xreply").removePrefix("x reply").removePrefix("reply x").trim())
             "stock" -> stock(host, when {
                 t.startsWith("stock ") -> t.removePrefix("stock ")
@@ -133,6 +135,9 @@ object AgenticEngine {
         Thread {
             val place = if (query.isBlank()) ShareContent.myPlace(host.hostContext)
                 else ShareContent.findPlace(host.hostContext, query)
+            // Fetch the map preview on this same worker thread — art was always null before, which
+            // is why the card's image well showed blank.
+            val thumb = place?.let { ShareContent.mapThumb(it.lat, it.lng) }
             host.post {
                 if (place != null) {
                     host.showShareCard(ShareCard(
@@ -140,7 +145,7 @@ object AgenticEngine {
                         title = place.name.ifBlank { place.address.substringBefore(',').ifBlank { "Here" } },
                         subtitle = if (place.name.isBlank()) "" else place.address,
                         insertText = place.insertText,
-                        art = null,
+                        art = thumb,
                         followUp = AgenticFollowUp("🧭 Directions") { openDirections(host, place) }
                     ))
                 } else if (query.isBlank()) host.flashStatus("📍 Location unavailable", 2200)
@@ -190,9 +195,15 @@ object AgenticEngine {
         "Analyze the mood behind this message, then suggest how to respond. Reply in exactly two short " +
             "lines: 'Mood: <one line>' and 'Reply: <one line>'. Be concise.", insertable = false)
 
-    private fun translate(host: AgenticHost) = clipboardSkill(
-        host, "Copy text to translate, then hold go", "🌐 Translating…", "TRANSLATION",
-        "Translate this into natural, everyday English. Reply with ONLY the translation.", insertable = true)
+    /** "translate" → English (default). "translate spanish" / "translate to french" → that language,
+     *  so you're not stuck with English-only. The target is echoed in the card kicker. */
+    private fun translate(host: AgenticHost, target: String = "") {
+        val lang = target.removePrefix("to ").trim().ifBlank { "English" }
+            .replaceFirstChar { it.uppercase() }
+        clipboardSkill(
+            host, "Copy text to translate, then hold go", "🌐 Translating…", "TRANSLATION · ${lang.uppercase()}",
+            "Translate this into natural, everyday $lang. Reply with ONLY the translation.", insertable = true)
+    }
 
     private fun xReply(host: AgenticHost, tone: String) {
         val t = tone.ifBlank { "supportive" }

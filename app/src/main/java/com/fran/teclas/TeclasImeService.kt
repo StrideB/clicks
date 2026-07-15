@@ -2835,9 +2835,19 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // a preview card. No seed-text starters (the "insert `play ` then re-hold go" flow was clunky).
     private fun buildStarters(): List<HudAction> {
         val chips = ArrayList<HudAction>()
+        // Run-now chirps.
         chips.add(HudAction("\ud83c\udfb5 Song") { AgenticEngine.shareSong(agenticHost) })
         chips.add(HudAction("\ud83d\udccd My location") { AgenticEngine.sharePlace(agenticHost) })
         if (canAttachHere()) chips.add(HudAction("\ud83d\udcce Attach") { showAttachPicker() })
+        // The real skill catalog \u2014 GO used to offer only the chirps above, which is why it felt
+        // empty. Tapping one seeds its trigger into the field so you just finish the thought.
+        AgenticRouter.starters(limit = 12).forEach { s ->
+            chips.add(HudAction(s.label) {
+                agenticStarters = emptyList()
+                currentInputConnection?.commitText(s.insert, 1)
+                onTextChanged()
+            })
+        }
         return chips
     }
 
