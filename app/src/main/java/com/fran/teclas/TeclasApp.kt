@@ -14,6 +14,9 @@ class TeclasApp : Application() {
             getSharedPreferences("teclas", MODE_PRIVATE)
             getSharedPreferences("pro", MODE_PRIVATE)
             getSharedPreferences("account_auth", MODE_PRIVATE)
+            // Persisted app brand colors — read for every app during the onCreate list load.
+            getSharedPreferences("brand_colors", MODE_PRIVATE)
+            getSharedPreferences("spotify_auth", MODE_PRIVATE)
         }, "prefs-warm").start()
         // Debug-only tripwire: log-only StrictMode so main-thread disk/network work and VM-level
         // leaks (unclosed Closeables, leaked registrations) show up in logcat during development.
