@@ -547,6 +547,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastCalendarLoadMs = 0L
     private val packageChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            // An updated app may ship a new icon: drop its persisted brand color so the
+            // prewarm recomputes it from the fresh icon.
+            intent?.data?.schemeSpecificPart?.let { pkg ->
+                appBrandColorCache.remove(pkg)
+                brandColorPrefs().edit().remove(pkg).apply()
+            }
             refreshAppsForPackageChange()
         }
     }
@@ -690,10 +696,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (granted) triggerSmsSeeding()
         }
         calendarPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            calendarEvents = loadCalendarEvents()
-            syncNowPlayingCardVisibility()
-            refreshNowPlayingCard()
-            scheduleSemanticIndexRefresh()
+            refreshCalendarEventsAsync { scheduleSemanticIndexRefresh() }
         }
         weatherPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) refreshWeather(force = true) else showWeatherNeedsPermission()
@@ -762,9 +765,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         libraryOpen = appLibraryDefaultHome()
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, CursorViolet)
         migrateWidgetGestureDefault()
-        apps = loadLaunchableApps()
-        prewarmAppIcons()
-        lastAppsLoadMs = System.currentTimeMillis()
+        // App list loads off-main: the synchronous load (PM label queries + brand colors behind
+        // cold-start disk contention) blocked onCreate for 1-2 s of every cold start. First render
+        // draws immediately; the dock/library fill in when the list lands.
+        loadAppsAsync(initial = true)
         if (semanticSearchEnabled()) {
             mediaUiScope.launch { com.fran.teclas.semantic.SemanticSearchEngine.warmUp(this@MainActivity) }
             handler.postDelayed({ rebuildSemanticIndex() }, 4_000L) // after first render settles
@@ -777,7 +781,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         registerAppPackageReceiver()
         registerConfigurationChangeReceiver()
         messages = loadHubMessages()
-        calendarEvents = loadCalendarEvents()
+        refreshCalendarEventsAsync()
         prefs().registerOnSharedPreferenceChangeListener(prefsListener)
         mediaSessionSource = MediaSessionSource(this)
         briefRepository = BriefRepository(
@@ -999,7 +1003,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             applyDemoShowcaseData(loadVisualStage = false)
         } else {
             if (now - lastHubLoadMs > 10_000) { messages = loadHubMessages(); lastHubLoadMs = now; scheduleSemanticIndexRefresh() }
-            if (now - lastCalendarLoadMs > 10_000) { calendarEvents = loadCalendarEvents(); lastCalendarLoadMs = now; scheduleSemanticIndexRefresh() }
+            if (now - lastCalendarLoadMs > 10_000) { refreshCalendarEventsAsync { scheduleSemanticIndexRefresh() }; lastCalendarLoadMs = now }
         }
         // LLM scene fusion: precompute a Space verdict from the fresh signal bundle (debounced +
         // gated internally; the result is read lock-free by SpaceManager.detect).
@@ -20841,18 +20845,53 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         }
     }
 
-    private fun refreshAppsForPackageChange() {
-        handler.post {
+    private fun refreshAppsForPackageChange() = loadAppsAsync(initial = false)
+
+    /** Query CalendarContract off the main thread (a StrictMode-measured ~580 ms provider query
+     *  on cold start), publish, and refresh the calendar-dependent surfaces. */
+    private fun refreshCalendarEventsAsync(then: () -> Unit = {}) {
+        mediaUiScope.launch(Dispatchers.IO) {
+            val loaded = runCatching { loadCalendarEvents() }.getOrDefault(emptyList())
+            withContext(Dispatchers.Main) {
+                calendarEvents = loaded
+                syncNowPlayingCardVisibility()
+                if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                then()
+            }
+        }
+    }
+
+    /** Load the launchable app list off the main thread, then publish it and refresh dependent
+     *  UI. Used for both the initial onCreate load and package-change refreshes; queryIntent +
+     *  label + brand-color work never touches the UI thread. */
+    private fun loadAppsAsync(initial: Boolean) {
+        mediaUiScope.launch(Dispatchers.IO) {
             val updatedApps = loadLaunchableApps()
-            val changed = updatedApps.map { it.componentName } != apps.map { it.componentName }
-            apps = updatedApps
-            lastAppsLoadMs = System.currentTimeMillis()
-            if (changed) {
-                prewarmAppIcons()
-                invalidateLibraryCaches()
-                renderRibbon()
-                renderFavoritesDock()
-                rebuildSemanticIndex()
+            if (initial) {
+                // Warm the icon-pack registry and the dock apps' icons while still off-main, so
+                // the publish render() draws the dock without main-thread icon loads.
+                runCatching { iconPacks() }
+                val favPkgs = favoritePackages()
+                updatedApps.filter { it.packageName in favPkgs }.take(DOCK_APP_LIMIT + 2)
+                    .forEach { runCatching { iconFor(it.toLibraryApp()) } }
+            }
+            withContext(Dispatchers.Main) {
+                val changed = updatedApps.map { it.componentName } != apps.map { it.componentName }
+                apps = updatedApps
+                lastAppsLoadMs = System.currentTimeMillis()
+                if (initial) {
+                    prewarmAppIcons()
+                    invalidateLibraryCaches()
+                    // Full rebuild once the list lands: covers every consumer (dock, library-as-
+                    // home, ribbon) without special-casing which surface is currently showing.
+                    if (::rootView.isInitialized && openPane == null) render()
+                } else if (changed) {
+                    prewarmAppIcons()
+                    invalidateLibraryCaches()
+                    renderRibbon()
+                    renderFavoritesDock()
+                    rebuildSemanticIndex()
+                }
             }
         }
     }
@@ -23108,12 +23147,28 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     // Icon-load + 18x18 pixel scan per call: fine once, but uncached it cost a StrictMode-measured
-    // ~950 ms of main-thread work across a single search render. Warmed off-main with the icons.
+    // ~950 ms of main-thread work across a single search render. Warmed off-main with the icons,
+    // and persisted across process restarts: toAppEntry() computes a color for EVERY installed app
+    // during the synchronous app-list load in onCreate, which cost ~1.6 s of every cold start —
+    // and OEMs that kill background launchers (Vivo) make every launch a cold launch. With the
+    // persisted layer that pass is a small prefs read (warmed in TeclasApp) instead of ~100 icon
+    // decodes; only genuinely new/updated packages ever compute again.
     private val appBrandColorCache = android.util.LruCache<String, Int>(256)
+
+    internal fun brandColorPrefs(): android.content.SharedPreferences =
+        getSharedPreferences("brand_colors", Context.MODE_PRIVATE)
 
     internal fun appBrandColor(packageName: String): Int {
         appBrandColorCache.get(packageName)?.let { return it }
-        return computeAppBrandColor(packageName).also { appBrandColorCache.put(packageName, it) }
+        val persisted = brandColorPrefs().getInt(packageName, Int.MIN_VALUE)
+        if (persisted != Int.MIN_VALUE) {
+            appBrandColorCache.put(packageName, persisted)
+            return persisted
+        }
+        val computed = computeAppBrandColor(packageName)
+        appBrandColorCache.put(packageName, computed)
+        brandColorPrefs().edit().putInt(packageName, computed).apply()
+        return computed
     }
 
     private fun computeAppBrandColor(packageName: String): Int {
