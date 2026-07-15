@@ -314,6 +314,18 @@ def main():
     ap.add_argument("--futo", metavar="PATH", default=None,
                     help="train on REAL FUTO swipes (jsonl file/dir) instead of synthetic")
     ap.add_argument("--futo-limit", type=int, default=None, help="cap FUTO rows loaded (CPU memory)")
+    ap.add_argument("--exclude-every", type=int, default=None,
+                    help="skip every Nth FUTO line — pair with `futo_data.py --make-dev` so the "
+                         "held-out dev.jsonl never leaks into training")
+    ap.add_argument("--synth-mix", type=float, default=0.25,
+                    help="fraction of batches drawn from the synthetic generator when --futo is set "
+                         "(real swipes cover ~12k donors' common words; synthetic covers the full "
+                         "wordlist's long tail — mixing keeps rare-word decoding from regressing)")
+    ap.add_argument("--own", metavar="GLOB", default=None,
+                    help="your own collected swipes (jsonl, collector-app or GlideLearningStore "
+                         "export) — oversampled via --own-prob, not drowned in the corpus")
+    ap.add_argument("--own-prob", type=float, default=0.10,
+                    help="probability each REAL-batch sample is drawn from --own rows")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -326,13 +338,17 @@ def main():
 
     words = load_words(args.wordlist, args.vocab_size)
     # Real-data path: load the FUTO corpus + calibrate the coordinate transform once (see futo_data.py).
-    futo_rows, futo_affine = None, None
+    futo_rows, futo_affine, own_rows = None, None, None
     if args.futo:
         import futo_data
-        futo_rows = futo_data.load_futo_rows(args.futo, limit=args.futo_limit)
+        futo_rows = futo_data.load_futo_rows(args.futo, limit=args.futo_limit, exclude_every=args.exclude_every)
         futo_affine = futo_data.calibrate_affine(futo_rows)
         print(f"FUTO: {len(futo_rows)} real swipes; {futo_affine}")
-    print(f"loaded {len(words)} words; device={device}; data={'FUTO-real' if args.futo else 'synthetic'}")
+        if args.own:
+            own_rows = futo_data.load_jsonl_rows(args.own)
+            print(f"own swipes: {len(own_rows)} rows, drawn with p={args.own_prob} per real sample")
+        print(f"mix: {int((1 - args.synth_mix) * 100)}% real batches / {int(args.synth_mix * 100)}% synthetic")
+    print(f"loaded {len(words)} words; device={device}; data={'FUTO-real+synth' if args.futo else 'synthetic'}")
 
     encoder = SwipeEncoder(args.d_model, args.nhead, args.layers, args.ff).to(device)
     decoder = SwipeDecoder(args.d_model, args.nhead, args.layers, args.ff).to(device)
@@ -341,9 +357,11 @@ def main():
 
     encoder.train(); decoder.train()
     for step in range(1, args.steps + 1):
-        if futo_rows is not None:
+        if futo_rows is not None and rng.random() >= args.synth_mix:
             import futo_data
-            feats, masks, tgt = futo_data.iter_futo_batch(futo_rows, rng, args.batch, affine=futo_affine)
+            feats, masks, tgt = futo_data.iter_futo_batch(
+                futo_rows, rng, args.batch, affine=futo_affine,
+                own_rows=own_rows, own_prob=args.own_prob)
         else:
             feats, masks, tgt = iter_batch(words, rng, args.batch, args.max_word_len)
         feats, masks, tgt = feats.to(device), masks.to(device), tgt.to(device)
@@ -371,16 +389,22 @@ def main():
 
     enc_path = f"{args.out}/swipe_encoder.onnx"
     dec_path = f"{args.out}/swipe_decoder.onnx"
+    # torch >= 2.6 defaults to the dynamo exporter, whose shape inference rejects our dynamic_axes
+    # contract (it traces memory's length as static 200). These graphs were built for the legacy
+    # TorchScript exporter (see the MultiHeadAttention notes above) — request it explicitly on torch
+    # versions that have the flag, older versions use it anyway.
+    import inspect
+    legacy = {"dynamo": False} if "dynamo" in inspect.signature(torch.onnx.export).parameters else {}
     torch.onnx.export(
         encoder.cpu(), (ex_feats, ex_mask), enc_path,
         input_names=["features", "src_mask"], output_names=["memory"],
-        opset_version=args.opset,
+        opset_version=args.opset, **legacy,
     )
     torch.onnx.export(
         decoder.cpu(), (ex_memory, ex_mask, ex_tgt), dec_path,
         input_names=["memory", "src_mask", "tgt"], output_names=["logits"],
         dynamic_axes={"tgt": {1: "L"}, "logits": {1: "L"}},
-        opset_version=args.opset,
+        opset_version=args.opset, **legacy,
     )
     print(f"wrote {enc_path}\nwrote {dec_path}")
     print("Rebuild the app; NeuralGlideEngine.isReady will flip true automatically.")

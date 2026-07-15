@@ -20,11 +20,12 @@ the canvas). We fit that affine ONCE by regression — a swipe's first/last poin
 first/last letter's key center — then reuse the identical feature math as the device
 (`export_seq2seq.features_from_path`), so training and on-device inference see the same inputs.
 
-Usage (once you have GPU time):
-    pip install torch numpy onnx pyarrow huggingface_hub
-    python futo_data.py --download            # fetch parquet files locally (once)
-    # then in export_seq2seq.py, swap iter_batch(...) for iter_futo_batch(rows, ...)
-    # or: python export_seq2seq.py --futo <dir>   (wire the flag as noted at the bottom)
+Usage (once you have GPU time) — or just run ../train_overnight.sh, which does all of this:
+    pip install torch numpy onnx onnxscript huggingface_hub
+    python futo_data.py --download                        # fetch the JSONL corpus (once)
+    python futo_data.py --make-dev futo_data/train.jsonl  # carve held-out dev.jsonl (once)
+    python export_seq2seq.py --futo futo_data/train.jsonl --exclude-every 200 \
+        --synth-mix 0.25 --own "my_swipes_*.jsonl" ...    # real + synthetic + your own swipes
 
 Self-test (no network):  python futo_data.py --selftest
 """
@@ -104,8 +105,12 @@ def row_to_sample(row, affine):
     return feats, mask, toks
 
 
-def iter_futo_batch(rows, rng, batch, calibrate=True, affine=None):
-    """Drop-in replacement for export_seq2seq.iter_batch: yields (features, masks, tgt) torch tensors."""
+def iter_futo_batch(rows, rng, batch, calibrate=True, affine=None, own_rows=None, own_prob=0.0):
+    """Drop-in replacement for export_seq2seq.iter_batch: yields (features, masks, tgt) torch tensors.
+    [own_rows]/[own_prob]: oversample the user's OWN collected swipes — a few hundred personal rows
+    would statistically never be drawn from a million-row corpus, yet they're the highest-value
+    samples (this user's finger, this user's device). Each sample comes from own_rows with
+    probability own_prob (e.g. 0.1 → ~10% of training is personal data regardless of corpus size)."""
     import torch
     if affine is None and calibrate:
         affine = calibrate_affine(rows)
@@ -113,8 +118,12 @@ def iter_futo_batch(rows, rng, batch, calibrate=True, affine=None):
         affine = Affine(1.0, 0.0, 1.0 / 0.7, 0.0)
     feats, masks, tgts = [], [], []
     n = len(rows)
+    n_own = len(own_rows) if own_rows else 0
     while len(feats) < batch:
-        s = row_to_sample(rows[int(rng.integers(0, n))], affine)
+        if n_own > 0 and rng.random() < own_prob:
+            s = row_to_sample(own_rows[int(rng.integers(0, n_own))], affine)
+        else:
+            s = row_to_sample(rows[int(rng.integers(0, n))], affine)
         if s is None:
             continue
         f, m, t = s
@@ -130,10 +139,12 @@ def iter_futo_batch(rows, rng, batch, calibrate=True, affine=None):
 
 # ─────────────────────────── parquet loading (real training) ───────────────────────────
 
-def load_futo_rows(path_or_dir, limit=None):
+def load_futo_rows(path_or_dir, limit=None, exclude_every=None):
     """Load FUTO rows. FUTO ships as JSONL (train.jsonl + swipe-2..5/*.jsonl). Accepts a single file,
     a glob, or the downloaded directory (loads every *.jsonl under it). Skips flagged-invalid rows.
-    [limit] caps how many valid rows are loaded — the full train.jsonl is ~5 GB, so cap it on CPU."""
+    [limit] caps how many valid rows are loaded — the full train.jsonl is ~5 GB, so cap it on CPU.
+    [exclude_every]: skip every Nth line (by global line index across files) — the SAME rows
+    [write_dev_split] carves out for dev.jsonl, so training never sees the held-out set."""
     import json
     if os.path.isdir(path_or_dir):
         files = sorted(glob.glob(os.path.join(path_or_dir, "**", "*.jsonl"), recursive=True))
@@ -142,11 +153,15 @@ def load_futo_rows(path_or_dir, limit=None):
     if not files:
         raise FileNotFoundError(f"no .jsonl under {path_or_dir} (run: python futo_data.py --download)")
     rows = []
+    idx = -1
     for fp in files:
         with open(fp, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
+                    continue
+                idx += 1
+                if exclude_every and idx % exclude_every == 0:
                     continue
                 r = json.loads(line)
                 if not r.get("potentially_invalid_sentence"):
@@ -154,6 +169,35 @@ def load_futo_rows(path_or_dir, limit=None):
                     if limit and len(rows) >= limit:
                         return rows
     return rows
+
+
+def write_dev_split(path_or_dir, dev_out, every=200):
+    """Carve a deterministic held-out dev set: every Nth line (global index across the same file
+    order [load_futo_rows] uses) goes to [dev_out]. Train with exclude_every=<same N> and the two
+    sets can never overlap — evaluate.py then measures on swipes the model has never seen."""
+    import json
+    if os.path.isdir(path_or_dir):
+        files = sorted(glob.glob(os.path.join(path_or_dir, "**", "*.jsonl"), recursive=True))
+    else:
+        files = glob.glob(path_or_dir) if any(c in path_or_dir for c in "*?[") else [path_or_dir]
+    n = 0
+    idx = -1
+    with open(dev_out, "w", encoding="utf-8") as out:
+        for fp in files:
+            with open(fp, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    idx += 1
+                    if idx % every != 0:
+                        continue
+                    r = json.loads(line)
+                    if not r.get("potentially_invalid_sentence"):
+                        out.write(line + "\n")
+                        n += 1
+    print(f"wrote {n} held-out swipes to {dev_out} (every {every}th line)")
+    return n
 
 
 def load_jsonl_rows(*paths):
@@ -228,8 +272,13 @@ if __name__ == "__main__":
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--download", action="store_true")
     ap.add_argument("--out", default="futo_data")
+    ap.add_argument("--make-dev", metavar="SRC", default=None,
+                    help="write futo_data/dev.jsonl as every Nth line of SRC (train with the same --exclude-every)")
+    ap.add_argument("--dev-every", type=int, default=200)
     args = ap.parse_args()
     if args.download:
         download(out=args.out)
+    elif args.make_dev:
+        write_dev_split(args.make_dev, os.path.join(args.out, "dev.jsonl"), every=args.dev_every)
     else:
         _selftest()
