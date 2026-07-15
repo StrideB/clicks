@@ -85,14 +85,14 @@ internal fun weatherCodeLabel(code: Int): String = when (code) {
     else -> "Local weather"
 }
 
-internal fun highlightedLabel(label: String, match: String): SpannableString {
+internal fun highlightedLabel(label: String, match: String, matchColor: Int = Neu.GREEN): SpannableString {
     val styled = SpannableString(label)
     val q = match.trim()
     if (q.isBlank()) return styled
     val start = label.lowercase(Locale.US).indexOf(q.lowercase(Locale.US))
     if (start < 0) return styled
     val end = (start + q.length).coerceAtMost(label.length)
-    styled.setSpan(ForegroundColorSpan(Neu.GREEN), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    styled.setSpan(ForegroundColorSpan(matchColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     styled.setSpan(StyleSpan(Typeface.BOLD), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
     return styled
 }

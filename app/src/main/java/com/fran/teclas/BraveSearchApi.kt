@@ -67,6 +67,34 @@ object BraveSearchApi {
         "coinbase", "disney", "nike"
     )
 
+    // "Main tourist locations" — a curated set so landmark cards fire on intent, not on every
+    // two-word query. Matched as a substring of the (lowercased) query, so "the eiffel tower"
+    // and "eiffel tower paris" both hit. Brave's infobox confirms it's actually a place.
+    val LANDMARK_TERMS = setOf(
+        "eiffel tower", "louvre", "arc de triomphe", "notre dame", "sacre coeur", "versailles",
+        "big ben", "tower of london", "buckingham palace", "london eye", "stonehenge",
+        "colosseum", "trevi fountain", "vatican", "st peter", "sistine chapel", "pantheon",
+        "leaning tower", "pisa", "duomo", "st mark", "rialto",
+        "sagrada familia", "park guell", "alhambra", "prado",
+        "brandenburg gate", "reichstag", "neuschwanstein",
+        "acropolis", "parthenon", "santorini",
+        "statue of liberty", "empire state", "times square", "central park", "brooklyn bridge",
+        "golden gate", "alcatraz", "hollywood sign", "space needle", "willis tower",
+        "grand canyon", "niagara falls", "mount rushmore", "yellowstone",
+        "christ the redeemer", "machu picchu", "chichen itza", "teotihuacan",
+        "cn tower", "banff",
+        "burj khalifa", "burj al arab", "petra", "pyramids", "giza", "sphinx",
+        "taj mahal", "gateway of india", "red fort", "angkor wat", "grand palace",
+        "marina bay sands", "merlion", "petronas towers", "great wall", "forbidden city",
+        "tokyo tower", "senso-ji", "fushimi inari", "mount fuji", "shibuya crossing",
+        "sydney opera house", "harbour bridge", "uluru",
+        "table mountain", "victoria falls",
+        "santa monica pier", "walt disney world", "disneyland", "universal studios"
+    )
+
+    fun matchesLandmark(lowerQuery: String): Boolean =
+        LANDMARK_TERMS.any { lowerQuery.contains(it) }
+
     fun fetchRich(query: String, apiKey: String, lat: Double? = null, long: Double? = null): RichAnswer? {
         if (query.isBlank() || apiKey.isBlank()) return null
         // Location headers make Brave return the `locations` POI block ("best buy" → the actual
@@ -82,23 +110,57 @@ object BraveSearchApi {
         val hint = root.optJSONObject("rich")?.optJSONObject("hint")
         val callbackKey = hint?.optString("callback_key")?.trim().orEmpty()
         if (callbackKey.isBlank()) {
-            // No rich vertical — a POI answer ("nearest best buy") may still be in `locations`.
-            return parseLocations(root)
+            // No rich vertical — a named landmark ("eiffel tower") is in the infobox; a "nearest X"
+            // POI is in `locations`. Landmark wins: it's the "learn about it" answer.
+            return parseInfoboxLandmark(root) ?: parseLocations(root)
         }
         val vertical = hint?.optString("vertical")?.trim().orEmpty()
 
         val rich = get(
             "https://api.search.brave.com/res/v1/web/rich?callback_key=${URLEncoder.encode(callbackKey, "UTF-8")}",
             apiKey
-        ) ?: return parseLocations(root)
+        ) ?: return parseInfoboxLandmark(root) ?: parseLocations(root)
         val results = runCatching { JSONObject(rich).optJSONArray("results") }.getOrNull()
-            ?: return parseLocations(root)
+            ?: return parseInfoboxLandmark(root) ?: parseLocations(root)
         for (i in 0 until results.length()) {
             val item = results.optJSONObject(i) ?: continue
             parse(item, vertical)?.let { return it }
         }
-        return parseLocations(root)
+        return parseInfoboxLandmark(root) ?: parseLocations(root)
     }
+
+    /** A place-category infobox ("eiffel tower", "colosseum") → a landmark card: name, a short
+     *  encyclopedic blurb, tap-through to Wikipedia. The caller pairs it with a ride offer when
+     *  the user is actually in that city. */
+    private fun parseInfoboxLandmark(root: JSONObject): RichAnswer? {
+        val ib = root.optJSONObject("infobox")?.optJSONArray("results")?.optJSONObject(0) ?: return null
+        if (ib.optString("category").lowercase() !in setOf("place", "location", "landmark", "tourist attraction"))
+            return null
+        val name = ib.optString("title").trim().ifBlank { return null }
+        val desc = ib.optString("description").trim()
+        val long = stripHtml(ib.optString("long_desc")).trim()
+        val body = when {
+            long.length > desc.length -> long
+            desc.isNotBlank() -> desc
+            else -> return null
+        }
+        return RichAnswer(
+            vertical = "landmark",
+            headline = name,
+            label = listOf("Landmark", desc.substringAfterLast(" in ", "").trim().trimEnd('.'))
+                .filter { it.isNotBlank() }.joinToString(" · "),
+            detail = body.take(220),
+            delta = null, deltaUp = true,
+            provider = "Wikipedia",
+            spark = emptyList(),
+            glyph = "🏛️",
+            url = ib.optString("url").trim().ifBlank { null }
+        )
+    }
+
+    private fun stripHtml(s: String): String =
+        s.replace(Regex("<[^>]*>"), "").replace("&amp;", "&").replace("&quot;", "\"")
+            .replace("&#39;", "'").replace(Regex("^\\)\\s*"), "").trim()
 
     /** Top POI from the web response's `locations` block → a card that opens Google Maps
      *  directly. No search-results page in between. */
