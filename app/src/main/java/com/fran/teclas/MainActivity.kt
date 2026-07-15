@@ -251,16 +251,42 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         openHere(teclasSettingsTarget())
     }
 
+    // Unified keyboard algorithm — same composite scorer as the IME, reading the same shared
+    // "teclas" prefs, so both keyboards rank and learn identically (personal usage, rejected
+    // corrections, adapted weights all shared).
+    private val personalFreq by lazy { com.fran.teclas.keyboard.unified.PersonalFrequencyStore(prefs()) }
+    private val rejectedStore by lazy { com.fran.teclas.keyboard.unified.RejectedCorrectionsStore(prefs()) }
+    private val adaptiveWeights by lazy { com.fran.teclas.keyboard.unified.AdaptiveWeights(prefs()) }
+    private val contextModel = com.fran.teclas.keyboard.unified.ContextModel()
+    private val unifiedRanker by lazy {
+        com.fran.teclas.keyboard.unified.UnifiedRanker(
+            engine = { predictionEngine },
+            personalBoost = { personalFreq.boost(it) },
+            isRejectedPair = { t, c -> rejectedStore.contains(t, c) },
+            lmProb = { prev, w -> contextModel.prob(prev, w) },
+            weights = { adaptiveWeights.weights() }
+        )
+    }
+    // Lazy bigram-LM load, off-main, no-op once loaded — cold start pays nothing.
+    private fun warmContextModel() {
+        if (contextModel.isLoaded) return
+        runCatching { launcherPredictExecutor.execute {
+            runCatching { assets.open("dict/en_bigrams.txt").use { contextModel.load(it) } }
+        } }
+    }
     private val autocorrectCore by lazy {
         com.fran.teclas.keyboard.AutocorrectCore(
             host = this,
             engine = { predictionEngine },
             contextNextWords = { ngramRepo.cachedNextWords(it) },
-            useFallback = true
+            useFallback = true,
+            ranker = { unifiedRanker },
+            rejectedPersist = { t, c -> rejectedStore.add(t, c) },
+            rejectedContains = { t, c -> rejectedStore.contains(t, c) }
         )
     }
     private val predictionCore by lazy {
-        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
+        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker })
     }
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
 
@@ -12641,6 +12667,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun keyboard(): View {
+        warmContextModel()   // lazy bigram-LM load, off-main, no-op once loaded
         syncLauncherSuggestionStripHeightForBuild()
         val overlayLayer = FrameLayout(this)
         predictionOverlay.overlayLayer = overlayLayer
@@ -14168,6 +14195,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // what you actually choose, and warm next-word predictions for it.
         val accepted = (if (pane?.kind == PaneKind.CHAT) composeText else query).trim().split(" ").filter { it.isNotEmpty() }
         if (accepted.size >= 2) ngramRepo.recordWord(accepted.last(), accepted[accepted.size - 2])
+        accepted.lastOrNull()?.let { personalFreq.noteCommitted(it) }
         ngramRepo.prefetchNextWords(word)
         launcherEmojiTriggerWord = ""
         launcherEmojiChips = emptyList()
@@ -14557,7 +14585,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 if (gen != launcherPredictGeneration) return@execute
                 val base = predictionCore.computeSuggestions(w, p)
                 val correction = if (w.length >= 2)
-                    autocorrectCore.computeCorrection(w, ngramRepo.cachedNextWords(p)) else null
+                    autocorrectCore.computeCorrection(w, ngramRepo.cachedNextWords(p), p) else null
                 handler.post {
                     if (gen != launcherPredictGeneration) return@post   // user typed past this answer
                     pendingLauncherCorrection = w to correction
@@ -14956,6 +14984,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // context re-ranking keep improving as you swipe.
         val toks = (if (pane?.kind == PaneKind.CHAT) composeText else query).trim().split(" ").filter { it.isNotEmpty() }
         if (toks.size >= 2) ngramRepo.recordWord(toks.last(), toks[toks.size - 2])
+        personalFreq.noteCommitted(topWord)
         ngramRepo.prefetchNextWords(topWord)
         suggestions = (listOf(topWord) + results.filter { it != topWord }).distinct().take(3)
         glideJustCommitted = true   // strip now shows tap-to-correct alternatives
@@ -15021,15 +15050,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         }
         private val trailPath = Path()
         private var glidePersisting = false
-        private var glideFadeRunnable: Runnable? = null
 
-        // Keep the finished glide trail on screen briefly (recolored to the matched app / theme),
-        // then fade it out — so it "stays after finishing" instead of vanishing the instant you lift.
+        // Kick the evaporating-trail draw loop after release: dispatchDraw's sliding time-window
+        // drains the remaining trail tail-first within ~one window (the Gboard glide-out), replacing
+        // the old timed full-clear that made the trail linger and then blink away all at once.
         private fun fadeGlideTrail() {
-            glideFadeRunnable?.let { handler.removeCallbacks(it) }
-            val r = Runnable { glidePersisting = false; trailLocal.clear(); trailTimes.clear(); glideRecognizedColor = null; invalidate() }
-            glideFadeRunnable = r
-            handler.postDelayed(r, 900)
+            postInvalidateOnAnimation()
         }
 
         private fun clearGlideTouchState() {
@@ -15056,10 +15082,25 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
             if ((tracking || glidePersisting) && trailLocal.size > 1) {
+                // Gboard-style evaporating trail (parity with the IME): only the last
+                // GLIDE_TRAIL_WINDOW_MS of the path is drawn, so the tail melts away behind the
+                // finger mid-glide and the remainder glides out within one window after release.
+                // Draw-only — the decoders snapshot the full stored path at UP.
+                val cutoff = android.os.SystemClock.uptimeMillis() - GLIDE_TRAIL_WINDOW_MS
+                var first = 0
+                while (first < trailTimes.size && trailTimes[first] < cutoff) first++
+                if (first >= trailLocal.size - 1) {
+                    if (glidePersisting) {
+                        glidePersisting = false
+                        trailLocal.clear(); trailTimes.clear()
+                        glideRecognizedColor = null
+                    }
+                    return
+                }
                 trailPath.reset()
-                trailPath.moveTo(trailLocal[0].first, trailLocal[0].second)
-                for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
-                val start = trailLocal.first()
+                trailPath.moveTo(trailLocal[first].first, trailLocal[first].second)
+                for (i in first + 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
+                val start = trailLocal[first]
                 val end = trailLocal.last()
                 val colors = glideTrailColors()
                 trailPaint.shader = android.graphics.LinearGradient(
@@ -15074,6 +15115,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 canvas.drawPath(trailPath, trailPaint)
                 trailPaint.shader = null
                 trailPaint.alpha = 255
+                // Drive the melt between touch events (and after release) at display rate.
+                postInvalidateOnAnimation()
             }
         }
 
@@ -15104,7 +15147,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX; startRawY = ev.rawY
                     glideBlockedByTypingStrip = isInsideTypingStrip(ev.rawX, ev.rawY)
-                    glideFadeRunnable?.let { handler.removeCallbacks(it) }
                     glidePersisting = false; glideRecognizedColor = null
                     tracking = false; traced.clear(); trailLocal.clear(); trailTimes.clear()
                     val loc = IntArray(2); getLocationOnScreen(loc)
@@ -15958,6 +16000,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     } else {
                         val words = query.trimEnd().split(" ")
                         if (words.size >= 2) ngramRepo.recordWord(words.last(), words[words.size - 2])
+                        words.lastOrNull()?.let { personalFreq.noteCommitted(it) }
                         tryAutocorrect()  // autocorrect current word before adding space
                         if (!query.endsWith(" ")) query += " "  // tryAutocorrect may have already appended the space
                         // Surface personalized next-word predictions for the word just committed
@@ -25041,6 +25084,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         private const val KeyHighlight = 0xFF3A3E4A.toInt()
         private const val THEME_STUDIO_TARGET_ID = "theme-studio"
         private const val PREFS_NAME = "teclas"
+        // Visible lifetime of each glide-trail point (Gboard-style tail evaporation; see the IME's
+        // twin constant — keep them equal so both keyboards' glides feel identical).
+        private const val GLIDE_TRAIL_WINDOW_MS = 320L
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
         private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"

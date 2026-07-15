@@ -345,17 +345,46 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val spatialScorer = SpatialScorer()
     private val ngramRepo by lazy { NgramRepository(this) }
     private val hapticEngine by lazy { com.fran.teclas.keyboard.CustomHapticEngine(this) }
+    // ── Unified keyboard algorithm ──────────────────────────────────────────────────────────────
+    // One composite scorer (edit distance + frequency + personal usage + n-gram context + bigram
+    // LM + phonetics + morphology) that both the suggestion strip and autocorrect route through.
+    // All learning state lives in the shared "teclas" prefs, so both keyboards learn as one:
+    // personal word usage, rejected corrections, and the adapted signal weights.
+    private val personalFreq by lazy { com.fran.teclas.keyboard.unified.PersonalFrequencyStore(imePrefs()) }
+    private val rejectedStore by lazy { com.fran.teclas.keyboard.unified.RejectedCorrectionsStore(imePrefs()) }
+    private val adaptiveWeights by lazy { com.fran.teclas.keyboard.unified.AdaptiveWeights(imePrefs()) }
+    private val contextModel = com.fran.teclas.keyboard.unified.ContextModel()
+    private val unifiedRanker by lazy {
+        com.fran.teclas.keyboard.unified.UnifiedRanker(
+            engine = { predictionEngine },
+            personalBoost = { personalFreq.boost(it) },
+            isRejectedPair = { t, c -> rejectedStore.contains(t, c) },
+            lmProb = { prev, w -> contextModel.prob(prev, w) },
+            weights = { adaptiveWeights.weights() }
+        )
+    }
+    // Load the bigram LM off-main AFTER the keyboard is already visible: cold-open cost stays
+    // zero; until it lands, lmProb returns 0 and ranking simply runs without the LM signal.
+    private fun warmContextModel() {
+        if (contextModel.isLoaded) return
+        runCatching { predictExecutor.execute {
+            runCatching { assets.open("dict/en_bigrams.txt").use { contextModel.load(it) } }
+        } }
+    }
     private val autocorrect by lazy {
         com.fran.teclas.keyboard.AutocorrectCore(
             host = this,
             engine = { predictionEngine },
             contextNextWords = { ngramRepo.cachedNextWords(it) },
             extendedEngine = { predictionEngineExtended },
-            useFallback = true   // match the launcher: accept edit-distance-1 corrections, not only strict
+            useFallback = true,  // match the launcher: accept edit-distance-1 corrections, not only strict
+            ranker = { unifiedRanker },
+            rejectedPersist = { t, c -> rejectedStore.add(t, c) },
+            rejectedContains = { t, c -> rejectedStore.contains(t, c) }
         )
     }
     private val predictionCore by lazy {
-        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo)
+        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker })
     }
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
     private var suggestionStrip: LinearLayout? = null
@@ -573,6 +602,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         currentEditorPackage = info?.packageName?.toString() ?: currentEditorPackage
+        warmContextModel()        // lazy bigram-LM load, off-main, no-op once loaded
         ensureGlideClassifier()   // retry if a previous load failed (onCreateInputView runs only once)
         if (shouldDeferToDeck()) {
             hideImeSurface()
@@ -1821,7 +1851,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 val tooLong = word.length > 18
                 val base = if (tooLong) emptyList() else predictionCore.computeSuggestions(word, prev)
                 val correction = if (!tooLong && word.length >= 2)
-                    autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev)) else null
+                    autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) else null
                 val computeMs = (System.nanoTime() - t0) / 1_000_000
                 handler.post {
                     if (gen != predictGeneration) return@post   // user typed past this answer
@@ -2030,7 +2060,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val tokens = wordsBeforeCursor()
         if (tokens.size >= 2) ngramRepo.recordWord(tokens[tokens.size - 1], tokens[tokens.size - 2])
         val last = tokens.lastOrNull().orEmpty()
-        if (last.isNotEmpty()) ngramRepo.prefetchNextWords(last)
+        if (last.isNotEmpty()) {
+            ngramRepo.prefetchNextWords(last)
+            // Unified-ranker learning: the user's own committed words rise in ranking over time.
+            personalFreq.noteCommitted(last)
+        }
     }
 
     private fun learnAndPredictAfterSpace() {
@@ -2041,9 +2075,25 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         updateStrip()
     }
 
+    // Weight-adaptation telemetry: which rank the user picked, and — when they overrode our #1 —
+    // the signal vectors of their pick vs ours, so AdaptiveWeights can learn which signals to
+    // trust more for this user. Runs on the prediction thread; the tap itself pays nothing.
+    private fun recordSuggestionPick(picked: String, typedBefore: String, shown: List<String>) {
+        val rank = shown.indexOf(picked)
+        if (rank < 0) return
+        val prev = predictionCore.previousWord()
+        runCatching { predictExecutor.execute {
+            val overrode = rank > 0 && typedBefore.length >= 2
+            val pickedSig = if (overrode) unifiedRanker.explain(typedBefore, picked, prevWord = prev) else null
+            val topSig = if (overrode) shown.firstOrNull()?.let { unifiedRanker.explain(typedBefore, it, prevWord = prev) } else null
+            adaptiveWeights.onSuggestionPicked(rank.coerceAtMost(2), pickedSig, topSig)
+        } }
+    }
+
     private fun acceptSuggestion(word: String) {
         if (currentInputConnection == null) return
         val before = predictionCore.currentWord()
+        recordSuggestionPick(word, before, suggestions.toList())
         when {
             // Mid-word: the strip shows completions/corrections of the partial word → replace it.
             before.isNotEmpty() -> predictionCore.replaceCurrentWord(word)
@@ -3564,8 +3614,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // movement (instead of every frame) keeps the visual identical without per-frame allocation.
         private var trailShaderEndX = Float.NaN
         private var trailShaderEndY = Float.NaN
+        private var trailShaderStartX = Float.NaN
+        private var trailShaderStartY = Float.NaN
         private var glidePersisting = false
-        private var glideFadeRunnable: Runnable? = null
         private val touchSlop = ViewConfiguration.get(this@TeclasImeService).scaledTouchSlop
         // A glide must clearly outrun a normal tap's finger-drift before it steals the touch from the
         // key, otherwise a tap with a little slide reads as a phantom swipe and eats the keystroke.
@@ -3605,16 +3656,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             return true
         }
 
+        // Kick the evaporating-trail draw loop after release: dispatchDraw's sliding time-window
+        // drains the remaining trail tail-first within ~one window (the Gboard glide-out), replacing
+        // the old timed full-clear that made the trail linger and then blink away all at once.
         private fun fadeGlideTrail() {
-            glideFadeRunnable?.let { handler.removeCallbacks(it) }
-            val r = Runnable {
-                glidePersisting = false
-                trailLocal.clear()
-                trailTimes.clear()
-                invalidate()
-            }
-            glideFadeRunnable = r
-            handler.postDelayed(r, 900L)
+            postInvalidateOnAnimation()
         }
 
         private fun clearGlideTouchState() {
@@ -3626,6 +3672,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             trailPaint.shader = null
             trailShaderEndX = Float.NaN
             trailShaderEndY = Float.NaN
+            trailShaderStartX = Float.NaN
+            trailShaderStartY = Float.NaN
             glideClassifier?.clear()
             invalidate()
         }
@@ -3643,15 +3691,35 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         override fun dispatchDraw(canvas: Canvas) {
             super.dispatchDraw(canvas)
             if ((tracking || glidePersisting) && trailLocal.size > 1) {
+                // Gboard-style evaporating trail: only the last GLIDE_TRAIL_WINDOW_MS of the path
+                // is drawn, so the tail continuously melts away behind the finger mid-glide, and
+                // the remainder glides out on its own within one window after release. Draw-only —
+                // the full path stays stored (the decoders snapshot it at UP).
+                val cutoff = android.os.SystemClock.uptimeMillis() - GLIDE_TRAIL_WINDOW_MS
+                var first = 0
+                while (first < trailTimes.size && trailTimes[first] < cutoff) first++
+                if (first >= trailLocal.size - 1) {
+                    // Fully evaporated. After release that's the end of the gesture's visuals.
+                    if (glidePersisting) {
+                        glidePersisting = false
+                        trailLocal.clear()
+                        trailTimes.clear()
+                    }
+                    return
+                }
                 trailPath.reset()
-                trailPath.moveTo(trailLocal[0].first, trailLocal[0].second)
-                for (i in 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
-                val start = trailLocal.first()
+                trailPath.moveTo(trailLocal[first].first, trailLocal[first].second)
+                for (i in first + 1 until trailLocal.size) trailPath.lineTo(trailLocal[i].first, trailLocal[i].second)
+                val start = trailLocal[first]
                 val end = trailLocal.last()
                 val colors = trailColorsCache ?: glideTrailColors().also { trailColorsCache = it }
-                val endMoved = (end.first - trailShaderEndX).let { it * it } +
-                    (end.second - trailShaderEndY).let { it * it }
-                if (trailPaint.shader == null || endMoved.isNaN() || endMoved > 36f) {
+                // Rebuild the gradient only after either visible endpoint moves ~6px — the tail
+                // now moves every frame, so this throttle is what keeps evaporation allocation-light.
+                val moved = (end.first - trailShaderEndX).let { it * it } +
+                    (end.second - trailShaderEndY).let { it * it } +
+                    (start.first - trailShaderStartX).let { it * it } +
+                    (start.second - trailShaderStartY).let { it * it }
+                if (trailPaint.shader == null || moved.isNaN() || moved > 36f) {
                     trailPaint.shader = android.graphics.LinearGradient(
                         start.first,
                         start.second,
@@ -3663,6 +3731,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     )
                     trailShaderEndX = end.first
                     trailShaderEndY = end.second
+                    trailShaderStartX = start.first
+                    trailShaderStartY = start.second
                 }
                 trailPaint.strokeWidth = dp(12).toFloat()
                 trailPaint.alpha = 58
@@ -3672,6 +3742,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 canvas.drawPath(trailPath, trailPaint)
                 trailPaint.shader = null
                 trailPaint.alpha = 255
+                // Drive the melt between touch events (and after release) at display rate.
+                postInvalidateOnAnimation()
             }
         }
 
@@ -3683,7 +3755,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX
                     startRawY = ev.rawY
-                    glideFadeRunnable?.let { handler.removeCallbacks(it) }
                     glidePersisting = false
                     tracking = false
                     traced.clear()
@@ -4543,6 +4614,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // Hot-path regexes, compiled once (these used to be re-compiled on every keystroke).
         private val WORD_RE = Regex("[A-Za-z]+")
         private val NON_LETTER_RE = Regex("[^\\p{L}]+")
+
+        // Visible lifetime of each glide-trail point: the tail melts away this long after the
+        // finger passed through (Gboard-style), instead of the whole trail lingering then blinking
+        // out. Also how long the trail takes to fully glide out after release.
+        private const val GLIDE_TRAIL_WINDOW_MS = 320L
 
         // Temporary: keystroke-path timing to logcat (tag TeclasPerf) to localize the freeze.
         private const val PERF_LOG = false

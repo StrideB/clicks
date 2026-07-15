@@ -14,7 +14,9 @@ import com.fran.teclas.db.NgramRepository
 class PredictionCore(
     private val host: KeyboardHost,
     private val engine: () -> PredictionEngine,
-    private val ngram: NgramRepository
+    private val ngram: NgramRepository,
+    /** When set, the unified ranker scores/orders candidates instead of the engine's heuristics. */
+    private val ranker: () -> com.fran.teclas.keyboard.unified.UnifiedRanker? = { null }
 ) {
     fun currentWord(): String = WordEditing.currentWord(host)
 
@@ -44,7 +46,9 @@ class PredictionCore(
         if (prev.isNotEmpty()) ngram.prefetchNextWords(prev)
         ngram.prefetchNextWords(word)
         val chord = AbbreviationExpander.expand(word)
-        val base = engine().getSuggestions(word, 3, ngramBoost = ngram.cachedNextWords(prev))
+        val boost = ngram.cachedNextWords(prev)
+        val base = ranker()?.suggestions(word, 3, ngramBoost = boost, prevWord = prev)
+            ?: engine().getSuggestions(word, 3, ngramBoost = boost)
         return ((if (chord != null) listOf(chord) else emptyList()) + base).distinct().take(3)
     }
 
