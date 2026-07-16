@@ -1297,7 +1297,34 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (isUnfoldedInnerLayoutActive()) refreshUnfoldedFocusContent()
             refreshKeyboardDock()
             rootView.post { captureKeyBounds() }
+            restoreLauncherAfterExternalSurface()
         }
+    }
+
+    /**
+     * Widget bind/config activities and picker sheets can return after the unfolded tree has been
+     * partially rebuilt. Rehydrate the surfaces that depend on async state (wallpaper, app index,
+     * dock faces, and keyboard hit bounds) so the home never sits on an empty black shell.
+     */
+    private fun restoreLauncherAfterExternalSurface() {
+        fun settle(forceAppsReload: Boolean = false) {
+            if (!::rootView.isInitialized) return
+            if (launcherWallpaperCanvasActive() && homeWallpaperDrawable == null) {
+                homeWallpaperUnavailableSig = null
+                refreshHomeWallpaperAsync()
+            }
+            if (forceAppsReload || apps.isEmpty()) loadAppsAsync(initial = false)
+            renderFavoritesDock()
+            normalizeFavoritesDockFaceState()
+            renderRibbon()
+            if (isUnfoldedInnerLayoutActive()) refreshUnfoldedFocusContent()
+            refreshKeyboardDock()
+            keyboardDockView.post { captureKeyBounds() }
+            rootView.post { captureKeyBounds() }
+        }
+        settle(forceAppsReload = true)
+        handler.postDelayed({ settle() }, 180L)
+        handler.postDelayed({ settle() }, 520L)
     }
 
     private fun startVoiceInput() {
@@ -2292,7 +2319,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun activeHomeWallpaperUri(): Uri? {
         if (useSystemWallpaperOnHome()) return null
         if (isUnfoldedInnerLayoutActive()) {
-            return innerHomeWallpaperUri()
+            // Inner and cover wallpapers stay independently configurable. If the inner screen has
+            // never been assigned one, fall back to the cover wallpaper instead of showing a black
+            // canvas after a picker/config activity rebuilds the unfolded home.
+            return innerHomeWallpaperUri() ?: coverHomeWallpaperUri()
         } else {
             return coverHomeWallpaperUri() ?: innerHomeWallpaperUri()
         }
@@ -7094,6 +7124,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         weatherPlacementView = null
         haptic(contentFrame)
         render()
+        restoreLauncherAfterExternalSurface()
     }
 
     private fun closeWeatherStylePicker() {
@@ -18309,6 +18340,7 @@ Question: $prompt"""
                 letterSpacing = 0.12f
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             renderFavoritesDockContext()
+            normalizeFavoritesDockFaceState()
             return
         }
         dockItems.take(DOCK_APP_LIMIT).forEachIndexed { index, item ->
@@ -18322,6 +18354,35 @@ Question: $prompt"""
             })
         }
         renderFavoritesDockContext()
+        normalizeFavoritesDockFaceState()
+    }
+
+    private fun normalizeFavoritesDockFaceState() {
+        if (!::favoritesDockView.isInitialized || !::favoritesDockContextView.isInitialized) return
+        if (favoritesDockContextShowing) {
+            favoritesDockView.visibility = View.GONE
+            favoritesDockView.alpha = 0f
+            favoritesDockView.rotationX = -90f
+            favoritesDockContextView.visibility = View.VISIBLE
+            favoritesDockContextView.alpha = 1f
+            favoritesDockContextView.rotationX = 0f
+            favoritesDockContextStampView?.let { stamp ->
+                stamp.visibility = View.VISIBLE
+                stamp.alpha = 1f
+                stamp.translationY = 0f
+            }
+        } else {
+            favoritesDockView.visibility = View.VISIBLE
+            favoritesDockView.alpha = 1f
+            favoritesDockView.rotationX = 0f
+            favoritesDockContextView.visibility = View.GONE
+            favoritesDockContextView.alpha = 0f
+            favoritesDockContextView.rotationX = 90f
+            favoritesDockContextStampView?.let { stamp ->
+                stamp.visibility = View.GONE
+                stamp.alpha = 0f
+            }
+        }
     }
 
     private inner class FavoritesDockFlipFrame(context: Context) : FrameLayout(context) {
@@ -18522,13 +18583,15 @@ Question: $prompt"""
             if (ordered.isNotEmpty()) return ordered.take(DOCK_APP_LIMIT)
         }
         val seen = linkedSetOf<String>()
-        return libraryCategories()
+        val categoryApps = libraryCategories()
             .flatMap { it.apps }
             .filter { app ->
                 val key = app.target.packageName ?: app.target.id
                 seen.add(key)
             }
             .take(DOCK_APP_LIMIT)
+        if (categoryApps.isNotEmpty()) return categoryApps
+        return builtInLauncherApps().take(DOCK_APP_LIMIT)
     }
 
     private fun currentContextDockSignature(): String {
@@ -21609,12 +21672,15 @@ Question: $prompt"""
                     // Full rebuild once the list lands: covers every consumer (dock, library-as-
                     // home, ribbon) without special-casing which surface is currently showing.
                     if (::rootView.isInitialized && openPane == null) render()
-                } else if (changed) {
-                    prewarmAppIcons()
-                    invalidateLibraryCaches()
+                } else {
+                    if (changed) {
+                        prewarmAppIcons()
+                        invalidateLibraryCaches()
+                        rebuildSemanticIndex()
+                    }
                     renderRibbon()
                     renderFavoritesDock()
-                    rebuildSemanticIndex()
+                    if (isUnfoldedInnerLayoutActive()) refreshUnfoldedFocusContent()
                 }
             }
         }
