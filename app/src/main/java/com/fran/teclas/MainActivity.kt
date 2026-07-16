@@ -652,6 +652,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var librarySearchHost: FrameLayout? = null
     private var librarySearchList: View? = null
     private var searchUiRefreshPending: Runnable? = null
+    // Inline AI answers: the debounce handle, and the query whose answer is already fetched/in
+    // flight, so a re-render doesn't re-ask. Answers themselves live in aiAnswersById (shared with
+    // the AI pane), keyed by aiTarget(prompt).id.
+    private var aiInlineDebounce: Runnable? = null
+    private var aiInlineFetched = ""
     private var zeissButtonView: ZeissCameraButtonView? = null
     private lateinit var hintBar: LinearLayout
     private var musicProgressBar: View? = null
@@ -1394,8 +1399,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return false
     }
 
+    // The search tap-defer window has to bracket the dispatch: arm it before (so a source landing
+    // mid-touch is held), release it after (so the row's own click is queued ahead of the rebuild).
+    // try/finally because the body below has many early returns.
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        searchResultsHost.trackSearchResultTouch(event)   // must run for every event, before any early return
+        searchResultsHost.trackSearchResultTouchDown(event)
+        try {
+            return dispatchTouchEventInner(event)
+        } finally {
+            searchResultsHost.trackSearchResultTouchUp(event)
+        }
+    }
+
+    private fun dispatchTouchEventInner(event: MotionEvent): Boolean {
         if (widgetEditGestureLock()) return super.dispatchTouchEvent(event)
         detectDockedWallpaperTripleTap(event)   // passive: triple-tap docked home → change wallpaper
         if (innerWallpaperEditMode) return super.dispatchTouchEvent(event)
@@ -15406,6 +15422,94 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         scheduleBraveWebSearch()
         scheduleSportsSearch()
         schedulePlacesSearch()
+        scheduleInlineAiAnswer()
+    }
+
+    /**
+     * The answer the model gives for the live query, if this query is one it should answer at all.
+     * Null means "not an AI query" — the card doesn't render and nothing was asked.
+     */
+    internal fun searchAiAnswer(): AiAnswerState? {
+        val clean = SearchRouter.cleanPrompt(query)
+        if (clean.isBlank()) return null
+        if (SearchRouter.route(query).route != SearchRouter.Route.ANSWER) return null
+        return aiAnswersById[aiTarget(clean).id]
+    }
+
+    /**
+     * Answer the query inline, in the results band — no pane, no popup. The card appears the moment
+     * the router says this is an answerable question and fills itself in when the model returns.
+     *
+     * Debounced hard (700ms) and only on a settled query: unlike the keyless verticals this costs a
+     * model generation, which on the local tier is seconds of CPU. Firing per keystroke would queue
+     * generations on the model mutex and cook the phone — the exact failure that forced
+     * allowLocal=false on the suggestion path.
+     */
+    private fun scheduleInlineAiAnswer() {
+        aiInlineDebounce?.let { handler.removeCallbacks(it) }
+        val raw = query.trim()
+        val clean = SearchRouter.cleanPrompt(raw)
+        if (clean.isBlank() || SearchRouter.route(raw).route != SearchRouter.Route.ANSWER) return
+        // A vertical with real, live data always beats a model answering from memory.
+        if (searchResultsHost.searchSportsCard() != null || searchPlaces() != null ||
+            searchResultsHost.searchRichAnswer() != null) return
+        if (!GeminiClient.configured(prefs())) return
+        val target = aiTarget(clean)
+        if (aiInlineFetched == clean || aiAnswersById[target.id]?.loading == false) return
+
+        val r = Runnable {
+            aiInlineDebounce = null
+            if (query.trim() != raw) return@Runnable          // moved on while waiting
+            aiInlineFetched = clean
+            aiAnswersById[target.id] = AiAnswerState(clean, "", true)
+            refreshSearchResultsUi()
+            mediaUiScope.launch(Dispatchers.IO) {
+                val out = runCatching { fetchInlineAnswer(clean) }.getOrNull()
+                runOnUiThread {
+                    // The model's own veto: it decided this needs information it doesn't have.
+                    // Drop the card and let the web row be the answer rather than making one up.
+                    if (out == null || out.needsWeb) {
+                        aiAnswersById.remove(target.id)
+                        if (out?.needsWeb == true) aiInlineWebOnly.add(clean)
+                    } else {
+                        aiAnswersById[target.id] = AiAnswerState(clean, out.text, false)
+                    }
+                    refreshSearchResultsUi()
+                }
+            }
+        }
+        aiInlineDebounce = r
+        handler.postDelayed(r, 700L)
+    }
+
+    private class InlineAnswer(val text: String, val needsWeb: Boolean)
+
+    /** Queries the model itself said it can't answer — remembered so the card doesn't re-ask. */
+    private val aiInlineWebOnly = mutableSetOf<String>()
+
+    internal fun aiInlineDeclined(q: String): Boolean = SearchRouter.cleanPrompt(q) in aiInlineWebOnly
+
+    /**
+     * One short answer for the search band. Deliberately capped at two sentences: this is a result
+     * row, not a chat — anything longer turns the band into a wall of text and buries the apps.
+     * The NEEDS_WEB contract is what keeps an offline model honest about live data.
+     */
+    private fun fetchInlineAnswer(prompt: String): InlineAnswer {
+        val p = """Answer this in at most 2 short sentences, plainly and directly. No preamble, no
+restating the question, no markdown, no bullet points.
+
+If answering correctly would need current information (today's prices, scores, news, schedules,
+availability, or anything that changes over time) — or if you are not confident — reply with
+exactly: NEEDS_WEB
+
+Question: $prompt"""
+        val text = GeminiClient.generate(
+            GeminiClient.apiKey(prefs()), GeminiClient.model(prefs()), p,
+            maxTokens = 160, temperature = 0.2,
+        )?.trim().orEmpty()
+        if (text.isBlank()) return InlineAnswer("", needsWeb = true)
+        if (text.uppercase(Locale.US).contains("NEEDS_WEB")) return InlineAnswer("", needsWeb = true)
+        return InlineAnswer(text.removeSurrounding("\"").trim(), needsWeb = false)
     }
 
     /** The resolved place intent for the live query — "hungry" → restaurants, "drinks" → bars —
@@ -19384,17 +19488,21 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             // Full results page in the in-launcher sheet (Brave when connected) — the old AI-pane
             // text list felt like a popup, not search.
             val web = SearchResult("Search the web", q, 0xFF4285F4.toInt(), SearchKind.WEB, null) { launchInAppGoogleSearch(q) }
-            val ai = SearchResult("Ask Gemini", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(q)) { askGemini(q) }
+            val ai = SearchResult("Ask Teclas AI", q, 0xFF8AB4F8.toInt(), SearchKind.AI, aiTarget(SearchRouter.cleanPrompt(q))) {
+                askGemini(SearchRouter.cleanPrompt(q))
+            }
+            // With no model reachable, an "answer" route has nothing to answer with — it's a web query.
+            val verdict = SearchRouter.route(q, directHits)
+            val answerable = verdict.route == SearchRouter.Route.ANSWER &&
+                GeminiClient.configured(prefs()) && !aiInlineDeclined(q)
             when {
-                !directHits && looksLikeWebSearch(q) -> {
-                    results.add(web)
-                    results.add(ai.copy(title = "Ask Gemini instead"))
-                }
+                // The answer is already rendering at the top of the band, so an "Ask AI" row would
+                // just be a second way to ask the same question. Offer the web as the escape hatch.
+                answerable -> results.add(web.copy(title = "Search the web instead"))
                 !directHits -> {
-                    results.add(ai)
-                    results.add(web.copy(title = "Search the web instead"))
+                    results.add(web)
+                    results.add(ai.copy(title = "Ask Teclas AI instead"))
                 }
-                looksLikeAiQuestion(q) -> results.add(ai)
                 else -> results.add(web.copy(title = "Search web for \"$q\""))
             }
         }
@@ -19410,25 +19518,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             listOf("what ", "why ", "how ", "when ", "where ", "who ", "summarize ", "explain ", "draft ").any { lower.startsWith(it) }
     }
 
-    // Auto-route a query to web-search vs Gemini. Strong web signals (navigational/current/lookup)
-    // win even over a question phrasing; a compose/explain-style request or a plain question goes to
-    // Gemini; and short keyword-y queries (a name, place, product) default to the web.
-    private fun looksLikeWebSearch(text: String): Boolean {
-        val lower = text.lowercase(Locale.US).trim()
-        val webSignals = listOf(
-            ".com", ".org", ".net", "http", "www.", "near me", "open now", "hours", "directions",
-            "map", "menu", "reviews", "showtimes", "price", "cheapest", "buy ", "download", "login",
-            " vs ", "reddit", "youtube", "amazon", "wikipedia", "news", "score", "stock ", "weather ",
-            "how much", "who won", "release date"
-        ).any { lower.contains(it) }
-        if (webSignals) return true
-        // Compose/generation or a genuine question → Gemini.
-        val aiVerbs = listOf("write ", "draft ", "summarize", "explain", "translate", "help me", "give me", "rewrite")
-        if (aiVerbs.any { lower.startsWith(it) || lower.contains(" $it") }) return false
-        if (looksLikeAiQuestion(lower)) return false
-        // Not a question, no AI verb: a keyword lookup → web (a name, a place, a thing).
-        return true
-    }
+    // Web-vs-answer routing now lives in SearchRouter (tested, and aware that an offline model must
+    // not answer live questions). The old looksLikeWebSearch heuristic was replaced by it.
 
     private fun looksLikeTravelQuery(text: String): Boolean {
         val lower = text.lowercase(Locale.US)
@@ -20221,6 +20312,15 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     internal fun openSearchResult(result: SearchResult) {
+        // Settings rows apply IN PLACE — "search is the settings screen", and their labels promise
+        // repeatable toggling ("On · tap to turn off"). Clearing the query first tore that surface
+        // down before perform() ran, so the pref flipped invisibly and the row's own
+        // refreshSearchSurfaces() had nothing left to redraw: from the user's seat, search just
+        // closed and nothing happened. Keep search up and let the action redraw it.
+        if (result.kind == SearchKind.SETTING) {
+            result.action?.invoke()
+            return
+        }
         clearSearchAfterResultLaunch()
         result.action?.invoke()?.let { return }
         val target = result.target ?: return

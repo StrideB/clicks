@@ -23,6 +23,7 @@ import android.widget.Toast
 import com.fran.teclas.MainActivity.Companion.Line
 import com.fran.teclas.predict.SpaceManager
 import java.util.Locale
+import kotlin.math.sin
 
 /**
  * MainActivity-side host for the universal-search results band: the three-zone results list
@@ -45,23 +46,33 @@ internal class SearchResultsHost(private val activity: MainActivity) {
         query.isNotBlank() && (libraryOpen || isWidgetUniversalSearchActive() || isUnfoldedInnerLayoutActive())
     }
 
-    // See searchResultTouchActive. Down on the results (not the keyboard) starts a defer window;
-    // up/cancel ends it and flushes any rebuild that was held back — the flush is posted so it runs
-    // AFTER this touch's click has been delivered to the card, so the tap actually fires.
-    internal fun trackSearchResultTouch(event: MotionEvent) { with(activity) {
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                searchResultTouchActive = searchResultsInteractive() &&
-                    !isInsideKeyboard(event.rawX, event.rawY)
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (searchResultTouchActive) {
-                    searchResultTouchActive = false
-                    if (searchResultRefreshPending) {
-                        searchResultRefreshPending = false
-                        if (hasContentFrame()) contentFrame.post { flushDeferredSearchRefresh() }
-                    }
-                }
+    // See searchResultTouchActive. Down on the results (not the keyboard) opens a defer window.
+    // MUST be called BEFORE the event is dispatched, so the window is already armed when an async
+    // source lands mid-touch.
+    internal fun trackSearchResultTouchDown(event: MotionEvent) { with(activity) {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            searchResultTouchActive = searchResultsInteractive() &&
+                !isInsideKeyboard(event.rawX, event.rawY)
+        }
+    } }
+
+    /**
+     * Closes the defer window and flushes any rebuild held back during the touch.
+     *
+     * MUST be called AFTER the event has been dispatched. View.onTouchEvent enqueues its own
+     * PerformClick on ACTION_UP, and the rebuild's removeView() detaches the row — which cancels
+     * any PerformClick still sitting in the queue. Flushing before dispatch therefore posted the
+     * rebuild ahead of the click and ate the tap: the first tap only consumed the pending flag and
+     * the second one worked, which is what "you have to tap twice" was. Ordering is the whole fix —
+     * post the flush after dispatch and the click is already queued in front of it.
+     */
+    internal fun trackSearchResultTouchUp(event: MotionEvent) { with(activity) {
+        val done = event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL
+        if (done && searchResultTouchActive) {
+            searchResultTouchActive = false
+            if (searchResultRefreshPending) {
+                searchResultRefreshPending = false
+                if (hasContentFrame()) contentFrame.post { flushDeferredSearchRefresh() }
             }
         }
     } }
@@ -163,7 +174,7 @@ internal class SearchResultsHost(private val activity: MainActivity) {
         isVerticalScrollBarEnabled = false   // search results scroll cleanly — no scrollbar track
         val results = universalSearchResults()
         val command = searchCommandPreview()
-        val aiInline = searchAiInlineState()
+        val aiInline = searchAiAnswer()
         val rich = searchRichAnswer()
         val sports = searchSportsCard()
         addView(LinearLayout(context).apply {
@@ -201,7 +212,9 @@ internal class SearchResultsHost(private val activity: MainActivity) {
                 }
             }
 
-            val visibleResults = if (aiInline != null) results.filterNot { it.kind == SearchKind.AI && it.title == "Ask Gemini" } else results
+            // SearchRouter already decides whether an "Ask AI" row belongs here — when the answer is
+            // rendering inline it isn't added at all, so there's nothing left to filter out.
+            val visibleResults = results
             if (visibleResults.isEmpty() && command == null && hero == null) {
                 addView(TextView(context).apply {
                     text = "No results for \"$query\""
@@ -1106,70 +1119,68 @@ internal class SearchResultsHost(private val activity: MainActivity) {
         }
     } }
 
-    private fun searchAiInlineState(): AiAnswerState? { with(activity) {
-        val clean = query.trim()
-        if (clean.isBlank() || !looksLikeAiQuestion(clean)) return null
-        val target = aiTarget(clean)
-        return aiAnswersById[target.id] ?: AiAnswerState(clean, "Tap to ask Gemini from Teclas.", false)
-    } }
-
+    /**
+     * The inline answer, and the whole point of it: the answer IS the card. No echoed prompt (the
+     * user just typed it, it's in the bar two inches up), no avatar, no chrome competing with the
+     * text. Not clickable either — this used to open the AI pane, which is exactly the "takes me to
+     * a popup" behaviour the band is meant to replace. The answer is the destination.
+     * Long-press copies it.
+     */
     private fun searchAiAnswerCard(state: AiAnswerState): View { with(activity) {
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            isClickable = true
-            setPadding(dp(12), dp(11), dp(12), dp(12))
+            setPadding(dp(14), dp(13), dp(14), dp(12))
             background = searchCardBackground(SearchKind.AI, true, 16)
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+            if (state.loading) {
+                addView(AnswerShimmerView(this@apply.context), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(34)))
+            } else {
                 addView(TextView(context).apply {
-                    text = "C"
-                    gravity = Gravity.CENTER
-                    textSize = 12f
-                    typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(Neu.PURPLE)
-                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.RAISED_SM)
-                }, LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(9) })
-                addView(LinearLayout(context).apply {
-                    orientation = LinearLayout.VERTICAL
-                    addView(TextView(context).apply {
-                        text = "Teclas AI"
-                        textSize = 12f
-                        typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                        setTextColor(activeNeuTokens.ink)
-                        includeFontPadding = false
-                    }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                    addView(mono(if (state.loading) "GEMINI · THINKING" else "GEMINI", 8f, Neu.PURPLE).apply {
-                        letterSpacing = 0.12f
-                        setPadding(0, dp(3), 0, 0)
-                    }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
-            addView(TextView(context).apply {
-                text = state.prompt
-                textSize = 11f
-                setTextColor(activeNeuTokens.inkDim)
-                includeFontPadding = false
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-                background = Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(TextView(context).apply {
-                text = state.answer
-                textSize = 12f
-                setTextColor(activeNeuTokens.ink)
-                includeFontPadding = false
-                setLineSpacing(dp(3).toFloat(), 1f)
-                setPadding(dp(10), dp(9), dp(10), dp(9))
-                background = Neu.drawable(activeNeuTokens, dp(11).toFloat(), NeuLevel.PRESSED_SM)
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(8)
-            })
-            setOnClickListener {
-                haptic(this)
-                askGemini(query)
+                    text = state.answer
+                    textSize = 15f * searchFontScale()
+                    setTextColor(activeNeuTokens.ink)
+                    includeFontPadding = false
+                    setLineSpacing(dp(5).toFloat(), 1f)
+                    setTextIsSelectable(false)
+                    isLongClickable = true
+                    setOnLongClickListener {
+                        haptic(this)
+                        val cb = activity.getSystemService(android.content.ClipboardManager::class.java)
+                        cb?.setPrimaryClip(android.content.ClipData.newPlainText("answer", state.answer))
+                        Toast.makeText(activity, "Answer copied", Toast.LENGTH_SHORT).show()
+                        true
+                    }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
+            // Quiet attribution. Says which brain answered, so an on-device answer is legible as one.
+            addView(mono(
+                if (state.loading) "THINKING" else if (GeminiClient.localReady()) "ON-DEVICE" else "TECLAS AI",
+                8f, Neu.PURPLE
+            ).apply {
+                letterSpacing = 0.14f
+                setPadding(0, dp(10), 0, 0)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
     } }
+
+    /** Three-dot pulse while the model generates — a placeholder with the answer's own rhythm,
+     *  rather than a spinner or a jumping "Thinking..." string that reflows the band. */
+    private inner class AnswerShimmerView(ctx: android.content.Context) : View(ctx) {
+        private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Neu.PURPLE }
+        private val startedAt = System.currentTimeMillis()
+        private val radius = activity.dp(3).toFloat()
+        private val gap = activity.dp(11).toFloat()
+        private val left = activity.dp(2).toFloat()
+
+        override fun onDraw(canvas: Canvas) {
+            val t = (System.currentTimeMillis() - startedAt) / 420.0
+            val cy = height / 2f
+            repeat(3) { i ->
+                val phase = (sin(t - i * 0.6) + 1.0) / 2.0
+                dot.alpha = (70 + 150 * phase).toInt().coerceIn(0, 255)
+                canvas.drawCircle(left + radius + i * gap, cy, radius, dot)
+            }
+            postInvalidateOnAnimation()
+        }
+    }
 }
