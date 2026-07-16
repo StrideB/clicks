@@ -3225,7 +3225,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             setPadding(dp(30), dp(14), dp(30), dp(18))
-            addView(unfoldedFocusTopBar(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)).apply {
+            addView(unfoldedFocusTopBar(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, unfoldedWeatherTopBarHeight()).apply {
                 bottomMargin = dp(12)
             })
             addView(FrameLayout(context).apply {
@@ -4532,12 +4532,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
     }
 
+    private fun unfoldedWeatherTopBarHeight(): Int {
+        val styleId = weatherWidgetStyleId()
+        return if (styleId == WEATHER_STYLE_CLASSIC_ID) {
+            dp(40)
+        } else {
+            weatherWidgetStyledHeight(styleId).coerceIn(dp(72), dp(178))
+        }
+    }
+
     private fun unfoldedFocusTopBar(): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER
         clipChildren = false
         clipToPadding = false
-        addView(unfoldedWeatherChip(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+        val styleId = weatherWidgetStyleId()
+        val weather = if (styleId == WEATHER_STYLE_CLASSIC_ID) {
+            unfoldedWeatherChip()
+        } else {
+            unfoldedStyledWeatherWidget(styleId)
+        }
+        addView(weather, LinearLayout.LayoutParams(
+            if (styleId == WEATHER_STYLE_CLASSIC_ID) ViewGroup.LayoutParams.WRAP_CONTENT else weatherWidgetStyledWidth(),
+            LinearLayout.LayoutParams.MATCH_PARENT
+        ))
     }
 
     private fun unfoldedWeatherChip(): View = LinearLayout(this).apply {
@@ -4565,6 +4583,34 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        installWeatherPickerLongPress()
+    }
+
+    private fun unfoldedStyledWeatherWidget(styleId: String): View = WeatherWidgetFrame(this).apply {
+        unfoldedWeatherChipView = this
+        clipChildren = true
+        clipToPadding = true
+        isClickable = true
+        setOnClickListener {
+            haptic(this)
+            if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        refreshWeatherWidgetComposeData()
+        addView(ComposeView(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setContent {
+                val data = weatherWidgetComposeData.value ?: weatherDataFromPrefs()
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+                }
+            }
+            installWeatherPickerLongPress()
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         installWeatherPickerLongPress()
     }
 
