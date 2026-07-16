@@ -331,16 +331,26 @@ class ThemeStudioActivity : ComponentActivity() {
             if (theme.weatherStyleId == WEATHER_STYLE_CLASSIC_ID) {
                 ClassicWeatherPreview(sampleWeather(), theme.accentColor)
             } else {
-                Box(
-                    Modifier.graphicsLayer(
-                        scaleX = 0.40f,
-                        scaleY = 0.40f,
-                        transformOrigin = TransformOrigin(0.5f, 0f)
-                    )
-                ) {
-                    weatherStyleById(theme.weatherStyleId).render(sampleWeather(), Color(theme.accentColor), Modifier.fillMaxWidth())
-                }
+                WeatherStylePreviewContent(theme.weatherStyleId, theme.accentColor, scale = 0.42f)
             }
+        }
+    }
+
+    @Composable
+    private fun WeatherStylePreviewContent(styleId: String, accent: Int, scale: Float) {
+        Box(
+            Modifier
+                .width(340.dp)
+                .height(168.dp)
+                .clipToBounds()
+                .graphicsLayer(
+                    scaleX = scale,
+                    scaleY = scale,
+                    transformOrigin = TransformOrigin(0.5f, 0.5f)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            weatherStyleById(styleId).render(sampleWeather(), Color(accent), Modifier)
         }
     }
 
@@ -701,9 +711,9 @@ class ThemeStudioActivity : ComponentActivity() {
                             modifier = Modifier.weight(1f).height(124.dp),
                             onClick = { onSelect(id) }
                         ) {
-                            Box(Modifier.fillMaxWidth().graphicsLayer(scaleX = 0.50f, scaleY = 0.50f), contentAlignment = Alignment.Center) {
+                            Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.Center) {
                                 if (id == WEATHER_STYLE_CLASSIC_ID) ClassicWeatherPreview(sampleWeather(), accent)
-                                else weatherStyleById(id).render(sampleWeather(), Color(accent), Modifier.fillMaxWidth())
+                                else WeatherStylePreviewContent(id, accent, scale = 0.46f)
                             }
                         }
                     }

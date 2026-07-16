@@ -1,6 +1,7 @@
 package com.fran.teclas.llm
 
 import android.content.Context
+import android.os.Looper
 import android.util.Log
 import java.io.File
 import java.net.HttpURLConnection
@@ -33,11 +34,39 @@ object EmbedEngine {
         private set
     @Volatile var downloadedBytes: Long = 0
         private set
+    @Volatile private var installedCache: Boolean? = null
+    @Volatile private var installCheckQueued: Boolean = false
 
     private fun modelFile(context: Context): File =
         File(File(context.filesDir, DIR).apply { mkdirs() }, MODEL_FILE)
 
-    fun modelInstalled(context: Context): Boolean = modelFile(context).length() == MODEL_BYTES
+    private fun computeModelInstalled(context: Context): Boolean =
+        (modelFile(context).length() == MODEL_BYTES).also { installedCache = it }
+
+    private fun queueInstallCheck(context: Context) {
+        if (installCheckQueued) return
+        synchronized(this) {
+            if (installCheckQueued) return
+            installCheckQueued = true
+        }
+        Thread({
+            try {
+                computeModelInstalled(context.applicationContext)
+            } finally {
+                installCheckQueued = false
+            }
+        }, "teclas-embed-install-check").start()
+    }
+
+    fun modelInstalled(context: Context): Boolean {
+        installedCache?.let { return it }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            queueInstallCheck(context)
+            return false
+        }
+        return computeModelInstalled(context)
+    }
+
     fun ready(context: Context): Boolean = handle != 0L || modelInstalled(context)
     val totalBytes: Long get() = MODEL_BYTES
 
@@ -70,9 +99,10 @@ object EmbedEngine {
                     }
                 }
             }
-            if (tmp.length() == MODEL_BYTES) { tmp.renameTo(target); true }
-            else { Log.w(TAG, "download incomplete: ${tmp.length()}/$MODEL_BYTES"); false }
+            if (tmp.length() == MODEL_BYTES) { tmp.renameTo(target); installedCache = true; true }
+            else { installedCache = false; Log.w(TAG, "download incomplete: ${tmp.length()}/$MODEL_BYTES"); false }
         } catch (e: Exception) {
+            installedCache = false
             Log.w(TAG, "download failed: ${e.message}"); false
         } finally {
             downloading = false

@@ -1,6 +1,7 @@
 package com.fran.teclas.llm
 
 import android.content.Context
+import android.os.Looper
 import android.util.Log
 import java.io.File
 import java.net.HttpURLConnection
@@ -43,6 +44,8 @@ object LocalLlmEngine {
         private set
     @Volatile var downloadedBytes: Long = 0
         private set
+    @Volatile private var installedCache: ModelSpec? = null
+    @Volatile private var installCheckQueued: Boolean = false
 
     private fun fileFor(context: Context, spec: ModelSpec): File =
         File(File(context.filesDir, DIR).apply { mkdirs() }, spec.file)
@@ -53,7 +56,33 @@ object LocalLlmEngine {
     private fun activeSpec(context: Context): ModelSpec? =
         if (installed(context, GEMMA)) GEMMA else if (installed(context, BONSAI)) BONSAI else null
 
-    fun modelInstalled(context: Context): Boolean = activeSpec(context) != null
+    private fun computeActiveSpec(context: Context): ModelSpec? =
+        activeSpec(context).also { installedCache = it }
+
+    private fun queueInstallCheck(context: Context) {
+        if (installCheckQueued) return
+        synchronized(this) {
+            if (installCheckQueued) return
+            installCheckQueued = true
+        }
+        Thread({
+            try {
+                computeActiveSpec(context.applicationContext)
+            } finally {
+                installCheckQueued = false
+            }
+        }, "teclas-llm-install-check").start()
+    }
+
+    fun modelInstalled(context: Context): Boolean {
+        if (installedCache != null) return true
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            queueInstallCheck(context)
+            return false
+        }
+        return computeActiveSpec(context) != null
+    }
+
     fun fastInstalled(context: Context): Boolean = installed(context, BONSAI)
     fun qualityInstalled(context: Context): Boolean = installed(context, GEMMA)
     val totalBytes: Long get() = BONSAI.bytes
@@ -96,10 +125,12 @@ object LocalLlmEngine {
             }
             if (tmp.length() == spec.bytes) {
                 tmp.renameTo(target)
+                installedCache = spec
                 synchronized(this) { if (handle != 0L) { runCatching { nativeFree(handle) }; handle = 0; loadedSpec = null } }
                 true
-            } else { Log.w(TAG, "download incomplete: ${tmp.length()}/${spec.bytes}"); false }
+            } else { installedCache = computeActiveSpec(context); Log.w(TAG, "download incomplete: ${tmp.length()}/${spec.bytes}"); false }
         } catch (e: Exception) {
+            installedCache = computeActiveSpec(context)
             Log.w(TAG, "download failed: ${e.message}")
             false
         } finally {

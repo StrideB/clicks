@@ -526,12 +526,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val deckParams = if (imeIsWideCanvas()) {
             android.widget.FrameLayout.LayoutParams(
                 imeKeyboardPanelWidth(),
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                imeKeyboardHeight(),
                 Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         } else {
             android.widget.FrameLayout.LayoutParams(
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT)
+                imeKeyboardHeight())
         }
         return android.widget.FrameLayout(this).apply {
             addView(deck, deckParams)
@@ -560,6 +560,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
     }
 
+    override fun onEvaluateFullscreenMode(): Boolean = false
+
     /**
      * With a centered, narrower panel on a wide canvas, the window still spans the full width — so
      * restrict the touchable region to the actual keyboard panel, letting taps in the side gaps fall
@@ -569,10 +571,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     override fun onComputeInsets(outInsets: android.inputmethodservice.InputMethodService.Insets?) {
         super.onComputeInsets(outInsets)
         outInsets ?: return
-        if (!imeIsWideCanvas()) return
-        if (attachOverlay != null || shareCardOverlay != null) return
+        val root = imeRoot
         val deck = deckView ?: return
         if (deck.width == 0 || deck.height == 0) return
+        val deckTopInWindow = if (root != null && deck.parent === root) deck.top else 0
+        // Tell Android the whole bottom IME band is visible keyboard content. Apps that honor IME
+        // insets will resize above this instead of letting the keyboard overlap their fields.
+        outInsets.contentTopInsets = deckTopInWindow
+        outInsets.visibleTopInsets = deckTopInWindow
+        if (!imeIsWideCanvas()) return
+        if (attachOverlay != null || shareCardOverlay != null) return
         val loc = IntArray(2)
         deck.getLocationInWindow(loc)
         outInsets.touchableInsets = android.inputmethodservice.InputMethodService.Insets.TOUCHABLE_INSETS_REGION
@@ -2164,7 +2172,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val strip = suggestionStrip ?: return
         if (suggestionStripExpanded != expanded) {
             suggestionStripExpanded = expanded
-            deckView?.minimumHeight = imeKeyboardHeight()
+            applyImeDeckHeight()
         }
         val targetHeight = if (expanded) dp(38) else 0
         (strip.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
@@ -2176,7 +2184,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         strip.visibility = if (expanded) View.VISIBLE else View.GONE
         if (!expanded) strip.background = null
         strip.requestLayout()
+        applyImeDeckHeight()
+    }
+
+    private fun applyImeDeckHeight() {
+        val target = imeKeyboardHeight()
+        deckView?.minimumHeight = target
+        deckView?.layoutParams?.let { lp ->
+            if (lp.height != target) {
+                lp.height = target
+                deckView?.layoutParams = lp
+            }
+        }
         deckView?.requestLayout()
+        imeRoot?.requestLayout()
     }
 
     // One well-background instance for the strip's lifetime; setBackground(same instance) is a
@@ -4087,7 +4108,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
      * A wide canvas (foldable inner display, tablet, big landscape) where a full-width keyboard
      * stretches the keys unpleasantly. Same >=600dp breakpoint the launcher uses for its inner UI.
      */
-    private fun imeIsWideCanvas(): Boolean = resources.configuration.screenWidthDp >= 600
+    private fun imeIsWideCanvas(): Boolean {
+        if (resources.configuration.screenWidthDp >= 600) return true
+        val dm = resources.displayMetrics
+        val minDp = minOf(dm.widthPixels, dm.heightPixels) / dm.density
+        return minDp >= 600f
+    }
 
     /**
      * The size the key metrics scale from. On a wide canvas we add the SAME inner-screen boost the
@@ -4098,7 +4124,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val base = KeyboardSettings.keyboardSize(this)
         if (!imeIsWideCanvas()) return base
         val boost = imePrefs().getInt("inner_keyboard_size_boost", 52).coerceIn(-20, 150)
-        return (base + boost + 12).coerceIn(0, 190)
+        return (base + boost + 28).coerceIn(0, 210)
     }
 
     /**

@@ -47,8 +47,8 @@ private val HairLine = Color(0x22FFFFFF)
 /**
  * Long-press picker for the homescreen weather widget. Lists the classic native
  * header plus every registered [WeatherStyle], each previewed with the launcher's
- * live weather data. Selecting a style hands off to placement mode in MainActivity;
- * scrim tap, ✕ and back all cancel without touching the current widget.
+ * live weather data. Selecting a style applies it in place; scrim tap, ✕ and
+ * back all cancel without touching the current widget.
  */
 @Composable
 fun WeatherStylePickerSheet(
@@ -90,7 +90,7 @@ fun WeatherStylePickerSheet(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text("WEATHER WIDGET", color = InkBright, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                    Text("Pick a style, then tap where it lives", color = InkMuted, fontSize = 11.sp)
+                    Text("Pick a style for the current weather widget", color = InkMuted, fontSize = 11.sp)
                 }
                 Box(
                     Modifier
@@ -111,6 +111,7 @@ fun WeatherStylePickerSheet(
                 grouped.keys.filter { it !in WEATHER_CATEGORY_ORDER }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
+                modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)

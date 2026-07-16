@@ -124,11 +124,16 @@ import com.fran.teclas.keyboard.SpatialScorer
 import com.fran.teclas.keyboard.WordBoundaryDeleter
 import com.fran.teclas.db.NgramRepository
 import com.fran.teclas.db.WidgetPersistenceRepository
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
+import androidx.compose.ui.unit.dp
 import com.fran.teclas.weather.WEATHER_STYLE_CLASSIC_ID
 import com.fran.teclas.weather.ALMANAC_STYLES
 import com.fran.teclas.weather.WeatherData
@@ -430,6 +435,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedLibraryContentArea: FrameLayout? = null
     private var unfoldedFocusContentArea: FrameLayout? = null
     private var unfoldedFocusDockView: View? = null
+    private var weatherWidgetFrameView: View? = null
+    private var unfoldedWeatherChipView: View? = null
+    private var weatherHoldTargetView: View? = null
+    private var unfoldedWeatherHoldRunnable: Runnable? = null
+    private var unfoldedWeatherHoldFired = false
+    private var unfoldedWeatherHoldStartX = 0f
+    private var unfoldedWeatherHoldStartY = 0f
     private var innerKeyboardPreviewBoost: Int? = null
     private var innerKeyboardEditMode = false
     private var composeText = ""
@@ -651,6 +663,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var weatherDripView: WeatherDripView? = null
     internal var homeWallpaperDrawable: Drawable? = null
     private var homeWallpaperSourceSig: String? = null
+    private var homeWallpaperUnavailableSig: String? = null
+    private var deviceWallpaperFileDeniedSig: String? = null
     private var innerWallpaperImageView: ImageView? = null
     private var innerWallpaperEditMode = false
     private var pendingWallpaperInnerScope: Boolean? = null
@@ -1054,7 +1068,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // re-decoding the image + rebuilding the whole view tree each time was a major heat source.
         if (useSystemWallpaperOnHome()) {
             val sig = deviceWallpaperSignature()
-            if (sig != homeWallpaperSourceSig || homeWallpaperDrawable == null) {
+            if (sig != homeWallpaperSourceSig || (homeWallpaperDrawable == null && homeWallpaperUnavailableSig != sig)) {
                 refreshHomeWallpaperAsync()
             }
         }
@@ -1184,10 +1198,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         super.onActivityResult(requestCode, resultCode, data)
         if (::spaceBoardController.isInitialized &&
             spaceBoardController.onWidgetResult(requestCode, resultCode == RESULT_OK)) {
+            recoverAfterWidgetSelection()
             return
         }
         if (::homeLeftController.isInitialized &&
             homeLeftController.onWidgetResult(requestCode, resultCode == RESULT_OK)) {
+            recoverAfterWidgetSelection()
             return
         }
         if (requestCode == VOICE_REQUEST_CODE && resultCode == RESULT_OK) {
@@ -1221,6 +1237,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             pendingWidgetProvider = null
             pendingDockWidgetKey = null
             pendingDockWidgetProvider = null
+            recoverAfterWidgetSelection()
         } else if (requestCode == WIDGET_CONFIGURE_REQUEST_CODE) {
             val widgetId = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, pendingWidgetId) ?: pendingWidgetId
             if (resultCode == RESULT_OK && widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
@@ -1238,6 +1255,48 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             pendingWidgetProvider = null
             pendingDockWidgetKey = null
             pendingDockWidgetProvider = null
+            recoverAfterWidgetSelection()
+        }
+    }
+
+    /**
+     * Android app-widget bind/config screens temporarily leave the launcher. On foldables that can
+     * interrupt our full-window board/glass layers mid-animation; if those stale layers survive, the
+     * homescreen looks black and the keyboard appears dead because a detached board is still eating
+     * touches. Re-seat whichever widget board is active and restore the keyboard surface.
+     */
+    private fun recoverAfterWidgetSelection() {
+        handler.post {
+            closeWidgetPicker()
+            widgetBoardView?.let { board ->
+                board.animate().cancel()
+                board.alpha = 1f
+                board.translationY = 0f
+                (board as? WidgetBoardFrame)?.setGlassProgress(1f)
+                setLauncherBlurred(true)
+                refreshWidgetBoard()
+            } ?: run {
+                if (homeLeftOverlay != null) setLauncherBlurProgress(1f) else setLauncherBlurred(false)
+            }
+
+            spaceBoardOverlay?.let { overlay ->
+                overlay.animate().cancel()
+                overlay.alpha = 1f
+                overlay.translationX = 0f
+                spaceBoardDragActive = false
+                reloadSpaceBoardForActiveSpace()
+            }
+            homeLeftOverlay?.let { overlay ->
+                overlay.animate().cancel()
+                overlay.alpha = 1f
+                overlay.translationX = 0f
+                homeLeftDragActive = false
+                reloadHomeLeftBoard()
+            }
+
+            if (isUnfoldedInnerLayoutActive()) refreshUnfoldedFocusContent()
+            refreshKeyboardDock()
+            rootView.post { captureKeyBounds() }
         }
     }
 
@@ -1575,6 +1634,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     internal fun render() {
         stopDeleteRepeat(clearFired = true)
         weatherWidgetDragging = false   // the widget is rebuilt below; never carry a stuck drag lock
+        clearTransientHomeOverlaysForRender()
         ensureDockedHomeSeed()   // one-time: copy the shared home setup into the docked namespace
         keyViews.clear()
         keyBounds.clear()
@@ -1675,6 +1735,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         root.post { captureKeyBounds() }
         // Key previews render inside our own window (one reused view) instead of a popup window.
         (findViewById<View>(android.R.id.content) as? FrameLayout)?.let { keyPreviewManager.attachHost(it) }
+    }
+
+    private fun clearTransientHomeOverlaysForRender() {
+        weatherStylePickerView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        weatherStylePickerView = null
+        weatherPlacementView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        weatherPlacementView = null
     }
 
     // Typing display — lives with whichever keyboard placement is active. Shows typed
@@ -2325,6 +2392,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun unfoldedKeyboardPanelOffsetX(panelWidth: Int = unfoldedKeyboardPanelWidth()): Int =
         innerKeyboardOffsetX().coerceIn(-unfoldedKeyboardPanelSnapLimit(panelWidth), unfoldedKeyboardPanelSnapLimit(panelWidth))
 
+    private fun unfoldedKeyboardPanelLeft(panelWidth: Int = unfoldedKeyboardPanelWidth()): Int {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val base = ((screenWidth - panelWidth) / 2).coerceAtLeast(0)
+        return (base + unfoldedKeyboardPanelOffsetX(panelWidth)).coerceIn(0, (screenWidth - panelWidth).coerceAtLeast(0))
+    }
+
+    private fun unfoldedKeyboardPanelParams(panelWidth: Int = unfoldedKeyboardPanelWidth()): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.BOTTOM or Gravity.LEFT).apply {
+            leftMargin = unfoldedKeyboardPanelLeft(panelWidth)
+        }
+
     private fun forceFoldableWidgetPlacement() {
         if (!isUnfoldedInnerLayoutActive() || keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) return
         foldPreviousKeyboardPlacement = foldPreviousKeyboardPlacement ?: keyboardPlacement
@@ -2437,6 +2515,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun loadHomeWallpaperDrawable(): Drawable? {
         normalizeInnerWallpaperTransform()
+        val sourceSig = deviceWallpaperSignature()
+        if (homeWallpaperUnavailableSig == sourceSig) return null
         val selectedDrawable = activeHomeWallpaperUri()?.let { uri ->
             runCatching {
                 decodeWallpaperSampled { contentResolver.openInputStream(uri) }
@@ -2445,7 +2525,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 android.util.Log.w("TeclasWallpaper", "Selected wallpaper load failed", it)
             }.getOrNull()
         }
-        if (selectedDrawable != null) return selectedDrawable
+        if (selectedDrawable != null) {
+            homeWallpaperUnavailableSig = null
+            deviceWallpaperFileDeniedSig = null
+            return selectedDrawable
+        }
         if (!useSystemWallpaperOnHome()) {
             val themedWallpaper = prefs().getString(ThemeRepository.THEME_WALLPAPER_ID_PREF, WallpaperRegistry.SYSTEM_WALLPAPER_ID)
                 ?: WallpaperRegistry.SYSTEM_WALLPAPER_ID
@@ -2457,13 +2541,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val manager = WallpaperManager.getInstance(this)
         fun fileDrawable(which: Int): Drawable? {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return null
+            if (deviceWallpaperFileDeniedSig == sourceSig) return null
             return runCatching {
                 decodeWallpaperSampled {
                     manager.getWallpaperFile(which)
                         ?.let { android.os.ParcelFileDescriptor.AutoCloseInputStream(it) }
                 }?.let { bitmap -> BitmapDrawable(resources, bitmap) }
             }.onFailure {
-                android.util.Log.w("TeclasWallpaper", "Device wallpaper file load failed for $which", it)
+                if (it is SecurityException) {
+                    deviceWallpaperFileDeniedSig = sourceSig
+                    android.util.Log.w("TeclasWallpaper", "Device wallpaper file access denied; using live drawable fallback")
+                } else {
+                    android.util.Log.w("TeclasWallpaper", "Device wallpaper file load failed for $which", it)
+                }
             }.getOrNull()
         }
         // Default to the device HOME (system) wallpaper — "whatever the user is using" — and
@@ -2481,6 +2571,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "TeclasWallpaper",
             "device wallpaper loaded=${drawable != null} type=${drawable?.javaClass?.simpleName}"
         )
+        if (drawable == null) homeWallpaperUnavailableSig = sourceSig else homeWallpaperUnavailableSig = null
         return drawable?.constantState?.newDrawable(resources)?.mutate() ?: drawable
     }
 
@@ -2517,7 +2608,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (wallpaper == null && launcherWallpaperCanvasActive() && !homeWallpaperLoading) refreshHomeWallpaperAsync()
         if (wallpaper == null && !launcherWallpaperCanvasActive()) return null
         innerWallpaperImageView = null
-        return FrameLayout(this).apply {
+        return object : FrameLayout(this) {
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                if (handleUnfoldedWeatherHold(ev)) return true
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
             if (wallpaper != null) {
                 addView(ImageView(context).apply {
                     setImageDrawable(wallpaper.constantState?.newDrawable(resources)?.mutate() ?: wallpaper)
@@ -2835,9 +2931,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetSearchContentArea = null
         val widgetSearchActive = isWidgetUniversalSearchActive()
         widgetSearchRendered = widgetSearchActive
-            homeEditMode = false
-            homeEditChipView = null
-            val content = LinearLayout(this).apply {
+        homeEditMode = false
+        homeEditChipView = null
+        weatherWidgetFrameView = null
+        weatherHoldTargetView = null
+        val content = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
                 clipChildren = false
@@ -2899,7 +2997,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 })
             }
         }
-        return FrameLayout(this).apply {
+        return object : FrameLayout(this) {
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                if (handleUnfoldedWeatherHold(ev)) return true
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
             clipChildren = false
             clipToPadding = false
             installWallpaperEditLongPress(this)
@@ -2920,7 +3023,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetSearchRendered = widgetSearchActive
         homeEditMode = false
         homeEditChipView = null
-        return FrameLayout(this).apply {
+        weatherWidgetFrameView = null
+        weatherHoldTargetView = null
+        return object : FrameLayout(this) {
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                if (handleUnfoldedWeatherHold(ev)) return true
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
             clipChildren = false
             clipToPadding = false
             installWallpaperEditLongPress(this)
@@ -3068,6 +3178,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         unfoldedLibraryContentArea = null
         unfoldedFocusContentArea = null
         unfoldedFocusDockView = null
+        unfoldedWeatherChipView = null
+        cancelUnfoldedWeatherHold()
         favoritesDockContextShowing = dockPinnedOverrideSpace() == null
 
         val focusArea = FrameLayout(this).apply {
@@ -3105,7 +3217,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(dockStage, LinearLayout.LayoutParams(panelWidth, dp(82)))
         }
 
-        return FrameLayout(this).apply {
+        return object : FrameLayout(this) {
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                if (handleUnfoldedWeatherHold(ev)) return true
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
             clipChildren = false
             clipToPadding = false
             installWallpaperEditLongPress(this)
@@ -3149,6 +3266,70 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         dock.visibility = if (visible) View.VISIBLE else View.GONE
         dock.alpha = if (visible) 1f else 0f
         dock.translationY = if (visible) 0f else dp(12).toFloat()
+    }
+
+    private fun cancelUnfoldedWeatherHold() {
+        unfoldedWeatherHoldRunnable?.let { contentFrame.removeCallbacks(it) }
+        unfoldedWeatherHoldRunnable = null
+    }
+
+    private fun handleUnfoldedWeatherHold(ev: MotionEvent): Boolean {
+        fun visibleRectFor(view: View?): Pair<View, Rect>? {
+            val target = view ?: return null
+            val rect = Rect()
+            return if (target.isShown && target.getGlobalVisibleRect(rect)) target to rect else null
+        }
+        val targetPair = when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> listOfNotNull(
+                visibleRectFor(weatherWidgetFrameView),
+                visibleRectFor(unfoldedWeatherChipView)
+            ).firstOrNull { (_, rect) -> rect.contains(ev.rawX.toInt(), ev.rawY.toInt()) }
+            else -> weatherHoldTargetView?.let { visibleRectFor(it) }
+        }
+        val chip = targetPair?.first ?: return false
+        val rect = targetPair.second
+        val withinChip = rect.contains(ev.rawX.toInt(), ev.rawY.toInt())
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                unfoldedWeatherHoldFired = false
+                if (!withinChip) {
+                    weatherHoldTargetView = null
+                    cancelUnfoldedWeatherHold()
+                    return false
+                }
+                weatherHoldTargetView = chip
+                unfoldedWeatherHoldStartX = ev.rawX
+                unfoldedWeatherHoldStartY = ev.rawY
+                cancelUnfoldedWeatherHold()
+                val r = Runnable {
+                    unfoldedWeatherHoldRunnable = null
+                    unfoldedWeatherHoldFired = true
+                    haptic(chip)
+                    openWeatherStylePicker()
+                }
+                unfoldedWeatherHoldRunnable = r
+                contentFrame.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (unfoldedWeatherHoldRunnable != null) {
+                    val slop = maxOf(dp(18), android.view.ViewConfiguration.get(this).scaledTouchSlop * 2)
+                    if (abs(ev.rawX - unfoldedWeatherHoldStartX) > slop || abs(ev.rawY - unfoldedWeatherHoldStartY) > slop) {
+                        cancelUnfoldedWeatherHold()
+                    }
+                }
+                return unfoldedWeatherHoldFired
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                cancelUnfoldedWeatherHold()
+                weatherHoldTargetView = null
+                if (unfoldedWeatherHoldFired) {
+                    unfoldedWeatherHoldFired = false
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private fun innerLibraryLocked(): Boolean =
@@ -3337,7 +3518,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         override fun onDraw(canvas: Canvas) {
             syncToPanel(invalidateEvenIfStill = false)
-            val drawable = homeWallpaperDrawable ?: loadHomeWallpaperDrawable()?.also { homeWallpaperDrawable = it }
+            val drawable = homeWallpaperDrawable
             if (drawable == null || width <= 0 || height <= 0) {
                 drawFallback(canvas)
                 return
@@ -4330,6 +4511,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun unfoldedWeatherChip(): View = LinearLayout(this).apply {
+        unfoldedWeatherChipView = this
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER
         isClickable = true
@@ -4353,6 +4535,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        installWeatherPickerLongPress()
     }
 
     private fun unfoldedContextSelector(): View = HorizontalScrollView(this).apply {
@@ -4610,7 +4793,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         orientation = LinearLayout.VERTICAL
         clipChildren = false
         clipToPadding = false
-        addView(homeHeader(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        addView(homeHeader().apply { installWeatherPickerLongPress() }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(10)))
         nowPlayingCardView = ComposeView(context).apply {
             setBackgroundColor(Color.TRANSPARENT)
@@ -6115,28 +6298,99 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun buildWeatherWidgetFrame(context: Context): WeatherWidgetFrame {
         val frame = WeatherWidgetFrame(context)
+        weatherWidgetFrameView = frame
         val styleId = weatherWidgetStyleId()
         if (styleId == WEATHER_STYLE_CLASSIC_ID) {
             // homeHeader() rebinds the weather lateinit views; the floating copy is built after
             // the column's invisible keeper, so updateClock() drives this live instance.
-            frame.addView(homeHeader(), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+            val header = homeHeader().apply { installWeatherPickerLongPress() }
+            frame.addView(header, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         } else {
+            frame.clipChildren = true
+            frame.clipToPadding = true
             refreshWeatherWidgetComposeData()
             frame.addView(ComposeView(context).apply {
                 setBackgroundColor(Color.TRANSPARENT)
                 setContent {
                     val data = weatherWidgetComposeData.value
-                    if (data != null) weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+                    if (data != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+                        }
+                    }
                 }
-            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+                installWeatherPickerLongPress()
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             frame.isClickable = true
             frame.setOnClickListener {
                 haptic(frame)
                 if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
             }
         }
+        frame.installWeatherPickerLongPress()
         frame.elevation = dp(8).toFloat()
         return frame
+    }
+
+    private fun View.installWeatherPickerLongPress() {
+        var startX = 0f
+        var startY = 0f
+        var fired = false
+        var armed: Runnable? = null
+        fun cancelHold(v: View) {
+            armed?.let { v.removeCallbacks(it) }
+            armed = null
+        }
+        setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.rawX
+                    startY = event.rawY
+                    fired = false
+                    cancelHold(view)
+                    val r = Runnable {
+                        armed = null
+                        fired = true
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                        haptic(view)
+                        openWeatherStylePicker()
+                    }
+                    armed = r
+                    view.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val slop = maxOf(dp(18), android.view.ViewConfiguration.get(view.context).scaledTouchSlop * 2)
+                    if (abs(event.rawX - startX) > slop || abs(event.rawY - startY) > slop) cancelHold(view)
+                    fired
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    cancelHold(view)
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    if (fired) {
+                        fired = false
+                        true
+                    } else {
+                        false
+                    }
+                }
+                else -> fired
+            }
+        }
+        isLongClickable = true
+        setOnLongClickListener { view ->
+            haptic(view)
+            openWeatherStylePicker()
+            true
+        }
+        if (this is ViewGroup) {
+            for (i in 0 until childCount) getChildAt(i).installWeatherPickerLongPress()
+        }
     }
 
     private fun weatherWidgetFrameLayoutParams(): FrameLayout.LayoutParams {
@@ -6144,7 +6398,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val lp = if (classic) {
             FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         } else {
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            FrameLayout.LayoutParams(weatherWidgetStyledWidth(), weatherWidgetStyledHeight(weatherWidgetStyleId()))
         }
         // Default = the header's flow position (content column padding), so an unset
         // position renders pixel-identically to the old fixed top header.
@@ -6152,6 +6406,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.topMargin = dp(6)
         if (classic) lp.rightMargin = dp(14)
         return lp
+    }
+
+    private fun weatherWidgetStyledWidth(): Int {
+        val max = (resources.displayMetrics.widthPixels - dp(28)).coerceAtLeast(dp(220))
+        return minOf(max, dp(360)).coerceAtLeast(dp(240))
+    }
+
+    private fun weatherWidgetStyledHeight(styleId: String): Int {
+        val category = weatherStyleById(styleId).category
+        return when (category) {
+            "Almanac" -> dp(156)
+            "Dot Matrix" -> dp(128)
+            else -> dp(122)
+        }
     }
 
     private fun applyPersistedWeatherWidgetPos(frame: WeatherWidgetFrame) {
@@ -6308,6 +6576,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         protected abstract fun onSettle(fallbackLeft: Int, fallbackTop: Int)
         /** Long-press action while locked (open the style/theme picker). */
         protected abstract fun onLongPress()
+        protected open fun lockedLongPressDelayMs(): Long = 700L
+        protected open fun lockedLongPressCancelSlopPx(): Int = dp(6)
 
         protected fun dispatchCancelToChildren() {
             val t = android.os.SystemClock.uptimeMillis()
@@ -6368,14 +6638,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         longPressRunnable = r
                         // A deliberately long, tight hold (≈700ms) so a glance-touch or the start of
                         // a swipe never trips the picker — only an intentional press-and-wait does.
-                        postDelayed(r, 700L)
+                        postDelayed(r, lockedLongPressDelayMs())
                     }
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (!moveMode) {
                         // A touch that starts drifting is a swipe, not a hold → cancel the picker timer
                         // so the gesture reaches the home cleanly.
-                        if ((abs(event.rawX - startRawX) > dp(6) || abs(event.rawY - startRawY) > dp(6))) cancelPickerLongPress()
+                        val holdSlop = lockedLongPressCancelSlopPx()
+                        if ((abs(event.rawX - startRawX) > holdSlop || abs(event.rawY - startRawY) > holdSlop)) cancelPickerLongPress()
                         return super.dispatchTouchEvent(event)  // swipe passes through
                     }
                     if (longPressFired) return true
@@ -6416,7 +6687,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private inner class WeatherWidgetFrame(context: Context) : MovableWidgetFrame(context) {
         private var persistedPosApplied = false
 
-        init { clipChildren = false; clipToPadding = false }
+        init {
+            clipChildren = false
+            clipToPadding = false
+            isClickable = true
+            isLongClickable = true
+        }
 
         override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
             super.onLayout(changed, l, t, r, b)
@@ -6427,6 +6703,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         override fun onSettle(fallbackLeft: Int, fallbackTop: Int) = settleWeatherWidget(this, fallbackLeft, fallbackTop)
+        override fun lockedLongPressDelayMs(): Long = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        override fun lockedLongPressCancelSlopPx(): Int = maxOf(dp(18), android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop * 2)
         override fun onLongPress() = openWeatherStylePicker()
     }
 
@@ -6792,8 +7070,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     accent = ComposeColor(goKeyColor),
                     currentStyleId = weatherWidgetStyleId(),
                     onSelect = { id ->
-                        closeWeatherStylePicker()
-                        enterWeatherPlacementMode(id)
+                        applyWeatherWidgetStyle(id)
                     },
                     onCancel = { closeWeatherStylePicker() }
                 )
@@ -6804,6 +7081,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         overlay.alpha = 0f
         overlay.translationY = dp(40).toFloat()
         overlay.animate().alpha(1f).translationY(0f).setDuration(240).setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    private fun applyWeatherWidgetStyle(styleId: String) {
+        prefs().edit().putString(homeScopedKey(WEATHER_WIDGET_STYLE_PREF), styleId).apply()
+        if (demoModeEnabled()) applyDemoWeather(demoSceneId())
+        weatherStylePickerView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        weatherStylePickerView = null
+        weatherPlacementView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        weatherPlacementView = null
+        haptic(contentFrame)
+        render()
     }
 
     private fun closeWeatherStylePicker() {
@@ -6824,9 +7112,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         overlay.animate().alpha(1f).setDuration(160).start()
     }
 
-    private fun exitWeatherPlacementMode() {
+    private fun exitWeatherPlacementMode(animate: Boolean = true) {
         val overlay = weatherPlacementView ?: return
         weatherPlacementView = null
+        if (!animate || !overlay.isAttachedToWindow) {
+            (overlay.parent as? ViewGroup)?.removeView(overlay)
+            return
+        }
         overlay.animate().alpha(0f).setDuration(140)
             .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }
             .start()
@@ -6895,7 +7187,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private var previewShown = false
 
         init {
-            setBackgroundColor(0x59000000)
+            // Keep placement as an edit layer over the real home. The previous dim made selecting a
+            // style feel like a blank screen because icons/wallpaper disappeared behind the overlay.
+            setBackgroundColor(Color.TRANSPARENT)
             isClickable = true
             preview = if (styleId == WEATHER_STYLE_CLASSIC_ID) {
                 buildClassicWeatherPreview(context)
@@ -6913,10 +7207,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val lp = if (styleId == WEATHER_STYLE_CLASSIC_ID) {
                 LayoutParams((contentFrame.width - dp(28)).coerceAtLeast(dp(220)), LayoutParams.WRAP_CONTENT)
             } else {
-                LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT)
+                LayoutParams((contentFrame.width - dp(48)).coerceAtLeast(dp(220)), LayoutParams.WRAP_CONTENT)
             }
             addView(preview, lp)
             addView(buildPlacementChrome(context))
+            post { showPreviewAtCurrentWeatherPosition() }
         }
 
         private fun buildPlacementChrome(context: Context): View {
@@ -6931,7 +7226,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(context).apply {
-                    text = "Tap where you want the weather widget"
+                    text = "Drag weather, release to place"
                     textSize = 12f
                     setTextColor(Ink)
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -6955,6 +7250,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return FrameLayout(context).apply {
                 addView(bar, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(18) })
             }
+        }
+
+        private fun showPreviewAtCurrentWeatherPosition() {
+            if (preview.width <= 0 || preview.height <= 0) {
+                preview.post { showPreviewAtCurrentWeatherPosition() }
+                return
+            }
+            val existing = weatherWidgetFrameView
+            val parentLoc = IntArray(2)
+            val viewLoc = IntArray(2)
+            getLocationOnScreen(parentLoc)
+            existing?.getLocationOnScreen(viewLoc)
+            val fallbackX = ((width - preview.width) / 2).coerceAtLeast(0)
+            val fallbackY = dp(70)
+            val x = if (existing?.isShown == true) viewLoc[0] - parentLoc[0] else fallbackX
+            val y = if (existing?.isShown == true) viewLoc[1] - parentLoc[1] else fallbackY
+            val (cx, cy) = clampWeatherWidgetPos(this, preview.width, preview.height, x, y)
+            preview.translationX = cx.toFloat()
+            preview.translationY = cy.toFloat()
+            previewShown = true
+            preview.animate().alpha(0.98f).setDuration(140).start()
         }
 
         override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -6982,7 +7298,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val h = preview.height
             if (w <= 0 || h <= 0) return
             preview.translationX = (x - w / 2f).coerceIn(0f, (width - w).toFloat().coerceAtLeast(0f))
-            preview.translationY = y - h / 2f
+            preview.translationY = (y - h / 2f).coerceIn(0f, (weatherWidgetBottomLimitIn(this) - h).toFloat().coerceAtLeast(0f))
         }
 
         private fun attemptDrop() {
@@ -7009,7 +7325,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (demoModeEnabled()) applyDemoWeather(demoSceneId())
             saveWeatherWidgetPos(resolved.first, resolved.second)
             haptic(this)
-            exitWeatherPlacementMode()
+            exitWeatherPlacementMode(animate = false)
             render()
         }
 
@@ -10211,6 +10527,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return container
     }
 
+    /** Reload the personal widget page after Android returns from widget bind/config. */
+    private fun reloadHomeLeftBoard() {
+        if (homeLeftOverlay == null || !::homeLeftController.isInitialized) return
+        homeLeftController.open(boardCanvasId(homeLeftController, HOME_LEFT_BOARD_ID), emptyList())
+    }
+
     private fun openHomeLeftPage() {
         val container = mountHomeLeftPage() ?: return
         if (cardsViewEnabled() && beginHomeCardTransition(container, +1)) {
@@ -11447,19 +11769,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             widgetKeyboardSeatView = KeyboardSocketView(context).apply {
                 alpha = 0.32f
             }
-            addView(widgetKeyboardSeatView, FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+            addView(widgetKeyboardSeatView, unfoldedKeyboardPanelParams(panelWidth))
 
             val socket = KeyboardSocketView(context).apply {
                 alpha = 0f
                 visibility = View.GONE
             }
             widgetSocketView = socket
-            addView(socket, FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+            addView(socket, unfoldedKeyboardPanelParams(panelWidth))
 
             val keyboardPanel = FrameLayout(context).apply {
                 clipChildren = false
                 clipToPadding = false
-                translationX = unfoldedKeyboardPanelOffsetX(panelWidth).toFloat()
                 translationY = innerKeyboardOffsetY().toFloat()
                 if (innerKeyboardEditMode) {
                     setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -11468,7 +11789,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
             widgetKeyboardModule = keyboardPanel
-            addView(keyboardPanel, FrameLayout.LayoutParams(panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+            addView(keyboardPanel, unfoldedKeyboardPanelParams(panelWidth))
 
             widgetKeyboardSliderHandleView = KeyboardSliderHandleView(context).apply {
                 visibility = if (widgetKeyboardHidden) View.VISIBLE else View.GONE
@@ -11618,7 +11939,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val maxX = innerKeyboardSnapMaxX(panel).coerceAtLeast(dp(4))
                     val nextX = (startX + event.rawX - startRawX).toInt().coerceIn(-maxX, maxX)
                     val nextY = (startY + event.rawY - startRawY).toInt().coerceIn(-dp(72), dp(18))
-                    panel.translationX = nextX.toFloat()
+                    panel.translationX = (nextX - startX).toFloat()
                     panel.translationY = nextY.toFloat()
                     prefs().edit()
                         .putInt(INNER_KEYBOARD_OFFSET_X_PREF, nextX)
@@ -11629,16 +11950,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     haptic(view)
                     view.parent?.requestDisallowInterceptTouchEvent(false)
-                    val snapX = nearestInnerKeyboardSnap(panel.translationX.toInt(), panel)
+                    val currentX = (startX + panel.translationX).toInt()
+                    val snapX = nearestInnerKeyboardSnap(currentX, panel)
                     prefs().edit()
                         .putInt(INNER_KEYBOARD_OFFSET_X_PREF, snapX)
                         .putInt(INNER_KEYBOARD_OFFSET_Y_PREF, panel.translationY.toInt())
                         .apply()
                     panel.animate()
-                        .translationX(snapX.toFloat())
+                        .translationX((snapX - startX).toFloat())
                         .setDuration(180L)
                         .setInterpolator(DecelerateInterpolator())
-                        .withEndAction { keyboardDockView.post { captureKeyBounds() } }
+                        .withEndAction {
+                            panel.translationX = 0f
+                            render()
+                        }
                         .start()
                     true
                 }
