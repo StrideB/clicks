@@ -4808,8 +4808,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 alpha = if (widgetKeyboardHidden) 1f else 0f
                 setOnTouchListener { _, event -> handleWidgetKeyboardSliderHandleTouch(event) }
             }
-            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(dp(132), dp(34), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                bottomMargin = dp(7)
+            // Full-width: the collapsed keyboard reads as the search bar, not a grip pill.
+            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                leftMargin = dp(10)
+                rightMargin = dp(10)
+                bottomMargin = dp(8)
             })
             setOnTouchListener { _, event ->
                 if (widgetKeyboardHidden) handleWidgetKeyboardSliderHostTouch(event) else false
@@ -5589,7 +5592,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             animate().alpha(0.32f).setDuration(220L).setInterpolator(DecelerateInterpolator(1.6f)).start()
         }
         module.animate().cancel()
-        handle?.animate()?.alpha(0f)?.translationY(dp(10).toFloat())?.setDuration(120L)?.start()
+        // The bar rises with the incoming keyboard — reads as the search field flying up to settle
+        // into its docked strip position at the top of the keyboard, not just blinking out.
+        handle?.animate()
+            ?.alpha(0f)
+            ?.translationY(-(expandedRootDockHeight() - widgetKeyboardCollapsedDockHeight()).toFloat() * 0.55f)
+            ?.setDuration(300L)
+            ?.setInterpolator(DecelerateInterpolator(1.8f))
+            ?.start()
         module.visibility = View.VISIBLE
         module.isEnabled = false
         module.alpha = 0.18f
@@ -5621,6 +5631,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         module.isEnabled = true
                         resetWidgetKeyboardTouchGeometry()
                         handle?.visibility = View.GONE
+                        handle?.translationY = 0f   // clear the fly-up offset for the next collapse
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                             module.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                         } else {
@@ -11404,8 +11415,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 alpha = if (widgetKeyboardHidden) 1f else 0f
                 setOnTouchListener { _, event -> handleWidgetKeyboardSliderHandleTouch(event) }
             }
-            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(dp(132), dp(34), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                bottomMargin = dp(7)
+            // Full-width: the collapsed keyboard reads as the search bar, not a grip pill.
+            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                leftMargin = dp(10)
+                rightMargin = dp(10)
+                bottomMargin = dp(8)
             })
             setOnTouchListener { _, event ->
                 if (widgetKeyboardHidden) handleWidgetKeyboardSliderHostTouch(event) else false
@@ -11453,8 +11467,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 alpha = if (widgetKeyboardHidden) 1f else 0f
                 setOnTouchListener { _, event -> handleWidgetKeyboardSliderHandleTouch(event) }
             }
-            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(dp(132), dp(34), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                bottomMargin = dp(7)
+            // Full-width: the collapsed keyboard reads as the search bar, not a grip pill.
+            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                leftMargin = dp(10)
+                rightMargin = dp(10)
+                bottomMargin = dp(8)
             })
             setOnTouchListener { _, event ->
                 if (widgetKeyboardHidden) handleWidgetKeyboardSliderHostTouch(event) else false
@@ -21830,7 +21847,8 @@ Question: $prompt"""
         return keyboardHeight() + launcherSuggestionStripOuterHeight()
     }
 
-    private fun widgetKeyboardCollapsedDockHeight(): Int = dp(48)
+    // Tall enough for the full-width search bar the collapsed keyboard turns into (48dp bar + margins).
+    private fun widgetKeyboardCollapsedDockHeight(): Int = dp(64)
 
     private fun widgetKeyboardHorizontalBleed(): Int = dp(10)
 
@@ -22756,64 +22774,65 @@ Question: $prompt"""
         }
     }
 
+    // The hidden-keyboard affordance. Not a grip pill: when the keyboard slides down, what remains
+    // IS the search bar — a full-width field with a magnifier and placeholder, representing what
+    // typing here does. Tapping it slides the keyboard back in (same handle touch handling).
     private inner class KeyboardSliderHandleView(context: Context) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
         private val rect = RectF()
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val light = selectedNeuTokens().mode == NeuMode.LIGHT
-            val radius = height * 0.42f
-            rect.set(dp(4).toFloat(), dp(5).toFloat(), width - dp(4).toFloat(), height - dp(5).toFloat())
+            val tokens = selectedNeuTokens()
+            val light = tokens.mode == NeuMode.LIGHT
+            val radius = dp(16).toFloat()
+            rect.set(dp(2).toFloat(), dp(3).toFloat(), width - dp(2).toFloat(), height - dp(3).toFloat())
 
+            // Field: raised surface with a soft top light, like the launcher's glass cards.
             paint.style = Paint.Style.FILL
             paint.shader = android.graphics.LinearGradient(
-                0f,
-                rect.top,
-                0f,
-                rect.bottom,
+                0f, rect.top, 0f, rect.bottom,
                 if (light) {
-                    intArrayOf(0xFFE5E9EF.toInt(), 0xFFC4CBD6.toInt(), 0xFFAEB8C5.toInt())
+                    intArrayOf(0xFFFFFFFF.toInt(), 0xFFEDEFF4.toInt(), 0xFFE2E6EC.toInt())
                 } else {
-                    intArrayOf(0xFF232832.toInt(), 0xFF0F1218.toInt(), 0xFF05070A.toInt())
+                    intArrayOf(0xFF262B34.toInt(), 0xFF181B21.toInt(), 0xFF101319.toInt())
                 },
-                null,
-                Shader.TileMode.CLAMP
+                null, Shader.TileMode.CLAMP
             )
             canvas.drawRoundRect(rect, radius, radius, paint)
             paint.shader = null
 
+            // Hairline + a whisper of the accent so it reads as the live search field.
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(1).toFloat()
-            paint.color = adjustAlpha(Color.WHITE, if (light) 0.56f else 0.16f)
+            paint.color = adjustAlpha(Color.WHITE, if (light) 0.62f else 0.14f)
             canvas.drawRoundRect(rect, radius, radius, paint)
-            paint.color = adjustAlpha(Color.BLACK, if (light) 0.24f else 0.76f)
-            canvas.drawLine(rect.left + dp(16), rect.bottom - dp(2), rect.right - dp(16), rect.bottom - dp(2), paint)
+            paint.color = adjustAlpha(goKeyColor, 0.34f)
+            canvas.drawRoundRect(rect, radius, radius, paint)
 
-            val grooveWidth = width * 0.46f
-            val grooveHeight = dp(4).toFloat()
-            val grooveTop = height / 2f - grooveHeight / 2f
-            val groove = RectF(
-                width / 2f - grooveWidth / 2f,
-                grooveTop,
-                width / 2f + grooveWidth / 2f,
-                grooveTop + grooveHeight
-            )
-            paint.style = Paint.Style.FILL
-            paint.shader = android.graphics.LinearGradient(
-                0f,
-                groove.top,
-                0f,
-                groove.bottom,
-                intArrayOf(
-                    adjustAlpha(Color.BLACK, if (light) 0.26f else 0.74f),
-                    adjustAlpha(Color.WHITE, if (light) 0.40f else 0.12f)
-                ),
-                null,
-                Shader.TileMode.CLAMP
-            )
-            canvas.drawRoundRect(groove, grooveHeight, grooveHeight, paint)
-            paint.shader = null
+            // Magnifier in the accent color.
+            val cx = rect.left + dp(22).toFloat()
+            val cy = rect.centerY() - dp(1).toFloat()
+            val r = dp(6).toFloat()
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(2).toFloat()
+            paint.strokeCap = Paint.Cap.ROUND
+            paint.color = goKeyColor
+            canvas.drawCircle(cx, cy, r, paint)
+            val hx = cx + r * 0.72f
+            val hy = cy + r * 0.72f
+            canvas.drawLine(hx, hy, hx + dp(5).toFloat(), hy + dp(5).toFloat(), paint)
+            paint.strokeCap = Paint.Cap.BUTT
+
+            // Placeholder text — the invitation.
+            textPaint.color = tokens.inkDim
+            textPaint.textSize = dp(14).toFloat()
+            val textX = rect.left + dp(40).toFloat()
+            val textY = rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f
+            canvas.drawText("Search apps, people, rides…", textX, textY, textPaint)
         }
     }
 
