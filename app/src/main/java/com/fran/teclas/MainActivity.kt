@@ -1052,7 +1052,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // wallpaper the user changes device-side shows up here on the next resume. Compare the
         // wallpaper ids first: launchers resume on every home press, and unconditionally
         // re-decoding the image + rebuilding the whole view tree each time was a major heat source.
-        if (!useSystemWallpaperOnHome() && (useLockscreenWallpaperOnHome() || isUnfoldedInnerLayoutActive() || activeHomeWallpaperUri() == null)) {
+        if (useSystemWallpaperOnHome()) {
             val sig = deviceWallpaperSignature()
             if (sig != homeWallpaperSourceSig || homeWallpaperDrawable == null) {
                 refreshHomeWallpaperAsync()
@@ -1450,7 +1450,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun dispatchTouchEventInner(event: MotionEvent): Boolean {
         if (widgetEditGestureLock()) return super.dispatchTouchEvent(event)
-        detectDockedWallpaperTripleTap(event)   // passive: triple-tap docked home → change wallpaper
+        detectHomeWallpaperTripleTap(event)   // passive: triple-tap empty home wallpaper → change wallpaper
         if (innerWallpaperEditMode) return super.dispatchTouchEvent(event)
         if (widgetKeyboardSwapActive()) return super.dispatchTouchEvent(event)
         if (handleVisibleWidgetKeyboardGlobalGesture(event)) return true
@@ -2314,7 +2314,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun unfoldedKeyboardPanelWidth(): Int {
         val maxWidth = resources.displayMetrics.widthPixels
-        return (maxWidth * innerKeyboardWidthPercent() / 100f).toInt().coerceIn(dp(720), maxWidth - dp(36))
+        val minWidth = dp(720)
+        val upperBound = (maxWidth - dp(36)).coerceAtLeast(minWidth)
+        return (maxWidth * innerKeyboardWidthPercent() / 100f).toInt().coerceIn(minWidth, upperBound)
     }
 
     private fun unfoldedKeyboardPanelSnapLimit(panelWidth: Int = unfoldedKeyboardPanelWidth()): Int =
@@ -2430,7 +2432,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val manager = WallpaperManager.getInstance(this)
         val sys = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_SYSTEM) }.getOrDefault(-1)
         val lock = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_LOCK) }.getOrDefault(-1)
-        return "$uri|$themeWallpaper|$sys|$lock|${useLockscreenWallpaperOnHome()}"
+        return "$uri|$themeWallpaper|$sys|$lock|${useSystemWallpaperOnHome()}|${useLockscreenWallpaperOnHome()}"
     }
 
     private fun loadHomeWallpaperDrawable(): Drawable? {
@@ -7274,16 +7276,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return localX >= contentFrame.width - edgeWidth
     }
 
-    // Triple-tap the docked homescreen background → change the wallpaper (opens the image picker).
+    // Triple-tap empty phone wallpaper → change the wallpaper (opens the image picker).
     private var homeWallpaperTapCount = 0
     private var homeWallpaperTapTime = 0L
     private var homeWallpaperDownX = 0f
     private var homeWallpaperDownY = 0f
     private var homeWallpaperDownTime = 0L
 
-    private fun detectDockedWallpaperTripleTap(event: MotionEvent) {
-        val eligible = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive() &&
-            !libraryOpen && openPane == null && spaceBoardOverlay == null && homeLeftOverlay == null &&
+    private fun detectHomeWallpaperTripleTap(event: MotionEvent) {
+        val phoneHome = !isUnfoldedInnerLayoutActive() &&
+            (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET)
+        // Widget universal search puts tappable results over the wallpaper with libraryOpen=false and
+        // no pane — which this used to consider "empty home". Three taps on results (easy to do when
+        // taps are being retried) then launched the wallpaper picker and search vanished.
+        val eligible = phoneHome &&
+            !libraryOpen && !isWidgetUniversalSearchActive() &&
+            openPane == null && spaceBoardOverlay == null && homeLeftOverlay == null &&
             widgetBoardView == null && !keyboardSettingsOpen && !homeEditMode && !innerWallpaperEditMode
         if (!eligible) { homeWallpaperTapCount = 0; return }
         when (event.actionMasked) {
