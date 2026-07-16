@@ -4981,7 +4981,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val module = FrameLayout(context).apply {
                 clipChildren = false
                 clipToPadding = false
-                background = homeKeyboardWidgetBackground(activeNeuTokens)
+                background = if (glassKeyboardDeckActive()) null else homeKeyboardWidgetBackground(activeNeuTokens)
                 setOnTouchListener { _, event -> handleWidgetKeyboardDetachedTouch(event) }
             }
             widgetKeyboardModule = module
@@ -5035,7 +5035,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun populateWidgetKeyboardModule(module: FrameLayout) {
         module.removeAllViews()
-        module.background = homeKeyboardWidgetBackground(activeNeuTokens)
+        // Glass deck: the module chrome must not paint an opaque slab over the blur plate that
+        // keyboard() hosts — the deck's own translucent sheet is the visible surface.
+        module.background = if (glassKeyboardDeckActive()) null else homeKeyboardWidgetBackground(activeNeuTokens)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -12238,12 +12240,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         return FrameLayout(this).apply {
+            // Glass tray on every device: fold-native glass where supported, dynamic blur plate
+            // elsewhere (foldAwareGlassPlate picks). The deck fill above goes translucent so the
+            // wallpaper reads through. Added art themes (Google/iOS/Sand/SeeMe/Brushed…) keep
+            // their own opaque panel art — glass applies to the launcher's own neu deck.
+            if (glassKeyboardDeckActive()) {
+                addView(
+                    foldAwareGlassPlate(this@MainActivity, radiusDp = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 22 else 16),
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                )
+            }
             addView(swipeLayout, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(overlayLayer, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
     }
+
+    // The launcher's own (default) deck renders as glass; every named theme keeps its panel art.
+    // Gating exactly to where the translucent fill shows also means the blur plate is never
+    // rendered invisibly behind an opaque themed deck.
+    private fun glassKeyboardDeckActive(): Boolean = keyboardTheme == KEYBOARD_THEME_DEFAULT
 
     private fun keyboardSettings(): View {
         return LinearLayout(this).apply {
@@ -23279,7 +23296,18 @@ Question: $prompt"""
         }
         if (keyboardTheme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (keyboardTheme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
-        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(activeNeuTokens, dp(16).toFloat(), NeuLevel.RAISED)
+        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) {
+            // Glass deck: translucent sheet over the blur plate keyboard() puts behind the deck.
+            val light = activeNeuTokens.mode == NeuMode.LIGHT
+            return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
+                intArrayOf(adjustAlpha(Color.WHITE, 0.44f), adjustAlpha(activeNeuTokens.baseHi, 0.34f), adjustAlpha(activeNeuTokens.baseLo, 0.30f))
+            } else {
+                intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.50f), adjustAlpha(activeNeuTokens.base, 0.42f), adjustAlpha(activeNeuTokens.baseLo, 0.55f))
+            }).apply {
+                cornerRadius = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(22).toFloat() else dp(16).toFloat()
+                setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.40f else 0.14f))
+            }
+        }
         val light = keyboardLightMode()
         val colors = if (light) {
             when (keyboardTheme) {
