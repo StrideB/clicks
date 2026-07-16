@@ -30,6 +30,15 @@ class ContextModel {
     fun prob(prev: String, word: String): Float =
         bigrams[prev.lowercase()]?.get(word.lowercase()) ?: 0f
 
+    /** The language's strongest continuations of [prev], best-first — blended into the
+     *  between-words prediction strip after the user's own n-gram habits. */
+    fun topContinuations(prev: String, limit: Int = 3): List<String> =
+        bigrams[prev.lowercase()]?.entries
+            ?.sortedByDescending { it.value }
+            ?.take(limit)
+            ?.map { it.key }
+            ?: emptyList()
+
     /** Parse and swap in a bigram table. Call from a background thread; reads are lock-free. */
     fun load(stream: InputStream) {
         val counts = HashMap<String, HashMap<String, Float>>()

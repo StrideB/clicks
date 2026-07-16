@@ -62,7 +62,7 @@ class AutocorrectCore(
      * the cached answer instantly when space lands (the Gboard pipeline: decode while typing,
      * commit on the keystroke).
      */
-    fun computeCorrection(word: String, ctx: List<String>, prevWord: String = ""): String? {
+    fun computeCorrection(word: String, ctx: List<String>, prevWord: String = "", tapTrace: List<Pair<Float, Float>> = emptyList()): String? {
         if (word.length < 2) return null
         if (isProtectedWord(word)) return null                          // deliberate token, not a typo
         extendedEngine()?.let { if (it.isDictWord(word)) return null }   // valid in another language
@@ -70,7 +70,7 @@ class AutocorrectCore(
         // "leave the word alone" (same contract), so we fall through to the loose fallback, never
         // to the engine's pick (double-guessing would reintroduce the disagreements it unifies).
         val r = ranker()
-        val corrected = (if (r != null) r.bestCorrection(word.lowercase(Locale.US), ctx, prevWord) else engine().bestCorrection(word, ctx)) ?: run {
+        val corrected = (if (r != null) r.bestCorrection(word.lowercase(Locale.US), ctx, prevWord, tapTrace) else engine().bestCorrection(word, ctx)) ?: run {
             if (!useFallback) return null
             val g = engine().getSuggestions(word, 1).firstOrNull() ?: return null
             if (levenshtein(word.lowercase(Locale.US), g.lowercase(Locale.US)) > 1) return null
@@ -114,6 +114,13 @@ class AutocorrectCore(
 
     /** Any other edit (typing a letter, moving the cursor) invalidates the pending undo. */
     fun clearPending() { pendingOriginal = null; pendingCorrected = null }
+
+    /** The (original, corrected) pair of the still-revertible last autocorrect, for a revert chip. */
+    fun pendingUndo(): Pair<String, String>? {
+        val o = pendingOriginal ?: return null
+        val c = pendingCorrected ?: return null
+        return o to c
+    }
 
     private fun preserveCase(typed: String, corrected: String): String = when {
         typed.all { it.isUpperCase() } -> corrected.uppercase(Locale.US)
