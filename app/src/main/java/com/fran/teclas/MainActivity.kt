@@ -310,8 +310,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
 
     private val collator = Collator.getInstance()
+    // Bumped whenever anything universalSearchResults() reads changes: the query itself, an async
+    // source landing, or a setting applied from a result row. It's the memo's invalidation key —
+    // see universalSearchResults / invalidateSearchResults.
+    //
+    // @Volatile because some writers (predictContext) run off-main and the memo is read on main.
+    // Racing increments can lose a count, which is harmless here: the memo only needs the value to
+    // DIFFER from the key it cached under, and this only ever moves forward.
+    @Volatile private var searchGeneration = 0
     internal var query = ""
+        set(value) {
+            if (field == value) return
+            field = value
+            searchGeneration++
+        }
+    // universalSearchResults() scores every result out of this list, so a package install/uninstall
+    // landing mid-query must invalidate the memo — otherwise search keeps serving the old app set.
     internal var apps: List<AppEntry> = emptyList()
+        set(value) {
+            field = value
+            searchGeneration++
+        }
     private var keyboardSize = 0
     private var appIconSize = 0
     internal var keyboardTheme = KEYBOARD_THEME_DEFAULT
@@ -322,8 +341,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var keyboardTiltLighting = true
     internal var keyboardSettingsOpen = false
     internal var goKeyColor = Accent
+    // Both are read by universalSearchResults() (message/calendar/commitment rows). They're
+    // republished from several places — onResume, the notification listener, an async calendar
+    // load — so the invalidation lives in the setter rather than at each call site, where it would
+    // eventually be forgotten.
     private var messages: List<HubMessage> = emptyList()
+        set(value) {
+            field = value
+            searchGeneration++
+        }
     private var calendarEvents: List<CalendarEvent> = emptyList()
+        set(value) {
+            field = value
+            searchGeneration++
+        }
     internal var openPane: PaneTarget? = null
     private var paneView: View? = null
     internal var libraryOpen = false
@@ -526,7 +557,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     // Prediction engine: last computed context (refreshed off-main), which launch surface
     // is about to fire, and the drawer's Space icon for live updates.
+    // Feeds app ordering in librarySearchResults() and the predicted-apps grid, and is refreshed
+    // off-main — so it must invalidate the memo too.
     @Volatile private var predictContext: ContextSnapshot? = null
+        set(value) {
+            field = value
+            searchGeneration++
+        }
     private var pendingLaunchSource = LaunchSource.OTHER
     private var spaceIconView: TextView? = null
 
@@ -652,7 +689,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var librarySearchHost: FrameLayout? = null
     private var librarySearchList: View? = null
     private var searchUiRefreshPending: Runnable? = null
-    // Inline AI answers: the debounce handle, and the query whose answer is already fetched/in
+    // Inline AI answers: the debounce handle, and the query whose answer is already fetched//in
     // flight, so a re-render doesn't re-ask. Answers themselves live in aiAnswersById (shared with
     // the AI pane), keyed by aiTarget(prompt).id.
     private var aiInlineDebounce: Runnable? = null
@@ -3556,7 +3593,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             bottomMargin = dp(10)
         })
         val child = if (query.isNotBlank()) {
-            searchResultsHost.searchResultsGrid()
+            // Its own surface key: this canvas builds results independently of the docked library,
+            // and sharing a key would let one surface's build suppress the other's entrances.
+            searchResultsHost.searchResultsGrid("unfolded-canvas")
         } else if (libraryGridMode) {
             libraryGrid()
         } else {
@@ -4654,17 +4693,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         post { refreshUnfoldedLibraryContent() }
     }
 
+    private var unfoldedSearchChild: View? = null
+
     internal fun refreshUnfoldedLibraryContent() {
         if (searchResultsHost.deferSearchRebuildWhileTouching()) return
         val area = unfoldedLibraryContentArea ?: return
+        if (query.isNotBlank()) {
+            // Same two guards as the other surfaces: don't re-animate rows that survived, and skip
+            // the rebuild outright when an async source landed without changing anything visible.
+            val attached = unfoldedSearchChild?.parent === area
+            if (!attached) searchResultsHost.resetRowEntrances("unfolded")
+            val unchanged = searchResultsHost.searchContentUnchanged("unfolded")
+            if (attached && unchanged) return
+        } else {
+            unfoldedSearchChild = null
+        }
         area.removeAllViews()
         val child = if (query.isNotBlank()) {
             val glass = appLibraryGlassEnabled()
-            searchResultsHost.searchGlassHost(searchResultsHost.searchResultsGrid().also { if (glass) searchResultsHost.padSearchContentForGlass(it) }, glass)
+            searchResultsHost.searchGlassHost(searchResultsHost.searchResultsGrid("unfolded").also { if (glass) searchResultsHost.padSearchContentForGlass(it) }, glass)
         } else {
             if (libraryGridMode) libraryGrid() else bentoGrid()
         }
         area.addView(child, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        unfoldedSearchChild = if (query.isNotBlank()) child else null
     }
 
     private fun foldContextBanner(space: Space): View = LinearLayout(this).apply {
@@ -9531,14 +9583,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // Docked search is a full-bleed opaque screen — no rounded glass card wrapping the
             // results (that made it look windowed, like widget mode). Widget/unfolded keep the glass.
             val glass = appLibraryGlassEnabled() && keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED
-            val fresh = searchResultsHost.searchResultsGrid()
+            // Decide reuse BEFORE building: on a first appearance every row is genuinely new and
+            // should animate in; on a refresh the surviving rows must not restart at alpha 0.
+            val reuse = librarySearchHost?.takeIf { it.parent === area }
+            if (reuse == null) searchResultsHost.resetRowEntrances("library")
+            // Most async sources don't change what's visible — skip the rebuild entirely when the
+            // rendered content would be identical. Only safe while the surface is still attached.
+            val unchanged = searchResultsHost.searchContentUnchanged("library")
+            if (reuse != null && unchanged) return
+            val keepScroll = (librarySearchList as? ScrollView)?.scrollY ?: 0
+            val fresh = searchResultsHost.searchResultsGrid("library")
             if (glass) searchResultsHost.padSearchContentForGlass(fresh)
-            librarySearchHost?.takeIf { it.parent === area }?.let { host ->
+            reuse?.let { host ->
                 // In-place swap on refresh — keeps the glass plate, kills the per-keystroke flicker.
                 librarySearchList?.let { host.removeView(it) }
                 host.addView(fresh, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                 librarySearchList = fresh
                 libraryContentReady = false
+                searchResultsHost.restoreScroll(fresh, keepScroll)
                 return
             }
             area.removeAllViews()
@@ -15595,6 +15657,8 @@ Question: $prompt"""
      *  Coalesced: several sources land within the same beat (web, rich, semantic, Spotify…),
      *  and one rebuild per beat instead of one per source keeps the list from flickering. */
     private fun refreshSearchResultsUi() {
+        // Every caller has just written its source field, so the memo is now stale.
+        invalidateSearchResults()
         if (searchUiRefreshPending != null) return
         val r = Runnable {
             searchUiRefreshPending = null
@@ -15864,7 +15928,8 @@ Question: $prompt"""
                 // searching "eiffel tower" to read about it shouldn't push an Uber unless you're
                 // standing in Paris. Resolved off-main: geocode the landmark, measure the distance.
                 braveRideOffer = if (answer?.vertical == "landmark") resolveLandmarkRide(answer.headline) else null
-                if (answer != null) refreshSearchResultsUi()
+                // Also on a null answer — see scheduleSportsSearch: retiring the card is a change.
+                refreshSearchResultsUi()
             }
         }
         braveRichDebounce = r
@@ -16068,7 +16133,9 @@ Question: $prompt"""
                 if (query.trim() != q) return@launch   // query moved on
                 sportsQuery = q
                 sportsCard = card
-                if (card != null) refreshSearchResultsUi()
+                // Also refresh when the lookup came back empty: retiring a card changes the band as
+                // much as gaining one, and the web rows it suppresses need to come back.
+                refreshSearchResultsUi()
             }
         }
         sportsDebounce = r
@@ -19374,7 +19441,31 @@ Question: $prompt"""
         }
     }
 
+    /**
+     * Invalidate the [universalSearchResults] memo. Called when an async source lands or a setting
+     * row applies a pref — the two things that change results without changing the query.
+     */
+    internal fun invalidateSearchResults() { searchGeneration++ }
+
+    private var searchResultsMemo: List<SearchResult>? = null
+    private var searchResultsMemoKey = -1
+
+    /**
+     * Memoized per (query, generation). The uncached body re-scores every installed app, sorts,
+     * classifies the query, and builds 37+ setting entries — and it used to run on EVERY view
+     * rebuild, of which there are 6-9 per query. The async sources each bump the generation when
+     * they land, so this stays correct while collapsing the repeats within one beat.
+     */
     internal fun universalSearchResults(): List<SearchResult> {
+        val key = searchGeneration
+        searchResultsMemo?.let { if (searchResultsMemoKey == key) return it }
+        val out = computeUniversalSearchResults()
+        searchResultsMemoKey = key
+        searchResultsMemo = out
+        return out
+    }
+
+    private fun computeUniversalSearchResults(): List<SearchResult> {
         val q = query.trim()
         if (q.isBlank()) return emptyList()
         val results = mutableListOf<SearchResult>()
@@ -20104,6 +20195,9 @@ Question: $prompt"""
     // Re-render whichever search surface is showing so an applied setting is visible
     // immediately, with the query and keyboard untouched.
     private fun refreshSearchSurfaces() {
+        // A setting row just flipped a pref that the result list renders (its own On/Off label,
+        // and possibly which rows exist at all).
+        invalidateSearchResults()
         if (libraryOpen) refreshLibraryContent()
         if (isWidgetUniversalSearchActive()) searchResultsHost.refreshWidgetSearchContent()
         if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent()
@@ -20403,6 +20497,11 @@ Question: $prompt"""
                 cachedContactPhones = phones
                 cachedContactEmails = emails
                 contactsCacheLoaded = true
+                // The first search of a session renders before this lands (queryContactPhones
+                // returns empty and kicks off this preload), so the results memo and the rebuild
+                // signature are both computed contact-free. Without this the re-render below is
+                // doubly blocked and contacts simply never appear for that query.
+                invalidateSearchResults()
                 if (query.isNotBlank() && openPane == null) renderRibbon()  // show freshly loaded contacts
             }
         }

@@ -40,6 +40,96 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     private var searchResultTouchActive = false
     private var searchResultRefreshPending = false
 
+    // ── Row entrance animations: only rows that are NEW animate ──────────────
+    // Every tile/row used to be born at alpha=0 with a staggered fade. A rebuild fires per
+    // keystroke AND per async source (~6-9 per query, landing 300-3000ms apart), so rows were
+    // continuously restarted at alpha=0 and the list spent most of fast typing half-transparent.
+    // That was the flicker. Rows that survive a refresh now stay exactly where they are; only rows
+    // absent from the previous render animate in. Same trick the host/glass plate already got.
+    // Keyed per surface, for the same reason lastSignatures is: library and unfolded can both be
+    // live at once. A single shared set meant one surface's build marked every row "seen", so the
+    // other surface's first appearance animated nothing — and its reset re-animated the other
+    // surface's whole list from alpha 0, which is the flicker this exists to kill.
+    private val renderedRowKeys = mutableMapOf<String, Set<String>>()
+    private var pendingRowKeys = mutableSetOf<String>()
+    private var buildingSurface = ""
+
+    private fun rowKey(result: SearchResult) = "${result.kind}|${result.title}|${result.subtitle}"
+
+    /** Records [result] as rendered on the surface being built, and reports whether it's new. */
+    private fun claimRowEntrance(result: SearchResult): Boolean {
+        val key = rowKey(result)
+        pendingRowKeys.add(key)
+        return key !in renderedRowKeys[buildingSurface].orEmpty()
+    }
+
+    /** [surface] is being built from scratch (not swapped in place), so everything on it is
+     *  legitimately new and should animate — e.g. search opening. */
+    internal fun resetRowEntrances(surface: String) { renderedRowKeys.remove(surface) }
+
+    // ── No-op rebuild guard ──────────────────────────────────────────────────
+    // The ~9 async sources land 300-3000ms apart and most don't change what's actually visible
+    // (semantic returns nothing new, the web fallback duplicates an existing row, a source resolves
+    // to the same card). Each one still tore down and rebuilt the whole tree. Fingerprint what
+    // would be rendered and skip the rebuild when it matches the tree already on screen. Cheap
+    // because universalSearchResults() is memoized per generation.
+    // Keyed per surface. A single shared signature would let one surface's rebuild convince another
+    // attached surface that it was already up to date, leaving it showing stale content.
+    private val lastSignatures = mutableMapOf<String, String>()
+
+    private fun contentSignature(): String = with(activity) {
+        val sb = StringBuilder(256)
+        sb.append(query.trim()).append('#')
+        val results = universalSearchResults()
+        results.forEach { sb.append(rowKey(it)).append(';') }
+        // Presentation, not just data: rowKey carries no accent, and a theme applied FROM a result
+        // row repaints every row without changing a single title. Without these, applying a theme
+        // in place would match the old signature and the repaint would be skipped.
+        sb.append('#').append(goKeyColor).append('/').append(activeNeuTokens.mode)
+            .append('/').append(searchFontSizePref())
+        // Rendered (the predicted-apps grid) but derived from predictContext/Predictor rather than
+        // from results, so it can change while everything above is byte-identical.
+        val pkgs = results.mapNotNull { it.target?.packageName }.toSet()
+        contextSuggestionResults(pkgs)?.let { (label, items) ->
+            sb.append('#').append(label)
+            items.forEach { sb.append(it.title).append(',') }
+        }
+        sb.append('#').append(searchCommandPreview()?.hashCode() ?: 0)
+        sb.append('#').append(searchSportsCard()?.hashCode() ?: 0)
+        sb.append('#').append(searchPlaces()?.hashCode() ?: 0)
+        sb.append('#').append(searchPlacesRefinement())
+        sb.append('#').append(searchRichAnswer()?.hashCode() ?: 0)
+        sb.append('#').append(searchRideOffer()?.hashCode() ?: 0)
+        val ai = searchAiAnswer()
+        sb.append('#').append(ai?.answer?.hashCode() ?: 0).append('/').append(ai?.loading)
+        return sb.toString()
+    }
+
+    /**
+     * True when nothing [surface] renders has changed since it was last built. Always records the
+     * new signature, so callers that rebuild anyway (first appearance) stay in sync. Only safe to
+     * act on when that surface is still attached — see refreshWidgetSearchContent.
+     */
+    internal fun searchContentUnchanged(surface: String): Boolean {
+        val sig = contentSignature()
+        if (lastSignatures[surface] == sig) return true
+        lastSignatures[surface] = sig
+        return false
+    }
+
+    /** Re-apply a saved scroll offset to a freshly built list. Set before the first draw so the
+     *  restore is invisible rather than a visible jump. */
+    internal fun restoreScroll(fresh: View, y: Int) {
+        if (y <= 0 || fresh !is ScrollView) return
+        fresh.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                fresh.viewTreeObserver.removeOnPreDrawListener(this)
+                fresh.scrollY = y
+                return true
+            }
+        })
+    }
+
     // True while search results are the interactive surface (docked library search, widget
     // universal search, or unfolded search) with a live query.
     private fun searchResultsInteractive(): Boolean = with(activity) {
@@ -106,13 +196,25 @@ internal class SearchResultsHost(private val activity: MainActivity) {
         if (deferSearchRebuildWhileTouching()) return
         val area = widgetSearchContentArea ?: return
         val glass = focusSurfaceGlassEnabled()
-        val fresh = searchResultsList(widgetMode = true)
+        // Decide reuse BEFORE building: on a first appearance every row really is new and should
+        // animate; on a refresh the surviving rows must not.
+        val reuse = widgetSearchHost?.takeIf { it.parent === area }
+        if (reuse == null) resetRowEntrances("widget")
+        // Only skip when the surface is still attached; if it isn't, the tree was torn down
+        // elsewhere and must be rebuilt regardless of the signature.
+        val unchanged = searchContentUnchanged("widget")
+        if (reuse != null && unchanged) return
+        val keepScroll = (widgetSearchList as? ScrollView)?.scrollY ?: 0
+        val fresh = searchResultsList(widgetMode = true, surface = "widget")
         if (glass) padSearchContentForGlass(fresh)
-        widgetSearchHost?.takeIf { it.parent === area }?.let { host ->
+        reuse?.let { host ->
             // In-place swap on refresh — no blur recreation, no re-entrance animation.
             widgetSearchList?.let { host.removeView(it) }
             host.addView(fresh, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             widgetSearchList = fresh
+            // A swap resets scrollY to 0 — restore it, or any async source landing yanks a
+            // scrolled-down user back to the top.
+            restoreScroll(fresh, keepScroll)
             return
         }
         area.removeAllViews()
@@ -158,20 +260,34 @@ internal class SearchResultsHost(private val activity: MainActivity) {
 
     // Unfolded/inner search panel shares the same three-zone presentation as every other surface.
     // (Previously rendered its own 2-column tiles with kind pills via unfoldedSearchResultTile.)
-    internal fun unfoldedSearchResultsList(): View = searchResultsList(widgetMode = false)
+    // "unfolded-focus", NOT "unfolded": this is the focus canvas (unfoldedFocusContentArea, driven
+    // by refreshUnfoldedFocusContent), a different surface with a different lifecycle from the
+    // unfolded library content (unfoldedLibraryContentArea, driven by refreshUnfoldedLibraryContent),
+    // which owns "unfolded". They're reachable from different routers — refreshSearchResultsUi goes
+    // to one, refreshSearchSurfaces to the other — so sharing a key let one surface's build mark
+    // every row "seen" and silently suppress the other's entrance animations.
+    internal fun unfoldedSearchResultsList(): View =
+        searchResultsList(widgetMode = false, surface = "unfolded-focus")
 
     // Grid and list surfaces now share one presentation — the three-zone layout. (Previously this
     // rendered 2-column "bento" cards with kind pills; unified so the redesign shows on every surface,
-    // wide/unfolded included.)
-    internal fun searchResultsGrid(): View = searchResultsList(widgetMode = false)
+    // wide/unfolded included.) [surface] must name the caller's surface so row-entrance diffing and
+    // the rebuild signature stay per-surface.
+    // No default for [surface] on purpose: a silent default is how the unfolded canvas ended up
+    // sharing the docked library's entrance state. Callers must name their surface.
+    internal fun searchResultsGrid(surface: String): View =
+        searchResultsList(widgetMode = false, surface = surface)
 
     // Universal search presentation — three zones, read top-down, hugging the docked search bar:
     //   ZONE 1  one instant answer (score card > rich answer > AI), never a stack of cards
     //   ZONE 2  matching apps as bare launcher icons (icon-pack honoured), no boxes/plates/tags
     //   ZONE 3  everything else in one list, grouped under quiet headers, no per-row kind pills
-    private fun searchResultsList(widgetMode: Boolean = false): View = with(activity) { ScrollView(this).apply {
+    private fun searchResultsList(widgetMode: Boolean = false, surface: String): View = with(activity) { ScrollView(this).apply {
         clipToPadding = false
         isVerticalScrollBarEnabled = false   // search results scroll cleanly — no scrollbar track
+        buildingSurface = surface            // which surface's entrance state claimRowEntrance reads
+        pendingRowKeys = mutableSetOf()      // collected by claimRowEntrance during the build below
+        fontScaleMemo = 0f                   // re-read the pref once for this build, then reuse
         val results = universalSearchResults()
         val command = searchCommandPreview()
         val aiInline = searchAiAnswer()
@@ -255,6 +371,8 @@ internal class SearchResultsHost(private val activity: MainActivity) {
                 addView(searchAppGrid(items), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
         })
+        // Everything built above has claimed its entrance; these are the rows on this surface now.
+        renderedRowKeys[surface] = pendingRowKeys
     } }
 
     /**
@@ -318,8 +436,18 @@ internal class SearchResultsHost(private val activity: MainActivity) {
 
     // Scale factor from the user's search text-size pref (the pref itself and its settings
     // label stay in MainActivity: searchFontSizePref / searchFontSizeLabel).
-    private fun searchFontScale(progress: Int = activity.searchFontSizePref()): Float =
-        0.90f + progress.coerceIn(0, 100) / 100f * 0.50f   // 0→0.90x, 50→1.15x (Medium), 100→1.40x
+    // Memoized per render: called once per TextView (~30-40 times a build), and the default
+    // argument made each of those a SharedPreferences lookup. Reset at the top of searchResultsList,
+    // so a font-size change still takes effect on the next build.
+    private var fontScaleMemo = 0f
+
+    private fun searchFontScale(): Float {
+        if (fontScaleMemo <= 0f) {
+            val progress = activity.searchFontSizePref().coerceIn(0, 100)
+            fontScaleMemo = 0.90f + progress / 100f * 0.50f   // 0→0.90x, 50→1.15x (Medium), 100→1.40x
+        }
+        return fontScaleMemo
+    }
 
     private fun searchZoneHeader(text: String): TextView = with(activity) {
         TextView(this).apply {
@@ -359,16 +487,19 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     private fun searchAppTile(result: SearchResult, index: Int): View { with(activity) {
         val app = result.target?.packageName?.let { pkg -> apps.firstOrNull { it.packageName == pkg } }
         val builtIn = result.target?.let { target -> builtInLauncherApps().firstOrNull { it.target.id == target.id } }
+        val entering = claimRowEntrance(result)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             isClickable = true
-            alpha = 0f
-            translationY = dp(8).toFloat()
             setPadding(dp(3), dp(4), dp(3), dp(2))
-            postDelayed({
-                animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
-            }, (index * 28L).coerceAtMost(240L))
+            if (entering) {
+                alpha = 0f
+                translationY = dp(8).toFloat()
+                postDelayed({
+                    animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator()).start()
+                }, (index * 28L).coerceAtMost(240L))
+            }
             val iconFrame = appLibraryIconFrameSize()
             if (app != null || builtIn != null) {
                 addView(FrameLayout(context).apply {
@@ -404,16 +535,19 @@ internal class SearchResultsHost(private val activity: MainActivity) {
 
     // ZONE 3 — one clean row: icon + title + secondary line. No kind pill (the header names it).
     private fun searchGroupedRow(result: SearchResult, index: Int): View { with(activity) {
+        val entering = claimRowEntrance(result)
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             isClickable = true
-            alpha = 0f
-            translationY = dp(6).toFloat()
             setPadding(dp(6), dp(7), dp(6), dp(7))
-            postDelayed({
-                animate().alpha(1f).translationY(0f).setDuration(200).setInterpolator(DecelerateInterpolator()).start()
-            }, (index * 24L).coerceAtMost(220L))
+            if (entering) {
+                alpha = 0f
+                translationY = dp(6).toFloat()
+                postDelayed({
+                    animate().alpha(1f).translationY(0f).setDuration(200).setInterpolator(DecelerateInterpolator()).start()
+                }, (index * 24L).coerceAtMost(220L))
+            }
             addView(searchResultIcon(result), LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(12) })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
@@ -631,15 +765,32 @@ internal class SearchResultsHost(private val activity: MainActivity) {
         return LayerDrawable(arrayOf(solid, base, ring))
     } }
 
-    /** The Brave rich answer for the live query, or null once the query moves on. */
+    /**
+     * Whether a card fetched for [cached] is still worth showing while [live] loads.
+     *
+     * These used to demand exact equality, so typing one more character blanked the hero card and
+     * it only came back after the debounce (300-450ms) PLUS a network round-trip — the card
+     * visibly popping out and back on every keystroke. Refining a query ("miami heat" ->
+     * "miami heat score") keeps the answer on screen while the sharper one loads. Diverging
+     * queries ("weather paris" -> "weather london") still drop it immediately, so a stale answer
+     * never sits under a query it doesn't answer. This is the pattern searchPlaces() already used.
+     */
+    private fun cardStillRelevant(cached: String, live: String): Boolean {
+        if (cached.isBlank() || live.isBlank()) return false
+        return cached == live || live.startsWith(cached) || cached.startsWith(live)
+    }
+
+    /** The Brave rich answer for the live query — kept while a refinement of it loads. */
     internal fun searchRichAnswer(): BraveSearchApi.RichAnswer? = with(activity) {
-        braveRichAnswer?.takeIf { braveRichQuery == query.trim() }
+        braveRichAnswer?.takeIf { cardStillRelevant(braveRichQuery, query.trim()) }
     }
 
     /** The ride offer to render under the landmark hero card — set only when the answer is a
      *  landmark and the user is within ride range of it (see resolveLandmarkRide). */
     private fun searchRideOffer(): MainActivity.RideOffer? = with(activity) {
-        braveRideOffer?.takeIf { braveRichQuery == query.trim() && braveRichAnswer?.vertical == "landmark" }
+        braveRideOffer?.takeIf {
+            cardStillRelevant(braveRichQuery, query.trim()) && braveRichAnswer?.vertical == "landmark"
+        }
     }
 
     /** Uber ride card shown directly under a landmark answer. Tap opens Uber with the landmark
@@ -694,7 +845,7 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     } }
 
     internal fun searchSportsCard(): SportsApi.ScoreCard? = with(activity) {
-        sportsCard?.takeIf { sportsQuery == query.trim() }
+        sportsCard?.takeIf { cardStillRelevant(sportsQuery, query.trim()) }
     }
 
     /** Nearby-places hero card (Google Places): one row per place with rating, price, open-now
