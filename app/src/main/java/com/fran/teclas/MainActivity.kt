@@ -4586,32 +4586,106 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         installWeatherPickerLongPress()
     }
 
-    private fun unfoldedStyledWeatherWidget(styleId: String): View = WeatherWidgetFrame(this).apply {
-        unfoldedWeatherChipView = this
-        clipChildren = true
-        clipToPadding = true
-        isClickable = true
-        setOnClickListener {
-            haptic(this)
-            if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-        refreshWeatherWidgetComposeData()
-        addView(ComposeView(context).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            setContent {
-                val data = weatherWidgetComposeData.value ?: weatherDataFromPrefs()
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+    private fun unfoldedStyledWeatherWidget(styleId: String): View {
+        val data = weatherDataFromPrefs()
+        val style = weatherStyleById(styleId)
+        return LinearLayout(this).apply {
+            unfoldedWeatherChipView = this
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            clipChildren = false
+            clipToPadding = false
+            isClickable = true
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setOnClickListener {
+                haptic(this)
+                if (hasWeatherPermission()) refreshWeather(force = true) else weatherPermissionLauncher.launch(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+            }
+
+            val isAlmanac = style.category == "Almanac"
+            val isDot = style.category == "Dot Matrix"
+            if (isAlmanac) {
+                addView(View(context).apply { setBackgroundColor(adjustAlpha(activeNeuTokens.inkDim, 86)) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                    bottomMargin = dp(5)
+                })
+            }
+            addView(TextView(context).apply {
+                text = when {
+                    isAlmanac -> "THE DAILY WEATHER"
+                    isDot -> style.name.uppercase()
+                    else -> data.place.uppercase()
                 }
+                gravity = Gravity.CENTER
+                textSize = if (isAlmanac) 10.5f else 9.5f
+                letterSpacing = if (isAlmanac) 0.22f else 0.16f
+                typeface = Typeface.create(if (isAlmanac) "serif" else "sans-serif", Typeface.BOLD)
+                setTextColor(activeNeuTokens.inkDim)
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                addView(TextView(context).apply {
+                    text = "${data.temp}°"
+                    gravity = Gravity.CENTER
+                    textSize = if (isAlmanac) 52f else 42f
+                    typeface = Typeface.create(if (isAlmanac) "serif" else "sans-serif", if (isAlmanac) Typeface.NORMAL else Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginEnd = dp(12)
+                })
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(TextView(context).apply {
+                        text = data.conditionLabel
+                        textSize = 13f
+                        typeface = Typeface.create(if (isAlmanac) "serif" else "sans-serif", Typeface.BOLD)
+                        setTextColor(activeNeuTokens.ink)
+                        includeFontPadding = false
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    })
+                    addView(TextView(context).apply {
+                        text = "${data.place} · Feels ${data.feelsLike}°"
+                        textSize = 10.5f
+                        typeface = Typeface.create(if (isDot) "monospace" else "sans-serif", Typeface.NORMAL)
+                        setTextColor(activeNeuTokens.inkDim)
+                        includeFontPadding = false
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        topMargin = dp(2)
+                    })
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(3)
+            })
+
+            addView(TextView(context).apply {
+                text = style.name.uppercase()
+                gravity = Gravity.CENTER
+                textSize = 9.5f
+                letterSpacing = 0.18f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(goKeyColor)
+                includeFontPadding = false
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(4)
+            })
+            if (isAlmanac) {
+                addView(View(context).apply { setBackgroundColor(adjustAlpha(activeNeuTokens.inkDim, 70)) }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                    topMargin = dp(5)
+                })
             }
             installWeatherPickerLongPress()
-        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        installWeatherPickerLongPress()
+        }
     }
 
     private fun unfoldedContextSelector(): View = HorizontalScrollView(this).apply {
