@@ -4225,18 +4225,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     /**
-     * Centered panel width on a wide canvas — mirrors the launcher's `unfoldedKeyboardPanelWidth`
-     * (shared `inner_keyboard_width_percent` pref) so the IME is the same narrower, centered block
-     * instead of spanning the whole inner display.
+     * Wide-canvas IME width mirrors the launcher's unfolded keyboard/search canvas. The launcher no
+     * longer uses the old narrow percent while typing on foldables; keeping that here made the IME
+     * look like a phone keyboard floating inside the inner display.
      */
     private fun imeKeyboardPanelWidth(): Int {
         val maxWidth = resources.displayMetrics.widthPixels
-        val ceiling = maxWidth - dp(36)
-        val pct = imePrefs().getInt("inner_keyboard_width_percent", 68).coerceIn(48, 100)
-        // Honour the user's width percent so the panel is genuinely narrower + centered; keep only a
-        // small absolute floor so tiny percents can't make it unusably narrow.
-        val floor = dp(440).coerceAtMost(ceiling)
-        return (maxWidth * pct / 100f).toInt().coerceIn(floor, ceiling)
+        return (maxWidth - dp(60)).coerceAtLeast(dp(720))
     }
 
     private fun imeKeyboardHeight(): Int {

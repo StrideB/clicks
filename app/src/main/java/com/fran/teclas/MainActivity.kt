@@ -438,6 +438,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedLibraryContentArea: FrameLayout? = null
     private var unfoldedFocusContentArea: FrameLayout? = null
     private var unfoldedFocusDockView: View? = null
+    private var unfoldedWeatherSpacerView: View? = null
     private var weatherWidgetFrameView: View? = null
     private var unfoldedWeatherChipView: View? = null
     private var weatherHoldTargetView: View? = null
@@ -713,6 +714,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var aiInlineFetched = ""
     private var zeissButtonView: ZeissCameraButtonView? = null
     private lateinit var hintBar: LinearLayout
+    private var unfoldedKeyboardSearchOverlayText: TextView? = null
     private var musicProgressBar: View? = null
     private var musicProgressHandler: android.os.Handler? = null
     private var musicProgressRunnable: Runnable? = null
@@ -1516,7 +1518,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // (library/board swipes, triple-tap wallpaper, pane swipes) may fire — the touch goes straight to
     // the widget UI so a move/placement isn't hijacked mid-gesture.
     private fun widgetEditGestureLock(): Boolean {
-        if (homeEditMode || weatherWidgetDragging || widgetPickerView != null) return true
+        if (homeEditMode || innerKeyboardEditMode || weatherWidgetDragging || widgetPickerView != null) return true
         // Theme/style pickers + placement mode own the screen too: no swipe-up-for-library etc.
         if (weatherStylePickerView?.isAttachedToWindow == true || themePaneHost.briefThemePickerShowing()) return true
         if (weatherPlacementView?.isAttachedToWindow == true) return true
@@ -1538,6 +1540,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun dispatchTouchEventInner(event: MotionEvent): Boolean {
+        if (innerKeyboardEditMode) return dispatchInnerKeyboardEditTouch(event)
         if (widgetEditGestureLock()) return super.dispatchTouchEvent(event)
         detectHomeWallpaperTripleTap(event)   // passive: triple-tap empty home wallpaper → change wallpaper
         if (innerWallpaperEditMode) return super.dispatchTouchEvent(event)
@@ -1564,6 +1567,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return true
         }
         return super.dispatchTouchEvent(event)
+    }
+
+    private fun dispatchInnerKeyboardEditTouch(event: MotionEvent): Boolean {
+        val insideKeyboard = isInsideKeyboard(event.rawX, event.rawY)
+        if (insideKeyboard) return super.dispatchTouchEvent(event)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            librarySwipeTriggered = false
+            librarySwipeBlockedByWidget = false
+            libraryDragActive = false
+            spaceBoardDragActive = false
+            homeLeftDragActive = false
+            paneSwipeTriggered = false
+            widgetKeyboardHostTwoFingerActive = false
+            widgetKeyboardSlideGestureActive = false
+            cancelWallpaperLongPress()
+            val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+            super.dispatchTouchEvent(cancel)
+            cancel.recycle()
+        }
+        return true
     }
 
     private fun keyboardGestureLockActive(): Boolean =
@@ -1668,6 +1691,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         ensureDockedHomeSeed()   // one-time: copy the shared home setup into the docked namespace
         keyViews.clear()
         keyBounds.clear()
+        unfoldedKeyboardSearchOverlayText = null
         applyTheme()
         syncSystemBars()
         val unfolded = isUnfoldedInnerLayoutActive()
@@ -2412,8 +2436,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun innerKeyboardWidthPercent(): Int =
         prefs().getInt(INNER_KEYBOARD_WIDTH_PREF, 68).coerceIn(48, 100)
 
+    private fun unfoldedFocusHorizontalInset(): Int = dp(30)
+
     private fun unfoldedKeyboardPanelWidth(): Int {
         val maxWidth = resources.displayMetrics.widthPixels
+        if (isUnfoldedInnerLayoutActive() && !innerKeyboardEditMode) {
+            return (maxWidth - unfoldedFocusHorizontalInset() * 2).coerceAtLeast(dp(720))
+        }
         val minWidth = dp(720)
         val upperBound = (maxWidth - dp(36)).coerceAtLeast(minWidth)
         return (maxWidth * innerKeyboardWidthPercent() / 100f).toInt().coerceIn(minWidth, upperBound)
@@ -2423,7 +2452,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         ((resources.displayMetrics.widthPixels - panelWidth) / 2).coerceAtLeast(0)
 
     private fun unfoldedKeyboardPanelOffsetX(panelWidth: Int = unfoldedKeyboardPanelWidth()): Int =
-        innerKeyboardOffsetX().coerceIn(-unfoldedKeyboardPanelSnapLimit(panelWidth), unfoldedKeyboardPanelSnapLimit(panelWidth))
+        if (isUnfoldedInnerLayoutActive() && !innerKeyboardEditMode) 0
+        else innerKeyboardOffsetX().coerceIn(-unfoldedKeyboardPanelSnapLimit(panelWidth), unfoldedKeyboardPanelSnapLimit(panelWidth))
 
     private fun unfoldedKeyboardPanelLeft(panelWidth: Int = unfoldedKeyboardPanelWidth()): Int {
         val screenWidth = resources.displayMetrics.widthPixels
@@ -3211,6 +3241,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         unfoldedLibraryContentArea = null
         unfoldedFocusContentArea = null
         unfoldedFocusDockView = null
+        unfoldedWeatherSpacerView = null
         unfoldedWeatherChipView = null
         cancelUnfoldedWeatherHold()
         favoritesDockContextShowing = dockPinnedOverrideSpace() == null
@@ -3227,16 +3258,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             gravity = Gravity.CENTER_HORIZONTAL
             clipChildren = false
             clipToPadding = false
-            setPadding(dp(30), dp(14), dp(30), dp(18))
-            addView(unfoldedFocusTopBar(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, unfoldedWeatherTopBarHeight()).apply {
+            val horizontalInset = unfoldedFocusHorizontalInset()
+            setPadding(horizontalInset, dp(14), horizontalInset, dp(18))
+            // The actual weather widget is added as a freeform overlay below, using the same
+            // MovableWidgetFrame as phone mode. Keep this spacer so the calm fold layout remains
+            // balanced without rendering a second, non-movable weather chip.
+            val weatherSpacer = View(context)
+            unfoldedWeatherSpacerView = weatherSpacer
+            addView(weatherSpacer, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, unfoldedWeatherTopBarHeight()).apply {
                 bottomMargin = dp(12)
             })
             addView(FrameLayout(context).apply {
                 clipChildren = true
                 clipToPadding = true
-                translationX = panelOffsetX
                 addView(focusArea, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }, LinearLayout.LayoutParams(panelWidth, 0, 1f).apply {
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
                 bottomMargin = dp(10)
             })
             val dock = unfoldedFocusDock()
@@ -3264,6 +3300,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh(playMoment = false)
+            if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
             post { refreshUnfoldedFocusContent() }
         }
     }
@@ -3275,6 +3312,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val showToday = todayOpen
         val dockVisible = !searching && !showToday && (!libraryOpen || innerLibraryLocked())
         setUnfoldedFocusDockVisible(dockVisible)
+        setUnfoldedWeatherSlotVisible(!searching)
         area.removeAllViews()
         val child = when {
             searching -> unfoldedSearchCanvas()
@@ -3283,7 +3321,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             else -> null
         }
         child?.let {
-            area.addView(it, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            val lp = if (searching) {
+                FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            } else {
+                FrameLayout.LayoutParams(unfoldedKeyboardPanelWidth(), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL)
+            }
+            area.addView(it, lp)
         }
     }
 
@@ -3301,6 +3344,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         dock.translationY = if (visible) 0f else dp(12).toFloat()
     }
 
+    private fun setUnfoldedWeatherSlotVisible(visible: Boolean) {
+        val spacer = unfoldedWeatherSpacerView
+        val lp = spacer?.layoutParams as? LinearLayout.LayoutParams
+        val targetHeight = if (visible) unfoldedWeatherTopBarHeight() else 0
+        val targetBottom = if (visible) dp(12) else 0
+        if (lp != null && (lp.height != targetHeight || lp.bottomMargin != targetBottom)) {
+            lp.height = targetHeight
+            lp.bottomMargin = targetBottom
+            spacer.layoutParams = lp
+        }
+        weatherWidgetFrameView?.let { widget ->
+            widget.animate().cancel()
+            widget.visibility = if (visible && weatherWidgetVisible()) View.VISIBLE else View.GONE
+            widget.alpha = if (visible && weatherWidgetVisible()) 1f else 0f
+        }
+    }
+
     private fun cancelUnfoldedWeatherHold() {
         unfoldedWeatherHoldRunnable?.let { contentFrame.removeCallbacks(it) }
         unfoldedWeatherHoldRunnable = null
@@ -3314,7 +3374,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         val targetPair = when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> listOfNotNull(
-                visibleRectFor(weatherWidgetFrameView),
                 visibleRectFor(unfoldedWeatherChipView)
             ).firstOrNull { (_, rect) -> rect.contains(ev.rawX.toInt(), ev.rawY.toInt()) }
             else -> weatherHoldTargetView?.let { visibleRectFor(it) }
@@ -6551,16 +6610,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun weatherWidgetFrameLayoutParams(): FrameLayout.LayoutParams {
         val classic = weatherWidgetStyleId() == WEATHER_STYLE_CLASSIC_ID
         val lp = if (classic) {
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            FrameLayout.LayoutParams(weatherWidgetFreeformWidth(), FrameLayout.LayoutParams.WRAP_CONTENT)
         } else {
             FrameLayout.LayoutParams(weatherWidgetStyledWidth(), weatherWidgetStyledHeight(weatherWidgetStyleId()))
         }
         // Default = the header's flow position (content column padding), so an unset
         // position renders pixel-identically to the old fixed top header.
-        lp.leftMargin = dp(14)
-        lp.topMargin = dp(6)
-        if (classic) lp.rightMargin = dp(14)
+        if (isUnfoldedInnerLayoutActive()) {
+            lp.leftMargin = dp(30)
+            lp.topMargin = dp(74)
+        } else {
+            lp.leftMargin = dp(14)
+            lp.topMargin = dp(6)
+        }
         return lp
+    }
+
+    private fun weatherWidgetFreeformWidth(): Int {
+        val max = (resources.displayMetrics.widthPixels - dp(28)).coerceAtLeast(dp(260))
+        return minOf(max, dp(420)).coerceAtLeast(dp(280))
     }
 
     private fun weatherWidgetStyledWidth(): Int {
@@ -6591,7 +6659,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
         // Placement-mode geometry can shift between sessions (keyboard mode, rotation);
         // re-apply the soft stack-avoid so a restored position doesn't bury the stack.
-        val (rx, ry) = resolveWeatherWidgetOverlap(parent, frame.width, frame.height, cx, cy) ?: (cx to cy)
+        val (rx, ry) = if (isUnfoldedInnerLayoutActive()) {
+            cx to cy
+        } else {
+            resolveWeatherWidgetOverlap(parent, frame.width, frame.height, cx, cy) ?: (cx to cy)
+        }
         lp.leftMargin = rx
         lp.topMargin = ry
         frame.layoutParams = lp
@@ -6621,7 +6693,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun clampWeatherWidgetPos(ancestor: View, w: Int, h: Int, x: Int, y: Int): Pair<Int, Int> {
         val maxX = (ancestor.width - w).coerceAtLeast(0)
-        val maxY = (weatherWidgetBottomLimitIn(ancestor) - h).coerceAtLeast(0)
+        val bottomLimit = if (isUnfoldedInnerLayoutActive()) ancestor.height else weatherWidgetBottomLimitIn(ancestor)
+        val maxY = (bottomLimit - h).coerceAtLeast(0)
         return x.coerceIn(0, maxX) to y.coerceIn(0, maxY)
     }
 
@@ -6683,6 +6756,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val parent = frame.parent as? View ?: return
         val lp = frame.layoutParams as FrameLayout.LayoutParams
         val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, lp.leftMargin, lp.topMargin)
+        if (isUnfoldedInnerLayoutActive()) {
+            lp.leftMargin = cx
+            lp.topMargin = cy
+            frame.layoutParams = lp
+            saveWeatherWidgetPos(cx, cy)
+            haptic(frame)
+            return
+        }
         val (sx, sy) = softSnapWeatherWidgetPos(parent, cx, cy)
         val (bx, by) = clampWeatherWidgetPos(parent, frame.width, frame.height, sx, sy)
         val resolved = resolveWeatherWidgetOverlap(parent, frame.width, frame.height, bx, by)
@@ -6777,7 +6858,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val now = android.os.SystemClock.uptimeMillis()
                     val doubleTap = now - lastTapMs < 280
                     lastTapMs = now
-                    if (doubleTap && !moveMode) enterMoveMode()
+                    if (doubleTap && !moveMode) {
+                        enterMoveMode()
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                        return true
+                    }
                     if (moveMode) {
                         parent?.requestDisallowInterceptTouchEvent(true)
                         armAutoLock()
@@ -7756,12 +7841,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var homeWallpaperDownTime = 0L
 
     private fun detectHomeWallpaperTripleTap(event: MotionEvent) {
-        val phoneHome = !isUnfoldedInnerLayoutActive() &&
+        val homeSurface = isUnfoldedInnerLayoutActive() ||
             (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET)
         // Widget universal search puts tappable results over the wallpaper with libraryOpen=false and
         // no pane — which this used to consider "empty home". Three taps on results (easy to do when
         // taps are being retried) then launched the wallpaper picker and search vanished.
-        val eligible = phoneHome &&
+        val eligible = homeSurface &&
             !libraryOpen && !isWidgetUniversalSearchActive() &&
             openPane == null && spaceBoardOverlay == null && homeLeftOverlay == null &&
             widgetBoardView == null && !keyboardSettingsOpen && !homeEditMode && !innerWallpaperEditMode
@@ -7893,7 +7978,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 val verticalOpenThreshold = if (widgetKeyboardHidden) dp(54) else dp(24)
                 val horizontalOpenThreshold = if (widgetKeyboardHidden) dp(38) else dp(22)
                 val axisDominance = if (widgetKeyboardHidden) 1.55f else 1.25f
-                if (upOpensLibrary && !librarySwipeTriggered && abs(dy) > verticalOpenThreshold && abs(dy) > abs(dx) * axisDominance) {
+                if (!isUnfoldedInnerLayoutActive() && upOpensLibrary && !librarySwipeTriggered && abs(dy) > verticalOpenThreshold && abs(dy) > abs(dx) * axisDominance) {
                     when {
                         dy < 0 && !libraryOpen && openPane == null -> {
                             // Docked: up-swipe brings up the opaque app library. Widget/unfolded keep
@@ -8000,7 +8085,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val dockedPhone = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()
                     if (dy < 0 && dockedPhone) {
                         openAppLibrary()   // docked: up brings up the opaque app library, not the widget board
-                    } else if (dy < 0 && upOpensLibrary) {
+                    } else if (dy < 0 && upOpensLibrary && !isUnfoldedInnerLayoutActive()) {
                         openSpaceBoard()
                     } else if (dy < 0) {
                         performHomeGesture(gestureAction(GESTURE_UP_PREF, GESTURE_WIDGETS))
@@ -8873,7 +8958,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 popup.dismiss()
                 when ((it as? TextView)?.text?.toString()) {
                     "Resize" -> onResize()
-                    "Remove" -> confirmRemoveWidget(spec.id)
+                    "Remove" -> {
+                        if (hapticsEnabled) anchor.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                        removeWidgetId(spec.id)
+                        Toast.makeText(this@MainActivity, "Widget removed.", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
@@ -9683,7 +9772,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     "Compact 2x2" -> resizeWidget(spec.id, 2, 2)
                     "Wide 4x2" -> resizeWidget(spec.id, 4, 2)
                     "Large 4x3" -> resizeWidget(spec.id, 4, 3)
-                    "Remove" -> confirmRemoveWidget(spec.id)
+                    "Remove" -> {
+                        removeWidgetId(spec.id)
+                        Toast.makeText(this, "Widget removed.", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 dialog.dismiss()
             }
@@ -12003,6 +12095,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (innerKeyboardEditMode) {
                     setOnTouchListener(innerKeyboardMoveListener(keyboardPanel))
                 } else {
+                    setOnTouchListener(unfoldedKeyboardHandleTapListener())
                     setOnLongClickListener {
                         haptic(this)
                         innerKeyboardEditMode = true
@@ -12057,8 +12150,96 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun unfoldedKeyboardHandleBackground(): Drawable =
         Neu.drawable(activeNeuTokens, dp(14).toFloat(), NeuLevel.RAISED_SM)
 
+    private fun unfoldedKeyboardSearchOverlay(): View {
+        return TextView(this).apply {
+            unfoldedKeyboardSearchOverlayText = this
+            searchHintView = this
+            typingStripWellView = this
+            background = typingStripBackground()
+            gravity = Gravity.CENTER_VERTICAL
+            includeFontPadding = false
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.START
+            isClickable = false
+            setPadding(dp(16), dp(3), dp(12), dp(3))
+            refreshUnfoldedKeyboardSearchOverlay()
+        }
+    }
+
+    private fun unfoldedKeyboardSearchTopMargin(): Int =
+        keyboardTopPadding() + dp(24)
+
+    private fun refreshUnfoldedKeyboardSearchOverlay() {
+        val overlay = unfoldedKeyboardSearchOverlayText ?: return
+        if (!isUnfoldedInnerLayoutActive()) {
+            overlay.visibility = View.GONE
+            return
+        }
+        overlay.visibility = View.VISIBLE
+        val typedText = when (openPane?.kind) {
+            PaneKind.CHAT -> composeText
+            PaneKind.AI -> aiDraftText
+            else -> query
+        }
+        if (typedText.isNotBlank() && !keyboardSettingsOpen) {
+            overlay.textSize = 15f
+            overlay.typeface = Typeface.MONOSPACE
+            overlay.letterSpacing = 0f
+            overlay.gravity = Gravity.CENTER_VERTICAL
+            overlay.includeFontPadding = true
+            overlay.setTextColor(keyboardIndicatorTextColor())
+            overlay.text = commandLine(styledTypedCommand(typedText))
+        } else {
+            overlay.textSize = 15f
+            overlay.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+            overlay.letterSpacing = 0f
+            overlay.gravity = Gravity.CENTER_VERTICAL
+            overlay.includeFontPadding = false
+            overlay.setTextColor(keyboardIndicatorTextColor())
+            overlay.text = launcherTypingStripText()
+        }
+    }
+
     private fun unfoldedKeyboardEditFrameBackground(): Drawable =
         Neu.drawable(activeNeuTokens, dp(24).toFloat(), NeuLevel.PRESSED_SM)
+
+    private fun unfoldedKeyboardHandleTapListener(): View.OnTouchListener {
+        var lastTapMs = 0L
+        var downX = 0f
+        var downY = 0f
+        var downMs = 0L
+        return View.OnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    downMs = android.os.SystemClock.uptimeMillis()
+                    false
+                }
+                MotionEvent.ACTION_UP -> {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val moved = abs(event.rawX - downX) > dp(12) || abs(event.rawY - downY) > dp(12)
+                    val quick = now - downMs < 260L
+                    val doubleTap = quick && !moved && now - lastTapMs < 360L
+                    lastTapMs = if (quick && !moved) now else 0L
+                    if (doubleTap) {
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                        haptic(view)
+                        innerKeyboardEditMode = true
+                        render()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    lastTapMs = 0L
+                    false
+                }
+                else -> false
+            }
+        }
+    }
 
     private fun innerKeyboardSnapMaxX(panel: View): Int {
         val screenWidth = resources.displayMetrics.widthPixels
@@ -12371,8 +12552,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(keyboardTopShelf(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyboardTopShelfHeight()).apply {
                     marginStart = dp(8)
                     marginEnd = dp(8)
-                    topMargin = dp(8)
-                    bottomMargin = dp(1)
+                    topMargin = if (stableLauncherSuggestionShelf()) dp(6) else dp(8)
+                    bottomMargin = if (stableLauncherSuggestionShelf()) 0 else dp(1)
                 })
             }
             if (symbolsOpen) {
@@ -13351,11 +13532,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var launcherAgenticStatus: String? = null
     private var pendingLauncherResult: AgenticResult? = null
 
-    private fun showSuggestionStrip() = keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED
+    // Launcher surfaces keep only the persistent typing indicator. Suggestions/chirps belong to
+    // the IME when typing in third-party apps; docked foreground app typing uses the indicator
+    // text via updateDockedForegroundChirpStrip().
+    private fun showSuggestionStrip() = false
     private fun showKeyboardTypingWell() = !keyboardSettingsOpen
     private fun keyboardTypingWellHeight() = dp(36)
     private fun keyboardSuggestionStripHeight() = dp(28)
     private fun keyboardSuggestionGap() = dp(2)
+    private fun stableLauncherSuggestionShelf() =
+        isUnfoldedInnerLayoutActive() && showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen
+
     private fun keyboardTopShelfHeight(): Int {
         if (!showKeyboardTypingWell()) return 0
         val suggestionHeight = launcherSuggestionStripAnimatedHeight.coerceIn(0, keyboardSuggestionStripHeight())
@@ -13399,12 +13586,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipToPadding = false
         }
         keyboardTopShelfView = shelf
-        val typing = typingStripView().also { typingStripWellView = it }
-        shelf.addView(typing, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            keyboardTypingWellHeight(),
-            Gravity.TOP
-        ))
+        if (!stableLauncherSuggestionShelf()) {
+            val typing = typingStripView().also { typingStripWellView = it }
+            shelf.addView(typing, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                keyboardTypingWellHeight(),
+                Gravity.TOP
+            ))
+        } else {
+            // Unfolded has a pinned overlay search bar mounted directly in the keyboard panel.
+            // Keep this shelf as the reserved suggestion lane only, so typing never creates
+            // a second search bar or changes the keyboard's measured height.
+            typingStripWellView = null
+        }
         if (showSuggestionStrip() && !numberPadOpen && !keyboardSettingsOpen) {
             shelf.addView(suggestionStrip(), FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -13486,7 +13680,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         widgetKeyboardHost?.let { host ->
             val lp = host.layoutParams
-            if (lp != null && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && !widgetPaneUsesRootDock()) {
+            if (lp != null && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && !widgetPaneUsesRootDock() && !isUnfoldedInnerLayoutActive()) {
                 lp.height = widgetKeyboardHeight()
                 host.layoutParams = lp
             }
@@ -13506,6 +13700,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun updateSuggestionBar() {
+        refreshUnfoldedKeyboardSearchOverlay()
         val strip = suggestionStripView ?: run {
             updateDockedForegroundChirpStrip()
             return
@@ -18451,6 +18646,7 @@ Question: $prompt"""
         }
         if (widgetSearchActive) searchResultsHost.refreshWidgetSearchContent()
         if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent()
+        refreshUnfoldedKeyboardSearchOverlay()
     }
 
     internal fun renderFavoritesDock() {
@@ -22359,7 +22555,8 @@ Question: $prompt"""
     // top-level/Context-extension functions. Call sites below are unchanged.
 
     private fun widgetKeyboardHeight(): Int {
-        return (keyboardHeight() + launcherSuggestionStripOuterHeight()).coerceAtMost(dp(360))
+        val height = keyboardHeight() + launcherSuggestionStripOuterHeight()
+        return if (isUnfoldedInnerLayoutActive()) height else height.coerceAtMost(dp(360))
     }
 
     private fun widgetKeyboardSlotHeight(): Int =

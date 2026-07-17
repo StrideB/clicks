@@ -267,7 +267,124 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     // to one, refreshSearchSurfaces to the other — so sharing a key let one surface's build mark
     // every row "seen" and silently suppress the other's entrance animations.
     internal fun unfoldedSearchResultsList(): View =
-        searchResultsList(widgetMode = false, surface = "unfolded-focus")
+        unfoldedSearchResultsDashboard(surface = "unfolded-focus")
+
+    private fun unfoldedSearchResultsDashboard(surface: String): View = with(activity) {
+        buildingSurface = surface
+        pendingRowKeys = mutableSetOf()
+        fontScaleMemo = 0f
+
+        val results = universalSearchResults()
+        val command = searchCommandPreview()
+        val aiInline = searchAiAnswer()
+        val rich = searchRichAnswer()
+        val sports = searchSportsCard()
+        val places = searchPlaces()
+        val hero: View? = when {
+            sports != null -> sportsScoreCard(sports)
+            places != null -> nearbyPlacesCard(places)
+            rich != null -> braveRichCard(rich)
+            aiInline != null -> searchAiAnswerCard(aiInline)
+            else -> null
+        }
+        val visibleResults = results
+        val appResults = visibleResults.filter { it.kind == SearchKind.APP }
+        val otherResults = visibleResults.filter { it.kind != SearchKind.APP }
+
+        val dashboard = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(0, dp(8), 0, dp(4))
+
+            addView(unfoldedSearchScrollColumn {
+                command?.let {
+                    addView(searchZoneHeader("Action"))
+                    addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(72)).apply {
+                        bottomMargin = dp(14)
+                    })
+                }
+                hero?.let {
+                    addView(searchZoneHeader("Answer"), zoneHeaderParams())
+                    addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = dp(14)
+                    })
+                    searchRideOffer()?.let { ride ->
+                        addView(braveRideCard(ride), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            bottomMargin = dp(14)
+                        })
+                    }
+                }
+                if (appResults.isNotEmpty()) {
+                    addView(searchZoneHeader("Apps"), zoneHeaderParams())
+                    addView(searchAppGrid(appResults, columns = 5), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = dp(12)
+                    })
+                }
+                if (visibleResults.isEmpty() && command == null && hero == null) {
+                    addView(TextView(context).apply {
+                        text = "No results for \"$query\""
+                        textSize = 14f * searchFontScale()
+                        gravity = Gravity.CENTER
+                        setTextColor(activeNeuTokens.inkDim)
+                        includeFontPadding = false
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(220)))
+                }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.18f).apply {
+                rightMargin = dp(14)
+            })
+
+            addView(unfoldedSearchDivider(), LinearLayout.LayoutParams(dp(1), LinearLayout.LayoutParams.MATCH_PARENT).apply {
+                topMargin = dp(8)
+                bottomMargin = dp(8)
+            })
+
+            addView(unfoldedSearchScrollColumn {
+                var rowIndex = 0
+                SEARCH_GROUP_ORDER.forEach { groupName ->
+                    val groupItems = otherResults.filter { searchGroupLabel(it.kind) == groupName }
+                    if (groupItems.isNotEmpty()) {
+                        addView(searchZoneHeader(groupName), zoneHeaderParams())
+                        groupItems.forEach { result ->
+                            addView(searchGroupedRow(result, rowIndex++), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                                bottomMargin = dp(2)
+                            })
+                        }
+                    }
+                }
+                contextSuggestionResults(results.mapNotNull { it.target?.packageName }.toSet())?.let { (label, items) ->
+                    addView(searchZoneHeader(label), zoneHeaderParams().apply { topMargin = dp(8) })
+                    addView(searchAppGrid(items, columns = 4), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.92f).apply {
+                leftMargin = dp(14)
+            })
+        }
+        renderedRowKeys[surface] = pendingRowKeys
+        dashboard
+    }
+
+    private fun unfoldedSearchScrollColumn(build: LinearLayout.() -> Unit): ScrollView = with(activity) {
+        ScrollView(this).apply {
+            clipToPadding = false
+            isVerticalScrollBarEnabled = false
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(4), 0, dp(16))
+                build()
+            }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    private fun unfoldedSearchDivider(): View = with(activity) {
+        View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                Color.TRANSPARENT,
+                adjustAlpha(activeNeuTokens.ink, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.16f else 0.10f),
+                Color.TRANSPARENT
+            ))
+        }
+    }
 
     // Grid and list surfaces now share one presentation — the three-zone layout. (Previously this
     // rendered 2-column "bento" cards with kind pills; unified so the redesign shows on every surface,
