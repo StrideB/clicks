@@ -441,6 +441,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedFocusDockView: View? = null
     private var unfoldedWeatherSpacerView: View? = null
     private var weatherWidgetFrameView: View? = null
+    private var briefWidgetFrameView: View? = null
     private var unfoldedWeatherChipView: View? = null
     private var weatherHoldTargetView: View? = null
     private var unfoldedWeatherHoldRunnable: Runnable? = null
@@ -7054,6 +7055,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val briefTheme = com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId())
         val dotTheme = briefTheme.id == com.fran.teclas.brief.BRIEF_THEME_DOT_ID.toInt()
         val frame = BriefWidgetFrame(context)
+        briefWidgetFrameView = frame
         val ink = briefTheme.textColorInt()
         val dim = briefTheme.mutedColorInt()
         val faint = dim
@@ -18668,6 +18670,7 @@ Question: $prompt"""
             searchHintView.setTextColor(if (libraryOpen) keyboardIndicatorTextColor() else keyboardIndicatorTextColor(dim = true))
             searchHintView.text = if (hint.startsWith("→")) hint else commandLine(hint)
         }
+        syncFloatingHomeWidgetsForSearch()
         val widgetSearchActive = isWidgetUniversalSearchActive()
         if (widgetSearchActive != widgetSearchRendered && ::contentFrame.isInitialized) {
             render()
@@ -18676,6 +18679,28 @@ Question: $prompt"""
         if (widgetSearchActive) searchResultsHost.refreshWidgetSearchContent()
         if (isUnfoldedInnerLayoutActive()) refreshUnfoldedLibraryContent()
         refreshUnfoldedKeyboardSearchOverlay()
+    }
+
+    /**
+     * The floating home widgets (Daily Brief / agenda card, weather) are added on TOP of the root
+     * home frame, after the content column — so with any timing gap in the search-mode rebuild they
+     * paint OVER an active search surface. Search owns the screen: force them hidden the moment a
+     * query is live on any search surface, and restore them when it clears. Runs on every ribbon
+     * pass, so it also heals states the build-time exclusions missed.
+     */
+    private fun syncFloatingHomeWidgetsForSearch() {
+        val searching = query.isNotBlank() &&
+            (libraryOpen || isWidgetUniversalSearchActive() || isUnfoldedInnerLayoutActive())
+        briefWidgetFrameView?.takeIf { it.parent != null }?.let {
+            it.visibility = if (!searching && briefWidgetVisible()) View.VISIBLE else View.GONE
+        }
+        // The unfolded layout manages its weather slot itself (setUnfoldedWeatherSlotVisible) —
+        // don't fight it from here.
+        if (!isUnfoldedInnerLayoutActive()) {
+            weatherWidgetFrameView?.takeIf { it.parent != null }?.let {
+                it.visibility = if (!searching && weatherWidgetVisible()) View.VISIBLE else View.GONE
+            }
+        }
     }
 
     internal fun renderFavoritesDock() {
@@ -21184,16 +21209,12 @@ Question: $prompt"""
     }
 
     internal fun openSearchResult(result: SearchResult) {
-        // Settings rows apply IN PLACE — "search is the settings screen", and their labels promise
-        // repeatable toggling ("On · tap to turn off"). Clearing the query first tore that surface
-        // down before perform() ran, so the pref flipped invisibly and the row's own
-        // refreshSearchSurfaces() had nothing left to redraw: from the user's seat, search just
-        // closed and nothing happened. Keep search up and let the action redraw it.
-        if (result.kind == SearchKind.SETTING) {
-            result.action?.invoke()
-            return
-        }
-        clearSearchAfterResultLaunch()
+        // The action runs FIRST and the search surface stays up — for every kind, not just
+        // settings rows. Clearing the query before the action ran a synchronous render() in the
+        // middle of the tap: the tapped card's whole surface was torn down before its action
+        // fired, so any hiccup in the launch left the user staring at a closed search and
+        // nothing opening. With search left standing, a tap either opens the target over the
+        // launcher or leaves the card exactly where it was to tap again — never a silent close.
         result.action?.invoke()?.let { return }
         val target = result.target ?: return
         when {
@@ -21204,14 +21225,6 @@ Question: $prompt"""
                 openExternal(target)
             }
         }
-    }
-
-    private fun clearSearchAfterResultLaunch() {
-        query = ""
-        suggestions = emptyList()
-        updateSuggestionBar()
-        renderRibbon()
-        refreshSearchSurfaces()
     }
 
     private fun bestLauncherResultForGo(): SearchResult? {
