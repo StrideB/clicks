@@ -15,7 +15,7 @@ object DefaultThemes {
             weatherVisible = true,
             keyboardTheme = "default",
             iconPack = IconPackRef.System,
-            wallpaperId = "midnight",
+            wallpaperId = WallpaperRegistry.FLUID_HOURS_ID,
             accentColor = Color.parseColor("#6EA8FE"),
             builtIn = true
         ),

@@ -80,6 +80,11 @@ class ThemeRepository(private val context: Context) {
         val accent = prefs.getInt(GO_KEY_COLOR_PREF, Color.parseColor("#C9A7FF"))
         val briefId = prefs.getString(BRIEF_THEME_PREF, "1") ?: "1"
         val weatherId = prefs.getString(WEATHER_WIDGET_STYLE_PREF, WEATHER_HEADER_ID) ?: WEATHER_HEADER_ID
+        val wallpaperDefault = if (hasManualWallpaperChoice()) {
+            WallpaperRegistry.SYSTEM_WALLPAPER_ID
+        } else {
+            WallpaperRegistry.FLUID_HOURS_ID
+        }
         return LauncherTheme(
             id = CUSTOM_THEME_ID,
             name = "Custom",
@@ -91,12 +96,18 @@ class ThemeRepository(private val context: Context) {
             weatherVisible = prefs.getBoolean(WEATHER_VISIBLE_PREF, true),
             keyboardTheme = keyboard,
             iconPack = prefs.getString(ACTIVE_ICON_PACK_PREF, null)?.let { IconPackRef.InstalledPack(it) } ?: IconPackRef.System,
-            wallpaperId = prefs.getString(THEME_WALLPAPER_ID_PREF, WallpaperRegistry.SYSTEM_WALLPAPER_ID)
-                ?: WallpaperRegistry.SYSTEM_WALLPAPER_ID,
+            wallpaperId = prefs.getString(THEME_WALLPAPER_ID_PREF, wallpaperDefault) ?: wallpaperDefault,
             accentColor = accent,
             builtIn = false
         )
     }
+
+    private fun hasManualWallpaperChoice(): Boolean =
+        prefs.contains(THEME_WALLPAPER_ID_PREF) ||
+            prefs.contains(HOME_COVER_WALLPAPER_URI_PREF) ||
+            prefs.contains(HOME_COVER_WALLPAPER_URI_PREF + DOCKED_HOME_SUFFIX) ||
+            prefs.getBoolean(HOME_SYSTEM_WALLPAPER_PREF, false) ||
+            prefs.getBoolean(HOME_SYSTEM_WALLPAPER_PREF + DOCKED_HOME_SUFFIX, false)
 
     private fun persistTheme(theme: LauncherTheme) {
         val edit = prefs.edit().putString(ACTIVE_THEME_ID_PREF, theme.id)

@@ -33,11 +33,17 @@ sealed interface IconPackRef {
 data class WallpaperEntry(
     val id: String,
     val name: String,
-    val source: WallpaperSource
+    val source: WallpaperSource,
+    val type: WallpaperType = WallpaperType.STATIC,
+    val author: String = "system",
+    val builtin: Boolean = true
 )
+
+enum class WallpaperType { STATIC, DYNAMIC }
 
 sealed interface WallpaperSource {
     data class Asset(val path: String) : WallpaperSource
     data class UserFile(val uri: String) : WallpaperSource
     data object System : WallpaperSource
+    data object FluidHours : WallpaperSource
 }

@@ -143,6 +143,7 @@ import com.fran.teclas.weather.parseHourlyJson
 import com.fran.teclas.weather.weatherStyleById
 import com.fran.teclas.theme.DefaultThemes
 import com.fran.teclas.theme.ThemeRepository
+import com.fran.teclas.theme.FluidHours
 import com.fran.teclas.theme.WallpaperRegistry
 import com.fran.teclas.brief.Brief
 import com.fran.teclas.brief.BriefAction
@@ -668,6 +669,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     internal var homeWallpaperDrawable: Drawable? = null
     private var homeWallpaperSourceSig: String? = null
     private var homeWallpaperUnavailableSig: String? = null
+    private var fluidHoursRefreshRunnable: Runnable? = null
     private var deviceWallpaperFileDeniedSig: String? = null
     private var innerWallpaperImageView: ImageView? = null
     private var innerWallpaperEditMode = false
@@ -1076,7 +1078,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (sig != homeWallpaperSourceSig || (homeWallpaperDrawable == null && homeWallpaperUnavailableSig != sig)) {
                 refreshHomeWallpaperAsync()
             }
+        } else if (fluidHoursWallpaperActive()) {
+            val sig = deviceWallpaperSignature()
+            if (sig != homeWallpaperSourceSig || homeWallpaperDrawable == null) refreshHomeWallpaperAsync()
         }
+        scheduleFluidHoursWallpaperRefresh()
         ensureBillingConnected()
         val now = System.currentTimeMillis()
         if (demoModeEnabled()) {
@@ -2569,11 +2575,34 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun deviceWallpaperSignature(): String {
         val uri = activeHomeWallpaperUri()?.toString().orEmpty()
         val themeWallpaper = prefs().getString(ThemeRepository.THEME_WALLPAPER_ID_PREF, WallpaperRegistry.SYSTEM_WALLPAPER_ID).orEmpty()
+        val dynamicPhase = if (themeWallpaper == WallpaperRegistry.FLUID_HOURS_ID) FluidHours.currentPhase().name else ""
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return "$uri|legacy"
         val manager = WallpaperManager.getInstance(this)
         val sys = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_SYSTEM) }.getOrDefault(-1)
         val lock = runCatching { manager.getWallpaperId(WallpaperManager.FLAG_LOCK) }.getOrDefault(-1)
-        return "$uri|$themeWallpaper|$sys|$lock|${useSystemWallpaperOnHome()}|${useLockscreenWallpaperOnHome()}"
+        return "$uri|$themeWallpaper|$dynamicPhase|$sys|$lock|${useSystemWallpaperOnHome()}|${useLockscreenWallpaperOnHome()}"
+    }
+
+    private fun fluidHoursWallpaperActive(): Boolean =
+        !useSystemWallpaperOnHome() &&
+            activeHomeWallpaperUri() == null &&
+            prefs().getString(ThemeRepository.THEME_WALLPAPER_ID_PREF, WallpaperRegistry.SYSTEM_WALLPAPER_ID) == WallpaperRegistry.FLUID_HOURS_ID
+
+    private fun scheduleFluidHoursWallpaperRefresh() {
+        fluidHoursRefreshRunnable?.let { handler.removeCallbacks(it) }
+        if (!fluidHoursWallpaperActive()) {
+            fluidHoursRefreshRunnable = null
+            return
+        }
+        val runnable = Runnable {
+            if (fluidHoursWallpaperActive()) {
+                homeWallpaperDrawable = null
+                refreshHomeWallpaperAsync()
+                scheduleFluidHoursWallpaperRefresh()
+            }
+        }
+        fluidHoursRefreshRunnable = runnable
+        handler.postDelayed(runnable, FluidHours.nextBoundaryDelayMillis().coerceAtMost(15 * 60_000L))
     }
 
     private fun loadHomeWallpaperDrawable(): Drawable? {

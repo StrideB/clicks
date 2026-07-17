@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +74,7 @@ import com.fran.teclas.weather.WEATHER_STYLE_CLASSIC_ID
 import com.fran.teclas.weather.WeatherData
 import com.fran.teclas.weather.weatherStyleById
 import java.util.Locale
+import kotlinx.coroutines.delay
 import org.xmlpull.v1.XmlPullParser
 
 class ThemeStudioActivity : ComponentActivity() {
@@ -92,12 +94,29 @@ class ThemeStudioActivity : ComponentActivity() {
         var staged by remember { mutableStateOf(applied) }
         var selectedTab by remember { mutableStateOf(StudioTab.Brief) }
         var appliedPulse by remember { mutableIntStateOf(0) }
+        var fluidHoursPreviewOpen by remember { mutableStateOf(false) }
         val wallpapers = remember { WallpaperRegistry(this).entries() }
         val wallpaperPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 staged = staged.copy(wallpaperId = WallpaperRegistry.userWallpaperId(uri.toString()), builtIn = false, id = "custom", name = "Custom")
             }
+        }
+
+        if (fluidHoursPreviewOpen) {
+            FluidHoursPreviewScreen(
+                accent = staged.accentColor,
+                onClose = { fluidHoursPreviewOpen = false },
+                onApply = {
+                    staged = staged.asCustom().copy(wallpaperId = WallpaperRegistry.FLUID_HOURS_ID)
+                    repository.applyTheme(staged)
+                    applied = staged
+                    appliedPulse++
+                    fluidHoursPreviewOpen = false
+                    Toast.makeText(this@ThemeStudioActivity, "Fluid Hours applied", Toast.LENGTH_SHORT).show()
+                }
+            )
+            return
         }
 
         Column(
@@ -225,13 +244,16 @@ class ThemeStudioActivity : ComponentActivity() {
                     ) { staged = staged.asCustom().copy(iconPack = it) }
                     StudioTab.Wallpaper -> {
                         Column {
-                            OptionGrid(
-                                wallpapers.map { it.name to it.id } + ("Pick file" to "pick"),
+                            WallpaperOptionGrid(
+                                wallpapers = wallpapers,
                                 selected = staged.wallpaperId,
                                 accent = staged.accentColor
                             ) {
-                                if (it == "pick") wallpaperPicker.launch(arrayOf("image/*"))
-                                else staged = staged.asCustom().copy(wallpaperId = it)
+                                when (it) {
+                                    "pick" -> wallpaperPicker.launch(arrayOf("image/*"))
+                                    WallpaperRegistry.FLUID_HOURS_ID -> fluidHoursPreviewOpen = true
+                                    else -> staged = staged.asCustom().copy(wallpaperId = it)
+                                }
                             }
                         }
                     }
@@ -278,6 +300,130 @@ class ThemeStudioActivity : ComponentActivity() {
                 }
             )
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.18f)))
+        }
+    }
+
+    @Composable
+    private fun FluidHoursPreviewScreen(accent: Int, onClose: () -> Unit, onApply: () -> Unit) {
+        var phase by remember { mutableStateOf(FluidHours.currentPhase()) }
+        var auto by remember { mutableStateOf(true) }
+        val phases = FluidHoursPhase.entries
+        LaunchedEffect(auto) {
+            while (auto) {
+                delay(2_500)
+                phase = phases[(phases.indexOf(phase) + 1).mod(phases.size)]
+            }
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { context -> FluidHoursView(context) },
+                update = { it.phase = phase }
+            )
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.18f)))
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(start = 16.dp, top = 42.dp, end = 16.dp, bottom = 16.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Fluid Hours", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+                        Text("${phase.label.uppercase(Locale.US)} · ${phase.window}", color = Color.White.copy(alpha = 0.74f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    }
+                    Text(
+                        "APPLY",
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(Color(accent).copy(alpha = 0.55f))
+                            .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(99.dp))
+                            .clickable { onApply() }
+                            .padding(horizontal = 14.dp, vertical = 9.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.30f))
+                            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                            .clickable { onClose() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("×", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.Black.copy(alpha = 0.28f))
+                        .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(18.dp))
+                        .padding(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    (listOf("Auto" to null) + phases.map { it.label to it }).forEach { (label, value) ->
+                        val selected = if (value == null) auto else !auto && phase == value
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clip(RoundedCornerShape(13.dp))
+                                .background(if (selected) Color.White.copy(alpha = 0.22f) else Color.Transparent)
+                                .clickable {
+                                    if (value == null) auto = true else {
+                                        auto = false
+                                        phase = value
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(label, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun WallpaperOptionGrid(wallpapers: List<WallpaperEntry>, selected: String, accent: Int, onSelect: (String) -> Unit) {
+        val options = wallpapers + WallpaperEntry("pick", "Pick file", WallpaperSource.UserFile(""), builtin = false)
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            options.chunked(2).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    row.forEach { entry ->
+                        val isSelected = entry.id == selected
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .height(64.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (isSelected) Color(accent).copy(alpha = 0.24f) else Color.White.copy(alpha = 0.06f))
+                                .border(1.dp, if (isSelected) Color(accent) else Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                                .clickable { onSelect(entry.id) }
+                                .padding(horizontal = 10.dp, vertical = 9.dp)
+                        ) {
+                            Text(entry.name, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                if (entry.type == WallpaperType.DYNAMIC) "◷ DYNAMIC" else if (entry.id == "pick") "FILE" else "WALL",
+                                color = Color.White.copy(alpha = 0.58f),
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.align(Alignment.BottomStart)
+                            )
+                        }
+                    }
+                    repeat(2 - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
         }
     }
 
@@ -897,6 +1043,10 @@ class ThemeStudioActivity : ComponentActivity() {
     }
 
     private fun previewWallpaperBrush(id: String): Brush = when (id) {
+        WallpaperRegistry.FLUID_HOURS_ID -> {
+            val frame = FluidHours.keyframe(FluidHours.currentPhase())
+            Brush.linearGradient(listOf(Color(frame.w1), Color(frame.w2), Color(frame.w6)))
+        }
         "slate" -> Brush.linearGradient(listOf(Color(0xFF20242C), Color(0xFF070A0E)))
         "ember" -> Brush.linearGradient(listOf(Color(0xFF3A1D13), Color(0xFF0A0908)))
         "mist" -> Brush.linearGradient(listOf(Color(0xFFE6EBEF), Color(0xFFAAB3BF)))

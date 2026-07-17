@@ -10,9 +10,12 @@ class WallpaperRegistry(private val context: Context) {
     fun entries(): List<WallpaperEntry> {
         val assets = assetWallpapers()
         val user = userWallpaperIds().map { id ->
-            WallpaperEntry(id, "Picked wallpaper", WallpaperSource.UserFile(id.removePrefix(USER_PREFIX)))
+            WallpaperEntry(id, "Picked wallpaper", WallpaperSource.UserFile(id.removePrefix(USER_PREFIX)), builtin = false)
         }
-        return listOf(WallpaperEntry(SYSTEM_WALLPAPER_ID, "System wallpaper", WallpaperSource.System)) + assets + user
+        return listOf(
+            WallpaperEntry(SYSTEM_WALLPAPER_ID, "System wallpaper", WallpaperSource.System),
+            WallpaperEntry(FLUID_HOURS_ID, "Fluid Hours", WallpaperSource.FluidHours, WallpaperType.DYNAMIC)
+        ) + assets + user
     }
 
     fun loadDrawable(id: String): Drawable? {
@@ -25,6 +28,7 @@ class WallpaperRegistry(private val context: Context) {
             }.getOrNull()
             is WallpaperSource.UserFile -> null
             WallpaperSource.System -> null
+            WallpaperSource.FluidHours -> FluidHoursDrawable(context)
         }
     }
 
@@ -50,6 +54,7 @@ class WallpaperRegistry(private val context: Context) {
     companion object {
         const val WALLPAPER_DIR = "wallpapers"
         const val SYSTEM_WALLPAPER_ID = "system"
+        const val FLUID_HOURS_ID = FluidHours.ID
         const val USER_PREFIX = "user:"
         private val SUPPORTED_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
 
