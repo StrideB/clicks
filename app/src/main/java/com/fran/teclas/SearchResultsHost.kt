@@ -487,10 +487,29 @@ internal class SearchResultsHost(private val activity: MainActivity) {
                 addView(searchZoneHeader(label), zoneHeaderParams().apply { topMargin = dp(6) })
                 addView(searchAppGrid(items), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
+
+            if (visibleResults.isNotEmpty() || hero != null) {
+                addView(searchHoldHintFooter(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(10)
+                })
+            }
         })
         // Everything built above has claimed its entrance; these are the rows on this surface now.
         renderedRowKeys[surface] = pendingRowKeys
     } }
+
+    // One quiet line under the results. Wording is a promise, not an apology: tap is the way,
+    // hold is the certainty.
+    private fun searchHoldHintFooter(): View = with(activity) {
+        TextView(this).apply {
+            text = "Tap to open · press & hold if a tap doesn't take"
+            textSize = 9.5f * searchFontScale()
+            gravity = Gravity.CENTER
+            letterSpacing = 0.04f
+            setTextColor(activeNeuTokens.inkFaint)
+            includeFontPadding = false
+        }
+    }
 
     /**
      * Long-press menu for an app in search results: pin it straight to the favorites dock (the
@@ -503,13 +522,17 @@ internal class SearchResultsHost(private val activity: MainActivity) {
         val space = activeSpaceForUi()
         val pinned = space != null && pkg in space.pinned
         val popup = android.widget.PopupMenu(this, anchor)
-        popup.menu.add(0, 1, 0, if (onDock) "Remove from dock" else "Pin to dock")
+        // "Open" leads: hold is also the guaranteed way to action a result, so the launch
+        // must be the first thing under the finger — pinning is the secondary errand here.
+        popup.menu.add(0, 3, 0, "Open ${result.title}")
+        popup.menu.add(0, 1, 1, if (onDock) "Remove from dock" else "Pin to dock")
         if (space != null) {
-            popup.menu.add(0, 2, 1,
+            popup.menu.add(0, 2, 2,
                 if (pinned) "Unpin from ${space.emoji} ${space.name} board" else "Pin to ${space.emoji} ${space.name} board")
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                3 -> openSearchResult(result)
                 1 -> {
                     setHomePresence(pkg, !onDock)
                     Toast.makeText(
@@ -644,8 +667,11 @@ internal class SearchResultsHost(private val activity: MainActivity) {
             setOnClickListener { haptic(this); openSearchResult(result) }
             if (result.target?.packageName != null) {
                 setOnLongClickListener { haptic(this); showSearchAppMenu(this, result); true }
-            } else result.longAction?.let { longAction ->
-                setOnLongClickListener { haptic(this); longAction(); true }
+            } else {
+                // Hold = same action as tap: a guaranteed way to fire the result even if a tap
+                // gets eaten by a scroll, a refresh, or a gesture detector upstream.
+                val hold = result.longAction ?: { openSearchResult(result) }
+                setOnLongClickListener { haptic(this); hold(); true }
             }
         }
     } }
@@ -690,9 +716,9 @@ internal class SearchResultsHost(private val activity: MainActivity) {
                 }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             setOnClickListener { haptic(this); openSearchResult(result) }
-            result.longAction?.let { longAction ->
-                setOnLongClickListener { haptic(this); longAction(); true }
-            }
+            // Hold = same action as tap (unless the row has its own long-press behavior).
+            val hold = result.longAction ?: { openSearchResult(result) }
+            setOnLongClickListener { haptic(this); hold(); true }
         }
     } }
 
