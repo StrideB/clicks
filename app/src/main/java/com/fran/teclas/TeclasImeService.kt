@@ -744,6 +744,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // event. This is what stops fast typing from doing two getText* IPC calls per keystroke.
         } else {
             seedShadow(newSelStart)
+            // The caret jumped somewhere we didn't drive (tap-to-reposition, app edit): the armed
+            // autocorrect-undo and post-commit chips describe a place the cursor no longer is.
+            // Without this, tapping right after a previously-corrected word and pressing backspace
+            // swapped/deleted the WHOLE word (the stale undo consumed the keypress) instead of
+            // deleting one character at the insertion point.
+            autocorrect.clearPending()
+            clearPostCommitChips()
         }
         if (!isLauncherEditorActive()) scheduleSuggestions()
     }
