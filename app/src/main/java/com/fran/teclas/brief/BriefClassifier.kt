@@ -12,6 +12,8 @@ object BriefClassifier {
     data class Result(val kind: Kind, val task: String? = null)
 
     private val TODO_PACKAGES = setOf(
+        "com.linear",
+        "com.linear.app",
         "com.google.android.apps.tasks",
         "com.google.android.keep",
         "com.todoist",

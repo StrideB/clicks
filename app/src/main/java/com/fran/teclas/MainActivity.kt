@@ -441,6 +441,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedFocusDockView: View? = null
     private var unfoldedWeatherSpacerView: View? = null
     private var weatherWidgetFrameView: View? = null
+    private var agendaWidgetFrameView: View? = null
     private var unfoldedWeatherChipView: View? = null
     private var weatherHoldTargetView: View? = null
     private var unfoldedWeatherHoldRunnable: Runnable? = null
@@ -927,6 +928,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (demoModeEnabled()) updateClock() else refreshWeather(force = false)
         maybeRequestSmsPermission()
         mediaSessionSource.start()
+        mediaUiScope.launch {
+            briefRepository.brief.collect {
+                if (::rootView.isInitialized && openPane == null && !libraryOpen && !isWidgetUniversalSearchActive()) {
+                    val shouldShowAgenda = agendaEntries().isNotEmpty()
+                    if (agendaWidgetFrameView?.isAttachedToWindow == true || shouldShowAgenda) render()
+                }
+            }
+        }
         mediaUiScope.launch {
             mediaSessionSource.nowPlaying.collect { info ->
                 syncNowPlayingCardVisibility()
@@ -1539,11 +1548,47 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         searchResultsHost.trackSearchResultTouchDown(event)
         try {
+            if (handleSystemNavigationGestureBypass(event)) return false
             return dispatchTouchEventInner(event)
         } finally {
             searchResultsHost.trackSearchResultTouchUp(event)
         }
     }
+
+    private var systemNavigationGestureBypassActive = false
+
+    private fun handleSystemNavigationGestureBypass(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            systemNavigationGestureBypassActive = isBottomSystemNavigationGestureStart(event.rawY)
+            if (systemNavigationGestureBypassActive) {
+                cancelWallpaperLongPress()
+                librarySwipeTriggered = false
+                librarySwipeBlockedByWidget = false
+                libraryDragActive = false
+                spaceBoardDragActive = false
+                homeLeftDragActive = false
+                paneSwipeTriggered = false
+                widgetKeyboardHostTwoFingerActive = false
+                widgetKeyboardSlideGestureActive = false
+            }
+        }
+        val bypass = systemNavigationGestureBypassActive
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            systemNavigationGestureBypassActive = false
+        }
+        return bypass
+    }
+
+    private fun isBottomSystemNavigationGestureStart(rawY: Float): Boolean {
+        val host = if (::rootView.isInitialized) rootView else window.decorView
+        if (host.height <= 0) return false
+        val loc = IntArray(2)
+        host.getLocationOnScreen(loc)
+        val bottom = loc[1] + host.height
+        return rawY >= bottom - bottomSystemGestureBypassHeight()
+    }
+
+    private fun bottomSystemGestureBypassHeight(): Int = dp(28)
 
     private fun dispatchTouchEventInner(event: MotionEvent): Boolean {
         if (innerKeyboardEditMode) return dispatchInnerKeyboardEditTouch(event)
@@ -1720,7 +1765,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             setBackgroundColor(if (wallpaperCanvas) Color.TRANSPARENT else activeNeuTokens.base)
-            setPadding(0, systemStatusBarHeight(), 0, if (phoneDockedFullBleed) 0 else keyboardBottomLift())
+            setPadding(0, launcherStatusBarInset(), 0, if (phoneDockedFullBleed) 0 else keyboardBottomLift())
         }
         rootView = root
         contentFrame = FrameLayout(this).apply {
@@ -2909,7 +2954,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             dp(46),
             Gravity.TOP or Gravity.CENTER_HORIZONTAL
         ).apply {
-            topMargin = systemStatusBarHeight() + dp(18)
+            topMargin = launcherStatusBarInset() + dp(18)
         })
     }
 
@@ -3026,6 +3071,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         homeEditMode = false
         homeEditChipView = null
         weatherWidgetFrameView = null
+        agendaWidgetFrameView = null
         weatherHoldTargetView = null
         val content = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -3104,6 +3150,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
             if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
             if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
@@ -3116,6 +3163,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         homeEditMode = false
         homeEditChipView = null
         weatherWidgetFrameView = null
+        agendaWidgetFrameView = null
         weatherHoldTargetView = null
         return object : FrameLayout(this) {
             override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
@@ -3166,6 +3214,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
             if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
     }
@@ -3330,6 +3379,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh(playMoment = false)
             if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
             post { refreshUnfoldedFocusContent() }
         }
     }
@@ -6650,7 +6700,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             lp.topMargin = dp(74)
         } else {
             lp.leftMargin = dp(14)
-            lp.topMargin = dp(6)
+            lp.topMargin = 0
         }
         return lp
     }
@@ -6731,7 +6781,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // Scoped to the weather widget — nothing else reads or reflows from this.
     private fun softSnapWeatherWidgetPos(ancestor: View, x: Int, y: Int): Pair<Int, Int> {
         val padL = dp(14)
-        val padT = dp(6)
+        val padT = 0
         val gap = dp(10)
         val contentW = ancestor.width - padL * 2
         val contentH = ancestor.height - padT
@@ -6835,12 +6885,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private var lastTapMs = 0L
         private var longPressFired = false
         private var longPressRunnable: Runnable? = null
+        private var singleTapRunnable: Runnable? = null
         private var autoLockRunnable: Runnable? = null
 
         /** Persist the settled position. */
         protected abstract fun onSettle(fallbackLeft: Int, fallbackTop: Int)
         /** Long-press action while locked (open the style/theme picker). */
         protected abstract fun onLongPress()
+        /** Optional single-tap action while locked. Delayed so double-tap can enter move mode. */
+        protected open fun handlesLockedSingleTap(): Boolean = false
+        protected open fun onLockedSingleTap() {}
         protected open fun lockedLongPressDelayMs(): Long = 700L
         protected open fun lockedLongPressCancelSlopPx(): Int = dp(6)
 
@@ -6851,6 +6905,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         private fun cancelPickerLongPress() { longPressRunnable?.let { removeCallbacks(it) }; longPressRunnable = null }
+        private fun cancelLockedSingleTap() { singleTapRunnable?.let { removeCallbacks(it) }; singleTapRunnable = null }
         private fun armAutoLock() {
             autoLockRunnable?.let { removeCallbacks(it) }
             val r = Runnable { autoLockRunnable = null; exitMoveMode() }
@@ -6888,6 +6943,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     val doubleTap = now - lastTapMs < 280
                     lastTapMs = now
                     if (doubleTap && !moveMode) {
+                        cancelLockedSingleTap()
                         enterMoveMode()
                         parent?.requestDisallowInterceptTouchEvent(true)
                         return true
@@ -6943,6 +6999,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         }
                         armAutoLock()   // tap in move mode without a drag: stay armed
                         return true
+                    }
+                    if (event.actionMasked == MotionEvent.ACTION_UP && handlesLockedSingleTap()) {
+                        val tapSlop = maxOf(dp(8), android.view.ViewConfiguration.get(context).scaledTouchSlop)
+                        val stillTap = abs(event.rawX - startRawX) <= tapSlop && abs(event.rawY - startRawY) <= tapSlop
+                        if (stillTap) {
+                            cancelLockedSingleTap()
+                            val r = Runnable {
+                                singleTapRunnable = null
+                                onLockedSingleTap()
+                            }
+                            singleTapRunnable = r
+                            postDelayed(r, 290L)
+                            return true
+                        }
                     }
                 }
             }
@@ -7047,6 +7117,426 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 ) { openCalendarEventOrRequest(ev) })
             }
         return out.take(5)
+    }
+
+    private data class AgendaEntry(
+        val label: String,
+        val title: String,
+        val subtitle: String,
+        val accent: Int,
+        val timeMs: Long,
+        val event: CalendarEvent? = null,
+        val briefItem: BriefItem? = null
+    )
+
+    private fun agendaEntries(limit: Int = 4): List<AgendaEntry> {
+        val now = System.currentTimeMillis()
+        val entries = mutableListOf<AgendaEntry>()
+        calendarEvents
+            .filter { now >= it.beginMs && now < it.endMs }
+            .sortedBy { it.endMs }
+            .take(1)
+            .forEach { event ->
+                entries += AgendaEntry(
+                    label = "HAPPENING NOW",
+                    title = event.title,
+                    subtitle = "Until ${agendaClock(event.endMs)}${event.location.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()}",
+                    accent = 0xFFFF5A3C.toInt(),
+                    timeMs = event.beginMs,
+                    event = event
+                )
+            }
+        calendarEvents
+            .filter { it.beginMs > now }
+            .sortedBy { it.beginMs }
+            .take(3)
+            .forEachIndexed { index, event ->
+                entries += AgendaEntry(
+                    label = if (index == 0) "UP NEXT" else event.dayLabel.ifBlank { "LATER" }.uppercase(Locale.US),
+                    title = event.title,
+                    subtitle = listOf(event.timeLabel, event.location).filter { it.isNotBlank() }.joinToString(" · "),
+                    accent = if (index == 0) 0xFFF5C451.toInt() else activeNeuTokens.inkDim,
+                    timeMs = event.beginMs,
+                    event = event
+                )
+            }
+        if (hasBriefRepository()) {
+            briefRepository.brief.value.items
+                .filterNot { it.category == BriefCategory.WEATHER || it.category == BriefCategory.MUSIC || it.category == BriefCategory.CALENDAR }
+                .take(3)
+                .forEach { item ->
+                    entries += AgendaEntry(
+                        label = when (item.category) {
+                            BriefCategory.MESSAGE -> "REPLY"
+                            BriefCategory.EMAIL -> "INBOX"
+                            BriefCategory.CALL -> "CALL"
+                            else -> "ACTION"
+                        },
+                        title = item.title,
+                        subtitle = item.subtitle,
+                        accent = when (item.category) {
+                            BriefCategory.MESSAGE -> 0xFF5FD0C4.toInt()
+                            BriefCategory.EMAIL -> 0xFFEA4335.toInt()
+                            BriefCategory.CALL -> 0xFF57C98A.toInt()
+                            else -> 0xFF9B72F0.toInt()
+                        },
+                        timeMs = item.signal?.timestamp ?: now,
+                        briefItem = item
+                    )
+                }
+        }
+        return entries
+            .distinctBy { it.event?.eventId?.let { id -> "cal:$id" } ?: it.briefItem?.signalRef ?: "${it.label}:${it.title}" }
+            .sortedWith(compareBy<AgendaEntry> { it.briefItem != null }.thenBy { it.timeMs })
+            .take(limit)
+    }
+
+    private fun agendaClock(ms: Long): String =
+        LocalDateTime.ofInstant(Instant.ofEpochMilli(ms), ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("h:mm a", Locale.US))
+            .lowercase(Locale.US)
+
+    private fun buildAgendaWidgetFrame(context: Context): View? {
+        val cardLayout = isUnfoldedInnerLayoutActive()
+        val entries = agendaEntries(limit = if (cardLayout) 2 else 1)
+        val entry = entries.firstOrNull() ?: return null
+        val frame = AgendaWidgetFrame(context)
+        agendaWidgetFrameView = frame
+        frame.elevation = dp(if (cardLayout) 8 else 5).toFloat()
+        if (cardLayout) {
+            frame.background = ColorDrawable(Color.TRANSPARENT)
+            frame.addView(foldAwareGlassPlate(context, radiusDp = 24), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            frame.addView(agendaCardContent(context, entries), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        } else {
+            frame.background = agendaStripBackground()
+            val content = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(13), 0, dp(12), 0)
+                isClickable = false
+                background = briefRowRipple(16)
+                addView(View(context).apply {
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(entry.accent)
+                    }
+                }, LinearLayout.LayoutParams(dp(7), dp(7)).apply { marginEnd = dp(9) })
+                addView(mono(agendaStripLabel(entry), 8.6f, entry.accent).apply {
+                    letterSpacing = 0.12f
+                    gravity = Gravity.CENTER_VERTICAL
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply { marginEnd = dp(10) })
+                addView(TextView(context).apply {
+                    text = entry.title
+                    textSize = 12.8f
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER_VERTICAL
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+                addView(TextView(context).apply {
+                    text = entry.subtitle
+                    textSize = 10.4f
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+                    setTextColor(activeNeuTokens.inkDim)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(dp(86), LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(8) })
+            }
+            frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+        return frame
+    }
+
+    private fun agendaCardContent(context: Context, entries: List<AgendaEntry>): View =
+        LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(15), dp(13), dp(15), dp(13))
+            clipChildren = false
+            clipToPadding = false
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(mono("AGENDA", 8.8f, activeNeuTokens.inkDim).apply {
+                    letterSpacing = 0.18f
+                    includeFontPadding = false
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(TextView(context).apply {
+                    text = "+"
+                    textSize = 20f
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER
+                    setTextColor(activeNeuTokens.ink)
+                    alpha = 0.86f
+                }, LinearLayout.LayoutParams(dp(26), dp(24)))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(24)).apply {
+                bottomMargin = dp(6)
+            })
+            entries.take(2).forEachIndexed { index, agendaEntry ->
+                addView(agendaCardRow(context, agendaEntry), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+                    if (index == 0 && entries.size > 1) bottomMargin = dp(7)
+                })
+            }
+        }
+
+    private fun agendaCardRow(context: Context, entry: AgendaEntry): View =
+        LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.DARK) 0.24f else 0.36f),
+                adjustAlpha(activeNeuTokens.base, if (activeNeuTokens.mode == NeuMode.DARK) 0.20f else 0.30f)
+            )).apply {
+                cornerRadius = dp(15).toFloat()
+                setStroke(dp(1), adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.DARK) 0.08f else 0.22f))
+            }
+            addView(View(context).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(entry.accent)
+                }
+            }, LinearLayout.LayoutParams(dp(8), dp(8)).apply { marginEnd = dp(9) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(mono(agendaStripLabel(entry), 8.2f, entry.accent).apply {
+                    letterSpacing = 0.16f
+                    includeFontPadding = false
+                    maxLines = 1
+                })
+                addView(TextView(context).apply {
+                    text = entry.title
+                    textSize = 12.8f
+                    includeFontPadding = false
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(3)
+                })
+                addView(TextView(context).apply {
+                    text = entry.subtitle
+                    textSize = 10.2f
+                    includeFontPadding = false
+                    setTextColor(activeNeuTokens.inkDim)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(2)
+                })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        }
+
+    private fun agendaStripVisible(): Boolean =
+        query.isBlank() && !libraryOpen && openPane == null && !isWidgetUniversalSearchActive()
+
+    private fun agendaStripLabel(entry: AgendaEntry): String =
+        when (entry.label) {
+            "HAPPENING NOW" -> "NOW"
+            "UP NEXT" -> "NEXT"
+            else -> entry.label
+        }
+
+    private fun agendaStripBackground(): Drawable =
+        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.DARK) 0.68f else 0.64f),
+            adjustAlpha(activeNeuTokens.base, if (activeNeuTokens.mode == NeuMode.DARK) 0.78f else 0.72f),
+            adjustAlpha(activeNeuTokens.baseLo, if (activeNeuTokens.mode == NeuMode.DARK) 0.72f else 0.62f)
+        )).apply {
+            cornerRadius = dp(16).toFloat()
+            setStroke(dp(1), adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.DARK) 0.16f else 0.34f))
+        }
+
+    private fun agendaWidgetFrameLayoutParams(): FrameLayout.LayoutParams =
+        if (isUnfoldedInnerLayoutActive()) {
+            val width = agendaWidgetCardWidth()
+            FrameLayout.LayoutParams(width, agendaWidgetCardHeight()).apply {
+                leftMargin = (resources.displayMetrics.widthPixels - width - dp(30)).coerceAtLeast(dp(30))
+                topMargin = dp(74)
+            }
+        } else {
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(42)).apply {
+                leftMargin = dp(14)
+                topMargin = dp(86)
+                rightMargin = dp(14)
+            }
+        }
+
+    private fun agendaWidgetCardWidth(): Int = weatherWidgetStyledWidth()
+
+    private fun agendaWidgetCardHeight(): Int {
+        val styleId = weatherWidgetStyleId()
+        return if (styleId == WEATHER_STYLE_CLASSIC_ID) dp(122)
+        else weatherWidgetStyledHeight(styleId).coerceIn(dp(122), dp(178))
+    }
+
+    private fun applyPersistedAgendaWidgetPos(frame: View) {
+        if (!prefs().contains(homeScopedKey(AGENDA_POS_X_PREF))) return
+        val parent = frame.parent as? View ?: return
+        if (parent.width <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == FrameLayout.LayoutParams.MATCH_PARENT) { lp.width = frame.width; lp.rightMargin = 0 }
+        val x = prefs().getInt(homeScopedKey(AGENDA_POS_X_PREF), lp.leftMargin)
+        val y = prefs().getInt(homeScopedKey(AGENDA_POS_Y_PREF), lp.topMargin)
+        val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
+        lp.leftMargin = cx
+        lp.topMargin = cy
+        frame.layoutParams = lp
+    }
+
+    private fun saveAgendaWidgetPos(x: Int, y: Int) {
+        prefs().edit().putInt(homeScopedKey(AGENDA_POS_X_PREF), x).putInt(homeScopedKey(AGENDA_POS_Y_PREF), y).apply()
+    }
+
+    private inner class AgendaWidgetFrame(context: Context) : MovableWidgetFrame(context) {
+        private var persistedPosApplied = false
+
+        init {
+            clipChildren = false
+            clipToPadding = false
+            isClickable = true
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!persistedPosApplied && width > 0 && ((parent as? View)?.width ?: 0) > 0) {
+                persistedPosApplied = true
+                post { applyPersistedAgendaWidgetPos(this) }
+            }
+        }
+
+        override fun onLongPress() = createCalendarEvent()
+
+        override fun handlesLockedSingleTap(): Boolean = true
+
+        override fun onLockedSingleTap() {
+            haptic(this)
+            openHere(agendaTarget())
+        }
+
+        override fun onSettle(fallbackLeft: Int, fallbackTop: Int) {
+            val parentView = parent as? View ?: return
+            val lp = layoutParams as FrameLayout.LayoutParams
+            val (cx, cy) = clampWeatherWidgetPos(parentView, width, height, lp.leftMargin, lp.topMargin)
+            if (isUnfoldedInnerLayoutActive()) {
+                lp.leftMargin = cx
+                lp.topMargin = cy
+                layoutParams = lp
+                saveAgendaWidgetPos(cx, cy)
+                haptic(this)
+                return
+            }
+            val (sx, sy) = softSnapWeatherWidgetPos(parentView, cx, cy)
+            val (bx, by) = clampWeatherWidgetPos(parentView, width, height, sx, sy)
+            val resolved = resolveWeatherWidgetOverlap(parentView, width, height, bx, by)
+            if (resolved != null) {
+                lp.leftMargin = resolved.first
+                lp.topMargin = resolved.second
+                layoutParams = lp
+                saveAgendaWidgetPos(resolved.first, resolved.second)
+                haptic(this)
+            } else {
+                lp.leftMargin = fallbackLeft
+                lp.topMargin = fallbackTop
+                layoutParams = lp
+            }
+        }
+    }
+
+    private fun agendaPane(): View {
+        val entries = agendaEntries(limit = 12)
+        return ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(activeNeuTokens.base)
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(16), dp(16), dp(16), dp(18))
+                addView(TextView(context).apply {
+                    text = "NOW · NEXT · ACTIONS"
+                    textSize = 9.5f
+                    letterSpacing = 0.18f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(activeNeuTokens.inkDim)
+                    includeFontPadding = false
+                })
+                addView(TextView(context).apply {
+                    text = if (entries.isEmpty()) "Nothing needs your attention." else "Your day, in order."
+                    textSize = 22f
+                    typeface = Typeface.create("serif", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    setPadding(0, dp(6), 0, dp(14))
+                    includeFontPadding = false
+                })
+                if (entries.isEmpty()) {
+                    addView(mono("Calendar and task notifications will appear here when there is something current or upcoming.", 10.5f, activeNeuTokens.inkDim).apply {
+                        setPadding(0, dp(8), 0, 0)
+                    })
+                } else {
+                    entries.forEach { entry ->
+                        addView(agendaTimelineRow(entry), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                            bottomMargin = dp(10)
+                        })
+                    }
+                }
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    private fun agendaTimelineRow(entry: AgendaEntry): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP
+            setPadding(dp(13), dp(12), dp(13), dp(12))
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED_SM)
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                entry.event?.let { openCalendarEventOrRequest(it); return@setOnClickListener }
+                entry.briefItem?.let { fireAgendaBriefItem(it); return@setOnClickListener }
+            }
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                addView(View(context).apply {
+                    background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(entry.accent) }
+                }, LinearLayout.LayoutParams(dp(10), dp(10)))
+                addView(View(context).apply {
+                    background = GradientDrawable().apply { setColor(adjustAlpha(entry.accent, 0.42f)); cornerRadius = dp(1).toFloat() }
+                }, LinearLayout.LayoutParams(dp(2), dp(44)).apply { topMargin = dp(6) })
+            }, LinearLayout.LayoutParams(dp(24), LinearLayout.LayoutParams.MATCH_PARENT).apply { marginEnd = dp(12) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(mono(entry.label, 9.2f, entry.accent).apply { letterSpacing = 0.15f })
+                addView(TextView(context).apply {
+                    text = entry.title
+                    textSize = 15.5f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.ink)
+                    setPadding(0, dp(4), 0, dp(4))
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                addView(TextView(context).apply {
+                    text = entry.subtitle
+                    textSize = 11.5f
+                    setTextColor(activeNeuTokens.inkDim)
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(mono("›", 18f, activeNeuTokens.inkDim).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(18), LinearLayout.LayoutParams.MATCH_PARENT))
+        }
+
+    private fun fireAgendaBriefItem(item: BriefItem) {
+        val action = item.signal?.actions?.firstOrNull { it.label.equals(item.primaryActionLabel, ignoreCase = true) }
+            ?: item.signal?.actions?.firstOrNull()
+        if (action != null) todayPaneHost.fireBriefAction(item, action, null)
+        else todayPaneHost.openToday()
     }
 
     private fun buildBriefWidgetFrame(context: Context): View? {
@@ -7826,7 +8316,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!homeWidgetStackVisible()) return 0
         val metrics = resources.displayMetrics
         val contentHeight = metrics.heightPixels -
-            systemStatusBarHeight() -
+            launcherStatusBarInset() -
             dp(34) -
             keyboardHeight()
         val reservedHomeChrome = dp(20) + dp(70) + dp(80) + dp(28)
@@ -7849,9 +8339,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val height = contentFrame.height
         if (width <= 0 || height <= 0) return
         val edgeWidth = dp(64).coerceAtLeast((width * 0.08f).toInt())
-        contentFrame.systemGestureExclusionRects = listOf(
-            Rect((width - edgeWidth).coerceAtLeast(0), 0, width, height)
-        )
+        val topSafe = (launcherStatusBarInset() + dp(24)).coerceAtMost(height)
+        val bottomSafe = systemGestureReservedBottomInset().coerceAtMost(height)
+        val exclusionBottom = (height - bottomSafe).coerceAtLeast(topSafe)
+        contentFrame.systemGestureExclusionRects =
+            if (exclusionBottom > topSafe) {
+                listOf(Rect((width - edgeWidth).coerceAtLeast(0), topSafe, width, exclusionBottom))
+            } else {
+                emptyList()
+            }
+    }
+
+    private fun systemGestureReservedBottomInset(): Int {
+        val navId = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        val navHeight = if (navId > 0) runCatching { resources.getDimensionPixelSize(navId) }.getOrDefault(0) else 0
+        return maxOf(navHeight, dp(44)).coerceAtMost(dp(96))
     }
 
     private fun isLibraryRightEdgeStart(rawX: Float, rawY: Float, contentLeft: Int, contentTop: Int): Boolean {
@@ -8609,7 +9111,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.VERTICAL
                 clipChildren = false
                 clipToPadding = false
-                setPadding(dp(16), systemStatusBarHeight() + dp(12), dp(16), dp(18))
+                setPadding(dp(16), launcherStatusBarInset() + dp(12), dp(16), dp(18))
                 addView(widgetBoardHeader(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)))
                 addView(widgetGridScroll(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -10599,7 +11101,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
         container.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), systemStatusBarHeight() + dp(12), dp(12), dp(14))
+            setPadding(dp(12), launcherStatusBarInset() + dp(12), dp(12), dp(14))
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -10779,7 +11281,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
         container.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), systemStatusBarHeight() + dp(12), dp(12), dp(14))
+            setPadding(dp(12), launcherStatusBarInset() + dp(12), dp(12), dp(14))
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -17403,6 +17905,7 @@ Question: $prompt"""
         if (target.kind == PaneKind.MUSIC) return musicPane()
         if (target.kind == PaneKind.PHOTOS) return photosPane()
         if (target.kind == PaneKind.AI) return aiPane(target)
+        if (target.id == AGENDA_TARGET_ID) return agendaPane()
         return ScrollView(this).apply {
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(14), dp(16), dp(14))
@@ -17563,6 +18066,13 @@ Question: $prompt"""
             haptic(this)
             renderFavoritesDock()
             renderPaneContent(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("HIDE STATUS BAR", hideStatusBarEnabled()) {
+            val next = !hideStatusBarEnabled()
+            prefs().edit().putBoolean(HIDE_STATUS_BAR_PREF, next).apply()
+            haptic(this)
+            render()
+            openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingAction("SPACES →") {
             haptic(this)
@@ -20127,7 +20637,7 @@ Question: $prompt"""
     }
 
     internal fun builtInLauncherApps(): List<LibraryApp> =
-        listOf(teclasSettingsLibraryApp(), themePaneHost.themeStudioLibraryApp(), musicLibraryApp(), photosLibraryApp())
+        listOf(teclasSettingsLibraryApp(), themePaneHost.themeStudioLibraryApp(), agendaLibraryApp(), musicLibraryApp(), photosLibraryApp())
 
     private fun builtInLauncherSearchResults(rawQuery: String): List<SearchResult> {
         val q = rawQuery.trim()
@@ -20147,6 +20657,16 @@ Question: $prompt"""
         val q = rawQuery.lowercase(Locale.US)
         val name = app.name.lowercase(Locale.US)
         val id = app.target.id.lowercase(Locale.US)
+        if (app.target.id == AGENDA_TARGET_ID) {
+            val aliases = listOf("agenda", "calendar", "events", "up next", "next", "tasks", "todo", "timeline", "today")
+            return when {
+                name == q || aliases.any { it == q } -> 1100
+                name.startsWith(q) || aliases.any { it.startsWith(q) } -> 980
+                name.contains(q) || aliases.any { it.contains(q) } -> 760
+                id.contains(q) -> 420
+                else -> 0
+            }
+        }
         val aliases = when (app.target.kind) {
             PaneKind.SETTINGS -> if (app.target.id == THEME_STUDIO_TARGET_ID) {
                 listOf("theme", "themes", "theme studio", "studio", "wallpaper", "keyboard theme", "brief themes", "weather themes")
@@ -20631,6 +21151,14 @@ Question: $prompt"""
         ) {
             prefs().edit().putBoolean(DOCK_LABELS_PREF, !showDockLabels()).apply()
             renderFavoritesDock()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Hide status bar", toggleStateLabel(hideStatusBarEnabled()),
+            listOf("status bar", "hide status bar", "clean look", "fullscreen", "full screen", "top bar")
+        ) {
+            prefs().edit().putBoolean(HIDE_STATUS_BAR_PREF, !hideStatusBarEnabled()).apply()
+            render()
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
@@ -21988,9 +22516,14 @@ Question: $prompt"""
         mediaUiScope.launch(Dispatchers.IO) {
             val loaded = runCatching { loadCalendarEvents() }.getOrDefault(emptyList())
             withContext(Dispatchers.Main) {
+                val hadAgenda = agendaEntries().isNotEmpty()
                 calendarEvents = loaded
                 syncNowPlayingCardVisibility()
                 if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                if (::rootView.isInitialized && openPane == null && !libraryOpen && !isWidgetUniversalSearchActive()) {
+                    val hasAgenda = agendaEntries().isNotEmpty()
+                    if (agendaWidgetFrameView?.isAttachedToWindow == true || hadAgenda != hasAgenda) render()
+                }
                 then()
             }
         }
@@ -22104,6 +22637,10 @@ Question: $prompt"""
     private fun musicLibraryApp() = LibraryApp("Music", 0xFF57C98A.toInt(), musicTarget(), null)
 
     private fun photosLibraryApp() = LibraryApp("ZEISS Optics", 0xFFDCE6FF.toInt(), photosTarget(), null)
+
+    private fun agendaTarget() = PaneTarget(AGENDA_TARGET_ID, "Agenda", 0xFFF5C451.toInt(), PaneKind.LIST, null, null, "Now and next")
+
+    private fun agendaLibraryApp() = LibraryApp("Agenda", 0xFFF5C451.toInt(), agendaTarget(), null)
 
     private fun HubMessage.toPaneTarget() = PaneTarget(
         "$packageName:$sender",
@@ -24084,6 +24621,12 @@ Question: $prompt"""
 
     internal fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    private fun hideStatusBarEnabled(): Boolean =
+        prefs().getBoolean(HIDE_STATUS_BAR_PREF, false)
+
+    private fun launcherStatusBarInset(): Int =
+        if (hideStatusBarEnabled()) 0 else systemStatusBarHeight()
+
     private fun selectedNeuTokens(): NeuTokens {
         val savedMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM
         return resolveTeclasNeuTokens(savedMode)
@@ -24104,6 +24647,7 @@ Question: $prompt"""
 
     private fun syncSystemBars() {
         if (isFinishing) return
+        val hideStatusBar = hideStatusBarEnabled()
         val mediaDock = openPane?.usesMediaDock() == true
         val innerWallpaperCanvas = isUnfoldedInnerLayoutActive() && openPane == null && !libraryOpen
         val darkBars = mediaDock || activeNeuTokens.mode == NeuMode.DARK
@@ -24124,6 +24668,8 @@ Question: $prompt"""
             else flags and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
         flags = if (lightNav) flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
             else flags and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+        flags = if (hideStatusBar) flags or View.SYSTEM_UI_FLAG_FULLSCREEN
+            else flags and View.SYSTEM_UI_FLAG_FULLSCREEN.inv()
         window.decorView.systemUiVisibility = flags
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -24136,6 +24682,8 @@ Question: $prompt"""
                         WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
                 )
                 controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (hideStatusBar) controller.hide(WindowInsets.Type.statusBars())
+                else controller.show(WindowInsets.Type.statusBars())
                 if (mediaDock) controller.hide(WindowInsets.Type.navigationBars())
                 else controller.show(WindowInsets.Type.navigationBars())
             }
@@ -25320,6 +25868,7 @@ Question: $prompt"""
         private const val FAVORITE_APPS_PREF = "favorite_apps"
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
         private const val DOCK_LABELS_PREF = "dock_labels"
+        private const val HIDE_STATUS_BAR_PREF = "hide_status_bar"
         // Space id the user last swiped the dock back to Pinned in. While the active Space
         // still equals this, the pinned view is respected (no auto-flip to context). Cleared
         // when the Space changes, which re-arms the auto-switch-to-context behavior.
@@ -25365,6 +25914,9 @@ Question: $prompt"""
         private const val WEATHER_WIDGET_STYLE_PREF = "weather_widget_style"
         private const val WEATHER_WIDGET_POS_X_PREF = "weather_widget_pos_x"
         private const val WEATHER_WIDGET_POS_Y_PREF = "weather_widget_pos_y"
+        private const val AGENDA_TARGET_ID = "agenda-timeline"
+        private const val AGENDA_POS_X_PREF = "agenda_widget_x"
+        private const val AGENDA_POS_Y_PREF = "agenda_widget_y"
         // Docked mode keeps its own copy of the phone home setup (wallpaper + weather widget), so
         // docked and widget mode are two independent experiences. Suffix appended to the shared keys.
         private const val DOCKED_HOME_SUFFIX = "_docked"

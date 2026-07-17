@@ -22,7 +22,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 enum class FluidHoursPhase(val label: String, val window: String) {
-    DAWN("Dawn", "before 7 AM"),
+    DAWN("Dawn", "5 AM - 7 AM"),
     DAY("Day", "7 AM - 5 PM"),
     DUSK("Dusk", "5 PM - 8 PM"),
     NIGHT("Night", "after 8 PM")
@@ -89,6 +89,7 @@ object FluidHours {
     fun currentPhase(calendar: Calendar = Calendar.getInstance()): FluidHoursPhase {
         val hour = calendar.get(Calendar.HOUR_OF_DAY)
         return when {
+            hour < 5 -> FluidHoursPhase.NIGHT
             hour < 7 -> FluidHoursPhase.DAWN
             hour < 17 -> FluidHoursPhase.DAY
             hour < 20 -> FluidHoursPhase.DUSK
@@ -101,6 +102,7 @@ object FluidHours {
     fun nextBoundaryDelayMillis(calendar: Calendar = Calendar.getInstance()): Long {
         val hour = calendar.get(Calendar.HOUR_OF_DAY)
         val nextHour = when {
+            hour < 5 -> 5
             hour < 7 -> 7
             hour < 17 -> 17
             hour < 20 -> 20

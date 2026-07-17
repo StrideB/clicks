@@ -98,9 +98,9 @@ class ThemeStudioActivity : ComponentActivity() {
         val wallpapers = remember { WallpaperRegistry(this).entries() }
 
         fun applyWallpaperNow(wallpaperId: String, label: String? = null) {
-            val updated = repository.editActive { it.copy(wallpaperId = wallpaperId) }
+            val updated = repository.applyWallpaper(wallpaperId)
             applied = updated
-            staged = staged.asCustom().copy(wallpaperId = wallpaperId)
+            staged = updated
             appliedPulse++
             Toast.makeText(
                 this@ThemeStudioActivity,

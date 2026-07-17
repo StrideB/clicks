@@ -68,6 +68,12 @@ class ThemeRepository(private val context: Context) {
     fun setWallpaperUri(uri: String): LauncherTheme =
         editActive { it.copy(wallpaperId = WallpaperRegistry.userWallpaperId(uri)) }
 
+    fun applyWallpaper(wallpaperId: String): LauncherTheme {
+        val updated = editActive { it.copy(wallpaperId = wallpaperId) }
+        writeWallpaperPrefs(wallpaperId, prefs.edit()).apply()
+        return updated
+    }
+
     private fun loadActiveTheme(): LauncherTheme {
         val activeId = prefs.getString(ACTIVE_THEME_ID_PREF, null)
         return DefaultThemes.byId(activeId)
@@ -157,24 +163,34 @@ class ThemeRepository(private val context: Context) {
             is IconPackRef.InstalledPack -> edit.putString(ACTIVE_ICON_PACK_PREF, icon.packageId)
         }
 
+        writeWallpaperPrefs(wallpaperId, edit)
+        edit.apply()
+    }
+
+    private fun writeWallpaperPrefs(wallpaperId: String, edit: SharedPreferences.Editor): SharedPreferences.Editor {
         val userWallpaperUri = WallpaperRegistry.uriFromUserWallpaperId(wallpaperId)
-        if (wallpaperId == WallpaperRegistry.SYSTEM_WALLPAPER_ID) {
-            edit.putBoolean(HOME_SYSTEM_WALLPAPER_PREF, true)
+        return if (wallpaperId == WallpaperRegistry.SYSTEM_WALLPAPER_ID) {
+            edit.putString(THEME_WALLPAPER_ID_PREF, wallpaperId)
+                .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, true)
                 .putBoolean(HOME_SYSTEM_WALLPAPER_PREF + DOCKED_HOME_SUFFIX, true)
                 .remove(HOME_COVER_WALLPAPER_URI_PREF)
                 .remove(HOME_COVER_WALLPAPER_URI_PREF + DOCKED_HOME_SUFFIX)
+                .remove(HOME_INNER_WALLPAPER_URI_PREF)
         } else if (userWallpaperUri != null) {
-            edit.putBoolean(HOME_SYSTEM_WALLPAPER_PREF, false)
+            edit.putString(THEME_WALLPAPER_ID_PREF, wallpaperId)
+                .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, false)
                 .putBoolean(HOME_SYSTEM_WALLPAPER_PREF + DOCKED_HOME_SUFFIX, false)
                 .putString(HOME_COVER_WALLPAPER_URI_PREF, userWallpaperUri)
                 .putString(HOME_COVER_WALLPAPER_URI_PREF + DOCKED_HOME_SUFFIX, userWallpaperUri)
+                .remove(HOME_INNER_WALLPAPER_URI_PREF)
         } else {
-            edit.putBoolean(HOME_SYSTEM_WALLPAPER_PREF, false)
+            edit.putString(THEME_WALLPAPER_ID_PREF, wallpaperId)
+                .putBoolean(HOME_SYSTEM_WALLPAPER_PREF, false)
                 .putBoolean(HOME_SYSTEM_WALLPAPER_PREF + DOCKED_HOME_SUFFIX, false)
                 .remove(HOME_COVER_WALLPAPER_URI_PREF)
                 .remove(HOME_COVER_WALLPAPER_URI_PREF + DOCKED_HOME_SUFFIX)
+                .remove(HOME_INNER_WALLPAPER_URI_PREF)
         }
-        edit.apply()
     }
 
     private fun LauncherTheme.toJson(): JSONObject = JSONObject()
@@ -241,6 +257,7 @@ class ThemeRepository(private val context: Context) {
         const val WEATHER_WIDGET_STYLE_PREF = "weather_widget_style"
         const val HOME_SYSTEM_WALLPAPER_PREF = "home_system_wallpaper"
         const val HOME_COVER_WALLPAPER_URI_PREF = "home_cover_wallpaper_uri"
+        const val HOME_INNER_WALLPAPER_URI_PREF = "home_inner_wallpaper_uri"
         private const val DOCKED_HOME_SUFFIX = "_docked"
 
         private const val CUSTOM_THEME_ID = "custom"
