@@ -1,0 +1,110 @@
+# Automated swipe-model retraining.
+#
+# Monthly (and on demand via Run workflow), this: downloads the MIT-licensed FUTO corpus (cached
+# between runs), trains the neural glide decoder (real swipes + synthetic long-tail mix, plus any
+# swipes committed under tools/neural_swipe/own_swipes/), evaluates the candidate against the
+# CURRENTLY-SHIPPED model on held-out real swipes, and — ONLY if the candidate wins — opens a PR
+# with the two updated .onnx files. If it doesn't win, the run ends quietly. You merge the PR when
+# it appears; the keyboard improves on autopilot.
+#
+# Runner selection (repository Settings → Secrets and variables → Actions → Variables):
+#   TRAIN_RUNNER  = the runs-on label to train on.
+#     - GitHub GPU runner (needs a Team/Enterprise org "larger runner", e.g. label gpu-t4-4-core):
+#       full config, ~2-3h, ~$8-13/run.
+#     - unset (default ubuntu-latest, free CPU): trains a reduced config sized to finish within
+#       the job limit. A CPU candidate rarely beats a GPU-trained shipped model — expect "no PR"
+#       until a GPU runner is configured; the plumbing still gets exercised end to end.
+#
+# One-time repo settings for the PR step: Settings → Actions → General →
+#   "Workflow permissions: Read and write" + "Allow GitHub Actions to create pull requests".
+
+name: Retrain swipe model
+
+on:
+  schedule:
+    - cron: "17 6 1 * *"   # 06:17 UTC on the 1st of each month
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "Training steps (default: sized to the runner)"
+        required: false
+      limit:
+        description: "Max real swipes to load (default: sized to the runner)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  retrain:
+    runs-on: ${{ vars.TRAIN_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 330
+    defaults:
+      run:
+        working-directory: tools/neural_swipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install training dependencies
+        run: pip install --quiet torch numpy onnx onnxscript onnxruntime huggingface_hub
+
+      # The corpus is ~5GB and immutable — cache it so only the first run pays the download.
+      - name: Cache FUTO corpus
+        uses: actions/cache@v4
+        with:
+          path: tools/neural_swipe/futo_data
+          key: futo-corpus-v1
+
+      - name: Download corpus + carve held-out dev split (first run only)
+        run: |
+          if [ ! -f futo_data/train.jsonl ]; then python futo_data.py --download; fi
+          if [ ! -f futo_data/dev.jsonl ]; then python futo_data.py --make-dev futo_data/train.jsonl; fi
+
+      - name: Train + evaluate candidate vs shipped model
+        id: train
+        run: |
+          # Size the run to the hardware: full config on a GPU runner; on free CPU, a small
+          # proof-of-plumbing config that finishes inside the job limit (it exercises the whole
+          # pipeline but won't beat a GPU-trained shipped model — expect "no PR").
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            STEPS_DEFAULT=100000; LIMIT_DEFAULT=800000
+          else
+            STEPS_DEFAULT=4000; LIMIT_DEFAULT=100000
+            export BATCH=64 DMODEL=128 LAYERS=3 NHEAD=4 FF=256
+          fi
+          export STEPS="${{ inputs.steps }}"; export LIMIT="${{ inputs.limit }}"
+          export STEPS="${STEPS:-$STEPS_DEFAULT}" LIMIT="${LIMIT:-$LIMIT_DEFAULT}"
+          # Fold in any committed personal swipes (exported from the phone / collector app).
+          if ls own_swipes/*.jsonl >/dev/null 2>&1; then export OWN="own_swipes/*.jsonl"; fi
+          ./train_overnight.sh 2>&1 | tee train.log
+          # Machine-readable verdict for the PR gate.
+          if grep -q "candidate WINS" train.log; then echo "wins=true" >> "$GITHUB_OUTPUT"; else echo "wins=false" >> "$GITHUB_OUTPUT"; fi
+          grep -E "top-1|candidate|baseline" train.log | tail -4 > verdict.txt || true
+          echo "verdict<<EOF" >> "$GITHUB_OUTPUT"; cat verdict.txt >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Open PR with the winning model
+        if: steps.train.outputs.wins == 'true'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="auto/swipe-model-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          cp tools/neural_swipe/model_candidate/swipe_encoder.onnx tools/neural_swipe/model_candidate/swipe_decoder.onnx app/src/main/assets/
+          git add app/src/main/assets/swipe_encoder.onnx app/src/main/assets/swipe_decoder.onnx
+          git commit -m "Auto-retrain: swipe model beats shipped baseline on held-out real swipes"
+          git push -u origin "$BRANCH"
+          gh pr create --title "Auto-retrain: improved swipe model ($(date -u +%Y-%m-%d))" --body "$(printf 'Automated monthly retrain. The candidate BEAT the shipped model on held-out real swipes the model never saw:\n\n```\n%s\n```\n\nTrained on the FUTO corpus (MIT) + synthetic long-tail mix%s. Merge to ship — NeuralGlideEngine picks the new model up automatically.\n' "$(cat tools/neural_swipe/verdict.txt)" "$([ -d tools/neural_swipe/own_swipes ] && echo ' + committed personal swipes')")" --base main --head "$BRANCH"
+
+      - name: Report (no improvement — nothing shipped)
+        if: steps.train.outputs.wins != 'true'
+        run: |
+          echo "Candidate did not beat the shipped model; no PR opened."
+          cat verdict.txt || true
