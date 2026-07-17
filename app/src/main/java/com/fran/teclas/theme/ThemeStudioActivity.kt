@@ -96,10 +96,23 @@ class ThemeStudioActivity : ComponentActivity() {
         var appliedPulse by remember { mutableIntStateOf(0) }
         var fluidHoursPreviewOpen by remember { mutableStateOf(false) }
         val wallpapers = remember { WallpaperRegistry(this).entries() }
+
+        fun applyWallpaperNow(wallpaperId: String, label: String? = null) {
+            val updated = repository.editActive { it.copy(wallpaperId = wallpaperId) }
+            applied = updated
+            staged = staged.asCustom().copy(wallpaperId = wallpaperId)
+            appliedPulse++
+            Toast.makeText(
+                this@ThemeStudioActivity,
+                "${label ?: wallpapers.firstOrNull { it.id == wallpaperId }?.name ?: "Wallpaper"} applied",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
         val wallpaperPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                staged = staged.copy(wallpaperId = WallpaperRegistry.userWallpaperId(uri.toString()), builtIn = false, id = "custom", name = "Custom")
+                applyWallpaperNow(WallpaperRegistry.userWallpaperId(uri.toString()), "Picked wallpaper")
             }
         }
 
@@ -108,12 +121,8 @@ class ThemeStudioActivity : ComponentActivity() {
                 accent = staged.accentColor,
                 onClose = { fluidHoursPreviewOpen = false },
                 onApply = {
-                    staged = staged.asCustom().copy(wallpaperId = WallpaperRegistry.FLUID_HOURS_ID)
-                    repository.applyTheme(staged)
-                    applied = staged
-                    appliedPulse++
+                    applyWallpaperNow(WallpaperRegistry.FLUID_HOURS_ID, "Fluid Hours")
                     fluidHoursPreviewOpen = false
-                    Toast.makeText(this@ThemeStudioActivity, "Fluid Hours applied", Toast.LENGTH_SHORT).show()
                 }
             )
             return
@@ -252,7 +261,7 @@ class ThemeStudioActivity : ComponentActivity() {
                                 when (it) {
                                     "pick" -> wallpaperPicker.launch(arrayOf("image/*"))
                                     WallpaperRegistry.FLUID_HOURS_ID -> fluidHoursPreviewOpen = true
-                                    else -> staged = staged.asCustom().copy(wallpaperId = it)
+                                    else -> applyWallpaperNow(it)
                                 }
                             }
                         }

@@ -23,6 +23,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.graphics.drawable.StateListDrawable
@@ -30,6 +31,7 @@ import android.graphics.drawable.StateListDrawable
 class DockedKeyboardService : Service() {
     private var windowManager: WindowManager? = null
     private var deckView: View? = null
+    private var keyboardDeck: LinearLayout? = null
     private var overlayParams: WindowManager.LayoutParams? = null
     private var shifted = false
     private var overlayVisible = true
@@ -72,6 +74,7 @@ class DockedKeyboardService : Service() {
             setPadding(dp(10), keyboardTopPadding(), dp(10), keyboardBottomPadding())
             background = deckBackground()
         }
+        keyboardDeck = deck
         listOf(
             "qwertyuiop".map { it.toString() },
             "asdfghjkl".map { it.toString() },
@@ -83,6 +86,16 @@ class DockedKeyboardService : Service() {
                 keyRowHeight()
             ).apply {
                 if (rowIndex > 0) topMargin = -keyRowOverlap()
+            })
+        }
+        val root = FrameLayout(this).apply {
+            addView(deck, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ))
+            addView(freeformRestoreButton(), FrameLayout.LayoutParams(dp(44), dp(30), Gravity.TOP or Gravity.END).apply {
+                topMargin = dp(9)
+                rightMargin = dp(16)
             })
         }
         val lp = WindowManager.LayoutParams(
@@ -97,9 +110,9 @@ class DockedKeyboardService : Service() {
             gravity = Gravity.BOTTOM
             y = DockedKeyboardMetrics.overlayBottomLiftPx(this@DockedKeyboardService)
         }
-        windowManager?.addView(deck, lp)
+        windowManager?.addView(root, lp)
         overlayParams = lp
-        deckView = deck
+        deckView = root
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -108,6 +121,7 @@ class DockedKeyboardService : Service() {
         val wasVisible = overlayVisible
         deckView?.let { view -> runCatching { windowManager?.removeView(view) } }
         deckView = null
+        keyboardDeck = null
         overlayParams = null
         overlayVisible = true
         showDeck()
@@ -239,7 +253,7 @@ class DockedKeyboardService : Service() {
         when (label) {
             "shift" -> {
                 shifted = !shifted
-                (deckView as? LinearLayout)?.let { deck ->
+                keyboardDeck?.let { deck ->
                     for (rowIndex in 0 until deck.childCount) {
                         val row = deck.getChildAt(rowIndex) as? LinearLayout ?: continue
                         for (keyIndex in 0 until row.childCount) {
@@ -271,6 +285,37 @@ class DockedKeyboardService : Service() {
             setPackage(packageName)
             putExtra(InputInjectionService.EXTRA_CHAR, value)
         })
+    }
+
+    private fun freeformRestoreButton(): TextView {
+        return TextView(this).apply {
+            text = "↙"
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(selectedNeuTokens().ink)
+            alpha = 0.76f
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(15).toFloat()
+                setColor(if (selectedNeuTokens().mode == NeuMode.LIGHT) 0xDDEBF0F4.toInt() else 0xBB090B10.toInt())
+                setStroke(dp(1), if (selectedNeuTokens().mode == NeuMode.LIGHT) 0x55FFFFFF else 0x22FFFFFF)
+            }
+            isClickable = true
+            contentDescription = "Resize app back above keyboard"
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                sendBroadcast(Intent(InputInjectionService.ACTION_REPIN_FREEFORM).apply { setPackage(packageName) })
+            }
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.92f).scaleY(0.92f).alpha(1f).setDuration(80).start()
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().scaleX(1f).scaleY(1f).alpha(0.76f).setDuration(120).start()
+                }
+                false
+            }
+        }
     }
 
     private fun visualLabel(label: String): String {
@@ -834,6 +879,7 @@ class DockedKeyboardService : Service() {
         runCatching { unregisterReceiver(overlayVisibilityReceiver) }
         deckView?.let { view -> runCatching { windowManager?.removeView(view) } }
         deckView = null
+        keyboardDeck = null
         overlayParams = null
         VivoDockedExperiment.clearViewportTruncation(this)
         super.onDestroy()

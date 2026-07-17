@@ -44,6 +44,7 @@ class InputInjectionService : AccessibilityService() {
                 ACTION_INJECT_KEY -> injectKey(intent.getStringExtra(EXTRA_CHAR).orEmpty())
                 ACTION_PREPARE_FIELD -> prepareForegroundField()
                 ACTION_TOGGLE_SPLIT_SCREEN -> performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
+                ACTION_REPIN_FREEFORM -> repinForegroundFreeform()
             }
         }
     }
@@ -53,6 +54,7 @@ class InputInjectionService : AccessibilityService() {
         val filter = IntentFilter(ACTION_INJECT_KEY).apply {
             addAction(ACTION_PREPARE_FIELD)
             addAction(ACTION_TOGGLE_SPLIT_SCREEN)
+            addAction(ACTION_REPIN_FREEFORM)
         }
         androidx.core.content.ContextCompat.registerReceiver(
             this, keystrokeReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
@@ -427,6 +429,16 @@ class InputInjectionService : AccessibilityService() {
         handler.postDelayed(pinRunnable, 120)   // debounce the burst of window-change events
     }
 
+    private fun repinForegroundFreeform() {
+        if (!KeyboardSettings.isDocked(this) || !DockedFreeform.isActive(this)) return
+        val topApp = windows
+            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            .filter { it.root?.packageName?.toString().let { pkg -> pkg != null && pkg != packageName } }
+            .maxByOrNull { it.layer }
+            ?: return
+        topApp.root?.packageName?.toString()?.let { requestPin(it) }
+    }
+
     private fun doPin() {
         val pkg = pinPackage ?: return
         val now = android.os.SystemClock.uptimeMillis()
@@ -479,6 +491,7 @@ class InputInjectionService : AccessibilityService() {
         const val ACTION_INJECT_KEY = "com.fran.teclas.ACTION_INJECT_KEY"
         const val ACTION_PREPARE_FIELD = "com.fran.teclas.ACTION_PREPARE_FIELD"
         const val ACTION_TOGGLE_SPLIT_SCREEN = "com.fran.teclas.ACTION_TOGGLE_SPLIT_SCREEN"
+        const val ACTION_REPIN_FREEFORM = "com.fran.teclas.ACTION_REPIN_FREEFORM"
         const val ACTION_SET_DOCKED_OVERLAY_VISIBLE = "com.fran.teclas.ACTION_SET_DOCKED_OVERLAY_VISIBLE"
         const val EXTRA_CHAR = "extra_char"
         const val EXTRA_VISIBLE = "extra_visible"
