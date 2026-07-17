@@ -948,6 +948,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // you lift — removes the entire dwell time from perceived latency). This counts the chars
         // committed by the current gesture so a glide/flick steal can undo them.
         private var downCommittedChars = 0
+        // The primary pointer's key and whether its DOWN already committed. The UP handler must
+        // use THESE, not pressedLabel/the shared counter: a second finger overlapping (constant in
+        // fast typing) overwrote pressedLabel and made UP skip the primary function key's commit —
+        // dropped spaces were the 'more error than hit' regression.
+        private var primaryLabel: String? = null
+        private var primaryCommitted = false
+        // Secondary (overlapping) non-letter taps commit on THEIR pointer-up: pointerId -> label.
+        private val secondaryDown = HashMap<Int, String>()
         // Canvas-drawn key preview bubble (no windows, no layout — one extra draw).
         private var previewLabel: String? = null
         private var previewCell: Rect? = null
@@ -1170,8 +1178,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     longPressFired = false
                     downCommittedChars = 0
                     glideStoleDownCommit = false
+                    secondaryDown.clear()
+                    primaryLabel = lbl
                     keyHaptic(lbl)
-                    commitLetterAtPointer(event, 0)
+                    primaryCommitted = commitLetterAtPointer(event, 0)
                     invalidate()
                     when (lbl) {
                         "teclas" -> armLongPress(ViewConfiguration.getLongPressTimeout().toLong()) {
@@ -1196,15 +1206,22 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 MotionEvent.ACTION_POINTER_DOWN -> {
                     val idx = event.actionIndex
                     val lbl = keyAtLocal(event.getX(idx), event.getY(idx))
-                    if (lbl != null && !symbolsMode && lbl.length == 1 && lbl[0].isLetter()) {
+                    if (lbl != null) {
                         keyHaptic(lbl)
                         pressedLabel = lbl
-                        commitLetterAtPointer(event, idx)
+                        if (!symbolsMode && lbl.length == 1 && lbl[0].isLetter()) {
+                            commitLetterAtPointer(event, idx)
+                        } else {
+                            // Overlapping tap on a function key (space, back, period, …): commit as
+                            // a plain tap on ITS pointer-up. Long-press/swipe stay primary-only.
+                            secondaryDown[event.getPointerId(idx)] = lbl
+                        }
                         invalidate()
                     }
                     return true
                 }
                 MotionEvent.ACTION_POINTER_UP -> {
+                    secondaryDown.remove(event.getPointerId(event.actionIndex))?.let { handleKey(it) }
                     clearPreview()
                     return true
                 }
@@ -1229,12 +1246,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     return true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val lbl = pressedLabel
+                    val lbl = primaryLabel
+                    primaryLabel = null
                     pressedLabel = null
                     invalidate()
                     seemeReleaseHaptic(this)
                     cancelKeyLongPress()
-                    if (longPressFired) { longPressFired = false; downCommittedChars = 0; clearPreview(); return true }
+                    if (longPressFired) { longPressFired = false; downCommittedChars = 0; primaryCommitted = false; clearPreview(); return true }
                     if (lbl == "space" && spaceCursorMoved) { spaceCursorMoved = false; return true }
                     if (lbl == "back") {
                         val repeated = deleteRepeatFired
@@ -1242,11 +1260,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         if (repeated) return true
                     }
                     if (lbl != null) {
-                        if (downCommittedChars > 0) {
-                            downCommittedChars = 0   // letter(s) already committed at DOWN
-                        } else {
-                            handleKey(resolveTapKey(lbl, event.rawX, event.rawY))
-                        }
+                        if (!primaryCommitted) handleKey(resolveTapKey(lbl, event.rawX, event.rawY))
+                        primaryCommitted = false
+                        downCommittedChars = 0
                         armFrameSample()
                     }
                     clearPreview()
@@ -1262,6 +1278,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     }
                     downCommittedChars = 0
                     glideStoleDownCommit = false
+                    primaryCommitted = false
+                    primaryLabel = null
+                    secondaryDown.clear()
                     pressedLabel = null
                     clearPreview()
                     invalidate()
