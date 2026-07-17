@@ -310,7 +310,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return false
     }
     private val predictionCore by lazy {
-        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker })
+        com.fran.teclas.keyboard.PredictionCore(
+            this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker },
+            languageNextWords = { prev -> contextModel.topContinuations(prev, 3) }
+        )
     }
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
 

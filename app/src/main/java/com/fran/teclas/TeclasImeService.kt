@@ -233,6 +233,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         shadowCaret = caret.coerceAtLeast(0)
         shadowValid = true
         shadowAfterValid = false
+        tapTraceClear()   // cursor re-seeded from the editor: the in-progress-word trace is stale
         // Reseed = the mirror is now authoritative here; forget older caret positions so a later
         // tap-to-reposition onto a stale position can't be mistaken for one of our own edits.
         selfCaretIdx = 0
@@ -351,6 +352,43 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // All learning state lives in the shared "teclas" prefs, so both keyboards learn as one:
     // personal word usage, rejected corrections, and the adapted signal weights.
     private val personalFreq by lazy { com.fran.teclas.keyboard.unified.PersonalFrequencyStore(imePrefs()) }
+
+    // ── Tap-lattice trace ─────────────────────────────────────────────────────────────────────
+    // Raw touch coordinates of each letter tap in the in-progress word. The ranker scores every
+    // candidate against these actual points (per-key Gaussian), so correction weighs every key the
+    // finger was NEAR — Gboard-style literal decoding — not just the letters that got committed.
+    // Maintenance is best-effort: any missed clear only produces a length mismatch, which the
+    // signal treats as "no evidence" (never wrong evidence). Main-thread only; snapshot before bg use.
+    private val tapTrace = ArrayList<Pair<Float, Float>>(32)
+    private fun tapTraceAppend(x: Float, y: Float) { if (tapTrace.size < 32) tapTrace.add(x to y) }
+    private fun tapTracePop() { if (tapTrace.isNotEmpty()) tapTrace.removeAt(tapTrace.size - 1) }
+    private fun tapTraceClear() { if (tapTrace.isNotEmpty()) tapTrace.clear() }
+
+    /** Mean per-tap Gaussian of [word]'s letters against the traced touch points (0 = no evidence). */
+    private fun tapSpatialScore(word: String, trace: List<Pair<Float, Float>>): Float {
+        if (trace.isEmpty() || word.length != trace.size) return 0f
+        var sum = 0.0
+        for (i in trace.indices) {
+            sum += spatialScorer.probability(trace[i].first, trace[i].second, word[i].toString())
+        }
+        return (sum / trace.size).toFloat()
+    }
+
+    // English-only features (sentence checks, standalone-i). The wordlists carry no language tag,
+    // so detect English by its two most characteristic function words.
+    private fun englishActive(): Boolean =
+        predictionEngine.isDictWord("the") && predictionEngine.isDictWord("and")
+
+    // Post-commit one-tap chips: revert the last autocorrect, or apply a sentence fix (doubled
+    // word / a-an). Shown as the first suggestion chip(s) after a space; cleared on any other input.
+    private var correctionRevertWord: String? = null
+    private var pendingSentenceFix: com.fran.teclas.keyboard.unified.SentenceChecks.Fix? = null
+    private fun fixLabel(f: com.fran.teclas.keyboard.unified.SentenceChecks.Fix): String =
+        if (f.replacement.isEmpty()) "✕ double" else f.replacement.trim()
+    private fun sentenceFixFor(before: String): com.fran.teclas.keyboard.unified.SentenceChecks.Fix? =
+        com.fran.teclas.keyboard.unified.SentenceChecks.doubledWord(before)
+            ?: com.fran.teclas.keyboard.unified.SentenceChecks.aAnAgreement(before)
+    private fun clearPostCommitChips() { correctionRevertWord = null; pendingSentenceFix = null }
     private val rejectedStore by lazy { com.fran.teclas.keyboard.unified.RejectedCorrectionsStore(imePrefs()) }
     private val adaptiveWeights by lazy { com.fran.teclas.keyboard.unified.AdaptiveWeights(imePrefs()) }
     private val contextModel = com.fran.teclas.keyboard.unified.ContextModel()
@@ -360,6 +398,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             personalBoost = { personalFreq.boost(it) },
             isRejectedPair = { t, c -> rejectedStore.contains(t, c) },
             lmProb = { prev, w -> contextModel.prob(prev, w) },
+            tapSpatial = { w, trace -> tapSpatialScore(w, trace) },
             weights = { adaptiveWeights.weights() }
         )
     }
@@ -384,7 +423,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         )
     }
     private val predictionCore by lazy {
-        com.fran.teclas.keyboard.PredictionCore(this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker })
+        com.fran.teclas.keyboard.PredictionCore(
+            this, { predictionEngine }, ngramRepo, ranker = { unifiedRanker },
+            languageNextWords = { prev -> contextModel.topContinuations(prev, 3) }
+        )
     }
     private val glideCore by lazy { com.fran.teclas.keyboard.GlideCore(this, ngramRepo) }
     private var suggestionStrip: LinearLayout? = null
@@ -1464,8 +1506,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 refreshKeyboardChrome(rebuildBackgrounds = keyboardTheme() == KEYBOARD_THEME_BRUSHED)
             }
             "back" -> {
+                clearPostCommitChips()
                 // Undo autocorrect via the shared core (restore original + remember rejection).
-                if (input != null && autocorrect.undoOnBackspace()) { onTextChanged(); return }
+                if (input != null && autocorrect.undoOnBackspace()) { tapTraceClear(); onTextChanged(); return }
+                tapTracePop()
                 if (input == null) {
                     VivoDockedExperiment.injectInput("⌫")
                 } else if (input.deleteSurroundingText(1, 0)) {
@@ -1511,6 +1555,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         pendingCorrection = null
                     }
                     commitValue(" ")
+                    tapTraceClear()
+                    // Standalone "i" → "I" (English only): the one sentence fix safe to apply
+                    // silently — gated on autocorrect being on, and never fired mid-word.
+                    if (autocorrectEnabled() && englishActive()) {
+                        com.fran.teclas.keyboard.unified.SentenceChecks.standaloneI(shadowBeforeCursor(8))?.let { f ->
+                            deleteBeforeCursor(f.replaceLastChars)
+                            commitValue(f.replacement)
+                        }
+                    }
                 } finally {
                     input?.endBatchEdit()
                 }
@@ -1520,9 +1573,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             "teclas" -> openImeSettings()
             "123" -> setSymbolsMode(true)
             "abc" -> setSymbolsMode(false)
-            "." -> commitValue(".")
+            "." -> { tapTraceClear(); clearPostCommitChips(); commitValue(".") }
             else -> {
                 autocorrect.clearPending()
+                clearPostCommitChips()
                 plog("letter: commitValue ->")
                 commitValue(if ((shifted || capsLock) && label.length == 1) label.uppercase() else label)
                 plog("letter: committed")
@@ -1601,6 +1655,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun startDeleteRepeat() {
+        tapTraceClear(); clearPostCommitChips()
         stopDeleteRepeat(clearFired = true)
         deleteRepeatActive = true
         val repeat = object : Runnable {
@@ -1663,11 +1718,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private val tapResolver by lazy { com.fran.teclas.keyboard.TapResolver(spatialScorer) }
 
-    private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String = tapResolver.resolve(
-        label, rawX, rawY, keyBounds, smartTouchEnabled(),
-        nextCharWeights = { predictionEngine.nextCharWeights(currentWord()) },
-        fallback = { x, y -> keyAtPoint(x, y, letterOnly = true) }
-    )
+    private fun resolveTapKey(label: String, rawX: Float, rawY: Float): String {
+        val resolved = tapResolver.resolve(
+            label, rawX, rawY, keyBounds, smartTouchEnabled(),
+            nextCharWeights = { predictionEngine.nextCharWeights(currentWord()) },
+            fallback = { x, y -> keyAtPoint(x, y, letterOnly = true) }
+        )
+        // Feed the tap-lattice trace (letter taps only — the raw point, not the resolved label,
+        // is the evidence; the ranker re-scores it against EVERY candidate word's keys).
+        if (resolved.length == 1 && resolved[0].isLetter() && !symbolsMode) tapTraceAppend(rawX, rawY)
+        return resolved
+    }
 
     private fun smartTouchEnabled() = imePrefs().getBoolean(IME_SMART_TOUCH_PREF, true)
 
@@ -1876,6 +1937,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             updateActiveLanguage()
             val before = shadowBeforeCursor(96)
             val fieldEmpty = before.isEmpty() && shadowAfterCursor(1).isEmpty()
+            val trace = if (tapTrace.isEmpty()) emptyList() else ArrayList(tapTrace)   // main-thread snapshot
             val gen = ++predictGeneration
             // runCatching: a debounce that fires after onDestroy would hit a shut-down executor.
             runCatching { predictExecutor.execute {
@@ -1889,9 +1951,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 // scan over the dictionary is pointless AND the most expensive case (this is the
                 // predict.compute 60–90ms spikes). Skip prediction/correction for it.
                 val tooLong = word.length > 18
-                val base = if (tooLong) emptyList() else predictionCore.computeSuggestions(word, prev)
+                val base = if (tooLong) emptyList() else predictionCore.computeSuggestions(word, prev, trace)
                 val correction = if (!tooLong && word.length >= 2)
-                    autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) else null
+                    autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev, trace) else null
                 val computeMs = (System.nanoTime() - t0) / 1_000_000
                 handler.post {
                     if (gen != predictGeneration) return@post   // user typed past this answer
@@ -2110,7 +2172,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun learnAndPredictAfterSpace() {
         recordCommittedWordContext()
         val last = wordsBeforeCursor().lastOrNull().orEmpty()
-        suggestions = if (last.isNotEmpty()) ngramRepo.cachedNextWords(last).take(3) else emptyList()
+        // Post-commit chips: if an autocorrect just landed, its original leads the strip as a
+        // one-tap revert (Gboard-style transparency — reverting also teaches the rejection store).
+        // Otherwise offer a deterministic sentence fix (doubled word / a-an) when one applies.
+        val undo = autocorrect.pendingUndo()
+        correctionRevertWord = undo?.first
+        pendingSentenceFix = if (undo == null && autocorrectEnabled() && englishActive())
+            sentenceFixFor(shadowBeforeCursor(64)) else null
+        val chips = listOfNotNull(correctionRevertWord, pendingSentenceFix?.let { fixLabel(it) })
+        val next = if (last.isNotEmpty()) predictionCore.nextWordPredictions(last) else emptyList()
+        suggestions = (chips + next).distinct().take(3)
         glideJustCommitted = false   // these are next-word predictions: tapping one appends
         updateStrip()
     }
@@ -2132,6 +2203,29 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun acceptSuggestion(word: String) {
         if (currentInputConnection == null) return
+        // Revert chip: restore the word autocorrect replaced (and remember the rejection so this
+        // correction never fires again), keeping the trailing space.
+        if (word == correctionRevertWord) {
+            clearPostCommitChips()
+            keyHaptic("back")
+            if (autocorrect.undoOnBackspace()) commitValue(" ")
+            learnAndPredictAfterSpace()
+            return
+        }
+        // Sentence-fix chip: apply the deterministic fix (doubled word / a-an) in place.
+        pendingSentenceFix?.let { f ->
+            if (word == fixLabel(f)) {
+                clearPostCommitChips()
+                keyHaptic("enter")
+                deleteBeforeCursor(f.replaceLastChars)
+                if (f.replacement.isNotEmpty()) commitValue(f.replacement)
+                learnAndPredictAfterSpace()
+                return
+            }
+        }
+        clearPostCommitChips()
+        tapTraceClear()
+        autocorrect.clearPending()   // a pick supersedes any still-revertible correction
         val before = predictionCore.currentWord()
         recordSuggestionPick(word, before, suggestions.toList())
         when {
@@ -3559,6 +3653,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun deleteWord() {
+        tapTraceClear(); clearPostCommitChips()
         val input = currentInputConnection ?: return
         val before = input.getTextBeforeCursor(128, 0)?.toString().orEmpty()
         val trimmed = before.trimEnd()
@@ -3911,6 +4006,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                         glidePersisting = false
                         invalidate()
                         if (hapticsOn()) haptics().symbolFlick()
+                        tapTraceClear(); clearPostCommitChips()
                         commitValue(flickSymbol)
                         onTextChanged()
                         return true
@@ -3964,6 +4060,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) haptics().glideCommit()
                                 val top = glideCore.rerank(results)
+                                tapTraceClear(); clearPostCommitChips()
                                 glideCore.commitWord(top)
                                 recordCommittedWordContext()
                                 // Online-learning: record the accepted glide for personal frequency + corpus.

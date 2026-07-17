@@ -33,12 +33,14 @@ class UnifiedRankerTest {
     private fun ranker(
         personal: Map<String, Float> = emptyMap(),
         rejected: Set<Pair<String, String>> = emptySet(),
-        lm: Map<String, Float> = emptyMap()   // key "prev word" → strength
+        lm: Map<String, Float> = emptyMap(),          // key "prev word" → strength
+        tap: Map<String, Float> = emptyMap()          // word → tap-lattice score
     ) = UnifiedRanker(
         engine = { engine },
         personalBoost = { personal[it] ?: 0f },
         isRejectedPair = { t, c -> (t to c) in rejected },
-        lmProb = { prev, w -> lm["$prev $w"] ?: 0f }
+        lmProb = { prev, w -> lm["$prev $w"] ?: 0f },
+        tapSpatial = { w, _ -> tap[w] ?: 0f }
     )
 
     // ── Correction guards (engine parity) ──────────────────────────────────────────────────────
@@ -98,6 +100,14 @@ class UnifiedRankerTest {
 
     @Test fun contextSignal_breaksHomophoneTie() {
         assertEquals("their", ranker().bestCorrection("thier", contextNextWords = listOf("their")))
+    }
+
+    @Test fun tapLattice_breaksSpatialTie() {
+        // Same story as the LM test, but decided by where the finger ACTUALLY touched: the trace
+        // sits on store's keys, so "store" outranks the equal-frequency, equal-distance "stork".
+        val r = ranker(tap = mapOf("store" to 0.95f, "stork" to 0.15f))
+        val trace = List(5) { 0f to 0f }   // content unused by the fake scorer; length gates the signal
+        assertEquals("store", r.bestCorrection("stora", tapTrace = trace))
     }
 
     @Test fun languageModel_breaksSpatialTie() {

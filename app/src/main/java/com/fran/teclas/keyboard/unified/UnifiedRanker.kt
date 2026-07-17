@@ -39,6 +39,10 @@ class UnifiedRanker(
     private val isRejectedPair: (typed: String, candidate: String) -> Boolean = { _, _ -> false },
     /** Contextual language model: relative strength (0..1) of `word` continuing `prev` (see ContextModel). */
     private val lmProb: (prev: String, word: String) -> Float = { _, _ -> 0f },
+    /** Tap-lattice evidence: mean per-tap Gaussian of the word's letters against the ACTUAL touch
+     *  points of the in-progress word (0 when unavailable/length-mismatched). This is what lets
+     *  correction consider every key the finger was near, not just the letters that committed. */
+    private val tapSpatial: (word: String, trace: List<Pair<Float, Float>>) -> Float = { _, _ -> 0f },
     /** Weights supplier — a provider so adapted weights (AdaptiveWeights) apply live. */
     private val weights: () -> ScoreWeights = { ScoreWeights() }
 ) {
@@ -54,10 +58,11 @@ class UnifiedRanker(
         val languageModel: Double,
         val completion: Double,
         val phonetic: Double,
-        val morphology: Double
+        val morphology: Double,
+        val tapSpatial: Double
     ) {
         fun asArray(): DoubleArray = doubleArrayOf(
-            editDistance, frequency, personal, context, languageModel, completion, phonetic, morphology
+            editDistance, frequency, personal, context, languageModel, completion, phonetic, morphology, tapSpatial
         )
     }
 
@@ -69,7 +74,8 @@ class UnifiedRanker(
         typed: String,
         maxCount: Int = 3,
         ngramBoost: List<String> = emptyList(),
-        prevWord: String = ""
+        prevWord: String = "",
+        tapTrace: List<Pair<Float, Float>> = emptyList()
     ): List<String> {
         if (typed.length < 2) return ngramBoost.take(maxCount)
         val t = typed.lowercase()
@@ -81,7 +87,7 @@ class UnifiedRanker(
         val morphs = Morphology.repairs(t)
         val prev = prevWord.lowercase()
         val scored = cands.map { c ->
-            val sig = signalsFor(c, t, maxDist, maxFreq, emptySet(), prev, phonetic, morphs)
+            val sig = signalsFor(c, t, maxDist, maxFreq, emptySet(), prev, phonetic, morphs, tapTrace)
             c.word to score(sig, w)
         }.sortedByDescending { it.second }.map { it.first }
         // N-gram continuations of the previous word that extend what's typed lead the list — parity
@@ -98,7 +104,8 @@ class UnifiedRanker(
     fun bestCorrection(
         typed: String,
         contextNextWords: List<String> = emptyList(),
-        prevWord: String = ""
+        prevWord: String = "",
+        tapTrace: List<Pair<Float, Float>> = emptyList()
     ): String? {
         if (typed.length < 3) return null
         val t = typed.lowercase()
@@ -121,7 +128,7 @@ class UnifiedRanker(
         val prev = prevWord.lowercase()
         val maxFreq = cands.maxOfOrNull { it.freq } ?: 0f
         val scored = cands.map { c ->
-            val sig = signalsFor(c, t, maxAccept, maxFreq, ctx, prev, phonetic = null, morphs = emptyList())
+            val sig = signalsFor(c, t, maxAccept, maxFreq, ctx, prev, phonetic = null, morphs = emptyList(), tapTrace = tapTrace)
             Triple(c, score(sig, w), c.freq)
         }.sortedByDescending { it.second }
         val best = scored.first()
@@ -138,7 +145,7 @@ class UnifiedRanker(
      * learner uses to compare a user's pick against our top-ranked word. Returns null when [word]
      * isn't reachable as a candidate (out of edit-distance range).
      */
-    fun explain(typed: String, word: String, ngramBoost: List<String> = emptyList(), prevWord: String = ""): Signals? {
+    fun explain(typed: String, word: String, ngramBoost: List<String> = emptyList(), prevWord: String = "", tapTrace: List<Pair<Float, Float>> = emptyList()): Signals? {
         if (typed.length < 2) return null
         val t = typed.lowercase()
         val maxDist = if (t.length <= 4) 1.6 else 2.4
@@ -150,7 +157,8 @@ class UnifiedRanker(
             ngramBoost.mapTo(HashSet()) { it.lowercase() },
             prevWord.lowercase(),
             PhoneticPatterns.fix(t),
-            Morphology.repairs(t)
+            Morphology.repairs(t),
+            tapTrace
         )
     }
 
@@ -162,7 +170,8 @@ class UnifiedRanker(
         ctx: Set<String>,
         prev: String,
         phonetic: String?,
-        morphs: List<String>
+        morphs: List<String>,
+        tapTrace: List<Pair<Float, Float>> = emptyList()
     ): Signals = Signals(
         editDistance = (1.0 - c.distance / (maxDist + 1e-3)).coerceIn(0.0, 1.0),
         frequency = if (maxFreq <= 0f) 0.0 else (c.freq / maxFreq).toDouble(),
@@ -171,7 +180,8 @@ class UnifiedRanker(
         languageModel = if (prev.isEmpty()) 0.0 else lmProb(prev, c.word).toDouble().coerceIn(0.0, 1.0),
         completion = if (c.word.length > typed.length && c.word.startsWith(typed)) 1.0 else 0.0,
         phonetic = if (c.word == phonetic) 1.0 else 0.0,
-        morphology = if (c.word in morphs) 1.0 else 0.0
+        morphology = if (c.word in morphs) 1.0 else 0.0,
+        tapSpatial = if (tapTrace.isEmpty()) 0.0 else tapSpatial(c.word, tapTrace).toDouble().coerceIn(0.0, 1.0)
     )
 
     private fun score(s: Signals, w: ScoreWeights): Double =
@@ -182,7 +192,8 @@ class UnifiedRanker(
             w.languageModel * s.languageModel +
             w.completion * s.completion +
             w.phonetic * s.phonetic +
-            w.morphology * s.morphology
+            w.morphology * s.morphology +
+            w.tapSpatial * s.tapSpatial
 
     private companion object {
         // Composite-score gap under which two candidates count as "tied" for the ambiguity guard.
@@ -195,24 +206,27 @@ class UnifiedRanker(
  * nudges them per user within bounded ranges as pick/rejection evidence accumulates.
  */
 data class ScoreWeights(
-    val editDistance: Double = 0.36,
-    val frequency: Double = 0.22,
-    val personal: Double = 0.12,
-    val context: Double = 0.09,
+    val editDistance: Double = 0.30,
+    val frequency: Double = 0.19,
+    val personal: Double = 0.11,
+    val context: Double = 0.08,
     val languageModel: Double = 0.08,
-    val completion: Double = 0.08,
+    val completion: Double = 0.07,
     val phonetic: Double = 0.03,
-    val morphology: Double = 0.02
+    val morphology: Double = 0.02,
+    // Tap-lattice evidence weighs like a second spatial leg: strong enough to rescue a sloppy tap
+    // sequence, weaker than edit distance so it can't overrule what was actually committed.
+    val tapSpatial: Double = 0.12
 ) {
     fun asArray(): DoubleArray = doubleArrayOf(
-        editDistance, frequency, personal, context, languageModel, completion, phonetic, morphology
+        editDistance, frequency, personal, context, languageModel, completion, phonetic, morphology, tapSpatial
     )
 
     companion object {
         fun fromArray(a: DoubleArray): ScoreWeights = ScoreWeights(
-            a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]
+            a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]
         )
-        const val SIZE = 8
+        const val SIZE = 9
     }
 }
 

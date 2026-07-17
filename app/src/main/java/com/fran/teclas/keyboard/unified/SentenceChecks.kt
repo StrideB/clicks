@@ -50,6 +50,9 @@ object SentenceChecks {
         val words = beforeCursor.trimEnd().split(' ', '\n', '\t').filter { it.isNotEmpty() }
         if (words.size < 2) return null
         val article = words[words.size - 2].lowercase()
+        // Acronyms are pronounced by letter name ("an FBI...", "a URL...") — the vowel-letter
+        // heuristic is wrong for them, so leave anything typed with uppercase past index 0 alone.
+        if (words.last().drop(1).any { it.isUpperCase() }) return null
         val noun = words.last().lowercase().trimEnd { !it.isLetter() }
         if (noun.isEmpty() || !noun.all { it.isLetter() }) return null
         val wantsAn = startsWithVowelSound(noun)

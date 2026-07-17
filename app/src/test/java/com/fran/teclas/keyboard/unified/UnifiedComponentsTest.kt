@@ -40,6 +40,12 @@ class UnifiedComponentsTest {
         assertEquals(0f, ContextModel().prob("the", "store"))
     }
 
+    @Test fun contextModel_topContinuationsBestFirst() {
+        val m = model("the store 100\nthe stork 10\nthe same 50\n")
+        assertEquals(listOf("store", "same"), m.topContinuations("the", 2))
+        assertEquals(emptyList<String>(), m.topContinuations("zzz"))
+    }
+
     // ── AdaptiveWeights update rule ─────────────────────────────────────────────────────────────
 
     @Test fun adapted_movesWeightTowardSignalsThatFavoredThePick() {
@@ -104,5 +110,8 @@ class UnifiedComponentsTest {
         // Sound exceptions: "a university", "an hour".
         assertNull(SentenceChecks.aAnAgreement("a university "))
         assertEquals("an hour ", SentenceChecks.aAnAgreement("in a hour ")!!.replacement)
+        // Acronyms are pronounced by letter name — never "fix" them.
+        assertNull(SentenceChecks.aAnAgreement("an FBI "))
+        assertNull(SentenceChecks.aAnAgreement("a NDA "))
     }
 }
