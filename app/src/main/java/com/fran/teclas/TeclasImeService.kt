@@ -379,6 +379,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun englishActive(): Boolean =
         predictionEngine.isDictWord("the") && predictionEngine.isDictWord("and")
 
+    // Why the canvas keyboard's touch got CANCELled: true = a glide/flick stole it (undo the
+    // down-committed letter — the gesture supersedes the tap), false = trackpad pan or window
+    // change (the typed letter was intentional; keep it).
+    private var glideStoleDownCommit = false
+
     // Post-commit one-tap chips: revert the last autocorrect, or apply a sentence fix (doubled
     // word / a-an). Shown as the first suggestion chip(s) after a space; cleared on any other input.
     private var correctionRevertWord: String? = null
@@ -932,6 +937,37 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private var spaceCursorMoved = false
         private var longPressFired = false
         private var longPressRunnable: Runnable? = null
+        // Letters commit at finger-DOWN (Gboard: the char appears the instant you touch, not when
+        // you lift — removes the entire dwell time from perceived latency). This counts the chars
+        // committed by the current gesture so a glide/flick steal can undo them.
+        private var downCommittedChars = 0
+        // Canvas-drawn key preview bubble (no windows, no layout — one extra draw).
+        private var previewLabel: String? = null
+        private var previewCell: Rect? = null
+        private val previewBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xF2262B33.toInt() }
+        private val previewTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER; color = Color.WHITE
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+
+        // Down-commit for a letter under pointer [idx]; shows the preview bubble. Returns true if
+        // it committed (single letter key, letters mode).
+        private fun commitLetterAtPointer(event: MotionEvent, idx: Int): Boolean {
+            val lbl = keyAtLocal(event.getX(idx), event.getY(idx)) ?: return false
+            if (symbolsMode || lbl.length != 1 || !lbl[0].isLetter()) return false
+            val loc = IntArray(2); getLocationOnScreen(loc)
+            val rawX = event.getX(idx) + loc[0]; val rawY = event.getY(idx) + loc[1]
+            val resolved = resolveTapKey(lbl, rawX, rawY)
+            previewLabel = if (shifted || capsLock) resolved.uppercase(Locale.US) else resolved
+            previewCell = keys.firstOrNull { it.label == resolved }?.cell ?: keys.firstOrNull { it.label == lbl }?.cell
+            handleKey(resolved)
+            downCommittedChars++
+            return true
+        }
+
+        private fun clearPreview() {
+            if (previewLabel != null) { previewLabel = null; previewCell = null; invalidate() }
+        }
 
         fun rebuild() { relayoutKeys(); publishBounds(); invalidate() }
         fun republishBounds() { publishBounds() }
@@ -1075,6 +1111,20 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             buffer?.let { canvas.drawBitmap(it, 0f, 0f, null) }
             // Pressed key drawn live over the cached buffer — a press never re-renders all 34 keys.
             pressedLabel?.let { pl -> keys.firstOrNull { it.label == pl }?.let { drawKey(canvas, it, pressed = true) } }
+            // Key preview bubble: the pressed letter, enlarged above the key (Gboard's instant
+            // feedback cue). Drawn into this same canvas — no popup windows, no layout passes.
+            val plabel = previewLabel; val pcell = previewCell
+            if (plabel != null && pcell != null) {
+                val bw = maxOf(pcell.width() * 1.2f, dp(46).toFloat())
+                val bh = pcell.height() * 1.05f
+                val cx = pcell.exactCenterX().coerceIn(bw / 2f, width - bw / 2f)
+                val bottom = (pcell.top - dp(6)).toFloat().coerceAtLeast(bh)
+                val r = android.graphics.RectF(cx - bw / 2f, bottom - bh, cx + bw / 2f, bottom)
+                canvas.drawRoundRect(r, dp(10).toFloat(), dp(10).toFloat(), previewBgPaint)
+                previewTextPaint.textSize = bh * 0.52f
+                val m = previewTextPaint.fontMetrics
+                canvas.drawText(plabel, cx, r.centerY() - (m.ascent + m.descent) / 2f, previewTextPaint)
+            }
         }
 
         private fun publishBounds() {
@@ -1111,7 +1161,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     downRawX = event.rawX; downRawY = event.rawY
                     spaceCursorLastX = event.rawX; spaceCursorMoved = false
                     longPressFired = false
+                    downCommittedChars = 0
+                    glideStoleDownCommit = false
                     keyHaptic(lbl)
+                    commitLetterAtPointer(event, 0)
                     invalidate()
                     when (lbl) {
                         "teclas" -> armLongPress(ViewConfiguration.getLongPressTimeout().toLong()) {
@@ -1131,6 +1184,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         }
                         "back" -> startDeleteRepeat()
                     }
+                    return true
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    val idx = event.actionIndex
+                    val lbl = keyAtLocal(event.getX(idx), event.getY(idx))
+                    if (lbl != null && !symbolsMode && lbl.length == 1 && lbl[0].isLetter()) {
+                        keyHaptic(lbl)
+                        pressedLabel = lbl
+                        commitLetterAtPointer(event, idx)
+                        invalidate()
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    clearPreview()
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -1159,7 +1227,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     invalidate()
                     seemeReleaseHaptic(this)
                     cancelKeyLongPress()
-                    if (longPressFired) { longPressFired = false; return true }
+                    if (longPressFired) { longPressFired = false; downCommittedChars = 0; clearPreview(); return true }
                     if (lbl == "space" && spaceCursorMoved) { spaceCursorMoved = false; return true }
                     if (lbl == "back") {
                         val repeated = deleteRepeatFired
@@ -1167,13 +1235,28 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         if (repeated) return true
                     }
                     if (lbl != null) {
-                        handleKey(resolveTapKey(lbl, event.rawX, event.rawY))
+                        if (downCommittedChars > 0) {
+                            downCommittedChars = 0   // letter(s) already committed at DOWN
+                        } else {
+                            handleKey(resolveTapKey(lbl, event.rawX, event.rawY))
+                        }
                         armFrameSample()
                     }
+                    clearPreview()
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    // A glide/flick stealing the touch supersedes the tap: remove the letter(s)
+                    // committed at DOWN so the gesture starts from clean text. Any other cancel
+                    // (trackpad pan, window change) keeps them — they were deliberate taps.
+                    if (downCommittedChars > 0 && glideStoleDownCommit) {
+                        deleteBeforeCursor(downCommittedChars)
+                        repeat(downCommittedChars) { tapTracePop() }
+                    }
+                    downCommittedChars = 0
+                    glideStoleDownCommit = false
                     pressedLabel = null
+                    clearPreview()
                     invalidate()
                     cancelKeyLongPress()
                     longPressFired = false
@@ -1959,10 +2042,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     if (gen != predictGeneration) return@post   // user typed past this answer
                     perfReport("predict.compute(bg)", computeMs)
                     pendingCorrection = word to correction
-                    suggestions = if (base.isEmpty()) {
+                    // Keep the post-commit chips (revert / sentence fix) at the head of the strip:
+                    // this async recompute lands ~100ms after learnAndPredictAfterSpace showed them,
+                    // and used to overwrite them — the chip flashed and vanished.
+                    val chips = if (word.isEmpty())
+                        listOfNotNull(correctionRevertWord?.let { "↩ $it" }, pendingSentenceFix?.let { fixLabel(it) })
+                    else emptyList()
+                    val withChips = if (chips.isEmpty()) base else (chips + base).distinct().take(3)
+                    suggestions = if (withChips.isEmpty()) {
                         // IME extra: notification quick-replies when the field is empty.
                         if (fieldEmpty) NotificationReplyContext.quickReplies(imePrefs(), System.currentTimeMillis()) else emptyList()
-                    } else base
+                    } else withChips
                     updateStrip()
                     plog("predict updateStrip done")
                     // Correction/spellcheck orchestration: the on-device engine already ran (correction
@@ -1977,7 +2067,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // 90ms: rank() is now budget-capped to single-digit ms, so prediction no longer saturates the
         // CPU and we can keep a snappy cadence — which also means the space-bar autocorrect precompute
         // is ready in time (no synchronous main-thread fallback hitch on space).
-        handler.postDelayed(r, 90L)
+        handler.postDelayed(r, 60L)
         // Emoji chips are heavier and less time-critical — run them on a slower cadence (180ms) so
         // fast typing doesn't fire them every keystroke. (System spellcheck used to ride along here on
         // every word; it's now a fallback triggered from the prediction result — see maybeSystemSpellcheck.)
@@ -2179,7 +2269,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         correctionRevertWord = undo?.first
         pendingSentenceFix = if (undo == null && autocorrectEnabled() && englishActive())
             sentenceFixFor(shadowBeforeCursor(64)) else null
-        val chips = listOfNotNull(correctionRevertWord, pendingSentenceFix?.let { fixLabel(it) })
+        val chips = listOfNotNull(correctionRevertWord?.let { "↩ $it" }, pendingSentenceFix?.let { fixLabel(it) })
         val next = if (last.isNotEmpty()) predictionCore.nextWordPredictions(last) else emptyList()
         suggestions = (chips + next).distinct().take(3)
         glideJustCommitted = false   // these are next-word predictions: tapping one appends
@@ -2205,7 +2295,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (currentInputConnection == null) return
         // Revert chip: restore the word autocorrect replaced (and remember the rejection so this
         // correction never fires again), keeping the trailing space.
-        if (word == correctionRevertWord) {
+        if (correctionRevertWord != null && word == "↩ $correctionRevertWord") {
             clearPostCommitChips()
             keyHaptic("back")
             if (autocorrect.undoOnBackspace()) commitValue(" ")
@@ -3800,6 +3890,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         private val cursorPanStep = dp(13).toFloat()
 
         private fun beginCursorPan(ev: MotionEvent) {
+            glideStoleDownCommit = false   // pan is deliberate cursor movement; keep typed chars
             cursorPanActive = true
             cursorPanLastX = (ev.getX(0) + ev.getX(1)) / 2f
             clearGlideTouchState()
@@ -3923,7 +4014,17 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (ev.pointerCount == 2) { beginCursorPan(ev); return true }
+                    if (ev.pointerCount == 2) {
+                        // Overlapping taps ARE fast typing: when the second finger lands on a
+                        // letter key, let the canvas type with it (multi-touch typing, Gboard
+                        // behavior). The two-finger trackpad claims the gesture only when the
+                        // second finger lands OFF the letter grid. This unconditional steal was
+                        // the hard cap on two-thumb typing speed.
+                        val idx = ev.actionIndex
+                        val loc = IntArray(2); getLocationOnScreen(loc)
+                        val second = keyAtPoint(ev.getX(idx) + loc[0], ev.getY(idx) + loc[1], letterOnly = true)
+                        if (second == null) { beginCursorPan(ev); return true }
+                    }
                 }
                 MotionEvent.ACTION_DOWN -> {
                     startRawX = ev.rawX
@@ -3952,6 +4053,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     if (!tracking && downOnLetterKey &&
                         (abs(ev.rawX - startRawX) > glideActivationSlop || abs(ev.rawY - startRawY) > glideActivationSlop)) {
                         tracking = true
+                        glideStoleDownCommit = true
                         if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
                         parent?.requestDisallowInterceptTouchEvent(true)
                         keyAtPoint(startRawX, startRawY, letterOnly = true)?.let { traced.add(it) }
