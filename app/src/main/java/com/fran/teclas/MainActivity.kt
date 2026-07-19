@@ -13078,7 +13078,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             background = keyboardDeckBackground()
-            setPadding(dp(7), keyboardTopPadding(), dp(7), keyboardBottomPadding())
+            // Side padding reclaimed for the key grid (parity with the IME): wider touch cells.
+            setPadding(dp(2), keyboardTopPadding(), dp(2), keyboardBottomPadding())
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             if (showKeyboardTypingWell()) {
@@ -13092,8 +13093,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (symbolsOpen) {
                 addKeyRow(com.fran.teclas.keyboard.KeyboardSymbols.ROW_DIGITS)
                 addKeyRow(com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_1)
-                addKeyRow(com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"), dp(8))
-                addKeyRow(listOf("abc", "teclas", "space", "period", "enter"), dp(15))
+                addKeyRow(com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"), dp(3))
+                addKeyRow(listOf("abc", "teclas", "space", "period", "enter"), dp(5))
             } else if (numberPadOpen) {
                 addKeyRow(listOf("1", "2", "3"))
                 addKeyRow(listOf("4", "5", "6"))
@@ -13101,9 +13102,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow(listOf("abc", "0", "back", "enter"))
             } else {
                 addKeyRow("qwertyuiop".map { it.toString() })
-                addKeyRow("asdfghjkl".map { it.toString() }, dp(18))
-                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(8))
-                addKeyRow(listOf("123", "teclas", "space", "period", "enter"), dp(15))
+                addKeyRow("asdfghjkl".map { it.toString() }, dp(6))
+                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(3))
+                addKeyRow(listOf("123", "teclas", "space", "period", "enter"), dp(5))
             }
         }
 
@@ -24492,7 +24493,10 @@ Question: $prompt"""
     }
 
     private fun keyHorizontalInset(): Int {
-        return if (keyboardTheme == KEYBOARD_THEME_DEFAULT || keyboardTheme == KEYBOARD_THEME_TECLAS) 0 else dp(3)
+        // Uniform 3dp face gap on every theme (default/teclas previously sat flush at 0): the
+        // spacing comes out of the drawn face only; touch cells stay edge-to-edge and grew via
+        // the reclaimed deck/row padding.
+        return dp(3)
     }
 
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
