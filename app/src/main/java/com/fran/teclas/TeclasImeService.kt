@@ -4395,7 +4395,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // Uniform 3dp face gap on every theme (default/teclas previously sat flush at 0): spacing
         // comes out of the drawn face only; touch cells stay edge-to-edge and grew via the
         // reclaimed deck/row padding.
-        return dp(5)
+        return dp(2)
     }
 
     private fun themedGoKeySize(): Int {
