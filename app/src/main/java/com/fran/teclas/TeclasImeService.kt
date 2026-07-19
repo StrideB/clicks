@@ -798,7 +798,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         return SwipeImeKeyboardLayout().apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(10), dp(10), dp(10), dp(8))
+            // Side padding reclaimed for the key grid: wider touch cells on every row (the visual
+            // breathing room now comes from each key face's inset, not dead deck border).
+            setPadding(dp(2), dp(10), dp(2), dp(8))
             background = deckBackground()
             minimumHeight = imeKeyboardHeight()
             // Per-component open-cost breakdown (RENDER_LOG): buildKeyboard's total was ~19ms after
@@ -1014,7 +1016,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             val spec = canvasLetterSpec()
             val brushed = keyboardTheme() == KEYBOARD_THEME_BRUSHED
             currentKeyRows().forEachIndexed { rowIndex, row ->
-                val inset = when (rowIndex) { 1 -> dp(12); 2 -> dp(6); 3 -> dp(18); else -> 0 }
+                val inset = when (rowIndex) { 1 -> dp(4); 2 -> dp(2); 3 -> dp(6); else -> 0 }
                 val rowTop = rowIndex * (rowH - overlap)
                 var weightSum = 0f
                 var fixedTotal = 0
@@ -1362,9 +1364,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // cost of every key row — paid at keyboard-open (buildKeyboard) and on each layout swap.
             isBaselineAligned = false
             val inset = when (rowIndex) {
-                1 -> dp(12)
-                2 -> dp(6)
-                3 -> dp(18)
+                1 -> dp(4)
+                2 -> dp(2)
+                3 -> dp(6)
                 else -> 0
             }
             setPadding(inset, 0, inset, 0)
@@ -4390,8 +4392,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun keyHorizontalInset(): Int {
-        val theme = keyboardVisualTheme()
-        return if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) 0 else dp(3)
+        // Uniform 3dp face gap on every theme (default/teclas previously sat flush at 0): spacing
+        // comes out of the drawn face only; touch cells stay edge-to-edge and grew via the
+        // reclaimed deck/row padding.
+        return dp(3)
     }
 
     private fun themedGoKeySize(): Int {
