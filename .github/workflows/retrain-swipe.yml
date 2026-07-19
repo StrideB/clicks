@@ -82,9 +82,15 @@ jobs:
           # Fold in any committed personal swipes (exported from the phone / collector app).
           if ls own_swipes/*.jsonl >/dev/null 2>&1; then export OWN="own_swipes/*.jsonl"; fi
           ./train_overnight.sh 2>&1 | tee train.log
-          # Machine-readable verdict for the PR gate.
-          if grep -q "candidate WINS" train.log; then echo "wins=true" >> "$GITHUB_OUTPUT"; else echo "wins=false" >> "$GITHUB_OUTPUT"; fi
-          grep -E "top-1|candidate|baseline" train.log | tail -4 > verdict.txt || true
+          # Machine-readable verdict for the PR gate: must beat the baseline on held-out real
+          # swipes AND pass the device-space decode gate (catches canvas→key-box calibration
+          # misfits the dev-split eval is structurally blind to).
+          if grep -q "candidate WINS" train.log && grep -q "DEVICE-SPACE GATE: PASS" train.log; then
+            echo "wins=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "wins=false" >> "$GITHUB_OUTPUT"
+          fi
+          grep -E "top-1|candidate|baseline|DEVICE-SPACE GATE" train.log | tail -6 > verdict.txt || true
           echo "verdict<<EOF" >> "$GITHUB_OUTPUT"; cat verdict.txt >> "$GITHUB_OUTPUT"; echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Open PR with the winning model

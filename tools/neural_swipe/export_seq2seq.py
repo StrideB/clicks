@@ -343,6 +343,7 @@ def main():
         import futo_data
         futo_rows = futo_data.load_futo_rows(args.futo, limit=args.futo_limit, exclude_every=args.exclude_every)
         futo_affine = futo_data.calibrate_affine(futo_rows)
+        futo_data.check_affine(futo_affine, KEY_W, KEY_H)   # refuse to train through a misfit map
         print(f"FUTO: {len(futo_rows)} real swipes; {futo_affine}")
         if args.own:
             own_rows = futo_data.load_jsonl_rows(args.own)

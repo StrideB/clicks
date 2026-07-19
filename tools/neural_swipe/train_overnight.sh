@@ -62,14 +62,20 @@ python export_seq2seq.py \
   --steps "$STEPS" --batch "$BATCH" --d-model "$DMODEL" --nhead "$NHEAD" --layers "$LAYERS" --ff "$FF" \
   --out "$OUT"
 
-# 4. Prove it beats what's shipped (held-out real swipes) BEFORE you ship it.
+# 4. Prove it beats what's shipped (held-out real swipes) AND decodes device-space swipes
+#    (DEVICE-SPACE GATE — catches the calibration-misfit bug the dev-split eval can't see)
+#    BEFORE you ship it.
 echo "== evaluating candidate vs the shipped model =="
 python evaluate.py "$OUT" ../../app/src/main/assets
 
 cat <<EOF
 
-Done. If the candidate WINS above, ship it:
+Done. Ship ONLY if BOTH lines above say so:
+  1. "candidate WINS"          (beats the shipped model on held-out real swipes)
+  2. "DEVICE-SPACE GATE: PASS" (decodes swipes in the device's own coordinate space)
+Then:
   cp $OUT/swipe_encoder.onnx $OUT/swipe_decoder.onnx ../../app/src/main/assets/
   # then rebuild + install the app
-If it did not beat the baseline, keep the current model (or train longer with more STEPS).
+If either check failed, keep the current model (or train longer with more STEPS).
+A gate FAIL despite a high dev score means the canvas->key-box calibration is wrong — do not ship.
 EOF
