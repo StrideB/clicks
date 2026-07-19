@@ -25873,7 +25873,9 @@ Question: $prompt"""
         private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"
         private const val INNER_KEYBOARD_OFFSET_X_PREF = "inner_keyboard_offset_x"
         private const val INNER_KEYBOARD_OFFSET_Y_PREF = "inner_keyboard_offset_y"
-        private const val TOUCH_MODEL_PREF = "touch_model_v1"
+        // "_dock" suffix: the docked launcher keyboard and the IME have different geometries — a
+        // shared key made each one restore the other's per-key offsets against the wrong layout.
+        private const val TOUCH_MODEL_PREF = "touch_model_dock_v2"
         private const val APP_ICON_SIZE_PREF = "app_icon_size"
         private const val SEARCH_FONT_SIZE_PREF = "search_font_size"
         private const val SEARCH_FONT_SIZE_DEFAULT = 50   // 0..100 slider; 50 = Medium

@@ -27,6 +27,12 @@ class SpatialScorer {
     private var offsetY = 0.0
     private val keyOffset = HashMap<String, DoubleArray>()   // label -> [dx, dy]
 
+    // Fingerprints of the letter-key geometry. Offsets are displacements FROM key centers — if the
+    // layout changes (spacing update, keyboard resize), offsets learned on the old centers steer
+    // taps toward where keys USED to be, turning the "smart" model into a systematic error source.
+    private var liveSig: Int? = null    // geometry currently on screen (null until first setKeys)
+    private var stateSig: Int? = null   // geometry the current offsets were learned on
+
     fun setKeys(bounds: Map<String, Rect>) {
         keys = bounds.entries.mapNotNull { (label, rect) ->
             if (label.isEmpty()) null
@@ -36,6 +42,27 @@ class SpatialScorer {
         val heights = bounds.values.map { it.height().toDouble() }
         if (widths.isNotEmpty()) sigmaX = widths.average() * 0.48
         if (heights.isNotEmpty()) sigmaY = heights.average() * 0.44
+        val sig = signature(bounds)
+        liveSig = sig
+        if (stateSig != sig) resetLearning()   // stale-layout (or legacy/unknown-layout) offsets
+        stateSig = sig
+    }
+
+    private fun signature(bounds: Map<String, Rect>): Int {
+        var h = 17
+        for ((label, r) in bounds.entries.sortedBy { it.key }) {
+            if (label.length != 1 || !label[0].isLetter()) continue
+            h = h * 31 + label[0].code
+            h = h * 31 + (r.centerX() / 4)   // quantized: immune to sub-4px layout jitter
+            h = h * 31 + (r.centerY() / 4)
+        }
+        return h
+    }
+
+    private fun resetLearning() {
+        keyOffset.clear()
+        offsetX = 0.0
+        offsetY = 0.0
     }
 
     private fun effOffset(label: String): DoubleArray {
@@ -135,9 +162,13 @@ class SpatialScorer {
         return exp(-((dx * dx) / (2 * sigmaX * sigmaX) + (dy * dy) / (2 * sigmaY * sigmaY)))
     }
 
-    /** Serialize learned state: "gx,gy|label:dx,dy;label:dx,dy;...". Safe to persist in prefs. */
+    /**
+     * Serialize learned state: "g2:<geoSig>|gx,gy|label:dx,dy;...". The geometry signature travels
+     * with the offsets so [setKeys] can tell whether restored offsets match the live layout.
+     */
     fun exportState(): String {
         val sb = StringBuilder()
+        sb.append("g2:").append(stateSig ?: 0).append('|')
         sb.append(offsetX).append(',').append(offsetY).append('|')
         for ((label, o) in keyOffset) {
             if (label.length != 1) continue
@@ -146,11 +177,24 @@ class SpatialScorer {
         return sb.toString()
     }
 
-    /** Restore state produced by [exportState]. Malformed input is ignored. */
+    /**
+     * Restore state produced by [exportState]. Malformed input is ignored. Legacy (unsigned) state
+     * restores with an unknown signature, so the first [setKeys] discards it — that one-time reset
+     * is deliberate: legacy offsets may have been learned on a since-changed layout.
+     */
     fun importState(state: String) {
         if (state.isBlank()) return
         runCatching {
-            val parts = state.split('|')
+            var s = state
+            var sig: Int? = null
+            if (s.startsWith("g2:")) {
+                val cut = s.indexOf('|')
+                sig = s.substring(3, cut).toInt()
+                s = s.substring(cut + 1)
+            }
+            // Geometry already known and the stored offsets weren't learned on it → discard.
+            if (liveSig != null && sig != liveSig) return
+            val parts = s.split('|')
             val g = parts[0].split(',')
             offsetX = g[0].toDouble(); offsetY = g[1].toDouble()
             keyOffset.clear()
@@ -162,6 +206,7 @@ class SpatialScorer {
                     keyOffset[kv[0]] = doubleArrayOf(dxy[0].toDouble(), dxy[1].toDouble())
                 }
             }
+            stateSig = sig
         }
     }
 
