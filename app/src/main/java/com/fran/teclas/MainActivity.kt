@@ -24496,7 +24496,7 @@ Question: $prompt"""
         // Uniform 3dp face gap on every theme (default/teclas previously sat flush at 0): the
         // spacing comes out of the drawn face only; touch cells stay edge-to-edge and grew via
         // the reclaimed deck/row padding.
-        return dp(3)
+        return dp(5)
     }
 
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
