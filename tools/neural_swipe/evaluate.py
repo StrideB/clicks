@@ -57,6 +57,57 @@ def load(d):
             ort.InferenceSession(os.path.join(d, "swipe_decoder.onnx")))
 
 
+# Words for the device-space gate: common vocabulary weighted toward bottom-row letters
+# (z x c v b n m) — the row the "google"→"good" miscalibration silently destroyed.
+GATE_WORDS = [
+    "google", "back", "become", "number", "move", "name", "change", "much", "black",
+    "common", "member", "voice", "magic", "begin", "chance", "zone", "zero", "crazy",
+    "exact", "every", "never", "women", "money", "combine", "minimum", "maximum",
+    "there", "water", "people", "think", "right", "house", "world", "great", "should", "little",
+]
+
+
+def device_gate(model_dir, wordset, pref, per_word=2, min_top1=0.70, min_top3=0.85):
+    """
+    Gate #2: decode SYNTHETIC swipes generated DIRECTLY in device key-box space — no affine,
+    no FUTO coordinates anywhere. This is the check the dev-split eval structurally cannot do:
+    train and dev share the canvas→key-box mapping, so a misfit mapping scores 95%+ there while
+    the model misdecodes every real device swipe (the shipped-then-reverted 'google'→'good' bug).
+    A model that can't read clean device-space paths must never ship.
+    """
+    enc, dec = load(model_dir)
+    words = [w for w in GATE_WORDS if w in wordset]
+    rng = np.random.default_rng(7)
+    t1 = t3 = n = 0
+    misses = []
+    for w in words:
+        for _ in range(per_word):
+            path, times = M.synth_path(w, rng)
+            if path is None:
+                continue
+            f, m = M.features_from_path(path, times)
+            cand = beam(enc, dec, f, m, wordset, pref)
+            n += 1
+            if cand[:1] == [w]:
+                t1 += 1
+            if w in cand:
+                t3 += 1
+            elif len(misses) < 10:
+                misses.append(f"{w}→{cand[0] if cand else '?'}")
+    r1, r3 = (t1 / n, t3 / n) if n else (0.0, 0.0)
+    ok = n >= 20 and r1 >= min_top1 and r3 >= min_top3
+    print(f"  device-space synthetic decode: top-1 {100 * r1:.1f}%  top-3 {100 * r3:.1f}%  ({n} swipes)")
+    if misses:
+        print(f"    top-3 misses: {', '.join(misses)}")
+    if ok:
+        print("  DEVICE-SPACE GATE: PASS")
+    else:
+        print("  DEVICE-SPACE GATE: FAIL — model cannot decode swipes in the device's own coordinate "
+              "space. DO NOT SHIP: this is the calibration-misfit failure mode the dev-split eval "
+              "cannot see (it evaluates in the same, possibly wrong, mapped space).")
+    return ok
+
+
 def score(model_dir, rows, aff, wordset, pref):
     enc, dec = load(model_dir)
     t1 = t3 = n = 0
@@ -90,6 +141,8 @@ def main():
         b1, b3, _ = score(sys.argv[2], rows, aff, wordset, pref)
         print(f"  baseline  {sys.argv[2]}: top-1 {b1:.1f}%  top-3 {b3:.1f}%")
         print(f"  => candidate {'WINS' if c1 > b1 else 'does NOT beat baseline'} (top-1 {c1 - b1:+.1f} pts)")
+    # Shipping requires BOTH: beating the baseline above AND passing the device-space gate below.
+    device_gate(sys.argv[1], wordset, pref)
 
 
 if __name__ == "__main__":

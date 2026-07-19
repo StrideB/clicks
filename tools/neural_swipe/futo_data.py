@@ -56,30 +56,65 @@ class Affine:
         return f"Affine(x={self.sx:.3f}*c+{self.ox:.3f}, y={self.sy:.3f}*c+{self.oy:.3f})"
 
 
-def calibrate_affine(rows, max_rows=20000):
+def calibrate_affine(rows, max_rows=40000):
     """
-    Fit the canvas→key-box affine by least squares: a swipe's FIRST point should sit on its first
-    letter's key center and its LAST point on its last letter's (both in layout.py's [0,1] box space).
-    Robust with a few thousand swipes; returns an [Affine].
+    Fit the canvas→key-box affine from PER-LETTER MEDIANS: group every swipe's first point by its
+    first letter (and last point by last letter), take the median canvas position of each group,
+    and least-squares fit those ~26-52 anchor medians onto the letters' key centers.
+
+    Why medians per letter, not raw endpoint regression (the old approach): endpoints carry
+    corner-cutting and slop that BIAS a raw fit — the y-scale came out wrong, bottom-row letters
+    mapped onto the middle row, and models decoded 'google' as 'good' on-device while evaluating
+    at 95%+ in their own (identically misfit) space. Medians cancel that noise, and the residuals
+    of the fit become a checkable quantity: [check_affine] refuses a fit whose anchors don't land
+    on their keys, so a miscalibrated pipeline now fails loudly instead of training confidently.
     """
-    cx, tx, cy, ty = [], [], [], []   # canvas coord, target (key-center) coord — per axis
+    from collections import defaultdict
+    first, last = defaultdict(list), defaultdict(list)
     for r in rows[:max_rows]:
         w = (r.get("word") or "").lower()
         data = r.get("data") or []
         if len(data) < 2 or not w:
             continue
-        for pt, ch in ((data[0], w[0]), (data[-1], w[-1])):
-            k = KEY_CENTERS.get(ch)
-            if k is None:
+        if w[0] in KEY_CENTERS:
+            first[w[0]].append((data[0]["x"], data[0]["y"]))
+        if w[-1] in KEY_CENTERS:
+            last[w[-1]].append((data[-1]["x"], data[-1]["y"]))
+    cx, tx, cy, ty = [], [], [], []
+    for grp in (first, last):
+        for ch, pts in grp.items():
+            if len(pts) < 3:
                 continue
-            cx.append(pt["x"]); tx.append(k[0])
-            cy.append(pt["y"]); ty.append(k[1])
-    if len(cx) < 20:
+            xs = sorted(p[0] for p in pts); ys = sorted(p[1] for p in pts)
+            k = KEY_CENTERS[ch]
+            cx.append(xs[len(xs) // 2]); tx.append(k[0])
+            cy.append(ys[len(ys) // 2]); ty.append(k[1])
+    if len(cx) < 10:
         # Not enough signal — fall back to a sensible default (letters span full width, upper ~70%).
         return Affine(1.0, 0.0, 1.0 / 0.7, 0.0)
     sx, ox = np.polyfit(np.asarray(cx), np.asarray(tx), 1)
     sy, oy = np.polyfit(np.asarray(cy), np.asarray(ty), 1)
-    return Affine(float(sx), float(ox), float(sy), float(oy))
+    aff = Affine(float(sx), float(ox), float(sy), float(oy))
+    aff.residual = (
+        float(np.mean(np.abs(np.asarray(cx) * sx + ox - np.asarray(tx)))),
+        float(np.mean(np.abs(np.asarray(cy) * sy + oy - np.asarray(ty)))),
+    )
+    return aff
+
+
+def check_affine(aff, key_w, key_h, max_frac=0.35):
+    """Device-space gate #1: the calibration's anchor residuals must land within [max_frac] of a
+    key's size on both axes. Raises with a clear message otherwise — do NOT train through this."""
+    res = getattr(aff, "residual", None)
+    if res is None:
+        return
+    rx, ry = res
+    if rx > key_w * max_frac or ry > key_h * max_frac:
+        raise RuntimeError(
+            f"CALIBRATION GATE FAIL: per-letter anchors miss their keys "
+            f"(x residual {rx:.3f} vs key_w {key_w:.3f}, y residual {ry:.3f} vs key_h {key_h:.3f}). "
+            f"The canvas->key-box mapping is wrong; a model trained through it will misdecode on-device."
+        )
 
 
 # ─────────────────────────── row → training sample ───────────────────────────
@@ -236,27 +271,40 @@ def _selftest():
              "because", "people", "world", "letter", "quick", "brown", "jumps", "over", "lazy",
              "typing", "message", "phone", "water", "seven", "eight"]
     for w in vocab:
-        pts = []
-        t = 1_000_000
-        for ch in w:
-            k = KEY_CENTERS[ch]
-            cx, cy = inv(k[0], k[1])
-            for _ in range(3):
-                t += 12
-                pts.append({"t": t, "x": float(np.clip(cx + rng.normal(0, 0.01), 0, 1)),
-                            "y": float(np.clip(cy + rng.normal(0, 0.01), 0, 1))})
-        rows.append({"word": w.capitalize(), "data": pts, "canvas_width": 422.0, "canvas_height": 170.0,
-                     "potentially_invalid_sentence": False})
+        for _ in range(6):   # repeats per word: per-letter anchor groups need >=3 samples to count
+            pts = []
+            t = 1_000_000
+            for ch in w:
+                k = KEY_CENTERS[ch]
+                cx, cy = inv(k[0], k[1])
+                for _ in range(3):
+                    t += 12
+                    pts.append({"t": t, "x": float(np.clip(cx + rng.normal(0, 0.01), 0, 1)),
+                                "y": float(np.clip(cy + rng.normal(0, 0.01), 0, 1))})
+            rows.append({"word": w.capitalize(), "data": pts, "canvas_width": 422.0, "canvas_height": 170.0,
+                         "potentially_invalid_sentence": False})
 
     aff = calibrate_affine(rows)
     print("calibrated:", aff, "\n     truth:", true)
-    assert abs(aff.sx - true.sx) < 0.15 and abs(aff.sy - true.sy) < 0.25, "affine not recovered"
+    assert getattr(aff, "residual", None) is not None, "calibration fell back to default — fit path not exercised"
+    assert abs(aff.sx - true.sx) < 0.05 and abs(aff.sy - true.sy) < 0.08, "affine not recovered"
+    assert abs(aff.ox - true.ox) < 0.03 and abs(aff.oy - true.oy) < 0.03, "affine offset not recovered"
+    from layout import KEY_W, KEY_H
+    check_affine(aff, KEY_W, KEY_H)   # a correct fit must pass gate #1...
+    bad = Affine(1.0, 0.0, 1.0, 0.0)  # ...and a misfit map (identity y, like the shipped bug) must fail it
+    bad.residual = (0.01, KEY_H * 0.5)
+    try:
+        check_affine(bad, KEY_W, KEY_H)
+        raise AssertionError("check_affine accepted a misfit calibration")
+    except RuntimeError:
+        pass
 
-    s = row_to_sample(rows[2], aff)   # "google"
+    grow = next(r for r in rows if r["word"].lower() == "google")
+    s = row_to_sample(grow, aff)
     assert s is not None
     feats, mask, toks = s
     assert feats.shape == (M.MAX_TRAJ, M.FEATURE_DIM), feats.shape
-    assert mask.shape == (M.MAX_TRAJ,) and int(mask.sum()) == min(len(rows[2]["data"]), M.MAX_TRAJ)
+    assert mask.shape == (M.MAX_TRAJ,) and int(mask.sum()) == min(len(grow["data"]), M.MAX_TRAJ)
     assert toks[0] == M.SOS and toks[-1] == M.EOS
     assert [chr(ord('a') + t - M.FIRST_LETTER) for t in toks[1:-1]] == list("google")
 
