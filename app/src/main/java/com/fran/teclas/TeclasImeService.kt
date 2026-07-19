@@ -4889,7 +4889,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         internal var instance: TeclasImeService? = null
 
         private const val PREFS_NAME = "teclas"
-        private const val TOUCH_MODEL_PREF = "touch_model_v1"
+        // "_ime" suffix: the IME and the docked launcher keyboard have different geometries — a
+        // shared key made each one restore the other's per-key offsets against the wrong layout.
+        private const val TOUCH_MODEL_PREF = "touch_model_ime_v2"
         private const val HAPTICS_PREF = "haptics"
         const val HAPTIC_LEVEL_PREF = "haptic_level"   // 0–100, keyboard-only vibration intensity
         private const val THEME_MODE_PREF = "theme_mode"
