@@ -392,7 +392,7 @@ class InputInjectionService : AccessibilityService() {
      * docked deck). Drives IME suppression + keyboard routing without a stale lifecycle flag.
      */
     private fun updateFreeformState() {
-        if (!KeyboardSettings.isDocked(this) || !DockedFreeform.isActive(this)) {
+        if (!dockedTopRegionAvailable()) {
             DockedFreeform.externalAppInFront = false
             return
         }
@@ -430,7 +430,7 @@ class InputInjectionService : AccessibilityService() {
     }
 
     private fun repinForegroundFreeform() {
-        if (!KeyboardSettings.isDocked(this) || !DockedFreeform.isActive(this)) return
+        if (!dockedTopRegionAvailable()) return
         val topApp = windows
             .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
             .filter { it.root?.packageName?.toString().let { pkg -> pkg != null && pkg != packageName } }
@@ -438,6 +438,10 @@ class InputInjectionService : AccessibilityService() {
             ?: return
         topApp.root?.packageName?.toString()?.let { requestPin(it) }
     }
+
+    private fun dockedTopRegionAvailable(): Boolean =
+        KeyboardSettings.isDocked(this) &&
+            (DockedFreeform.isActive(this) || (DockedFreeform.isFeatureEnabled(this) && ShizukuPinner.isReady()))
 
     private fun doPin() {
         val pkg = pinPackage ?: return

@@ -20201,8 +20201,6 @@ Question: $prompt"""
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 runCatching {
                     startActivity(intent, options)
-                    DockedFreeform.externalAppInFront = true
-                    syncDockedSearchStatusBar()   // opaque status-bar strip so wallpaper doesn't bleed above the app
                 }
                     .onFailure {
                         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -20212,12 +20210,36 @@ Question: $prompt"""
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 startActivity(intent)
             }
+            finishDockedExternalLaunch(packageName)
         } else {
             VivoDockedExperiment.clearViewportTruncation(this)
             startActivity(intent)
         }
         recordAppLaunch(packageName)
         return true
+    }
+
+    private fun finishDockedExternalLaunch(packageName: String) {
+        DockedFreeform.externalAppInFront = true
+        syncDockedSearchStatusBar()   // opaque status-bar strip so wallpaper doesn't bleed above the app
+        requestDockedFreeformRepin(packageName)
+    }
+
+    private fun requestDockedFreeformRepin(packageName: String) {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED || packageName == this.packageName) return
+        refreshDockedExternalKeyboardTop()
+        sendBroadcast(Intent(InputInjectionService.ACTION_REPIN_FREEFORM).apply {
+            setPackage(this@MainActivity.packageName)
+        })
+        if (!DockedFreeform.isFeatureEnabled(this) || !ShizukuPinner.isReady()) return
+        listOf(240L, 900L).forEach { delayMs ->
+            handler.postDelayed({
+                val bounds = DockedFreeform.pinBounds(this@MainActivity)
+                Thread({
+                    ShizukuPinner.pin(packageName, bounds)
+                }, "docked-freeform-repin").start()
+            }, delayMs)
+        }
     }
 
     private fun prepareDockedExternalMode(): Boolean {
@@ -20328,7 +20350,7 @@ Question: $prompt"""
     private fun keysRouteToForegroundApp(): Boolean =
         DockedFreeform.externalAppInFront &&
             keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
-            DockedFreeform.isActive(this) &&
+            (DockedFreeform.isActive(this) || (DockedFreeform.isFeatureEnabled(this) && ShizukuPinner.isReady())) &&
             isTeclasAccessibilityEnabled()
 
     /**
@@ -22176,6 +22198,15 @@ Question: $prompt"""
         prefs().getBoolean(GEMINI_ENABLED_PREF, false) && geminiReachable()
 
     internal fun startSafeIntent(intent: Intent, failureMessage: String) {
+        val resolvedPackage = intent.`package`
+            ?: intent.component?.packageName
+            ?: runCatching { intent.resolveActivity(packageManager)?.packageName }.getOrNull()
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
+            !resolvedPackage.isNullOrBlank() &&
+            resolvedPackage != packageName
+        ) {
+            if (runCatching { launchExternalIntent(intent, resolvedPackage) }.getOrDefault(false)) return
+        }
         runCatching { startActivity(intent) }
             .onFailure { Toast.makeText(this, failureMessage, Toast.LENGTH_SHORT).show() }
     }
