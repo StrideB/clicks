@@ -14,3 +14,9 @@ scratch_*.png
 app/src/main/cpp/llama.cpp/
 app/.cxx/
 .kotlin/
+
+# Neural-swipe training outputs — never committed; the shipped models live in app/src/main/assets
+tools/neural_swipe/model_candidate/
+tools/neural_swipe/runs/
+tools/neural_swipe/futo_data/
+tools/neural_swipe/venv/

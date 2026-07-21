@@ -54,19 +54,30 @@ fi
 #    swipes oversampled, if provided).
 echo "== training: steps=$STEPS limit=$LIMIT batch=$BATCH synth-mix=$SYNTH_MIX own='${OWN}' =="
 mkdir -p "$OUT"
+# --resume + --checkpoint-every: progress is checkpointed to $OUT/checkpoint.pt every N steps, so
+# a crash, reboot, or accidental file deletion costs at most CKPT_EVERY steps — just rerun this
+# same command and it continues where it stopped. To deliberately start over: rm $OUT/checkpoint.pt
 python export_seq2seq.py \
   --wordlist ../../app/src/main/assets/dict/en_wordlist.txt \
   --futo futo_data/train.jsonl --futo-limit "$LIMIT" --exclude-every "$DEV_EVERY" \
   --synth-mix "$SYNTH_MIX" \
   ${OWN:+--own "$OWN"} \
   --steps "$STEPS" --batch "$BATCH" --d-model "$DMODEL" --nhead "$NHEAD" --layers "$LAYERS" --ff "$FF" \
+  --checkpoint-every "${CKPT_EVERY:-2000}" --resume \
   --out "$OUT"
 
 # 4. Prove it beats what's shipped (held-out real swipes) AND decodes device-space swipes
 #    (DEVICE-SPACE GATE — catches the calibration-misfit bug the dev-split eval can't see)
 #    BEFORE you ship it.
+RUN_DIR="runs/$(date -u +%Y%m%d_%H%M%SZ)"
+mkdir -p "$RUN_DIR"
 echo "== evaluating candidate vs the shipped model =="
-python evaluate.py "$OUT" ../../app/src/main/assets
+python evaluate.py "$OUT" ../../app/src/main/assets | tee "$RUN_DIR/eval.txt"
+
+# 5. Archive the finished run — models + verdict — into a timestamped folder that nothing else
+#    ever writes to. Even if $OUT gets clobbered later, the run survives here.
+cp "$OUT"/swipe_encoder.onnx "$OUT"/swipe_decoder.onnx "$RUN_DIR"/
+echo "== run archived to tools/neural_swipe/$RUN_DIR (models + eval verdict) =="
 
 cat <<EOF
 
@@ -76,6 +87,7 @@ Done. Ship ONLY if BOTH lines above say so:
 Then:
   cp $OUT/swipe_encoder.onnx $OUT/swipe_decoder.onnx ../../app/src/main/assets/
   # then rebuild + install the app
+A safety copy of this run (models + verdict) is archived under $RUN_DIR.
 If either check failed, keep the current model (or train longer with more STEPS).
 A gate FAIL despite a high dev score means the canvas->key-box calibration is wrong — do not ship.
 EOF
