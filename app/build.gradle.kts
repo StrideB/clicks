@@ -137,4 +137,7 @@ dependencies {
 
     // Unit tests for the shared keyboard core (pure-JVM logic: word placement, prediction/autocorrect).
     testImplementation(libs.junit)
+    // Robolectric: the typing-accuracy gate drives the real TapResolver/SpatialScorer, which use
+    // android.graphics.Rect — real implementations on the JVM instead of throwing stubs.
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }
