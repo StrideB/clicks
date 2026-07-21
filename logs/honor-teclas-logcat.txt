@@ -1,0 +1,500 @@
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:16.873 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.925 V/WindowManagerShell( 4898): Transition requested (#1322): android.os.BinderProxy@b0a0420 TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 1322, displayMode = 2, mCanStartTransitionAsync = false }
+07-16 15:40:16.928 I/HwActivityTaskManagerServiceEx( 3413): backwardTaskTakeover from:ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651 f}}, to:ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:16.928 W/HwActivityTaskManagerServiceEx( 3413): appSwitch from: com.google.android.documentsui to: com.fran.teclas
+07-16 15:40:16.928 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.928 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:16.928 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:16.928 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.928 I/WindowManager( 3413): Changing focus from Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity} to null mode 0 displayId=0
+07-16 15:40:16.928 I/UsageStatsService( 3413): reportEvent : component= ComponentInfo{com.fran.teclas/com.fran.teclas.MainActivity} eventType= 1
+07-16 15:40:16.930 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=false, w.isDrawFinishedLw()=false
+07-16 15:40:16.931 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.931 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.931 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.931 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.931 I/ActivityThread(21530): Performing restart of ActivityRecord{3e8ef3f token=android.os.BinderProxy@183df5e {com.fran.teclas/com.fran.teclas.MainActivity}} start=false callers:android.app.servertransaction.TransactionExecutor.performLifecycleSequence:254 android.app.servertransaction.TransactionExecutor.cycleToPath:209 android.app.servertransaction.TransactionExecutor.cycleToPath:191 android.app.servertransaction.TransactionExecutor.executeNonLifecycleItem:144 android.app.servertransaction.TransactionExecutor.executeTransactionItems:118 android.app.servertransaction.TransactionExecutor.execute:89 android.app.ActivityThread$H.handleMessage:3553 android.os.Handler.dispatchMessage:124 android.os.Looper.loopOnce:263 android.os.Looper.loop:360 
+07-16 15:40:16.931 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.931 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.931 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/HwAudioService( 3413): now type = -1,reportForegroundAppType = -1,pkg = com.fran.teclas,VOIP_OPTIMIZE_IN_GAMEMODE = false
+07-16 15:40:16.932 I/SWAP_SCENE( 3413): Entering notifySceneData. EventType: APP_SWITCH_TO app: com.fran.teclas uid: 10293
+07-16 15:40:16.933 I/SWAP_AppModel( 3413): setDailyUseCount pkgName:com.fran.teclas dailyUseCount:17
+07-16 15:40:16.933 I/SWAP_AppModel( 3413): getDailyUseCount. pkgName:com.fran.teclas dailyUseCount:17
+07-16 15:40:16.933 I/SWAP_AppScore( 3413): final ratio info: pkgName:com.fran.teclas, reclaime ratio:0, swap ratio:0
+07-16 15:40:16.933 I/SWAP_AppScore( 3413): setScoreAndRatioForeground::pkgName:com.fran.teclas score:0  write r-Ratio:0 s-Ratio:0 refault:50
+07-16 15:40:16.934 I/DE J DES( 3413): [effect] Pg pkg:com.fran.teclas
+07-16 15:40:16.934 I/SWAP_SCENE( 3413): swapIn: com.fran.teclas, 10293
+07-16 15:40:16.934 E/SWAP_GkiKernelInterface( 3413): readAppMemcgInfo result is null: com.fran.teclas
+07-16 15:40:16.934 I/SWAP_AppScore( 3413): setScoreAndRatioForeground::app is score 0 , skip! pkgName:com.fran.teclas
+07-16 15:40:16.938 I/HWMW_HwMagicActivityLifeManager( 3413): ### Execute -> resumeActivityForHwMagicWin ActivityRecord resumeActivity = ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651} isInFoldedStatus:true
+07-16 15:40:16.938 D/HWMW_HwMagicActivityLifeManager( 3413): resumeActivityForHwMagicWin call scheduleIdleLocked topActivity ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651 f}} resumeActivity ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:16.938 D/HwTaskEx( 3413): setIsMwUnlocked mIsMwUnLocked false mStack Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:16.938 I/HWMW_HwMagicWinAmsPolicy( 3413): reportAppLocked packageName com.fran.teclas container com.android.server.wm.HwMagicLocalContainer@41a1004 callers: com.android.server.wm.HwMagicActivityLifeManager.resumeActivityForHwMagicWin:170 com.android.server.wm.HwMagicWinAmsPolicy.lambda$new$31:987 com.android.server.wm.HwMagicWinAmsPolicy.$r8$lambda$DeVG3JIDibouaPpm_fmiCcqiaJk:0 com.android.server.wm.HwMagicWinAmsPolicy$$ExternalSyntheticLambda31.execute:0 com.android.server.wm.HwMagicWinModulePolicy$ModulePolicy.performHwMagicWindowPolicy:72 com.android.server.magicwin.HwMagicWindowManagerService.performHwMagicWindowPolicy:1054 android.magicwin.HwMagicWindowManagerImpl.performHwMagicWindowPolicy:143 android.util.HwMwUtils.performPolicy:1607 com.android.server.wm.HwActivityTaskManagerServiceEx.dispatchActivityLifeState:2855 com.android.server.wm.ActivityClientController.activityResumed:260 
+07-16 15:40:16.938 I/HWMW_HwMagicActivityLifeManager( 3413): resumeActivityForHwMagicWin return, resumeActivity: ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:16.938 I/HWMW_HwMagicWinStatistics( 3413): reportLock com.fran.teclas is app die false
+07-16 15:40:16.941 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.941 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:16.941 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:16.941 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:16.941 I/WindowManager( 3413): Changing focus from null to Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity} mode 0 displayId=0
+07-16 15:40:16.942 I/HnAppCompatLetterboxPolicyEx( 3413): setDecoBgColor,  window is null, or not in VerticalInwardFold main mode
+07-16 15:40:16.942 E/IHwWindowManager( 3413): Process Permission error! uid:10038
+07-16 15:40:16.942 I/WindowManager( 3413): removeLeash, the window position need update Window{5345150 u0 StatusBar}
+07-16 15:40:16.942 I/WindowManager( 3413): removeLeash, the window position need update Window{8065986 u0 NavigationBar0}
+07-16 15:40:16.943 I/HnSwingMotionGestureHandler( 3413): current app:com.fran.teclas,appType:-1
+07-16 15:40:16.945 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=false, w.isDrawFinishedLw()=false
+07-16 15:40:16.945 I/WindowManager( 3413): New wallpaper target: Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity} prevTarget: null
+07-16 15:40:16.954 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=false, w.isDrawFinishedLw()=false
+07-16 15:40:16.957 D/HwWindowManagerServiceEx( 3413): constructHnTransitionAnimationInfo wc size : 3
+07-16 15:40:16.957 D/HwWindowManagerServiceEx( 3413): constructHnTransitionAnimationInfo type: close activity : ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651 f}}, isSplitMode : false
+07-16 15:40:16.957 D/HwWindowManagerServiceEx( 3413): mIntelligentCardPosition = null
+07-16 15:40:16.957 I/HwWindowManagerServiceEx( 3413): isBackToParallelSpaceLauncher launcherOpen =false; isWallpaperNoAnimation false
+07-16 15:40:16.957 D/HwWindowManagerServiceEx( 3413): constructHnTransitionAnimationInfo type: open activity : ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}, isSplitMode : false
+07-16 15:40:16.957 D/HwWindowManagerServiceEx( 3413): mIntelligentCardPosition = null
+07-16 15:40:16.957 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=false, w.isDrawFinishedLw()=false
+07-16 15:40:16.957 V/WindowManagerShell( 4898): onTransitionReady(transaction=14658723464008)
+07-16 15:40:16.957 V/WindowManager( 3413): Sent Transition (#1322) createdAt=07-16 15:40:16.925 via request=TransitionRequestInfo { type = CLOSE, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 0, debugId = 1322, displayMode = 2, mCanStartTransitionAsync = false }
+07-16 15:40:16.957 V/WindowManager( 3413):     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
+07-16 15:40:16.957 V/WindowManagerShell( 4898): onTransitionReady (#1322) android.os.BinderProxy@b0a0420: {id=1322 t=CLOSE f=0x0 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=false r=[0@Point(0, 0)#true] c=[
+07-16 15:40:16.957 V/WindowManagerShell( 4898):         {m=CLOSE f=FILLS_TASK leash=Surface(name=ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651})/@0xdb3079e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.google.android.documentsui/com.android.documentsui.picker.PickActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:16.957 V/WindowManagerShell( 4898):         {m=TO_FRONT f=SHOW_WALLPAPER|FILLS_TASK leash=Surface(name=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651})/@0x3c0927f sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.fran.teclas/.MainActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:16.957 V/WindowManagerShell( 4898):         {m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x2db424c sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}
+07-16 15:40:16.957 V/WindowManagerShell( 4898):     ]}
+07-16 15:40:16.957 V/WindowManager( 3413):     info={id=1322 t=CLOSE f=0x0 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=false r=[0@Point(0, 0)#true] c=[
+07-16 15:40:16.957 V/WindowManager( 3413):         {m=CLOSE f=FILLS_TASK leash=Surface(name=ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651})/@0x5e94b17 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.google.android.documentsui/com.android.documentsui.picker.PickActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:16.957 V/WindowManager( 3413):         {m=TO_FRONT f=SHOW_WALLPAPER|FILLS_TASK leash=Surface(name=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651})/@0x8fbf14e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.fran.teclas/.MainActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:16.957 V/WindowManager( 3413):         {m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0xdfac305 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}
+07-16 15:40:16.957 V/WindowManager( 3413):     ]}
+07-16 15:40:16.958 V/WindowManagerShell( 4898): Playing animation for (#1322) android.os.BinderProxy@b0a0420@0
+07-16 15:40:16.958 I/MultiWindowTransitionHandler( 4898): shouldStartAnimation: false TransitionInfo: {id=1322 t=CLOSE f=0x0 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=false r=[0@Point(0, 0)#true] c=[{m=CLOSE f=FILLS_TASK leash=Surface(name=ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651})/@0xdb3079e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.google.android.documentsui/com.android.documentsui.picker.PickActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=SHOW_WALLPAPER|FILLS_TASK leash=Surface(name=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651})/@0x3c0927f sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.fran.teclas/.MainActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x2db424c sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:16.958 I/Shell_HnFoldTransitionHandler( 4898): not switching screen scenes
+07-16 15:40:16.958 V/WindowManagerShell( 4898): Transition doesn't have explicit remote, search filters for match for {id=1322 t=CLOSE f=0x0 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=false r=[0@Point(0, 0)#true] c=[{m=CLOSE f=FILLS_TASK leash=Surface(name=ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651})/@0xdb3079e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.google.android.documentsui/com.android.documentsui.picker.PickActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=SHOW_WALLPAPER|FILLS_TASK leash=Surface(name=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651})/@0x3c0927f sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.fran.teclas/.MainActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x2db424c sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:16.958 V/WindowManagerShell( 4898):  Checking filter Pair{{types=[] flags=0x0] notFlags=0x100 checks=[{atype=home independent=true modes=[OPEN,TO_FRONT] flags=NONE mustBeTask=false order=ANY topActivity=ComponentInfo{com.hihonor.android.launcher/com.hihonor.android.launcher.drawer.DrawerLauncher} launchCookie=null windowingMode=undefined},{atype=standard independent=true modes=[CLOSE,TO_BACK] flags=NONE mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined},{NOT atype=standard independent=true modes=[] flags=TRANSLUCENT mustBeTask=false order=ANY topActivity=null launchCookie=null windowingMode=undefined}]} RemoteTransition { remoteTransition = android.window.IRemoteTransition$Stub$Proxy@3ac6b20, backRemoteTransition = , appThread = android.app.IApplicationThread$Stub$Proxy@3cd8cd9, debugName = QuickstepLaunchHome }}
+07-16 15:40:16.958 V/WindowManagerShell( 4898):  Delegate animation for (#1322) to null
+07-16 15:40:16.958 I/WindowManagerShell( 4898): start default transition animation, info = {id=1322 t=CLOSE f=0x0 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=false r=[0@Point(0, 0)#true] c=[{m=CLOSE f=FILLS_TASK leash=Surface(name=ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651})/@0xdb3079e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.google.android.documentsui/com.android.documentsui.picker.PickActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=SHOW_WALLPAPER|FILLS_TASK leash=Surface(name=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651})/@0x3c0927f sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 bc=ffffffff component=com.fran.teclas/.MainActivity opt={t=FROM_STYLE mUserId=0} mSkipAnimation=false mhasLetterbox=false taskId= 2651 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x2db424c sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:16.959 V/WindowManagerShell( 4898): loadAnimation: anim=android.view.animation.AnimationSet@2a03738 animAttr=0x10 type=CLOSE isEntrance=true
+07-16 15:40:16.960 V/WindowManagerShell( 4898): loadAnimation: anim=android.view.animation.AnimationSet@ed8da02 animAttr=0x11 type=CLOSE isEntrance=false
+07-16 15:40:16.960 I/WindowManagerShell( 4898):  animated by com.android.wm.shell.transition.DefaultTransitionHandler@2d0bd78
+07-16 15:40:16.986 I/InputMethodManagerService( 3413): startInputOrWindowGainedFocus: userId=0,newUserId=0,mCurrentImeUserId=0,ime=com.fran.teclas/.TeclasImeService
+07-16 15:40:16.986 I/InputMethodManagerService( 3413): startInputOrWindowGainedFocusInternalLocked: reason=WINDOW_FOCUS_GAIN client=android.os.BinderProxy@dbdc011 inputContext=null editorInfo=android.view.inputmethod.EditorInfo@bf4c1e2 startInputFlags=VIEW_HAS_FOCUS|INITIAL_CONNECTION softInputMode=STATE_UNSPECIFIED|ADJUST_PAN windowFlags=#81910100 unverifiedTargetSdkVersion=37 bindingController=com.android.server.inputmethod.InputMethodBindingController@684cfc9 imeDispatcher=android.window.ImeOnBackInvokedDispatcher@1159973 cs=ClientState{fcf506c mUid=10293 mPid=21530 mSelfReportedDisplayId=0} imeRequestedVisible=false
+07-16 15:40:16.987 I/InputMethodManagerService( 3413): removeImeSurfaceImmediately
+07-16 15:40:16.988 I/InputMethodManagerService( 3413): unbindCurrentInputLocked: client=android.os.BinderProxy@70de7a8
+07-16 15:40:16.989 V/InputMethodMenuControllerNew( 3413): Hide IME switcher menu.
+07-16 15:40:16.989 V/InputMethodManagerService( 3413): Creating new accessibility sessions for client ClientState{fcf506c mUid=10293 mPid=21530 mSelfReportedDisplayId=0}
+07-16 15:40:16.990 V/InputMethodManagerService( 3413): Disabling: SessionState{uid=10038 pid=23448 method=a8e06b6 session=7a3ad9b channel=ClientState{cd804c mUid=10038 mPid=23448 mSelfReportedDisplayId=0} userId=0}
+07-16 15:40:16.990 V/InputMethodManagerService( 3413): Enabling: SessionState{uid=10293 pid=21530 method=a8e06b6 session=b487fb7 channel=ClientState{fcf506c mUid=10293 mPid=21530 mSelfReportedDisplayId=0} userId=0}
+07-16 15:40:16.992 I/WindowManager( 3413): removeLeash, the window position need update Window{82d57bf u0 InputMethod}
+07-16 15:40:16.993 I/InputMethodManagerService( 3413): registerImeRequestedChangedListener: Will hide current input
+07-16 15:40:16.993 I/InputMethodManagerService( 3413): Client requesting input be hidden
+07-16 15:40:16.993 I/InputMethodManagerService( 3413): hideCurrentInputLocked: reason 4
+07-16 15:40:16.994 I/TouchScreenWrapperAidl( 3413): hwTsRunCommand service:vendor.honor.hardware.tp.ITouchscreen$Stub$Proxy@98c7526 command:THP_InformTypingStatus parameter:com.fran.teclas#0 callback:com.android.server.input.HwInputManagerServiceEx$$ExternalSyntheticLambda0@8bf3548 mCallback:com.android.server.input.tp.TouchScreenCallbackAidl@afcff14
+07-16 15:40:16.996 I/TouchScreenWrapperAidl( 3413): hwTsRunCommand service:vendor.honor.hardware.tp.ITouchscreen$Stub$Proxy@98c7526 command:THP_SetInputMethodRegion parameter:com.fran.teclas#-1#0#0 callback:com.android.server.input.HwInputManagerServiceEx$$ExternalSyntheticLambda0@955cfe1 mCallback:com.android.server.input.tp.TouchScreenCallbackAidl@afcff14
+07-16 15:40:17.003 V/ActivityTaskManager( 3413): Activity idle: ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:17.012 I/HwInputMethodManagerService( 3413): removeImeSurfaceFromWindowAsync.android.os.BinderProxy@6b1c626
+07-16 15:40:17.012 D/StylusInputMethodManagerService( 3413):  removeImeSurfaceFromWindowAsync.android.os.BinderProxy@6b1c626
+07-16 15:40:17.038 I/HWMW_HwMagicWindowManagerService( 3413): case Utils.MSG_SCHEDULE_IDLE
+07-16 15:40:17.043 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:17.043 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:17.044 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:17.044 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:17.044 I/DE J DES( 3413): [effect] appInContainfalse, FocusPkg:com.fran.teclas, mMultiWindowState: false
+07-16 15:40:17.045 I/DE J DES( 3413): [effect] appInContainfalse, FocusPkg:com.fran.teclas, mDarkModeStatus: false
+07-16 15:40:17.045 I/DE J DES( 3413): [effect] Pg pkg:com.fran.teclas
+07-16 15:40:17.102 V/WindowManagerShell( 4898): Transition animation finished (aborted=false), notifying core (#1322) android.os.BinderProxy@b0a0420@0
+07-16 15:40:17.103 I/TransitionController( 3413):    ChangeInfo{6365df4 container=WallpaperWindowToken{2eb20ef showWhenLocked=true} flags=0x0}
+07-16 15:40:17.103 I/TransitionController( 3413):    ChangeInfo{47e891d container=Task{2f3228f #2651 type=home A=10293:com.fran.teclas} flags=0x0}
+07-16 15:40:17.103 I/TransitionController( 3413):    ChangeInfo{9e6ade container=WallpaperWindowToken{9c52a3e showWhenLocked=false} flags=0x0}
+07-16 15:40:17.103 I/TransitionController( 3413):    ChangeInfo{d9b778c container=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651} flags=0x0}
+07-16 15:40:17.103 I/wm_HnFoldScreenAnimation( 3413): notifyCloseAPGAnimation syncId = 1322  mDisplaySwapSyncId =  1262 mAPGAnimationStart = false
+07-16 15:40:17.103 V/WindowManager( 3413): Finish Transition (#1322): created at 07-16 15:40:16.925 collect-started=0.08ms request-sent=0.089ms started=1.696ms ready=4.62ms sent=31.779ms commit=8.181ms finished=177.804ms
+07-16 15:40:17.104 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{147f44b u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity}
+07-16 15:40:17.104 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =false
+07-16 15:40:17.104 I/WindowManager( 3413): surfaceControl level and the IME current surface t =android.view.SurfaceControl$Transaction@d8d2680,mInputMethodSurfaceParent = Surface(name=ActivityRecord{71510515 u0 com.google.android.documentsui/com.android.documentsui.picker.PickActivity t2651})/@0x5e94b17
+07-16 15:40:17.104 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:17.104 I/WindowManagerShell( 4898): Track 0 became idle
+07-16 15:40:17.104 I/WindowManagerShell( 4898): All active transition animations finished
+07-16 15:40:17.117 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowState.removeImmediately:2817 com.android.server.wm.WindowState.removeIfPossible:3039 com.android.server.wm.WindowManagerService.removeClientToken:2762 com.android.server.wm.Session.remove:328 android.view.IWindowSession$Stub.onTransact:883 com.android.server.wm.Session.onTransact:250 android.os.Binder.execTransactInternal:1459 android.os.Binder.execTransact:1401 <bottom of call stack> 
+07-16 15:40:17.117 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:17.117 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:17.117 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:17.117 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:17.117 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:17.118 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:17.118 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:17.118 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:17.118 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:17.118 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:17.118 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:17.118 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:17.119 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.ActivityRecord.setSurfaceControl:2002 com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowToken.removeImmediately:371 com.android.server.wm.ActivityRecord.removeImmediately:5481 com.android.server.wm.WindowToken.removeIfPossible:275 com.android.server.wm.ActivityRecord.onRemovedFromDisplay:5544 com.android.server.wm.DisplayContent.removeAppToken:1817 com.android.server.wm.ActivityRecord.removeFromHistory:5137 com.android.server.wm.ActivityRecord.destroyed:5220 com.android.server.wm.ActivityClientController.activityDestroyed:373 
+07-16 15:40:17.120 D/WindowManager( 3413): start homeActivity displayId == 1 and FoldScreenDevice
+07-16 15:40:17.134 D/CollectDataProc( 3413): [activity restore] getLastKilledReason com.fran.teclas uid 10293 reason iAwareF[SmartClean] code 30
+07-16 15:40:17.134 I/SWAP_AppModel( 3413): pkgName: com.fran.teclas, uid: 10293, App stays background time: 1195ms
+07-16 15:40:17.134 I/CollectDataProc( 3413): [activity restore] procUserAction com.fran.teclas uid 10293 action hotStart isLastKilled:true
+07-16 15:40:17.734 I/WindowManager( 3413): This window is not animating, window = Window{5a6d181 u0 Toast}
+07-16 15:40:17.734 I/WindowManager( 3413): Policy visibility false: Window{5a6d181 u0 Toast}
+07-16 15:40:18.124 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:40:18.124 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:40:18.248 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=0
+07-16 15:40:18.248 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:40:20.722 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowState.removeImmediately:2817 com.android.server.wm.WindowState.removeIfPossible:3039 com.android.server.wm.WindowManagerService.removeClientToken:2762 com.android.server.wm.Session.remove:328 android.view.IWindowSession$Stub.onTransact:883 com.android.server.wm.Session.onTransact:250 android.os.Binder.execTransactInternal:1459 android.os.Binder.execTransact:1401 <bottom of call stack> 
+07-16 15:40:20.723 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:20.723 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:20.723 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:20.723 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:20.724 W/NotificationService( 3413): Toast already killed. pkg=com.fran.teclas token=android.os.BinderProxy@38fdd0e
+07-16 15:40:22.254 I/WindowManager( 3413): This window is not animating, window = Window{94f4297 u0 Toast}
+07-16 15:40:22.254 I/WindowManager( 3413): Policy visibility false: Window{94f4297 u0 Toast}
+07-16 15:40:22.991 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:40:22.992 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:40:23.867 I/WindowManager( 3413): PowerDown deal by mGestureLauncherService mPowerKeyHandled = false
+07-16 15:40:23.868 D/WindowManager( 3413): The very long press on power behavior is 1
+07-16 15:40:23.869 I/WindowManager( 3413): telecomManager check ringing, mIncallPowerBehavior = 1,interactive=true
+07-16 15:40:23.869 I/WindowManager( 3413): hungUp=false, handledByPowerManager=false, mPowerKeyHandledByTv=false, mPowerKeyHandled=false
+07-16 15:40:24.037 I/WindowManager( 3413): VolumeUp and PowerDown(4) cancelPendingScreenRecord
+07-16 15:40:24.037 D/WindowManager( 3413): The very long press on power behavior is 1
+07-16 15:40:24.167 I/WindowManager( 3413): PowerKey onPress
+07-16 15:40:24.167 I/WindowManager( 3413): powerPress: eventTime=41939361 interactive=true count=1 beganFromNonInteractive=false mShortPressOnPowerBehavior=1
+07-16 15:40:24.167 D/HwPhoneWindowManager( 3413): notifyPowerKeyEventToHnAOD return: mAodSwitch is 0
+07-16 15:40:24.167 I/WindowManager( 3413): Is not standby posture for sleep.
+07-16 15:40:24.169 I/WindowManager( 3413): UL_PowerStarted going to sleep... (groupId=0 why=OFF_BECAUSE_OF_USER)
+07-16 15:40:24.170 V/InputMethodManagerService( 3413): IME window vis: 0 active: 0 visible: 0 displayId: 0
+07-16 15:40:24.170 I/InputMethodManagerService( 3413): handleSetInteractive:interactive=false,mIsAodExist=true
+07-16 15:40:24.180 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:1
+07-16 15:40:24.186 I/HwNormalizedAutomaticBrightnessController( 3413): updateWallpaperGray gray = 115.8619868636819
+07-16 15:40:24.198 I/WindowManager( 3413): EHDR real capture,source: Task{2f3228f #2651 type=home A=10293:com.fran.teclas} ,snapshot: TaskSnapshot{ mId=1784234424186 mCaptureTime=481758717314546 mTopActivityComponent=com.fran.teclas/.MainActivity mSnapshot=android.hardware.HardwareBuffer@9f6e458 (1060x2376) mColorSpace=Display P3 (id=7, model=RGB) mOrientation=1 mRotation=0 mTaskSize=Point(1060, 2376) mContentInsets=[0,105][0,0] mLetterboxInsets=[0,0][0,0] mIsLowResolution=false mIsRealSnapshot=true mWindowingMode=1 mAppearance=0 mIsTranslucent=true mHasImeSurface=false mIsForceRotate=false mInternalReferences=0 mWriteToParcelCount=0 mUiMode=11
+07-16 15:40:24.220 I/HWMW_HwMagicWindowManagerService( 3413): Handle screen off
+07-16 15:40:24.244 D/HwWindowManagerServiceEx( 3413): notifySwingRotation rotation:-100
+07-16 15:40:24.256 I/HwPhoneWindowManager( 3413): onShowingChangedL: true
+07-16 15:40:24.267 I/HwWallpaperManagerServiceEx( 3413): getAbnormalExitWallpaperInfo userId = 0; exitStr = ; key = abnormal_exit_system_wallpaper_info
+07-16 15:40:24.267 I/HwWallpaperManagerServiceEx( 3413): getAbnormalExitWallpaperInfo userId = 0; exitStr = ; key = abnormal_exit_lock_wallpaper_info
+07-16 15:40:24.269 D/WindowManager( 3413): positionChildAt, other conditions.
+07-16 15:40:24.269 D/WindowManager( 3413): start homeActivity displayId == 1 and FoldScreenDevice
+07-16 15:40:24.269 I/WindowManager( 3413): Policy visibility false: Window{b89e3c1 u0 HnPopupTips}
+07-16 15:40:24.269 I/WindowManager( 3413): Policy visibility false: Window{409b291 u0 HnMultiWindowBar}
+07-16 15:40:24.270 I/WindowManager( 3413): Policy visibility false: Window{fc367b7 u0 ShellDropTarget}
+07-16 15:40:24.279 V/InputMethodMenuControllerNew( 3413): Hide IME switcher menu.
+07-16 15:40:24.312 I/VRI[DrawerLauncher](21822): setLayoutParams: not fullscreen caller = android.view.WindowManagerGlobal.updateViewLayout:627 android.view.WindowManagerImpl.updateViewLayout:192 android.app.Activity.onWindowAttributesChanged:4649 android.view.Window.dispatchWindowAttributesChanged:1399 com.android.internal.policy.PhoneWindow.dispatchWindowAttributesChanged:3519 android.view.Window.setAttributes:1671 com.android.internal.policy.PhoneWindow.setAttributes:4457 com.hihonor.android.launcher.HnLauncher.fullScreen:1698 com.hihonor.android.launcher.splitscreen.SplitScreenNotifierEx.lambda$changeSystemUIFlag$1:133 com.hihonor.android.launcher.splitscreen.SplitScreenNotifierEx.$r8$lambda$m_Vj7ktA6kp__WoB4Lv53ce-_m0:0 
+07-16 15:40:24.312 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:24.312 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:24.312 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:24.312 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:24.312 I/WindowManager( 3413): Changing focus from Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity} to Window{6b002ee u0 NotificationShade} mode 0 displayId=0
+07-16 15:40:24.313 I/WindowManager( 3413): removeLeash, the window position need update Window{5345150 u0 StatusBar}
+07-16 15:40:24.313 I/WindowManager( 3413): removeLeash, the window position need update Window{8065986 u0 NavigationBar0}
+07-16 15:40:24.320 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=false
+07-16 15:40:24.320 I/WindowManager( 3413): New wallpaper target: Window{6b002ee u0 NotificationShade} prevTarget: Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:24.330 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:24.331 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:24.354 I/PackageManager( 3413): Returning preferred activity: com.fran.teclas/com.fran.teclas.MainActivity
+07-16 15:40:24.354 I/PackageManager( 3413): choose best activity: com.fran.teclas, com.fran.teclas.MainActivity
+07-16 15:40:24.368 I/HwNormalizedAutomaticBrightnessController( 3413): updateWallpaperGray gray = 115.8619868636819
+07-16 15:40:24.376 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:24.376 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:24.379 I/HwPhoneWindowManager( 3413): OverscanTimeout run
+07-16 15:40:24.383 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:24.383 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:24.384 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:24.384 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:24.398 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:24.568 I/WindowManager( 3413): EHDR real capture,source: Task{2f3228f #2651 type=home A=10293:com.fran.teclas} ,snapshot: TaskSnapshot{ mId=1784234424563 mCaptureTime=481759087217046 mTopActivityComponent=com.fran.teclas/.MainActivity mSnapshot=android.hardware.HardwareBuffer@c6080e (1060x2376) mColorSpace=Display P3 (id=7, model=RGB) mOrientation=1 mRotation=0 mTaskSize=Point(1060, 2376) mContentInsets=[0,105][0,0] mLetterboxInsets=[0,0][0,0] mIsLowResolution=false mIsRealSnapshot=true mWindowingMode=1 mAppearance=0 mIsTranslucent=true mHasImeSurface=false mIsForceRotate=false mInternalReferences=0 mWriteToParcelCount=0 mUiMode=11
+07-16 15:40:24.569 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:24.569 V/WindowManagerShell( 4898): Transition requested (#1323): android.os.BinderProxy@58ed389 TransitionRequestInfo { type = TO_FRONT, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 800, debugId = 1323, displayMode = 2, mCanStartTransitionAsync = false }
+07-16 15:40:24.569 D/WindowManager( 3413): Create SleepToken: tag=keyguard, displayId=0
+07-16 15:40:24.572 D/WindowManager( 3413): Create SleepToken: tag=keyguard, displayId=1
+07-16 15:40:24.572 V/InputMethodManagerService( 3413): IME window vis: 0 active: 0 visible: 0 displayId: 0
+07-16 15:40:24.572 V/InputMethodManagerService( 3413): IME window vis: 0 active: 0 visible: 0 displayId: 0
+07-16 15:40:24.572 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:24.574 I/ActivityTaskManager( 3413): animating need stay in stopping state: com.fran.teclas/.MainActivity
+07-16 15:40:24.575 I/UsageStatsService( 3413): reportEvent : component= ComponentInfo{com.fran.teclas/com.fran.teclas.MainActivity} eventType= 2
+07-16 15:40:24.575 I/ActivityTaskManager( 3413): animating need stay in stopping state: com.fran.teclas/.MainActivity
+07-16 15:40:24.576 I/JobScheduler( 3413): isReadyToBeExecutedLocked, job is prevent by HN_USER_EXPERIENCE: 20e04d6 #u0a293/-2082135260 com.fran.teclas/com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService
+07-16 15:40:24.577 D/HwWindowManagerServiceEx( 3413): constructHnTransitionAnimationInfo wc size : 4
+07-16 15:40:24.577 D/HwWindowManagerServiceEx( 3413): constructHnTransitionAnimationInfo type: close activity : ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}, isSplitMode : false
+07-16 15:40:24.577 D/HwWindowManagerServiceEx( 3413): mIntelligentCardPosition = null
+07-16 15:40:24.577 I/HwWindowManagerServiceEx( 3413): isBackToParallelSpaceLauncher launcherOpen =false; isWallpaperNoAnimation false
+07-16 15:40:24.578 V/WindowManagerShell( 4898): onTransitionReady(transaction=14658723464049)
+07-16 15:40:24.578 V/WindowManager( 3413): Sent Transition (#1323) createdAt=07-16 15:40:24.568 via request=TransitionRequestInfo { type = TO_FRONT, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 800, debugId = 1323, displayMode = 2, mCanStartTransitionAsync = false }
+07-16 15:40:24.578 V/WindowManager( 3413):     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
+07-16 15:40:24.578 V/WindowManagerShell( 4898): onTransitionReady (#1323) android.os.BinderProxy@58ed389: {id=1323 t=TO_FRONT f=0x840 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[
+07-16 15:40:24.578 V/WindowManagerShell( 4898):         {m=TO_BACK f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@769efa8} leash=Surface(name=Task=2563)/@0x739ff8e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:24.578 V/WindowManagerShell( 4898):         {m=TO_BACK f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0x23d53bc sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:24.578 V/WindowManagerShell( 4898):         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x3081f45 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:24.578 V/WindowManagerShell( 4898):         {m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0x85a869a sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}
+07-16 15:40:24.578 V/WindowManagerShell( 4898):     ]}
+07-16 15:40:24.578 V/WindowManager( 3413):     info={id=1323 t=TO_FRONT f=0x840 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[
+07-16 15:40:24.578 V/WindowManager( 3413):         {WCT{RemoteToken{de47fcc Task{4a95b79 #2563 type=home}}} m=TO_BACK f=SHOW_WALLPAPER p=WCT{RemoteToken{bfc698a DefaultTaskDisplayArea@92787278}} leash=Surface(name=Task=2563)/@0x6e2645d sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:24.578 V/WindowManager( 3413):         {WCT{RemoteToken{bfc698a DefaultTaskDisplayArea@92787278}} m=TO_BACK f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0x4df5e9e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:24.578 V/WindowManager( 3413):         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0xdfac305 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:24.578 V/WindowManager( 3413):         {m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0x824f4da sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}
+07-16 15:40:24.578 V/WindowManager( 3413):     ]}
+07-16 15:40:24.579 V/WindowManagerShell( 4898): Playing animation for (#1323) android.os.BinderProxy@58ed389@0
+07-16 15:40:24.579 I/MultiWindowTransitionHandler( 4898): shouldStartAnimation: false TransitionInfo: {id=1323 t=TO_FRONT f=0x840 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[{m=TO_BACK f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@769efa8} leash=Surface(name=Task=2563)/@0x739ff8e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0x23d53bc sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x3081f45 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0x85a869a sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:24.579 V/WindowManagerShell( 4898): start keyguard appearing transition, info = {id=1323 t=TO_FRONT f=0x840 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[{m=TO_BACK f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@769efa8} leash=Surface(name=Task=2563)/@0x739ff8e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0x23d53bc sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x3081f45 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0x85a869a sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:24.579 D/KeyguardService( 4898): Starts IRemoteAnimationRunner: info={id=1323 t=TO_FRONT f=0x840 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[{m=TO_BACK f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@769efa8} leash=Surface(name=Task=2563)/@0x739ff8e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0x23d53bc sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x3081f45 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0x85a869a sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:24.582 I/WindowManagerShell( 4898):  animated by com.android.wm.shell.keyguard.KeyguardTransitionHandler@bb22bd4
+07-16 15:40:24.583 V/WindowManagerShell( 4898): Transition animation finished (aborted=false), notifying core (#1323) android.os.BinderProxy@58ed389@0
+07-16 15:40:24.583 I/TransitionController( 3413):    ChangeInfo{c0e1541 container=WallpaperWindowToken{2eb20ef showWhenLocked=true} flags=0x0}
+07-16 15:40:24.583 I/TransitionController( 3413):    ChangeInfo{dbf0ae6 container=Task{2f3228f #2651 type=home A=10293:com.fran.teclas} flags=0x10}
+07-16 15:40:24.583 I/TransitionController( 3413):    ChangeInfo{be0ef72 container=WallpaperWindowToken{9c52a3e showWhenLocked=false} flags=0x0}
+07-16 15:40:24.583 I/TransitionController( 3413):    ChangeInfo{d4ce040 container=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651} flags=0x0}
+07-16 15:40:24.583 I/wm_HnFoldScreenAnimation( 3413): notifyCloseAPGAnimation syncId = 1323  mDisplaySwapSyncId =  1262 mAPGAnimationStart = false
+07-16 15:40:24.583 V/WindowManager( 3413): Finish Transition (#1323): created at 07-16 15:40:24.568 collect-started=0.163ms request-sent=0.243ms started=6.311ms ready=6.3ms sent=9.01ms commit=5.688ms finished=14.77ms
+07-16 15:40:24.585 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:24.585 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:24.585 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =null
+07-16 15:40:24.585 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:24.586 I/WindowManagerShell( 4898): Track 0 became idle
+07-16 15:40:24.586 I/WindowManagerShell( 4898): All active transition animations finished
+07-16 15:40:24.590 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:24.591 I/WindowManager( 3413): Policy visibility false: Window{82d57bf u0 InputMethod}
+07-16 15:40:24.592 I/ActivityTaskManager( 3413): removeSinkSurface:Surface(name=16df0 ActivityRecordInputSink com.fran.teclas/.MainActivity)/@0x78f2b79
+07-16 15:40:24.593 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:24.596 I/UsageStatsService( 3413): reportEvent : component= ComponentInfo{com.fran.teclas/com.fran.teclas.MainActivity} eventType= 23
+07-16 15:40:24.597 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:24.597 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:24.597 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =null
+07-16 15:40:24.597 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:24.878 I/HwPhoneWindowManager( 3413): onScreenStateChanged from display: 3
+07-16 15:40:25.128 I/WindowManager( 3413): PowerDown deal by mGestureLauncherService mPowerKeyHandled = false
+07-16 15:40:25.128 D/WindowManager( 3413): The very long press on power behavior is 1
+07-16 15:40:25.129 I/WindowManager( 3413): telecomManager check ringing, mIncallPowerBehavior = 1,interactive=false
+07-16 15:40:25.129 I/WindowManager( 3413): hungUp=false, handledByPowerManager=false, mPowerKeyHandledByTv=false, mPowerKeyHandled=false
+07-16 15:40:25.129 I/WindowManager( 3413): Is not standby posture for wakeup
+07-16 15:40:25.130 I/WindowManager( 3413): UL_Power Started waking up... (groupId=0 why=ON_BECAUSE_OF_USER)
+07-16 15:40:25.130 V/InputMethodManagerService( 3413): IME window vis: 0 active: 0 visible: 0 displayId: 0
+07-16 15:40:25.130 I/InputMethodManagerService( 3413): handleSetInteractive:interactive=true,mIsAodExist=true
+07-16 15:40:25.131 I/HwPhoneWindowManager( 3413): awaken dreams when waking up
+07-16 15:40:25.132 I/HwPhoneWindowManager( 3413): onScreenStateChanged from display: 2
+07-16 15:40:25.137 I/HwFoldScreenManagerService( 3413): reportEventMsgInner event SENSOR_REGISTER_REPORT currentTime=41940633
+07-16 15:40:25.174 I/DisplayFoldSensorController( 3413): handleHallSensorEvent type: 2.0,status: 1.0
+07-16 15:40:25.205 D/HwWindowManagerServiceEx( 3413): notifySwingRotation rotation:-100
+07-16 15:40:25.232 I/DisplayFoldSensorController( 3413): handleHallSensorEvent type: 2.0,status: 1.0
+07-16 15:40:25.254 I/DE J DES( 3413): [effect] Pg pkg:com.fran.teclas
+07-16 15:40:25.269 I/DisplayFoldSensorController( 3413): handleHallSensorEvent type: 2.0,status: 1.0
+07-16 15:40:25.284 D/ActivityThread(13473): Package [com.fran.teclas] reported as REPLACED, but missing application info. Assuming REMOVED.
+07-16 15:40:25.284 I/WindowManager( 3413): UL_PowerFinished waking up... (why=ON_BECAUSE_OF_USER)
+07-16 15:40:25.285 D/ActivityThread(13473): Package [com.fran.teclas] reported as REPLACED, but missing application info. Assuming REMOVED.
+07-16 15:40:25.349 D/WindowManager( 3413): The very long press on power behavior is 1
+07-16 15:40:25.429 I/WindowManager( 3413): PowerKey onPress
+07-16 15:40:25.429 I/WindowManager( 3413): powerPress: eventTime=41940624 interactive=true count=1 beganFromNonInteractive=true mShortPressOnPowerBehavior=1
+07-16 15:40:25.429 V/WindowManager( 3413): Ignoring short press of power button because the device is not interactive. interactive=true, beganFromNonInteractive=true
+07-16 15:40:25.511 I/HwNormalizedAutomaticBrightnessController( 3413): getWallpaperGray mGray = 115.8619868636819
+07-16 15:40:25.525 D/WindowManager( 3413): Remove SleepToken: tag=keyguard, displayId=0
+07-16 15:40:25.525 V/WindowManagerShell( 4898): Transition requested (#1324): android.os.BinderProxy@1a1127 TransitionRequestInfo { type = TO_BACK, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 104, debugId = 1324, displayMode = 2, mCanStartTransitionAsync = false }
+07-16 15:40:25.526 I/HwActivityTaskManagerServiceEx( 3413): backwardTaskTakeover from:ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}, to:ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:25.526 I/UsageStatsService( 3413): reportEvent : component= ComponentInfo{com.fran.teclas/com.fran.teclas.MainActivity} eventType= 1
+07-16 15:40:25.527 I/WindowManager( 3413): handleTopActivityLaunchingInDifferentOrientation windowsCanBeWallpaperTarget, activityRecord:ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:25.527 I/WindowManager( 3413): handleTopActivityLaunchingInDifferentOrientation windowsCanBeWallpaperTarget, activityRecord:ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:25.527 D/WindowManager( 3413): start homeActivity displayId == 1 and FoldScreenDevice
+07-16 15:40:25.528 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:25.529 D/WindowManager( 3413): Remove SleepToken: tag=keyguard, displayId=1
+07-16 15:40:25.529 D/WindowManager( 3413): start homeActivity displayId == 1 and FoldScreenDevice
+07-16 15:40:25.530 I/ActivityThread(21530): Performing restart of ActivityRecord{3e8ef3f token=android.os.BinderProxy@183df5e {com.fran.teclas/com.fran.teclas.MainActivity}} start=false callers:android.app.servertransaction.TransactionExecutor.performLifecycleSequence:254 android.app.servertransaction.TransactionExecutor.cycleToPath:209 android.app.servertransaction.TransactionExecutor.executeLifecycleItem:181 android.app.servertransaction.TransactionExecutor.executeTransactionItems:116 android.app.servertransaction.TransactionExecutor.execute:89 android.app.ActivityThread$H.handleMessage:3553 android.os.Handler.dispatchMessage:124 android.os.Looper.loopOnce:263 android.os.Looper.loop:360 android.app.ActivityThread.main:10806 
+07-16 15:40:25.534 I/DE J DES( 3413): [effect] Pg pkg:com.fran.teclas
+07-16 15:40:25.539 W/ProcBatteryStats( 3413): timer is running , not start, name: , uid: 10293, tag: *job*r/com.fran.teclas/com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService
+07-16 15:40:25.543 I/HWMW_HwMagicActivityLifeManager( 3413): ### Execute -> resumeActivityForHwMagicWin ActivityRecord resumeActivity = ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651} isInFoldedStatus:true
+07-16 15:40:25.543 I/HWMW_HwMagicActivityLifeManager( 3413): resumeActivityForHwMagicWin return, resumeActivity: ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:25.545 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.545 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:25.545 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =null
+07-16 15:40:25.545 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.553 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:25.553 I/WindowManager( 3413): New wallpaper target: Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity} prevTarget: Window{6b002ee u0 NotificationShade}
+07-16 15:40:25.553 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:25.553 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:25.553 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:25.553 I/HwBrightnessPgSceneDetection( 3413): pkgNamecom.fran.teclas
+07-16 15:40:25.553 I/DE J DES( 3413): [effect] appInContainfalse, FocusPkg:com.fran.teclas, mMultiWindowState: false
+07-16 15:40:25.553 I/DE J DES( 3413): [effect] appInContainfalse, FocusPkg:com.fran.teclas, mDarkModeStatus: false
+07-16 15:40:25.554 I/DE J DES( 3413): [effect] Pg pkg:com.fran.teclas
+07-16 15:40:25.560 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:25.561 D/HwWindowManagerServiceEx( 3413): constructHnTransitionAnimationInfo wc size : 4
+07-16 15:40:25.562 D/HwWindowManagerServiceEx( 3413): constructHnTransitionAnimationInfo type: open activity : ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}, isSplitMode : false
+07-16 15:40:25.562 D/HwWindowManagerServiceEx( 3413): mIntelligentCardPosition = null
+07-16 15:40:25.562 V/WindowManager( 3413): Sent Transition (#1324) createdAt=07-16 15:40:25.525 via request=TransitionRequestInfo { type = TO_BACK, triggerTask = null, pipChange = null, remoteTransition = null, displayChange = null, flags = 104, debugId = 1324, displayMode = 2, mCanStartTransitionAsync = false }
+07-16 15:40:25.562 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:25.562 V/WindowManager( 3413):     startWCT=WindowContainerTransaction { changes= {} hops= [] errorCallbackToken=null taskFragmentOrganizer=null }
+07-16 15:40:25.562 V/WindowManagerShell( 4898): onTransitionReady(transaction=14658723464070)
+07-16 15:40:25.562 V/WindowManager( 3413):     info={id=1324 t=TO_BACK f=0x104 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[
+07-16 15:40:25.562 V/WindowManager( 3413):         {WCT{RemoteToken{de47fcc Task{4a95b79 #2563 type=home}}} m=TO_FRONT f=SHOW_WALLPAPER p=WCT{RemoteToken{bfc698a DefaultTaskDisplayArea@92787278}} leash=Surface(name=Task=2563)/@0x6e2645d sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:25.562 V/WindowManager( 3413):         {WCT{RemoteToken{bfc698a DefaultTaskDisplayArea@92787278}} m=TO_FRONT f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0x4df5e9e sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:25.562 V/WindowManager( 3413):         {m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0xdfac305 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:25.562 V/WindowManager( 3413):         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0x824f4da sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}
+07-16 15:40:25.562 V/WindowManager( 3413):     ]}
+07-16 15:40:25.562 V/WindowManagerShell( 4898): onTransitionReady (#1324) android.os.BinderProxy@1a1127: {id=1324 t=TO_BACK f=0x104 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[
+07-16 15:40:25.562 V/WindowManagerShell( 4898):         {m=TO_FRONT f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@be1de70} leash=Surface(name=Task=2563)/@0x2ea6696 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:25.562 V/WindowManagerShell( 4898):         {m=TO_FRONT f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0xea26604 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:25.562 V/WindowManagerShell( 4898):         {m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x152d7ed sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},
+07-16 15:40:25.562 V/WindowManagerShell( 4898):         {m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0xc5e5622 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}
+07-16 15:40:25.562 V/WindowManagerShell( 4898):     ]}
+07-16 15:40:25.562 V/WindowManagerShell( 4898): Playing animation for (#1324) android.os.BinderProxy@1a1127@0
+07-16 15:40:25.562 I/MultiWindowTransitionHandler( 4898): shouldStartAnimation: false TransitionInfo: {id=1324 t=TO_BACK f=0x104 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[{m=TO_FRONT f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@be1de70} leash=Surface(name=Task=2563)/@0x2ea6696 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0xea26604 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x152d7ed sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0xc5e5622 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:25.563 V/WindowManagerShell( 4898): start keyguard going-away transition, info = {id=1324 t=TO_BACK f=0x104 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[{m=TO_FRONT f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@be1de70} leash=Surface(name=Task=2563)/@0x2ea6696 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0xea26604 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x152d7ed sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0xc5e5622 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:25.563 D/KeyguardService( 4898): Starts IRemoteAnimationRunner: info={id=1324 t=TO_BACK f=0x104 trk=0 includeEmbeddedWindow=false isKeyGuardLocked=true r=[0@Point(0, 0)#false] c=[{m=TO_FRONT f=SHOW_WALLPAPER p=WCT{android.window.IWindowContainerToken$Stub$Proxy@be1de70} leash=Surface(name=Task=2563)/@0x2ea6696 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 taskParent=-1 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=SHOW_WALLPAPER|FLAG_IS_TASK_DISPLAY_AREA leash=Surface(name=DefaultTaskDisplayArea)/@0xea26604 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_FRONT f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{9c52a3e showWhenLocked=false})/@0x152d7ed sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0},{m=TO_BACK f=IS_WALLPAPER leash=Surface(name=WallpaperWindowToken{2eb20ef showWhenLocked=false})/@0xc5e5622 sb=Rect(0, 0 - 1060, 2376) eb=Rect(0, 0 - 1060, 2376) epz=Point(1060, 2376) d=0 mSkipAnimation=false mhasLetterbox=false taskId= 0 offScreenBounds=Rect(0, 0 - 0, 0) hnFlags=0}]}
+07-16 15:40:25.566 I/WindowManagerShell( 4898):  animated by com.android.wm.shell.keyguard.KeyguardTransitionHandler@bb22bd4
+07-16 15:40:25.568 I/HwPhoneWindowManager( 3413): onShowingChangedL: false
+07-16 15:40:25.576 I/PackageManager( 3413): Returning preferred activity: com.fran.teclas/com.fran.teclas.MainActivity
+07-16 15:40:25.576 I/PackageManager( 3413): choose best activity: com.fran.teclas, com.fran.teclas.MainActivity
+07-16 15:40:25.588 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.588 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:25.588 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:25.588 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.588 I/WindowManager( 3413): Changing focus from Window{6b002ee u0 NotificationShade} to Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity} mode 0 displayId=0
+07-16 15:40:25.588 I/HnAppCompatLetterboxPolicyEx( 3413): setDecoBgColor,  window is null, or not in VerticalInwardFold main mode
+07-16 15:40:25.589 I/WindowManager( 3413): removeLeash, the window position need update Window{5345150 u0 StatusBar}
+07-16 15:40:25.589 I/WindowManager( 3413): removeLeash, the window position need update Window{8065986 u0 NavigationBar0}
+07-16 15:40:25.589 I/HnSwingMotionGestureHandler( 3413): current app:com.fran.teclas,appType:-1
+07-16 15:40:25.591 I/WindowManager( 3413): Win Window{6b002ee u0 NotificationShade}, w.isOnScreen()=true, w.isDrawFinishedLw()=true
+07-16 15:40:25.592 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.592 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:25.592 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:25.592 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.609 I/HwWindowManagerServiceEx( 3413): Keyguard exit, is first unlock after boot: false
+07-16 15:40:25.609 V/InputMethodManagerService( 3413): IME window vis: 0 active: 0 visible: 0 displayId: 0
+07-16 15:40:25.609 V/InputMethodManagerService( 3413): IME window vis: 0 active: 0 visible: 0 displayId: 0
+07-16 15:40:25.614 D/ActivityThread( 3679): Package [com.fran.teclas] reported as REPLACED, but missing application info. Assuming REMOVED.
+07-16 15:40:25.617 V/ActivityTaskManager( 3413): Activity idle: ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651}
+07-16 15:40:25.617 I/InputMethodManagerService( 3413): startInputOrWindowGainedFocus: userId=0,newUserId=0,mCurrentImeUserId=0,ime=com.fran.teclas/.TeclasImeService
+07-16 15:40:25.618 D/ActivityThread( 3679): Package [com.fran.teclas] reported as REPLACED, but missing application info. Assuming REMOVED.
+07-16 15:40:25.618 I/InputMethodManagerService( 3413): startInputOrWindowGainedFocusInternalLocked: reason=WINDOW_FOCUS_GAIN client=android.os.BinderProxy@dbdc011 inputContext=null editorInfo=android.view.inputmethod.EditorInfo@48c833b startInputFlags=VIEW_HAS_FOCUS|INITIAL_CONNECTION softInputMode=STATE_UNSPECIFIED|ADJUST_PAN windowFlags=#81910100 unverifiedTargetSdkVersion=37 bindingController=com.android.server.inputmethod.InputMethodBindingController@684cfc9 imeDispatcher=android.window.ImeOnBackInvokedDispatcher@a720a58 cs=ClientState{fcf506c mUid=10293 mPid=21530 mSelfReportedDisplayId=0} imeRequestedVisible=false
+07-16 15:40:25.618 V/InputMethodManagerService( 3413): Creating new accessibility sessions for client ClientState{fcf506c mUid=10293 mPid=21530 mSelfReportedDisplayId=0}
+07-16 15:40:25.622 I/TouchScreenWrapperAidl( 3413): hwTsRunCommand service:vendor.honor.hardware.tp.ITouchscreen$Stub$Proxy@98c7526 command:THP_InformTypingStatus parameter:com.fran.teclas#0 callback:com.android.server.input.HwInputManagerServiceEx$$ExternalSyntheticLambda0@87a1eb3 mCallback:com.android.server.input.tp.TouchScreenCallbackAidl@afcff14
+07-16 15:40:25.623 I/TouchScreenWrapperAidl( 3413): hwTsRunCommand service:vendor.honor.hardware.tp.ITouchscreen$Stub$Proxy@98c7526 command:THP_SetInputMethodRegion parameter:com.fran.teclas#-1#0#0 callback:com.android.server.input.HwInputManagerServiceEx$$ExternalSyntheticLambda0@2cbcc70 mCallback:com.android.server.input.tp.TouchScreenCallbackAidl@afcff14
+07-16 15:40:25.625 I/HwFoldScreenManagerService( 3413): on receive userPresentReceiver
+07-16 15:40:25.625 I/HwFoldScreenManagerService( 3413): on receive userPresentReceiver
+07-16 15:40:25.709 V/WindowManagerShell( 4898): Transition animation finished (aborted=false), notifying core (#1324) android.os.BinderProxy@1a1127@0
+07-16 15:40:25.709 I/TransitionController( 3413):    ChangeInfo{70100eb container=WallpaperWindowToken{2eb20ef showWhenLocked=true} flags=0x0}
+07-16 15:40:25.709 I/TransitionController( 3413):    ChangeInfo{a772e48 container=Task{2f3228f #2651 type=home A=10293:com.fran.teclas} flags=0x10}
+07-16 15:40:25.709 I/TransitionController( 3413):    ChangeInfo{df4e6f4 container=WallpaperWindowToken{9c52a3e showWhenLocked=false} flags=0x0}
+07-16 15:40:25.709 I/TransitionController( 3413):    ChangeInfo{ea59892 container=ActivityRecord{258168371 u0 com.fran.teclas/.MainActivity t2651} flags=0x0}
+07-16 15:40:25.709 I/wm_HnFoldScreenAnimation( 3413): notifyCloseAPGAnimation syncId = 1324  mDisplaySwapSyncId =  1262 mAPGAnimationStart = false
+07-16 15:40:25.709 V/WindowManager( 3413): Finish Transition (#1324): created at 07-16 15:40:25.525 collect-started=0.08ms request-sent=0.095ms started=5.805ms ready=5.794ms sent=36.878ms commit=8.478ms finished=184.411ms
+07-16 15:40:25.711 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.711 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:25.711 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:25.711 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:25.711 I/WindowManagerShell( 4898): Track 0 became idle
+07-16 15:40:25.711 I/WindowManagerShell( 4898): All active transition animations finished
+07-16 15:40:25.903 W/ProcBatteryStats( 3413): timer is not running , not stop, name: , uid: 10293, tag: *job*r/com.fran.teclas/com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService
+07-16 15:40:26.125 D/HwWindowManagerServiceEx( 3413): notifySwingRotation rotation:0
+07-16 15:40:27.058 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowToken.setExiting:240 com.android.server.wm.DisplayContent.removeWindowToken:1726 com.android.server.wm.WindowManagerService$LocalService.removeWindowToken:9667 com.android.server.wm.WindowManagerInternal.removeWindowToken:649 com.android.server.notification.NotificationManagerService.finishWindowTokenLocked:11359 com.android.server.notification.NotificationManagerService.handleKillTokenTimeout:11409 com.android.server.notification.NotificationManagerService.-$$Nest$mhandleKillTokenTimeout:0 com.android.server.notification.NotificationManagerService$WorkerHandler.handleMessage:11702 android.os.Handler.dispatchMessage:124 
+07-16 15:40:27.059 W/WindowManager( 3413): removeWindowToken: Attempted to remove non-existing token: android.os.Binder@19a4a5a
+07-16 15:40:27.530 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:40:27.530 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:40:27.633 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=0
+07-16 15:40:27.633 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:40:29.383 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:40:29.383 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:40:30.113 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowState.removeImmediately:2817 com.android.server.wm.WindowState.removeIfPossible:3039 com.android.server.wm.WindowManagerService.removeClientToken:2762 com.android.server.wm.Session.remove:328 android.view.IWindowSession$Stub.onTransact:883 com.android.server.wm.Session.onTransact:250 android.os.Binder.execTransactInternal:1459 android.os.Binder.execTransact:1401 <bottom of call stack> 
+07-16 15:40:30.113 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:30.113 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:40:30.113 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:40:30.113 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:40:30.117 W/NotificationService( 3413): Toast already killed. pkg=com.fran.teclas token=android.os.BinderProxy@9362f5f
+07-16 15:40:31.584 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowToken.setExiting:240 com.android.server.wm.DisplayContent.removeWindowToken:1726 com.android.server.wm.WindowManagerService$LocalService.removeWindowToken:9667 com.android.server.wm.WindowManagerInternal.removeWindowToken:649 com.android.server.notification.NotificationManagerService.finishWindowTokenLocked:11359 com.android.server.notification.NotificationManagerService.handleKillTokenTimeout:11409 com.android.server.notification.NotificationManagerService.-$$Nest$mhandleKillTokenTimeout:0 com.android.server.notification.NotificationManagerService$WorkerHandler.handleMessage:11702 android.os.Handler.dispatchMessage:124 
+07-16 15:40:31.584 W/WindowManager( 3413): removeWindowToken: Attempted to remove non-existing token: android.os.Binder@e539ad8
+07-16 15:40:31.648 I/WindowManager( 3413): This window is not animating, window = Window{ab40c87 u0 Toast}
+07-16 15:40:31.648 I/WindowManager( 3413): Policy visibility false: Window{ab40c87 u0 Toast}
+07-16 15:40:40.969 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowToken.setExiting:240 com.android.server.wm.DisplayContent.removeWindowToken:1726 com.android.server.wm.WindowManagerService$LocalService.removeWindowToken:9667 com.android.server.wm.WindowManagerInternal.removeWindowToken:649 com.android.server.notification.NotificationManagerService.finishWindowTokenLocked:11359 com.android.server.notification.NotificationManagerService.handleKillTokenTimeout:11409 com.android.server.notification.NotificationManagerService.-$$Nest$mhandleKillTokenTimeout:0 com.android.server.notification.NotificationManagerService$WorkerHandler.handleMessage:11702 android.os.Handler.dispatchMessage:124 
+07-16 15:40:40.970 W/WindowManager( 3413): removeWindowToken: Attempted to remove non-existing token: android.os.Binder@5a86308
+07-16 15:40:52.858 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:40:56.485 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:56.488 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:40:56.488 I/WallpaperManagerService( 3413): getWallpaperInfoWithFlags which:2
+07-16 15:41:12.520 I/AWARENESS_PineAppleEyeGazeAbility( 8069): isFoldable:true
+07-16 15:41:17.510 I/ITouchService( 2851): itouch GameXsyncManager:checkGameXsyncState PkgName com.fran.teclas not found in Xsync list
+07-16 15:41:17.964 I/ITouchService( 2851): itouch GameXsyncManager:checkGameXsyncState PkgName com.fran.teclas not found in Xsync list
+07-16 15:41:18.921 I/ITouchService( 2851): itouch GameXsyncManager:checkGameXsyncState PkgName com.fran.teclas not found in Xsync list
+07-16 15:41:19.638 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:19.639 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:19.641 I/HwInputMethodManager( 3413): setInputSource isFingerTouch = true
+07-16 15:41:19.643 D/CpuGovernor( 5081): handleAction: action id=231 time=1784234479640 Flag=1 name=touch_up pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:19.737 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:19.870 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:19.921 I/ITouchService( 2851): itouch GameXsyncManager:checkGameXsyncState PkgName com.fran.teclas not found in Xsync list
+07-16 15:41:20.102 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:20.118 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:20.127 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:20.127 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:20.128 D/CpuGovernor( 5081): handleAction: action id=232 time=1784234480128 Flag=2 name=touch_down pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:21.411 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:21.411 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:21.413 I/HwInputMethodManager( 3413): setInputSource isFingerTouch = true
+07-16 15:41:21.413 D/CpuGovernor( 5081): handleAction: action id=231 time=1784234481413 Flag=1 name=touch_up pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:21.475 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:41:21.476 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:41:21.555 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:21.555 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:21.557 D/CpuGovernor( 5081): handleAction: action id=232 time=1784234481557 Flag=2 name=touch_down pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:22.335 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:22.335 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:22.336 I/HwInputMethodManager( 3413): setInputSource isFingerTouch = true
+07-16 15:41:22.337 D/CpuGovernor( 5081): handleAction: action id=231 time=1784234482336 Flag=1 name=touch_up pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:22.391 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:41:22.391 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:41:22.488 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:22.488 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:22.490 D/CpuGovernor( 5081): handleAction: action id=232 time=1784234482489 Flag=2 name=touch_down pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:24.518 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:24.518 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:24.520 I/HwInputMethodManager( 3413): setInputSource isFingerTouch = true
+07-16 15:41:24.521 D/CpuGovernor( 5081): handleAction: action id=231 time=1784234484520 Flag=1 name=touch_up pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:24.555 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:41:24.555 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:41:24.571 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:24.688 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:24.689 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:24.690 D/CpuGovernor( 5081): handleAction: action id=232 time=1784234484690 Flag=2 name=touch_down pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:25.156 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:25.156 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:25.157 D/CpuGovernor( 5081): handleAction: action id=231 time=1784234485156 Flag=1 name=touch_up pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:25.157 I/HwInputMethodManager( 3413): setInputSource isFingerTouch = true
+07-16 15:41:25.176 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:25.193 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:25.209 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:25.210 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:41:25.210 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:41:25.226 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:25.492 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:25.493 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:25.493 I/HnVibratorManagerService( 3413): performHapticFeedbackWithEffect opPkg=com.fran.teclas constant=3
+07-16 15:41:25.493 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:41:25.494 D/CpuGovernor( 5081): handleAction: action id=232 time=1784234485494 Flag=2 name=touch_down pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:26.009 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:26.010 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:26.011 I/HwInputMethodManager( 3413): setInputSource isFingerTouch = true
+07-16 15:41:26.012 D/CpuGovernor( 5081): handleAction: action id=231 time=1784234486012 Flag=1 name=touch_up pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:26.090 I/VibratorManagerService( 3413): vibrate: uid is 10293, opPkg is com.fran.teclas
+07-16 15:41:26.329 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:26.346 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:26.362 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:26.379 W/InputEventReceiver(21530): channel '4053814 com.fran.teclas/com.fran.teclas.MainActivity' ~ not consumeBatches, dispatchBatchedInputEvent
+07-16 15:41:26.604 I/InputDispatcher( 3413): publishMotion chanel = 4053814 com.fran.teclas/com.fran.teclas.MainActivity  MotionEntry = MotionEvent  transform =   [1.0000  0.0000  -0.0000]  [0.0000  1.0000  -0.0000]  [0.0000  0.0000  1.0000]
+07-16 15:41:26.604 I/InputDispatcher( 3413): publishMotion chanel = 993b034 com.android.systemui.wallpapers.ImageWallpaper  MotionEntry = MotionEvent  transform =   [0.9085  -0.0000  0.0000]  [-0.0000  0.9083  0.9083]  [0.0000  0.0000  1.0000]
+07-16 15:41:26.605 D/CpuGovernor( 5081): handleAction: action id=232 time=1784234486605 Flag=2 name=touch_down pkg=4053814 com.fran.teclas/com.fran.teclas.MainActivity#993b034 com.android.systemui.wallpapers.ImageWallpaper
+07-16 15:41:26.606 I/com.fran.teclas(21530): hiddenapi: Accessing hidden method Landroid/app/StatusBarManager;->expandNotificationsPanel()V (runtime_flags=0, domain=platform, api=unsupported,test-api) from Lcom/fran/teclas/MainActivity; (domain=app, TargetSdkVersion=37) using reflection: allowed
+07-16 15:41:28.462 D/WindowManager( 3413): The very long press on power behavior is 1
+07-16 15:41:29.082 I/WindowManager( 3413): setSurfaceControl null, caller = com.android.server.wm.WindowContainer.removeImmediately:986 com.android.server.wm.WindowState.removeImmediately:2817 com.android.server.wm.WindowState.removeIfPossible:3039 com.android.server.wm.WindowManagerService.removeClientToken:2762 com.android.server.wm.Session.remove:328 android.view.IWindowSession$Stub.onTransact:883 com.android.server.wm.Session.onTransact:250 android.os.Binder.execTransactInternal:1459 android.os.Binder.execTransact:1401 <bottom of call stack> 
+07-16 15:41:29.083 I/WindowManager( 3413): surfaceControl level and imeTarget current state ,  imeTarget =Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:41:29.083 I/WindowManager( 3413): surfaceControl level and imeTarget current state,  canImeTargetSetRelativeLayer =true
+07-16 15:41:29.083 I/WindowManager( 3413): surfaceControl level and the current topStac,  topStack =Task{2f3228f #2651 type=home A=10293:com.fran.teclas}
+07-16 15:41:29.083 I/WindowManager( 3413): surfaceControl level and the IME current surface ,t =android.view.SurfaceControl$Transaction@d8d2680,imeTarget = Window{4053814 u0 com.fran.teclas/com.fran.teclas.MainActivity}
+07-16 15:41:29.088 W/NotificationService( 3413): Toast already killed. pkg=com.fran.teclas token=android.os.BinderProxy@873b50

@@ -1,0 +1,107 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <boolean name="docked_home_seeded" value="true" />
+    <boolean name="keyboard_placement_intro_shown" value="true" />
+    <string name="weather_feels">Feels 51°</string>
+    <string name="brief_edition_todos">[]</string>
+    <int name="go_key_color" value="-1446411" />
+    <int name="weather_feels_f" value="51" />
+    <boolean name="home_system_wallpaper_docked" value="false" />
+    <string name="weather_hourly">[{&quot;h&quot;:&quot;Now&quot;,&quot;t&quot;:53,&quot;c&quot;:2},{&quot;h&quot;:&quot;8 AM&quot;,&quot;t&quot;:56,&quot;c&quot;:3},{&quot;h&quot;:&quot;9 AM&quot;,&quot;t&quot;:59,&quot;c&quot;:2},{&quot;h&quot;:&quot;10 AM&quot;,&quot;t&quot;:61,&quot;c&quot;:2},{&quot;h&quot;:&quot;11 AM&quot;,&quot;t&quot;:64,&quot;c&quot;:2},{&quot;h&quot;:&quot;12 PM&quot;,&quot;t&quot;:66,&quot;c&quot;:51}]</string>
+    <string name="spotify_integration">api</string>
+    <boolean name="space_boards_pinned_seed_v2" value="true" />
+    <string name="dock_widget_ids">{}</string>
+    <string name="touch_model_v1">0.0,0.0|</string>
+    <int name="search_font_size" value="78" />
+    <string name="weather_meta">PARTLY CLOUDY</string>
+    <int name="weather_wind_mph" value="3" />
+    <boolean name="brief_visible_docked" value="true" />
+    <boolean name="cover_widget_keyboard_hidden" value="false" />
+    <boolean name="proofread_mode" value="true" />
+    <set name="hidden_home_apps">
+        <string>teclas-music</string>
+    </set>
+    <int name="weather_temp_f" value="53" />
+    <boolean name="brief_edition_forced" value="true" />
+    <string name="brief_edition_rows">[{&quot;g&quot;:&quot;✉&quot;,&quot;t&quot;:&quot;Reply to Mom about dinner tonight&quot;,&quot;s&quot;:&quot;Messages · she asked if 7 works&quot;,&quot;p&quot;:&quot;&quot;,&quot;k&quot;:&quot;&quot;},{&quot;g&quot;:&quot;›&quot;,&quot;t&quot;:&quot;Send Sarah the Q3 deck&quot;,&quot;s&quot;:&quot;Gmail · before 2pm&quot;,&quot;p&quot;:&quot;&quot;,&quot;k&quot;:&quot;&quot;},{&quot;g&quot;:&quot;◷&quot;,&quot;t&quot;:&quot;Product sync starts at 9:30&quot;,&quot;s&quot;:&quot;Calendar · Room B&quot;,&quot;p&quot;:&quot;&quot;,&quot;k&quot;:&quot;&quot;}]</string>
+    <boolean name="brief_visible" value="true" />
+    <boolean name="home_system_wallpaper" value="false" />
+    <string name="user_themes_json">[{&quot;id&quot;:&quot;custom&quot;,&quot;name&quot;:&quot;Custom&quot;,&quot;briefStyle&quot;:&quot;AGENDA&quot;,&quot;briefThemeId&quot;:&quot;6&quot;,&quot;briefVisible&quot;:true,&quot;weatherStyle&quot;:&quot;HEADER&quot;,&quot;weatherStyleId&quot;:&quot;header&quot;,&quot;weatherVisible&quot;:true,&quot;keyboardTheme&quot;:&quot;solaris&quot;,&quot;iconPackType&quot;:&quot;installed&quot;,&quot;iconPackValue&quot;:&quot;cs14.pixelperfect.iconpack.vera&quot;,&quot;wallpaperId&quot;:&quot;midnight&quot;,&quot;accentColor&quot;:-1446411,&quot;builtIn&quot;:false}]</string>
+    <boolean name="app_library_default_home" value="false" />
+    <string name="letter_shortcut_x">com.zero.zerolivewallpaper</string>
+    <int name="app_icon_size" value="61" />
+    <int name="weather_hi" value="67" />
+    <boolean name="gemini_enabled" value="true" />
+    <string name="weather_stats">77% RH . 3 mph</string>
+    <int name="weather_lo" value="49" />
+    <int name="weather_widget_pos_y_docked" value="22" />
+    <string name="brief_edition_key">20260714-am</string>
+    <long name="theme_apply_version" value="1784031200005" />
+    <boolean name="kbd_tilt_light" value="false" />
+    <string name="weather_widget_style_docked">header</string>
+    <string name="weather_widget_style">header</string>
+    <string name="gesture_up_action">none</string>
+    <boolean name="animated_weather" value="false" />
+    <string name="vivo_docked_experiment_status">1784031226974: cleared viewport</string>
+    <string name="app_usage_counts">{&quot;com.whatsapp&quot;:63,&quot;com.android.camera&quot;:1,&quot;com.spotify.music&quot;:8,&quot;org.telegram.messenger&quot;:7,&quot;com.android.vending&quot;:2,&quot;com.google.android.apps.maps&quot;:1,&quot;com.instagram.android&quot;:5,&quot;com.android.chrome&quot;:15,&quot;com.chase.sig.android&quot;:1,&quot;com.google.android.gm&quot;:2,&quot;com.google.android.apps.authenticator2&quot;:1,&quot;com.google.android.contacts&quot;:1,&quot;com.airbnb.android&quot;:4,&quot;com.bbk.theme&quot;:1}</string>
+    <int name="weather_code" value="2" />
+    <string name="theme_wallpaper_id">midnight</string>
+    <string name="keyboard_placement">widget</string>
+    <boolean name="weather_visible" value="true" />
+    <string name="app_last_launch_times">{&quot;com.whatsapp&quot;:1784026975083,&quot;com.android.camera&quot;:1783895719190,&quot;com.spotify.music&quot;:1783950424999,&quot;org.telegram.messenger&quot;:1783914907345,&quot;com.android.vending&quot;:1783991519283,&quot;com.google.android.apps.maps&quot;:1783907768448,&quot;com.instagram.android&quot;:1783982095802,&quot;com.android.chrome&quot;:1784027539913,&quot;com.chase.sig.android&quot;:1783916533442,&quot;com.google.android.gm&quot;:1783957040540,&quot;com.google.android.apps.authenticator2&quot;:1783955284168,&quot;com.google.android.contacts&quot;:1783962093457,&quot;com.airbnb.android&quot;:1783985304728,&quot;com.bbk.theme&quot;:1783987430341}</string>
+    <set name="user_dict_words">
+        <string>que</string>
+        <string>for</string>
+        <string>life</string>
+        <string>how</string>
+        <string>balance</string>
+        <string>and</string>
+        <string>me</string>
+        <string>payment</string>
+        <string>up</string>
+        <string>you</string>
+        <string>toy</string>
+        <string>in</string>
+        <string>forky</string>
+        <string>this</string>
+        <string>was</string>
+        <string>pay</string>
+        <string>is</string>
+        <string>it</string>
+        <string>my</string>
+        <string>the</string>
+        <string>what</string>
+        <string>to</string>
+        <string>invoice</string>
+        <string>partial</string>
+        <string>story</string>
+    </set>
+    <string name="brief_theme">6</string>
+    <string name="built_in_icon_style">mono</string>
+    <string name="user_dict_counts">{&quot;does&quot;:1,&quot;about&quot;:2,&quot;just&quot;:1,&quot;start&quot;:1,&quot;typing&quot;:1,&quot;without&quot;:1,&quot;looking&quot;:1,&quot;see&quot;:1,&quot;tjs&quot;:1,&quot;feels&quot;:1,&quot;good&quot;:1,&quot;as&quot;:1,&quot;before&quot;:1,&quot;ut&quot;:2,&quot;spork&quot;:1,&quot;husband&quot;:1,&quot;kren&quot;:1,&quot;tu&quot;:2,&quot;es&quot;:1,&quot;eubia&quot;:1,&quot;rubia&quot;:1,&quot;thebfufk&quot;:1,&quot;hfhdmxhstwulajdhfbvnbs&quot;:1,&quot;shfu&quot;:1,&quot;jfhrbw&quot;:1,&quot;jdyenc&quot;:1,&quot;going&quot;:1,&quot;on&quot;:2,&quot;sith&quot;:1,&quot;bebe&quot;:1,&quot;wstaban&quot;:1,&quot;mis&quot;:2,&quot;audifonos&quot;:1,&quot;wn&quot;:1,&quot;fu&quot;:1,&quot;en&quot;:1,&quot;los&quot;:1,&quot;perdi&quot;:1,&quot;bro&quot;:1,&quot;hardcore&quot;:1,&quot;croppo&quot;:1,&quot;hows&quot;:1,&quot;that&quot;:1,&quot;got&quot;:2,&quot;tifed&quot;:1,&quot;of&quot;:2,&quot;have&quot;:1,&quot;hard&quot;:1,&quot;use&quot;:1,&quot;thats&quot;:1,&quot;fokd&quot;:1,&quot;fold&quot;:2,&quot;leaked&quot;:1,&quot;samecshi&quot;:1,&quot;fokdabkes&quot;:1,&quot;we&quot;:1,&quot;witness&quot;:1,&quot;foldables&quot;:1,&quot;sll&quot;:1,&quot;here&quot;:1,&quot;mi&quot;:2,&quot;modo&quot;:1,&quot;covers&quot;:1,&quot;next&quot;:1,&quot;are&quot;:2,&quot;morning&quot;:1,&quot;please&quot;:2,&quot;send&quot;:1,&quot;foe&quot;:1,&quot;claudia&quot;:1,&quot;casanova&quot;:1,&quot;zelle&quot;:1,&quot;added&quot;:1,&quot;her&quot;:1,&quot;phone&quot;:1,&quot;number&quot;:1,&quot;ending&quot;:1,&quot;csnt&quot;:1,&quot;do&quot;:2,&quot;becusse&quot;:1,&quot;wont&quot;:1,&quot;allow&quot;:1,&quot;after&quot;:1,&quot;thiw&quot;:1,&quot;new&quot;:2,&quot;owed&quot;:1,&quot;troya&quot;:2,&quot;leaen&quot;:1,&quot;learn&quot;:1,&quot;damn&quot;:1,&quot;im&quot;:1,&quot;amped&quot;:1,&quot;upppp&quot;:1,&quot;mo&quot;:1,&quot;buenos&quot;:2,&quot;sell&quot;:1,&quot;wtf&quot;:1,&quot;utw&quot;:1,&quot;juky&quot;:1,&quot;july&quot;:1,&quot;diasssssssss&quot;:1,&quot;amorr&quot;:1,&quot;como&quot;:2,&quot;hokd&quot;:1,&quot;hold&quot;:2,&quot;cono&quot;:1,&quot;dormiste&quot;:1,&quot;why&quot;:1,&quot;dont&quot;:1,&quot;change&quot;:1,&quot;oof&quot;:1,&quot;fucked&quot;:1,&quot;yeah&quot;:1,&quot;they&quot;:1,&quot;comiste&quot;:1,&quot;vienes&quot;:1,&quot;aca&quot;:1,&quot;tienes&quot;:1,&quot;hacer&quot;:1,&quot;otras&quot;:1,&quot;no&quot;:1,&quot;comido&quot;:1,&quot;nada&quot;:1,&quot;make&quot;:2,&quot;an&quot;:1,&quot;image&quot;:1,&quot;look&quot;:1,&quot;estas&quot;:1,&quot;asi&quot;:1,&quot;dejas&quot;:1,&quot;cuando&quot;:1,&quot;sacas&quot;:1,&quot;todas&quot;:1,&quot;lasvgota&quot;:1,&quot;dis&quot;:1,&quot;did&quot;:1,&quot;move&quot;:1,&quot;something&quot;:1,&quot;came&quot;:1,&quot;picked&quot;:2,&quot;whatw&quot;:1,&quot;whats&quot;:1,&quot;left&quot;:1,&quot;need&quot;:2,&quot;mufh&quot;:1,&quot;much&quot;:2,&quot;but&quot;:1,&quot;know&quot;:1,&quot;legt&quot;:1,&quot;so&quot;:1,&quot;can&quot;:1,&quot;pick&quot;:1,&quot;trabjan&quot;:1,&quot;take&quot;:1,&quot;like&quot;:1,&quot;hola&quot;:2,&quot;wivmas&quot;:1,&quot;informacion&quot;:1,&quot;si&quot;:1,&quot;cringe&quot;:1,&quot;holaaa&quot;:1,&quot;vomo&quot;:1,&quot;info&quot;:1,&quot;porda&quot;:1,&quot;porfs&quot;:1,&quot;porfa&quot;:1,&quot;samntha&quot;:1,&quot;un&quot;:1,&quot;asta&quot;:1,&quot;hnnn&quot;:1,&quot;lwt&quot;:1,&quot;let&quot;:1,&quot;ne&quot;:1,&quot;ask&quot;:1,&quot;babe&quot;:1,&quot;nooo&quot;:1,&quot;nos&quot;:1,&quot;esta&quot;:1,&quot;haciendo&quot;:1,&quot;frio&quot;:1,&quot;titan&quot;:1,&quot;samsung&quot;:1,&quot;quiero&quot;:1,&quot;comerme&quot;:1,&quot;esas&quot;:1,&quot;tetas&quot;:1,&quot;llaman&quot;:1,&quot;la&quot;:1,&quot;las&quot;:1,&quot;chicas&quot;:1,&quot;son&quot;:1,&quot;anyway&quot;:1,&quot;ti&quot;:1,&quot;get&quot;:1,&quot;databback&quot;:1,&quot;from&quot;:1,&quot;reset&quot;:1}</string>
+    <long name="weather_fetched_at" value="1784031205552" />
+    <string name="weather_temp">53°</string>
+    <boolean name="weather_visible_docked" value="true" />
+    <int name="weather_widget_pos_y" value="106" />
+    <int name="weather_widget_pos_x" value="52" />
+    <string name="glide_personal_counts">{&quot;that&quot;:2,&quot;okay&quot;:1,&quot;play&quot;:1,&quot;you&quot;:2,&quot;what&quot;:4,&quot;about&quot;:2,&quot;saying&quot;:2,&quot;in&quot;:1,&quot;this&quot;:1,&quot;knows&quot;:1,&quot;let&quot;:1,&quot;do&quot;:1,&quot;and&quot;:2,&quot;the&quot;:1,&quot;has&quot;:1}</string>
+    <int name="weather_humidity_pct" value="77" />
+    <int name="brief_widget_y_docked" value="488" />
+    <int name="brief_widget_x_docked" value="52" />
+    <string name="commitments_v1">[{&quot;t&quot;:&quot;Lil Tomatoes&quot;,&quot;p&quot;:&quot;Traveling rat goons&quot;,&quot;k&quot;:&quot;org.telegram.messenger&quot;,&quot;n&quot;:&quot;0|org.telegram.messenger|1663142532|null|10361&quot;,&quot;w&quot;:1784026943918},{&quot;t&quot;:&quot;Lockscreen password&quot;,&quot;p&quot;:&quot;CN Themes Chat&quot;,&quot;k&quot;:&quot;com.google.android.gm&quot;,&quot;n&quot;:&quot;0|com.google.android.gm|1925560776|gig:-555966194:CLASSIC_INBOX_ALL_MAIL|10258&quot;,&quot;w&quot;:1784026943918},{&quot;t&quot;:&quot;Provide credit card details&quot;,&quot;p&quot;:&quot;Ethan&quot;,&quot;k&quot;:&quot;&quot;,&quot;n&quot;:&quot;&quot;,&quot;w&quot;:1783963449020},{&quot;t&quot;:&quot;booking confirmation&quot;,&quot;p&quot;:&quot;Juan&quot;,&quot;k&quot;:&quot;&quot;,&quot;n&quot;:&quot;&quot;,&quot;w&quot;:1783959461064},{&quot;t&quot;:&quot;Attend Provider Training Session&quot;,&quot;p&quot;:&quot;Self&quot;,&quot;k&quot;:&quot;&quot;,&quot;n&quot;:&quot;&quot;,&quot;w&quot;:1783958243249},{&quot;t&quot;:&quot;Attend Provider Town Hall Training&quot;,&quot;p&quot;:&quot;Self&quot;,&quot;k&quot;:&quot;&quot;,&quot;n&quot;:&quot;&quot;,&quot;w&quot;:1783958110552},{&quot;t&quot;:&quot;Attend Market Prep briefing and Post-Open Confirmation&quot;,&quot;p&quot;:&quot;Unknown&quot;,&quot;k&quot;:&quot;&quot;,&quot;n&quot;:&quot;&quot;,&quot;w&quot;:1783957490260},{&quot;t&quot;:&quot;check-in on the Alpha project&quot;,&quot;p&quot;:&quot;Sarah&quot;,&quot;k&quot;:&quot;&quot;,&quot;n&quot;:&quot;&quot;,&quot;w&quot;:1783957423111},{&quot;t&quot;:&quot;Resolve credit card payment issues&quot;,&quot;p&quot;:&quot;biBERKBusinessInsurance&quot;,&quot;k&quot;:&quot;com.google.android.gm&quot;,&quot;n&quot;:&quot;0|com.google.android.gm|1611133719|gig:-555966194:CLASSIC_INBOX_ALL_MAIL|10258&quot;,&quot;w&quot;:1783941215425},{&quot;t&quot;:&quot;Send a reel&quot;,&quot;p&quot;:&quot;Dr. Kelly Dayana&quot;,&quot;k&quot;:&quot;com.instagram.android&quot;,&quot;n&quot;:&quot;0|com.instagram.android|64278|direct|72638;thread_id:340282366841710301244258668703875778828|10330&quot;,&quot;w&quot;:1783941215425},{&quot;t&quot;:&quot;Dinner tonight&quot;,&quot;p&quot;:&quot;Sarah&quot;,&quot;k&quot;:&quot;&quot;,&quot;n&quot;:&quot;&quot;,&quot;w&quot;:1783913940996},{&quot;t&quot;:&quot;Dinner tonight&quot;,&quot;p&quot;:&quot;Unknown&quot;,&quot;k&quot;:&quot;com.google.android.apps.messaging&quot;,&quot;n&quot;:&quot;0|com.google.android.apps.messaging|2|com.google.android.apps.messaging:incoming_message:5|10243&quot;,&quot;w&quot;:1783910859867}]</string>
+    <string name="theme_mode">light</string>
+    <string name="keyboard_theme">solaris</string>
+    <string name="weather_place">Bogotá, D.C.</string>
+    <int name="weather_widget_pos_x_docked" value="449" />
+    <string name="active_theme_id">custom</string>
+    <int name="keyboard_size" value="100" />
+    <string name="active_icon_pack">cs14.pixelperfect.iconpack.vera</string>
+    <boolean name="glass_effects" value="false" />
+    <string name="keyboard_swap_animation">pop_out</string>
+    <string name="brief_theme_docked">6</string>
+    <string name="gesture_down_action">none</string>
+    <int name="brief_widget_y" value="469" />
+    <int name="brief_widget_x" value="52" />
+    <string name="hub_messages">[{&quot;key&quot;:&quot;0|com.whatsapp|1|qw7D7JRMaz7Vl1vrsKVDWUXB9WHqTFR853KlYra5deU=\n|10351&quot;,&quot;sender&quot;:&quot;Dayana&quot;,&quot;preview&quot;:&quot;Please. I dont want the electricity to get disconnected&quot;,&quot;packageName&quot;:&quot;com.whatsapp&quot;,&quot;kind&quot;:&quot;message&quot;,&quot;color&quot;:-42436,&quot;lastUpdated&quot;:1784031229682}]</string>
+    <string name="brief_edition_lede">Good morning — family first, then the work that needs a reply.</string>
+</map>

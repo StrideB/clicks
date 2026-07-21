@@ -1,0 +1,2 @@
+Display 4630946846403687059 (HWC display 0): port=147 pnpId=QCM displayName=""
+Display 4630946324137792660 (HWC display 3): port=148 pnpId=QCM displayName=""
