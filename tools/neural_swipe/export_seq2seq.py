@@ -30,6 +30,7 @@ the neural decoder (statistical decoder stays as fallback). No app code changes 
 
 import argparse
 import math
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -326,6 +327,11 @@ def main():
                          "export) — oversampled via --own-prob, not drowned in the corpus")
     ap.add_argument("--own-prob", type=float, default=0.10,
                     help="probability each REAL-batch sample is drawn from --own rows")
+    ap.add_argument("--checkpoint-every", type=int, default=2000,
+                    help="save a resumable checkpoint to <out>/checkpoint.pt every N steps — a "
+                         "crash, reboot, or file mishap can only ever cost N steps of progress")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from <out>/checkpoint.pt if present (config must match)")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
@@ -356,8 +362,35 @@ def main():
     opt = torch.optim.AdamW(list(encoder.parameters()) + list(decoder.parameters()), lr=args.lr)
     loss_fn = nn.CrossEntropyLoss(ignore_index=PAD)
 
+    # Resumable checkpointing: days of GPU time must never hinge on one file surviving. The
+    # checkpoint is written atomically (tmp + rename) so a crash mid-save can't corrupt it.
+    os.makedirs(args.out, exist_ok=True)
+    ckpt_path = os.path.join(args.out, "checkpoint.pt")
+    config = {"d_model": args.d_model, "nhead": args.nhead, "layers": args.layers,
+              "ff": args.ff, "vocab_size": args.vocab_size, "max_word_len": args.max_word_len}
+    start_step = 1
+    if args.resume and os.path.exists(ckpt_path):
+        ck = torch.load(ckpt_path, map_location=device)
+        if ck.get("config") != config:
+            raise SystemExit(
+                f"REFUSING TO RESUME: {ckpt_path} was trained with a different config\n"
+                f"  checkpoint: {ck.get('config')}\n  requested : {config}\n"
+                f"Either rerun with the checkpoint's config, or move/delete the checkpoint "
+                f"to deliberately start fresh.")
+        encoder.load_state_dict(ck["encoder"]); decoder.load_state_dict(ck["decoder"])
+        opt.load_state_dict(ck["opt"])
+        start_step = ck["step"] + 1
+        print(f"resumed from {ckpt_path}: step {ck['step']} of {args.steps} already done")
+
+    def save_ckpt(step):
+        tmp = ckpt_path + ".tmp"
+        torch.save({"step": step, "config": config,
+                    "encoder": encoder.state_dict(), "decoder": decoder.state_dict(),
+                    "opt": opt.state_dict()}, tmp)
+        os.replace(tmp, ckpt_path)
+
     encoder.train(); decoder.train()
-    for step in range(1, args.steps + 1):
+    for step in range(start_step, args.steps + 1):
         if futo_rows is not None and rng.random() >= args.synth_mix:
             import futo_data
             feats, masks, tgt = futo_data.iter_futo_batch(
@@ -374,7 +407,10 @@ def main():
         opt.step()
         if step % 200 == 0 or step == 1:
             print(f"step {step:5d}/{args.steps}  loss {loss.item():.4f}")
+        if step % args.checkpoint_every == 0:
+            save_ckpt(step)
 
+    save_ckpt(max(args.steps, start_step - 1))   # final state — a crash during export costs nothing on rerun
     encoder.eval(); decoder.eval()
 
     # Export. Both graphs run at BATCH 1 on-device (the beam search calls the decoder once per beam),
