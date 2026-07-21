@@ -4392,10 +4392,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun keyHorizontalInset(): Int {
-        // Uniform 3dp face gap on every theme (default/teclas previously sat flush at 0): spacing
-        // comes out of the drawn face only; touch cells stay edge-to-edge and grew via the
-        // reclaimed deck/row padding.
-        return dp(2)
+        // Visible face gap only: touch cells stay edge-to-edge. Default/Teclas/Skeuo get a wider
+        // drawn keycap while the rest of the theme set keeps the current spacing.
+        val theme = keyboardVisualTheme()
+        return dp(if (theme == KEYBOARD_THEME_DEFAULT ||
+            theme == KEYBOARD_THEME_TECLAS ||
+            theme == KEYBOARD_THEME_SKEUO
+        ) 1 else 2)
     }
 
     private fun themedGoKeySize(): Int {

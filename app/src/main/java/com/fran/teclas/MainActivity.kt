@@ -541,6 +541,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetKeyboardDockHeightAnimator: ValueAnimator? = null
     private var widgetKeyboardHostHeightAnimator: ValueAnimator? = null
     private var pendingWidgetKeyboardPopIn = false
+    private var pendingWidgetKeyboardSwapAfterPopIn = false
     private var widgetSocketView: KeyboardSocketView? = null
     private var widgetCoachView: TextView? = null
     private var widgetDotsView: LinearLayout? = null
@@ -5349,6 +5350,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             module.setOnTouchListener { _, event -> handleWidgetKeyboardDetachedTouch(event) }
             if (pendingWidgetKeyboardPopIn) {
                 pendingWidgetKeyboardPopIn = false
+                val openSwapAfterPopIn = pendingWidgetKeyboardSwapAfterPopIn
+                pendingWidgetKeyboardSwapAfterPopIn = false
                 module.alpha = 0f
                 module.translationY = dp(42).toFloat()
                 module.scaleX = 0.965f
@@ -5361,6 +5364,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         .scaleY(1f)
                         .setDuration(280L)
                         .setInterpolator(DecelerateInterpolator(1.55f))
+                        .withEndAction {
+                            if (openSwapAfterPopIn && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                                beginWidgetKeyboardDetach(module)
+                            }
+                        }
                         .start()
                 }
             }
@@ -5402,7 +5410,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun keyboardSwapPopOutEnabled(): Boolean =
         keyboardSwapAnimationMode() == KEYBOARD_SWAP_ANIMATION_POPOUT
 
-    private fun beginWidgetKeyboardDetach(dockKey: TextView) {
+    private fun beginWidgetKeyboardDetach(dockKey: View) {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_WIDGET || widgetSwapState != WidgetKeyboardSwapState.SEATED) return
         val module = widgetKeyboardModule ?: return
         widgetSwapState = WidgetKeyboardSwapState.DETACHING
@@ -13642,6 +13650,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val dock = if (::keyboardDockView.isInitialized && keyboardDockView.parent != null) keyboardDockView else null
         if (dock == null) {
             pendingWidgetKeyboardPopIn = true
+            pendingWidgetKeyboardSwapAfterPopIn = true
             setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
             return
         }
@@ -13654,6 +13663,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .setInterpolator(DecelerateInterpolator())
             .withEndAction {
                 pendingWidgetKeyboardPopIn = true
+                pendingWidgetKeyboardSwapAfterPopIn = true
                 keyboardPlacement = KEYBOARD_PLACEMENT_WIDGET
                 prefs().edit().putString(KEYBOARD_PLACEMENT_PREF, KEYBOARD_PLACEMENT_WIDGET).apply()
                 render()
@@ -24524,10 +24534,12 @@ Question: $prompt"""
     }
 
     private fun keyHorizontalInset(): Int {
-        // Uniform 3dp face gap on every theme (default/teclas previously sat flush at 0): the
-        // spacing comes out of the drawn face only; touch cells stay edge-to-edge and grew via
-        // the reclaimed deck/row padding.
-        return dp(2)
+        // Visible face gap only: touch cells stay edge-to-edge. Default/Teclas/Skeuo get a wider
+        // drawn keycap while the rest of the theme set keeps the current spacing.
+        return dp(if (keyboardTheme == KEYBOARD_THEME_DEFAULT ||
+            keyboardTheme == KEYBOARD_THEME_TECLAS ||
+            keyboardTheme == KEYBOARD_THEME_SKEUO
+        ) 1 else 2)
     }
 
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
