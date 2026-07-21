@@ -114,6 +114,7 @@ import com.fran.teclas.keyboard.PredictionOverlayManager
 import com.fran.teclas.predict.ContextSnapshot
 import com.fran.teclas.fold.FoldPosture
 import com.fran.teclas.fold.observeFoldPosture
+import com.fran.teclas.galaxy.NowBarLiveUpdate
 import com.fran.teclas.predict.LaunchSource
 import com.fran.teclas.predict.Predictor
 import com.fran.teclas.predict.Space
@@ -1129,6 +1130,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
         refreshPredictContext()
+        // Next-event Live Update (Samsung Now Bar / lock screen): re-sync from the cached
+        // events even when the 10 s calendar-load guard skipped a fresh load.
+        NowBarLiveUpdate.sync(this, prefs(), calendarEvents, goKeyColor)
         if (::ribbonView.isInitialized) {
             updateClock()
             renderHub()
@@ -2484,7 +2488,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         prefs().getBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, false)
 
     internal fun isUnfoldedInnerLayoutActive(): Boolean =
-        foldPosture is FoldPosture.Inner && resources.configuration.screenWidthDp >= 600
+        (foldPosture is FoldPosture.Inner || foldPosture is FoldPosture.HalfOpen) &&
+            resources.configuration.screenWidthDp >= 600
+
+    /** Lower-panel height (px) in tabletop Flex Mode (half-open, horizontal hinge), else 0.
+     *  Galaxy Folds report HALF_OPENED through most of the fold arc, so without this the
+     *  inner screen would drop back to the stretched cover layout the moment the hinge bends.
+     *  Content keeps to the upright upper panel; the bottom-anchored keyboard overlay stays
+     *  on the flat lower half — the Flex Mode typing split. */
+    private fun tabletopLowerPanelInset(): Int {
+        val posture = foldPosture as? FoldPosture.HalfOpen ?: return 0
+        if (posture.vertical) return 0
+        val screenHeight = resources.displayMetrics.heightPixels
+        // The root keyboard dock already owns the bottom of the screen (it's a sibling below
+        // the content frame), so only pad the content for the slice of the lower panel the
+        // dock doesn't cover.
+        val dockReserved = activeRootDockHeight() + launcherDockedKeyboardBottomLift() + keyboardBottomLift()
+        return (screenHeight - posture.hinge.top - dockReserved).coerceIn(0, screenHeight / 2)
+    }
 
     private fun innerKeyboardWidthPercent(): Int =
         prefs().getInt(INNER_KEYBOARD_WIDTH_PREF, 68).coerceIn(48, 100)
@@ -2542,9 +2563,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun handleFoldPosture(posture: FoldPosture) {
         val wasInner = isUnfoldedInnerLayoutActive()
+        val wasTabletopInset = tabletopLowerPanelInset()
         saveWidgetKeyboardHiddenForCurrentPosture()
         foldPosture = posture
         val isInner = isUnfoldedInnerLayoutActive()
+        val tabletopInset = tabletopLowerPanelInset()
         homeWallpaperDrawable = null
         innerWallpaperImageView = null
         widgetKeyboardHidden = loadWidgetKeyboardHiddenForCurrentPosture()
@@ -2560,6 +2583,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             libraryOpen = if (isInner) false else appLibraryDefaultHome()
             openPane = if (isInner) null else openPane
             keyboardSettingsOpen = false
+            render()
+        } else if (isInner && tabletopInset != wasTabletopInset && ::rootView.isInitialized) {
+            // Tabletop Flex Mode engaged/released (or the hinge line moved): rebuild so the
+            // content's bottom inset tracks the hinge.
             render()
         } else if (isInner) {
             refreshUnfoldedLibraryContent()
@@ -3339,7 +3366,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             val horizontalInset = unfoldedFocusHorizontalInset()
-            setPadding(horizontalInset, dp(14), horizontalInset, dp(18))
+            setPadding(horizontalInset, dp(14), horizontalInset, dp(18) + tabletopLowerPanelInset())
             // The actual weather widget is added as a freeform overlay below, using the same
             // MovableWidgetFrame as phone mode. Keep this spacer so the calm fold layout remains
             // balanced without rendering a second, non-movable weather chip.
@@ -19555,6 +19582,9 @@ Question: $prompt"""
         contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
         contextDockRefreshRunnable = object : Runnable {
             override fun run() {
+                // Piggyback the next-event Live Update on the existing 60 s foreground tick so
+                // its progress/countdown state stays fresh without any alarm or background work.
+                NowBarLiveUpdate.sync(this@MainActivity, prefs(), calendarEvents, goKeyColor)
                 if (::favoritesDockContextView.isInitialized) {
                     val next = currentContextDockSignature()
                     if (next != contextDockSignature) renderFavoritesDockContext()
@@ -22573,6 +22603,7 @@ Question: $prompt"""
             withContext(Dispatchers.Main) {
                 val hadAgenda = agendaEntries().isNotEmpty()
                 calendarEvents = loaded
+                NowBarLiveUpdate.sync(this@MainActivity, prefs(), loaded, goKeyColor)
                 syncNowPlayingCardVisibility()
                 if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
                 if (::rootView.isInitialized && openPane == null && !libraryOpen && !isWidgetUniversalSearchActive()) {

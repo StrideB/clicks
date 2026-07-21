@@ -392,6 +392,34 @@ package first (`"$ADB" uninstall com.fran.clicks`) or you'll get two launchers.
 On the first call/dial, allow the CALL_PHONE prompt; MagicOS/OriginOS may also
 need "Install via USB" enabled in Developer options.
 
+## Galaxy / Foldable Integration
+
+`galaxy/` holds the Samsung-facing integrations; everything in it is standard AOSP API
+(no Samsung SDK), so it degrades cleanly on other devices:
+
+- **Next-event Live Update** (`galaxy/NowBarLiveUpdate.kt`): on Android 16+ the next
+  calendar event (within 90 minutes, or ongoing) is published as a promoted ongoing
+  notification — `ProgressStyle` + `setRequestPromotedOngoing` + the
+  `POST_PROMOTED_NOTIFICATIONS` manifest permission. One UI 8+ renders it in the Samsung
+  Now Bar (lock screen + status chip); stock Android 16 pins it on the lock screen. It
+  re-syncs only on the launcher's existing foreground cadence (resume, calendar refresh,
+  the 60 s context tick) — no alarms, no background work; the visible countdown stays live
+  while backgrounded via the notification chronometer, which ticks device-side. Default-on
+  behind the `now_bar_live_updates` pref; no-op below API 36. `galaxy/GalaxyDevice.kt`
+  detects One UI (`SEM_PLATFORM_INT`) purely for user-facing copy.
+- **Flex Mode / half-open postures**: `isUnfoldedInnerLayoutActive()` accepts
+  `FoldPosture.HalfOpen` on ≥600dp windows, because Galaxy Folds report HALF_OPENED through
+  most of the fold arc — without this the inner screen dropped to the stretched cover layout
+  the moment the hinge bent. In tabletop posture (horizontal hinge),
+  `tabletopLowerPanelInset()` pads the unfolded content above the hinge line so widgets/dock
+  keep to the upright panel and the bottom-anchored keyboard owns the flat half.
+- **DeX / desktop windowing**: the manifest declares
+  `android.software.freeform_window_management` (not required), app-level
+  `resizeableActivity`, and Samsung's `com.samsung.android.multidisplay.keep_process_alive`
+  meta-data, so the launcher runs windowed in Samsung DeX / Android 16 connected displays
+  without being relaunched on dock/undock. The favorites dock feeds the One UI 8 DeX
+  taskbar automatically.
+
 ## Code Map
 
 `MainActivity.kt` is still the launcher core (~24k lines) but is being decomposed into same-package hosts — follow the established `with(activity) { }` verbatim-move pattern when extracting more:
@@ -399,7 +427,7 @@ need "Install via USB" enabled in Developer options.
 - `TodayPaneHost`, `MusicPaneHost`, `TravelPaneHost` — pane hosting split out of MainActivity
 - `PaneModels`, `LauncherModels`, `ThemeDrawables` — types and pure drawing/geometry helpers
 - `TeclasImeService` — the system IME (shares the keyboard engine); `DockedKeyboardService` — overlay keyboard
-- Packages: `brief/` Today page · `predict/` Spaces · `semantic/` + `llm/` on-device search/AI · `theme/` Theme Studio · `weather/` weather styles/widget · `keyboard/` typing engine (+`neural/` glide) · `grid/` AOSP lab · `fold/` foldable posture · `db/` Room · `brand/` brand tokens · `glide/` statistical glide
+- Packages: `brief/` Today page · `predict/` Spaces · `semantic/` + `llm/` on-device search/AI · `theme/` Theme Studio · `weather/` weather styles/widget · `keyboard/` typing engine (+`neural/` glide) · `grid/` AOSP lab · `fold/` foldable posture · `galaxy/` Samsung/Now Bar integration · `db/` Room · `brand/` brand tokens · `glide/` statistical glide
 
 ## Design Rules For Future Agents
 
