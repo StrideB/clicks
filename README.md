@@ -66,6 +66,40 @@ driven dock or wallpaper motion. (The keyboard's separate "tilt lighting"
 setting/toggle is unrelated and untouched — it's keycap-highlight territory,
 not a homescreen effect, and out of scope here.)
 
+## Wallpaper Depth (iOS-style depth effect)
+
+Off by default. Search "depth" (or Settings → Wallpaper depth) to enable. When
+on, the wallpaper's foreground subject is lifted into its own layer that sits
+IN FRONT of the widgets it overlaps — the clock/card/photo tuck behind the
+tower, the person, the skyline. `WallpaperDepth.kt` runs ML Kit Subject
+Segmentation ONCE per wallpaper (at set-time / first decode), caches the
+transparent cutout PNG to `cacheDir/wallpaper_depth/<sig>.png`, and after that
+it's pure compositing — no model, no sensors, no per-frame work. Devices without
+the segmentation module (it downloads on demand via Play services) just get the
+flat wallpaper; everything is guarded so a miss never crashes.
+
+Render path (`homeWallpaperLayer` unchanged; the sandwich is in
+`addFloatingHomeWidgets`): the cutout is a matrix-locked `ImageView` (same
+fill-scale × zoom + pan transform as the wallpaper, via `applyCutoutMatrix`)
+inserted among the floating home widgets. Widgets NOT opted into depth are added
+after the cutout (in front); opted-in ones are added before it (tucked). The
+cutout is transparent except where the subject is, so the dock and any
+non-overlapping widget read through it untouched. Per-widget control is the
+widget long-press menu's "Add depth / Remove depth" row (`widget_depth_<id>`
+prefs; ids: clock, weather, agenda, brief). v1 applies to the phone/cover home
+(`home` + `phoneWidgetHome`), not the unfolded inner layout.
+
+Motion: two options, and they respect the battery rule above.
+- **Settle-in** (default, free): a one-shot "Live Photo" ease when home appears
+  (`playDepthSettle`, fired via `depthSettlePending` on resume / enable /
+  segmentation-complete) — the wallpaper eases forward, the subject leads it to
+  rest, then everything is DEAD STATIC. No continuous work.
+- **Living drift** (`wallpaper_drift` pref, OFF by default, labeled "uses more
+  battery"): the ONE continuous animation — a whisper of parallax on the subject
+  (`startWallpaperDrift`). Cancelled in `onPause` so it never runs backgrounded.
+  This is the deliberate, opt-in exception to the no-continuous-motion rule; do
+  not make it the default.
+
 ## Today (Daily Brief)
 
 Swiping right on the homescreen opens the Today page — a Compose live timeline (`brief/TodayPage.kt`, hosted by `TodayPaneHost`) built from notification signals, calendar, weather, and travel. The `brief/` package owns collection (`BriefRepository`, refreshed on resume and every 45 minutes while the launcher is foreground), classification, and Gemini-assisted summarization. It needs Notification Listener access for the richest content and degrades to an access prompt without it. Brief style/visibility is a themable layer with its own picker (`BriefThemePicker`).

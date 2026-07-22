@@ -17,6 +17,7 @@ onnxruntime = "1.27.0"
 mlkitGenaiProofreading = "1.0.0-beta1"
 mlkitGenaiPrompt = "1.0.0-beta2"
 mlkitGenaiRewriting = "1.0.0-beta1"
+mlkitSubjectSegmentation = "16.0.0-beta1"
 localagentsRag = "0.3.0"
 tasksGenai = "0.10.35"
 junit = "4.13.2"
@@ -50,6 +51,7 @@ onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime
 mlkit-genai-proofreading = { group = "com.google.mlkit", name = "genai-proofreading", version.ref = "mlkitGenaiProofreading" }
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
 mlkit-genai-rewriting = { group = "com.google.mlkit", name = "genai-rewriting", version.ref = "mlkitGenaiRewriting" }
+mlkit-subject-segmentation = { group = "com.google.mlkit", name = "subject-segmentation", version.ref = "mlkitSubjectSegmentation" }
 localagents-rag = { group = "com.google.ai.edge.localagents", name = "localagents-rag", version.ref = "localagentsRag" }
 mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "tasksGenai" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

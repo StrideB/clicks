@@ -695,6 +695,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var fluidHoursRefreshRunnable: Runnable? = null
     private var deviceWallpaperFileDeniedSig: String? = null
     private var innerWallpaperImageView: ImageView? = null
+    // Depth wallpaper: the subject cutout view (matrix-locked to the wallpaper), whether a segment
+    // pass is in flight, whether the settle-in should play on the next render, and the continuous
+    // Living-drift animator (opt-in, cancelled on pause/re-render).
+    private var wallpaperCutoutImageView: ImageView? = null
+    private var wallpaperDepthLoading = false
+    private var depthSettlePending = false
+    private var wallpaperDriftAnimator: android.animation.ValueAnimator? = null
     private var innerWallpaperEditMode = false
     private var pendingWallpaperInnerScope: Boolean? = null
     private var wallpaperLongPressRunnable: Runnable? = null
@@ -1133,6 +1140,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         scheduleFluidHoursWallpaperRefresh()
+        // Landing on home replays the one-shot depth settle (Live-Photo style) — off while Living
+        // drift owns the motion, since the two would fight.
+        if (wallpaperDepthActive() && !wallpaperDriftEnabled()) depthSettlePending = true
         ensureBillingConnected()
         val now = System.currentTimeMillis()
         if (demoModeEnabled()) {
@@ -1218,6 +1228,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // nothing needs them while backgrounded.
         musicProgressRunnable?.let { musicProgressHandler?.removeCallbacks(it) }
         contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
+        // Living drift is the one continuous animation — never let it run while backgrounded.
+        cancelWallpaperDrift()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
             prefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
@@ -3352,6 +3364,171 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    // ─────────────────────────── Depth wallpaper ───────────────────────────
+    // The subject cutout is composited between the wallpaper and the home widgets: widgets that
+    // aren't opted into depth stay in front of it; opted-in ones (and everything they overlap) tuck
+    // behind. Segmentation runs ONCE per wallpaper and the cutout is cached — after that it's pure
+    // compositing. No sensors, no per-frame reads (Living drift, opt-in, is the one exception).
+
+    private fun wallpaperDepthEnabled(): Boolean =
+        prefs().getBoolean(homeScopedKey(WALLPAPER_DEPTH_PREF), false)
+
+    private fun wallpaperDriftEnabled(): Boolean =
+        prefs().getBoolean(homeScopedKey(WALLPAPER_DRIFT_PREF), false)
+
+    /** Depth only composites when the launcher is actually drawing its own wallpaper canvas. */
+    private fun wallpaperDepthActive(): Boolean =
+        wallpaperDepthEnabled() && launcherWallpaperCanvasActive()
+
+    private fun widgetDepthEnabled(id: String): Boolean =
+        prefs().getBoolean(homeScopedKey(WIDGET_DEPTH_PREF_PREFIX + id), false)
+
+    private fun toggleWidgetDepth(id: String) {
+        val next = !widgetDepthEnabled(id)
+        prefs().edit().putBoolean(homeScopedKey(WIDGET_DEPTH_PREF_PREFIX + id), next).apply()
+        if (next && !wallpaperDepthEnabled()) {
+            // Turning depth on for a widget implies the feature is on.
+            prefs().edit().putBoolean(homeScopedKey(WALLPAPER_DEPTH_PREF), true).apply()
+        }
+        depthSettlePending = true
+        if (::rootView.isInitialized && openPane == null) render()
+        Toast.makeText(this, if (next) "Depth added — tucks behind the wallpaper" else "Depth removed", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun setWallpaperDepthEnabled(on: Boolean) {
+        prefs().edit().putBoolean(homeScopedKey(WALLPAPER_DEPTH_PREF), on).apply()
+        if (on) depthSettlePending = true else { WallpaperDepth.clearMemory(); cancelWallpaperDrift() }
+        if (::rootView.isInitialized && openPane == null) render()
+        Toast.makeText(
+            this,
+            if (on) "Wallpaper depth on — long-press a widget to tuck it behind the subject" else "Wallpaper depth off",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun setWallpaperDriftEnabled(on: Boolean) {
+        prefs().edit().putBoolean(homeScopedKey(WALLPAPER_DRIFT_PREF), on).apply()
+        if (on && !wallpaperDepthEnabled()) prefs().edit().putBoolean(homeScopedKey(WALLPAPER_DEPTH_PREF), true).apply()
+        if (!on) cancelWallpaperDrift()
+        depthSettlePending = !on
+        if (::rootView.isInitialized && openPane == null) render()
+    }
+
+    /** Builds the subject cutout layer for the current wallpaper, or null when depth is off / the
+     *  cutout isn't ready yet (a miss kicks the one-time segmentation and this pass draws flat). */
+    private fun wallpaperSubjectCutoutLayer(): View? {
+        if (!wallpaperDepthActive()) return null
+        val sig = deviceWallpaperSignature()
+        val cutout = WallpaperDepth.cachedCutout(sig)
+        if (cutout == null || cutout.isRecycled) {
+            maybeKickDepthSegmentation(sig)
+            return null
+        }
+        return ImageView(this).apply {
+            setImageBitmap(cutout)
+            scaleType = ImageView.ScaleType.MATRIX
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            wallpaperCutoutImageView = this
+            post {
+                applyCutoutMatrix(this)
+                if (depthSettlePending) { depthSettlePending = false; playDepthSettle() }
+                if (wallpaperDriftEnabled()) startWallpaperDrift() else cancelWallpaperDrift()
+            }
+        }
+    }
+
+    /** Same transform as the wallpaper (fill-scale × zoom + pan) so the cutout sits exactly over
+     *  its twin in the background image. Kept memo-free to avoid fighting the wallpaper's memo. */
+    private fun applyCutoutMatrix(image: ImageView) {
+        val drawable = image.drawable ?: return
+        val viewW = image.width.toFloat(); val viewH = image.height.toFloat()
+        val drawW = drawable.intrinsicWidth.takeIf { it > 0 }?.toFloat() ?: return
+        val drawH = drawable.intrinsicHeight.takeIf { it > 0 }?.toFloat() ?: return
+        if (viewW <= 0f || viewH <= 0f) return
+        val baseScale = maxOf(viewW / drawW, viewH / drawH) * innerWallpaperZoom()
+        val scaledW = drawW * baseScale; val scaledH = drawH * baseScale
+        val maxX = ((scaledW - viewW) / 2f).coerceAtLeast(0f)
+        val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
+        val tx = (viewW - scaledW) / 2f + maxX * innerWallpaperOffsetX().coerceIn(-1f, 1f)
+        val ty = (viewH - scaledH) / 2f + maxY * innerWallpaperOffsetY().coerceIn(-1f, 1f)
+        image.imageMatrix = Matrix().apply { postScale(baseScale, baseScale); postTranslate(tx, ty) }
+    }
+
+    private fun maybeKickDepthSegmentation(sig: String) {
+        if (!wallpaperDepthActive() || wallpaperDepthLoading || WallpaperDepth.knownEmpty(sig)) return
+        val bmp = (homeWallpaperDrawable as? BitmapDrawable)?.bitmap
+            ?: (lastGoodHomeWallpaperDrawable as? BitmapDrawable)?.bitmap ?: return
+        wallpaperDepthLoading = true
+        mediaUiScope.launch(Dispatchers.IO) {
+            val cut = runCatching { WallpaperDepth.cutoutFor(this@MainActivity, bmp, sig) }.getOrNull()
+            withContext(Dispatchers.Main) {
+                wallpaperDepthLoading = false
+                if (cut != null && ::rootView.isInitialized && openPane == null && !libraryOpen && wallpaperDepthActive()) {
+                    depthSettlePending = true
+                    render()
+                }
+            }
+        }
+    }
+
+    /** One-shot "Live Photo" settle: the wallpaper eases forward and the subject leads it to rest.
+     *  Plays once when home appears with depth on, then everything is dead static. */
+    private fun playDepthSettle() {
+        if (reduceMotionEnabled()) return
+        val subject = wallpaperCutoutImageView
+        val bg = innerWallpaperImageView
+        bg?.let {
+            it.animate().cancel()
+            it.scaleX = 1.08f; it.scaleY = 1.08f
+            it.animate().scaleX(1f).scaleY(1f).setDuration(1300)
+                .setInterpolator(DecelerateInterpolator(1.4f)).start()
+        }
+        subject?.let {
+            it.animate().cancel()
+            it.alpha = 0.55f; it.translationY = dp(13).toFloat(); it.scaleX = 1.05f; it.scaleY = 1.05f
+            it.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f).setDuration(1050)
+                .setInterpolator(DecelerateInterpolator(1.2f)).start()
+        }
+    }
+
+    private fun startWallpaperDrift() {
+        val subject = wallpaperCutoutImageView ?: return
+        if (reduceMotionEnabled()) return
+        cancelWallpaperDrift()
+        // A whisper of continuous parallax: the subject breathes a few px against the background.
+        // This is the battery-costly path — only ever runs when the user opts in.
+        val amp = dp(6).toFloat()
+        wallpaperDriftAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 11_000L
+            repeatMode = android.animation.ValueAnimator.REVERSE
+            repeatCount = android.animation.ValueAnimator.INFINITE
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            addUpdateListener { a ->
+                val p = a.animatedValue as Float
+                subject.translationX = amp * p
+                subject.translationY = -amp * 0.6f * p
+                innerWallpaperImageView?.let { it.translationX = -amp * 0.4f * p }
+            }
+            start()
+        }
+    }
+
+    private fun cancelWallpaperDrift() {
+        wallpaperDriftAnimator?.cancel()
+        wallpaperDriftAnimator = null
+        wallpaperCutoutImageView?.let { it.translationX = 0f; it.translationY = 0f }
+        innerWallpaperImageView?.let { it.translationX = 0f }
+    }
+
+    private fun reduceMotionEnabled(): Boolean =
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
+            ) == 0f
+        }.getOrDefault(false)
+
     private fun innerWallpaperPanBounds(image: ImageView, zoom: Float = innerWallpaperZoom()): Pair<Float, Float> {
         val drawable = image.drawable ?: return 0f to 0f
         val viewW = image.width.toFloat()
@@ -3943,6 +4120,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         popup.showAtLocation(anchor, Gravity.CENTER, 0, 0)
     }
 
+    /** Adds the floating home widgets (weather / clock / agenda / brief) with the depth cutout
+     *  composited between them. Widgets opted into depth tuck behind the wallpaper's subject; the
+     *  rest stay in front. With depth off (or no cutout yet) it's just the widgets in normal order.
+     *  The cutout is transparent except for the subject, so it only occludes where the subject sits
+     *  — the dock and any non-overlapping widget read through it untouched. */
+    private fun FrameLayout.addFloatingHomeWidgets(widgetSearchActive: Boolean) {
+        data class Floating(val view: View, val params: FrameLayout.LayoutParams, val id: String)
+        val widgets = ArrayList<Floating>(4)
+        if (!widgetSearchActive && weatherWidgetVisible()) widgets += Floating(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams(), "weather")
+        if (!widgetSearchActive && clockWidgetVisible()) widgets += Floating(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams(), "clock")
+        if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { widgets += Floating(it, agendaWidgetFrameLayoutParams(), "agenda") }
+        if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { widgets += Floating(it, briefWidgetFrameLayoutParams(), "brief") }
+
+        val cutout = wallpaperSubjectCutoutLayer()
+        if (cutout == null) {
+            widgets.forEach { addView(it.view, it.params) }
+            return
+        }
+        widgets.filter { widgetDepthEnabled(it.id) }.forEach { addView(it.view, it.params) }
+        addView(cutout, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        widgets.filter { !widgetDepthEnabled(it.id) }.forEach { addView(it.view, it.params) }
+    }
+
     private fun home(): View {
         homeTileViews.clear()
         widgetSearchContentArea = null
@@ -4032,10 +4232,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
-            if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
-            if (!widgetSearchActive && clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
-            if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
-            if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
+            addFloatingHomeWidgets(widgetSearchActive)
         }
     }
 
@@ -4100,10 +4297,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
-            if (!widgetSearchActive && clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
-            if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
-            if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
+            addFloatingHomeWidgets(widgetSearchActive)
         }
     }
 
@@ -7820,7 +8014,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             accent = 0xFFC9A7FF.toInt(),
             styleLabel = "Clock themes",
             onStyle = { openClockStylePicker() },
-            onRemove = { removeClockWidget() }
+            onRemove = { removeClockWidget() },
+            depthId = "clock"
         )
     }
 
@@ -7831,7 +8026,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             accent = 0xFFF5C451.toInt(),
             styleLabel = "Weather themes",
             onStyle = { openWeatherStylePicker() },
-            onRemove = { removeWeatherWidget() }
+            onRemove = { removeWeatherWidget() },
+            depthId = "weather"
         )
     }
 
@@ -7842,7 +8038,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             accent = 0xFF5FD0C4.toInt(),
             styleLabel = "Brief themes",
             onStyle = { themePaneHost.openBriefThemePicker() },
-            onRemove = { removeBriefWidget() }
+            onRemove = { removeBriefWidget() },
+            depthId = "brief"
         )
     }
 
@@ -7853,7 +8050,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             accent = 0xFFFF8F8F.toInt(),
             styleLabel = "New event",
             onStyle = { createCalendarEvent() },
-            onRemove = { removeAgendaWidget() }
+            onRemove = { removeAgendaWidget() },
+            depthId = "agenda"
         )
     }
 
@@ -7863,8 +8061,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         accent: Int,
         styleLabel: String,
         onStyle: () -> Unit,
-        onRemove: () -> Unit
+        onRemove: () -> Unit,
+        depthId: String? = null
     ) {
+        // The depth row appears only once the depth wallpaper is on — it's the per-widget control
+        // the user asked for: long-press a widget, tuck it behind (or lift it off) the subject.
+        val showDepthRow = depthId != null && wallpaperDepthEnabled()
+        val depthOn = depthId != null && widgetDepthEnabled(depthId)
+        val depthLabel = if (depthOn) "Remove depth" else "Add depth"
+        var depthRow: View? = null
         val menu = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(8), dp(8), dp(8))
@@ -7876,6 +8081,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setPadding(dp(13), 0, dp(13), dp(7))
             }, LinearLayout.LayoutParams(dp(190), dp(26)))
             addView(widgetQuickMenuItem(styleLabel, accent), LinearLayout.LayoutParams(dp(190), dp(44)))
+            if (showDepthRow) {
+                depthRow = widgetQuickMenuItem(depthLabel, 0xFFC9A7FF.toInt())
+                addView(depthRow, LinearLayout.LayoutParams(dp(190), dp(44)))
+            }
             addView(widgetQuickMenuDivider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
                 leftMargin = dp(10); rightMargin = dp(10)
             })
@@ -7888,11 +8097,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             animationStyle = android.R.style.Animation_Dialog
         }
         val styleRow = menu.getChildAt(1)
-        val removeRow = menu.getChildAt(3)
+        val removeRow = menu.getChildAt(menu.childCount - 1)
         styleRow.setOnClickListener {
             popup.dismiss()
             haptic(anchor)
             onStyle()
+        }
+        depthRow?.setOnClickListener {
+            popup.dismiss()
+            haptic(anchor)
+            depthId?.let { toggleWidgetDepth(it) }
         }
         removeRow.setOnClickListener {
             popup.dismiss()
@@ -23313,6 +23527,24 @@ Question: $prompt"""
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Wallpaper depth",
+            if (wallpaperDepthEnabled()) "On · subject pops in front · long-press a widget to tuck it"
+            else "Tap to lift the wallpaper's subject in front of your widgets",
+            listOf("depth", "wallpaper depth", "depth effect", "3d wallpaper", "parallax", "foreground", "subject", "cutout")
+        ) {
+            setWallpaperDepthEnabled(!wallpaperDepthEnabled())
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Living drift",
+            if (wallpaperDriftEnabled()) "On · continuous motion · uses more battery"
+            else "Off · gentle always-on depth drift (uses more battery)",
+            listOf("living drift", "drift", "living universe", "wallpaper motion", "animated wallpaper", "moving wallpaper")
+        ) {
+            setWallpaperDriftEnabled(!wallpaperDriftEnabled())
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Daily Brief themes",
             "${com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId()).name} · tap to restyle",
             listOf(
@@ -28005,6 +28237,11 @@ Question: $prompt"""
         private const val COVER_WIDGET_KEYBOARD_HIDDEN_PREF = "cover_widget_keyboard_hidden"
         private const val INNER_WIDGET_KEYBOARD_HIDDEN_PREF = "inner_widget_keyboard_hidden"
         private const val INNER_LIBRARY_LOCKED_PREF = "inner_library_locked"
+        // Depth wallpaper: master toggle, the battery-costly continuous-drift opt-in, and the
+        // per-widget "this one tucks behind the subject" flag prefix (widget_depth_<id>).
+        private const val WALLPAPER_DEPTH_PREF = "wallpaper_depth"
+        private const val WALLPAPER_DRIFT_PREF = "wallpaper_drift"
+        private const val WIDGET_DEPTH_PREF_PREFIX = "widget_depth_"
         private const val DEV_EXPERIMENTS_PREF = "dev_experiments"
         private const val GRID_WORKSPACE_LAB_PREF = "grid_workspace_lab"
         private const val DOCK_APP_LIMIT = 5
