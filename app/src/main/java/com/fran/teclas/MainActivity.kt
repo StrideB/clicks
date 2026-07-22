@@ -1181,6 +1181,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) clearDockedExternalStateOnLauncherFocus()
+    }
+
+    private fun clearDockedExternalStateOnLauncherFocus() {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return
+        if (!DockedFreeform.externalAppInFront && dockedStatusShieldView?.visibility != View.VISIBLE) return
+        handler.post {
+            if (!hasWindowFocus() || keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return@post
+            DockedFreeform.externalAppInFront = false
+            dockedForegroundDraft.clear()
+            syncDockedSearchStatusBar()
+        }
+    }
+
     override fun onPause() {
         cancelWidgetKeyboardSwap(resetTheme = true)
         widgetCoachAnimator?.cancel()
