@@ -75,18 +75,24 @@ class NeuralGlideEngine(private val context: Context) {
         val raw = NeuralBeamSearch(model, trie)
             .search(feats.features, feats.mask, beamWidth, topK * 2, MAX_DECODE_LEN)
         if (raw.isEmpty()) return@withContext emptyList()
-        // Blend a gentle frequency prior (so common words break near-ties among model candidates)
-        // and, if supplied, a shape prior from the statistical decoder (cross-priming), without
-        // letting either override a confident model prediction.
+        // ORDER by beam score blended with two small priors (frequency, statistical cross-prime),
+        // but RETURN the raw beam score — downstream confidence gating must measure what the MODEL
+        // believes, not the priors. Prior scale is calibrated against measured beam-score margins
+        // (correct top-1 margins: p10 0.89, median 1.74; wrong top-1 margins ≤ 0.80): the combined
+        // prior influence (≤ ~0.45) can only reorder genuine near-ties, never a confident answer.
+        // The old weights (0.15/0.5) exceeded typical margins and let a frequent statistical
+        // favorite ("good") outrank a correct rare word ("google") the model was certain about.
         raw.map {
-            ScoredWord(
+            Triple(
                 it.word,
+                it.score,
                 it.score + FREQ_WEIGHT * ln((freqs[it.word] ?: 0f) + 1e-3f) +
                     PRIOR_WEIGHT * (priorBoost[it.word] ?: 0f)
             )
         }
-            .sortedByDescending { it.score }
+            .sortedByDescending { it.third }
             .take(topK)
+            .map { ScoredWord(it.first, it.second) }
     }
 
     /** Convenience: just the ranked words, matching the statistical classifier's `getSuggestions`. */
@@ -104,9 +110,11 @@ class NeuralGlideEngine(private val context: Context) {
         const val PREFS = "teclas"
         /** Boolean pref: use the neural decoder when a model is present. Default true. */
         const val PREF_NEURAL_GLIDE = "kbd_neural_glide"
-        /** Weight of the log-frequency prior relative to per-char log-prob; small = tiebreak only. */
-        private const val FREQ_WEIGHT = 0.15f
-        /** Weight of the cross-priming shape prior from the statistical decoder. */
-        private const val PRIOR_WEIGHT = 0.5f
+        /** Weight of the log-frequency prior relative to per-char log-prob; small = tiebreak only.
+         *  Max influence ≈ 0.35 — below the p10 margin (0.89) of correct predictions. */
+        private const val FREQ_WEIGHT = 0.05f
+        /** Weight of the cross-priming shape prior from the statistical decoder. Max 0.1 — a nudge
+         *  inside genuine near-ties only. */
+        private const val PRIOR_WEIGHT = 0.1f
     }
 }
