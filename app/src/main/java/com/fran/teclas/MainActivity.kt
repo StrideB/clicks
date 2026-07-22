@@ -20669,6 +20669,7 @@ Question: $prompt"""
             // Third-party app owns the real text field; keep this fixed well as the Chirp/action bar.
         } else if (typedText.isNotBlank() && !keyboardSettingsOpen) {
             // Type-to-do echo: mono command face, "> " affordance, Cursor Violet caret.
+            searchHintView.translationX = 0f
             searchHintView.textSize = 15f
             searchHintView.typeface = Typeface.MONOSPACE
             searchHintView.letterSpacing = 0f
@@ -20681,15 +20682,16 @@ Question: $prompt"""
             searchHintView.text = commandLine(styledTypedCommand(typedText))
         } else {
             // Idle placeholder: mono command face with the "> " prompt affordance.
+            searchHintView.translationX = 0f
             searchHintView.translationY = 0f
-            searchHintView.textSize = if (libraryOpen) 11.5f else if (isVivoDevice()) 9.5f else 10.5f
-            searchHintView.typeface = Typeface.MONOSPACE
-            searchHintView.letterSpacing = if (libraryOpen) 0.04f else 0.02f
+            searchHintView.textSize = if (libraryOpen) 14.5f else 16f
+            searchHintView.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+            searchHintView.letterSpacing = if (libraryOpen) 0.03f else 0.015f
             searchHintView.ellipsize = android.text.TextUtils.TruncateAt.END
             searchHintView.includeFontPadding = false
             searchHintView.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
-            searchHintView.setPadding(dp(10), dp(2), dp(6), dp(3))
-            searchHintView.setTextColor(if (libraryOpen) keyboardIndicatorTextColor() else keyboardIndicatorTextColor(dim = true))
+            searchHintView.setPadding(dp(10), dp(1), dp(6), dp(2))
+            searchHintView.setTextColor(keyboardIndicatorTextColor(dim = false))
             searchHintView.text = if (hint.startsWith("→")) hint else commandLine(hint)
         }
         syncFloatingHomeWidgetsForSearch()
