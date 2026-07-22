@@ -14972,7 +14972,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 haptic(this); render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
 
-            addView(settingToggle("USE GBOARD (SYSTEM KEYBOARD)", useSystemKeyboard) {
+            addView(settingToggle("USE SYSTEM KEYBOARD", useSystemKeyboard) {
                 useSystemKeyboard = !useSystemKeyboard
                 prefs().edit().putBoolean(USE_SYSTEM_KEYBOARD_PREF, useSystemKeyboard).apply()
                 haptic(this)
