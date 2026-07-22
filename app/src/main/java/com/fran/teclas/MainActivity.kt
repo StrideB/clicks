@@ -2327,10 +2327,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    /** After voice fills the launcher query, act on it if it resolves to a real command or result —
-     *  a type-to-do action ("timer 10", "uber to airport"), an app, a contact, a setting, an answer —
-     *  but NEVER the web-search fallback. So spoken commands DO the thing instead of Googling; a phrase
-     *  with no real match just stays in the box as a search for you to refine or send. */
+    /** Voice is a complete utterance, so it auto-enters — one step, no separate GO. It runs whatever
+     *  the phrase resolves to: a type-to-do action ("timer 10", "uber to airport"), an app, a contact,
+     *  a setting, an answer — and if nothing command-like matches, it's treated as a search/question
+     *  and opened (Google / a URL). Commands DO the thing; searches ("latest news", "meaning of life")
+     *  just search. Either way the user never has to press GO. */
     private fun runVoiceGo(): Boolean {
         val q = query.trim()
         if (q.isBlank()) return false
@@ -2339,7 +2340,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val match = results.firstOrNull { it.kind == SearchKind.APP && it.title.equals(q, ignoreCase = true) }
             ?: results.firstOrNull { it.kind != SearchKind.WEB && it.kind != SearchKind.AI }
         if (match != null) { openSearchResult(match); return true }
-        return false
+        // No command/app match → it's a search or question. Auto-open it so voice stays one step.
+        launchInAppGoogleSearch(q)
+        return true
     }
 
     /** Spoken navigation shortcuts that jump to a launcher surface instead of filling the search box
