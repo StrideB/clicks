@@ -278,6 +278,12 @@ object AgenticRouter {
             triggers = "add event ,new event ,calendar ,schedule ,remind me to ,event ",
             labelTemplate = "📅  Add “{q}”", builtin = true, sortOrder = 12),
         SkillEntity(name = "Call", emoji = "📞", actionType = "CALL",
-            triggers = "call ,dial ,phone ", labelTemplate = "📞  Call {q}", builtin = true, sortOrder = 13)
+            triggers = "call ,dial ,phone ", labelTemplate = "📞  Call {q}", builtin = true, sortOrder = 13),
+        // Ride-hailing: opens the Uber app with the destination prefilled from your current location
+        // (universal link → app if installed, web otherwise). "uber to airport" → arg "airport".
+        SkillEntity(name = "Uber", emoji = "🚗", actionType = "URI",
+            uriTemplate = "https://m.uber.com/ul/?action=setPickup&pickup=my_location&dropoff[formatted_address]={q}",
+            triggers = "uber to ,order an uber to ,get an uber to ,order uber to ,get me an uber to ,uber ,order an uber,get an uber",
+            labelTemplate = "🚗  Uber to {q}", builtin = true, sortOrder = 14)
     )
 }

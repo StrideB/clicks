@@ -659,6 +659,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var callPhoneLauncher: ActivityResultLauncher<String>
     private var pendingCallNumber: String? = null
     private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var micPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var calendarPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var weatherPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var photosPermissionLauncher: ActivityResultLauncher<String>
@@ -797,6 +798,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         smsPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) triggerSmsSeeding()
+        }
+        micPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) beginVoiceInput()
+            else Toast.makeText(this, "Microphone permission needed for voice typing", Toast.LENGTH_SHORT).show()
         }
         calendarPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             refreshCalendarEventsAsync { scheduleSemanticIndexRefresh() }
@@ -1859,6 +1864,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 })
             }
             root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, activeRootDockHeight() + launcherDockedKeyboardBottomLift())
+            keyboardDockView.post { installSpaceTouchDelegate() }
         } else {
             keyboardDockView = FrameLayout(this)
         }
@@ -1954,6 +1960,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             elevation = dp(3).toFloat()
             isClickable = true
             setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
+            dockedMicButton = TextView(context).apply {
+                background = micButtonBackground(false)
+                foreground = micGlyph(keyboardIndicatorTextColor(dim = false))
+                isClickable = true
+                setOnClickListener { toggleVoiceInput() }
+            }
+            addView(dockedMicButton, LinearLayout.LayoutParams(dp(32), dp(32)).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                marginStart = dp(10); marginEnd = dp(2)
+            })
             searchHintView = TextView(context).apply {
                 text = launcherTypingStripText()
                 textSize = 15f
@@ -1994,14 +2010,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var dockedSuggestChips: LinearLayout? = null
     // Emoji shortcut button — only shown while typing into a third-party app (hidden in launcher search).
     private var dockedEmojiButton: TextView? = null
+    // The space bar view + the word its suggestion chips are currently showing for — used by the
+    // space touch-delegate and the docked suggestion-chip persistence just below.
+    private var spaceKeyView: View? = null
+    private var lastDockedChipWord: String = ""
+    // Voice input: the mic key (left of the strip, mirroring the emoji key) and its swappable engine.
+    private var dockedMicButton: TextView? = null
+    private var voiceEngine: com.fran.teclas.keyboard.voice.VoiceInputEngine? = null
+    private var voicePartialActive = false
+
+    /** Extend the space bar's touchable area down past the bottom of the deck (over the lift band and
+     *  any padding) and slightly out at the sides, so the strip under/around the space bar commits a
+     *  space instead of being a dead zone. Runs after layout each render; a no-op off the docked deck. */
+    private fun installSpaceTouchDelegate() {
+        val space = spaceKeyView ?: return
+        if (!::keyboardDockView.isInitialized) return
+        val dock = keyboardDockView
+        if (space.width == 0 || dock.height == 0) {
+            // Not laid out yet — try again on the next frame.
+            dock.post { installSpaceTouchDelegate() }
+            return
+        }
+        val r = android.graphics.Rect(0, 0, space.width, space.height)
+        dock.offsetDescendantRectToMyCoords(space, r)
+        r.bottom = dock.height                 // swallow the lift band + bottom padding under the bar
+        r.left -= space.width / 8              // a little slack at the corners
+        r.right += space.width / 8
+        dock.touchDelegate = android.view.TouchDelegate(r, space)
+    }
 
     private fun updateDockedSuggestionChips() {
         val chips = dockedSuggestChips ?: return
         val active = dockedForegroundChirpActive()
         dockedEmojiButton?.visibility = if (active) View.VISIBLE else View.GONE   // emoji button: app-typing only
         val word = if (active) dockedForegroundCurrentWord() else ""
-        val dictReady = predictionEngine.isDictWord("the")
-        val words = if (active && word.length >= 1 && dictReady)
+        val words = if (active && word.length >= 1)
             predictionEngine.getSuggestions(word, 6).filterNot { it.equals(word, ignoreCase = true) }
                 .sortedByDescending { languageBias?.preference(it) ?: 1.0 }   // favor the language in use
                 .take(3)
@@ -2009,10 +2052,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Word→emoji suggestions: if the typed word maps to emoji, offer them first.
         val emojis = if (active && word.length >= 2) SmartChips.emojiFor(prefs(), word.lowercase(Locale.US)).take(2) else emptyList()
         if (words.isEmpty() && emojis.isEmpty()) {
+            // Keep the chips up while the user is still on the SAME word: a transient empty result (an
+            // async dictionary swap, a slow refresh) must not flip the strip back to the "CHIRP · hold
+            // GO" hint and make the suggestions flicker away mid-word. Only clear when the word actually
+            // changed (space/backspace) or app-typing ended.
+            if (active && word.isNotEmpty() && word == lastDockedChipWord && chips.childCount > 0) {
+                chips.visibility = View.VISIBLE
+                if (::searchHintView.isInitialized) searchHintView.visibility = View.GONE
+                return
+            }
+            lastDockedChipWord = ""
             chips.visibility = View.GONE
             if (::searchHintView.isInitialized) searchHintView.visibility = View.VISIBLE
             return
         }
+        lastDockedChipWord = word
         if (::searchHintView.isInitialized) searchHintView.visibility = View.GONE
         chips.visibility = View.VISIBLE
         chips.removeAllViews()
@@ -2104,6 +2158,203 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         dockedFgUndo = null
         keyHaptic("space")
         updateDockedForegroundChirpStrip()
+    }
+
+    // ── Voice input ──────────────────────────────────────────────────────────
+    // Mic key → dictate into whatever field is active (launcher search, chat compose, or the
+    // foreground app via injection). The engine sits behind VoiceInputEngine so the OSS on-device
+    // recognizer (Whisper / streaming Zipformer via sherpa-onnx) swaps in without touching this UI.
+
+    private fun toggleVoiceInput() {
+        voiceEngine?.let { if (it.isListening) { it.stop(); setMicVisual(false); clearVoicePartial(); return } }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        beginVoiceInput()
+    }
+
+    private fun beginVoiceInput() {
+        val engine = voiceEngine
+            ?: com.fran.teclas.keyboard.voice.AndroidVoiceInputEngine(this).also { voiceEngine = it }
+        if (!engine.isAvailable()) {
+            Toast.makeText(this, "Voice recognition unavailable on this device", Toast.LENGTH_SHORT).show()
+            return
+        }
+        keyHaptic("space")
+        suppressRecognizerBeep()   // mute the OS's jarring recognizer chirp
+        playSubtleVoiceCue()       // our own soft, quiet blip instead
+        voicePartialActive = false
+        engine.start(voiceLanguageTag(), voiceHotwords(), object : com.fran.teclas.keyboard.voice.VoiceInputEngine.Callbacks {
+            override fun onPartial(text: String) { showVoicePartial(text) }
+            override fun onFinal(text: String) { commitVoiceText(text) }
+            override fun onStateChanged(listening: Boolean) { setMicVisual(listening); if (!listening) clearVoicePartial() }
+            override fun onError(message: String) {
+                setMicVisual(false)
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+            }
+        })
+    }
+
+    /** Recognizer language from the keyboard's primary enabled language (en/es/fr/de/pt/it). */
+    private fun voiceLanguageTag(): String =
+        when (com.fran.teclas.keyboard.DictionaryLoader.enabledLanguages(this).firstOrNull()) {
+            "es" -> "es-ES"; "fr" -> "fr-FR"; "de" -> "de-DE"; "pt" -> "pt-BR"; "it" -> "it-IT"; else -> "en-US"
+        }
+
+    /** Personal vocabulary to bias the recognizer toward — installed app names (contacts can follow).
+     *  Honored by engines with contextual biasing (the OSS sherpa-onnx backend); ignored otherwise. */
+    private fun voiceHotwords(): List<String> =
+        apps.take(60).map { it.label }.distinct().take(80)
+
+    private fun setMicVisual(listening: Boolean) {
+        dockedMicButton?.apply {
+            background = micButtonBackground(listening)
+            foreground = micGlyph(if (listening) 0xFFFFFFFF.toInt() else keyboardIndicatorTextColor(dim = false))
+            if (listening) {
+                // Soft "breathing" pulse — the aura glow gently expands/contracts while listening.
+                val pulse = android.view.animation.ScaleAnimation(
+                    1f, 1.18f, 1f, 1.18f,
+                    android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f,
+                    android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f
+                ).apply {
+                    duration = 720
+                    repeatCount = android.view.animation.Animation.INFINITE
+                    repeatMode = android.view.animation.Animation.REVERSE
+                    interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+                }
+                startAnimation(pulse)
+            } else {
+                clearAnimation()
+            }
+        }
+    }
+
+    /** The modern mic glyph (a vector, not an emoji), tinted and inset inside the round button. */
+    private fun micGlyph(color: Int): Drawable {
+        val d = resources.getDrawable(R.drawable.ic_mic_modern, theme).mutate()
+        d.setTint(color)
+        return android.graphics.drawable.InsetDrawable(d, dp(8))
+    }
+
+    /** Round background for the mic key — a raised neu circle at rest; a soft cyan AURA GLOW (radial,
+     *  fading to transparent) while listening, instead of a flat system-red fill. */
+    private fun micButtonBackground(listening: Boolean): Drawable =
+        if (listening) GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            gradientType = GradientDrawable.RADIAL_GRADIENT
+            gradientRadius = dp(24).toFloat()
+            colors = intArrayOf(0xFF3FC7FF.toInt(), adjustAlpha(0xFF3FC7FF.toInt(), 0.12f))
+        }
+        else Neu.drawable(activeNeuTokens, dp(99).toFloat(), NeuLevel.RAISED_SM)
+
+    /** Mute the system streams the built-in recognizer chirps on (NOT music) for ~1s around start, so
+     *  activation is our soft haptic + the mic pulse instead of the OS's abrupt double-beep. */
+    private fun suppressRecognizerBeep() {
+        runCatching {
+            val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            val streams = intArrayOf(
+                android.media.AudioManager.STREAM_SYSTEM,
+                android.media.AudioManager.STREAM_NOTIFICATION
+            )
+            streams.forEach { runCatching { am.adjustStreamVolume(it, android.media.AudioManager.ADJUST_MUTE, 0) } }
+            handler.postDelayed({
+                streams.forEach { runCatching { am.adjustStreamVolume(it, android.media.AudioManager.ADJUST_UNMUTE, 0) } }
+            }, 950)
+        }
+    }
+
+    /** A soft, quiet "listening" blip in place of the OS's loud recognizer beep. Low volume, short,
+     *  on the media stream (which we don't mute), so it mixes gently over anything playing. */
+    private fun playSubtleVoiceCue() {
+        runCatching {
+            val tg = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 28)
+            tg.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 70)
+            handler.postDelayed({ runCatching { tg.release() } }, 240)
+        }
+    }
+
+    private fun showVoicePartial(text: String) {
+        if (!::searchHintView.isInitialized) return
+        val starting = !voicePartialActive
+        voicePartialActive = true
+        dockedSuggestChips?.visibility = View.GONE
+        searchHintView.visibility = View.VISIBLE
+        searchHintView.text = "🎤  $text"
+        if (starting) {   // ease the live transcript in the first time, not on every partial (that'd flicker)
+            searchHintView.alpha = 0.35f
+            searchHintView.animate().alpha(1f).setDuration(200).start()
+        }
+    }
+
+    private fun clearVoicePartial() {
+        if (!voicePartialActive) return
+        voicePartialActive = false
+        if (::searchHintView.isInitialized) { searchHintView.animate().cancel(); searchHintView.alpha = 1f }
+        if (dockedForegroundChirpActive()) updateDockedForegroundChirpStrip() else updateSuggestionBar()
+    }
+
+    /** Drop recognized text into the active field with a trailing space, through the same commit
+     *  paths typing uses. Capitalizes the first word so a dictated sentence reads right. */
+    private fun commitVoiceText(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) { clearVoicePartial(); return }
+        voicePartialActive = false
+        keyHaptic("space")
+        when {
+            // Typing INTO an app or a chat compose → dictation: drop the words in as text.
+            dockedForegroundChirpActive() -> insertDockedForegroundText(t.replaceFirstChar { it.titlecase(Locale.US) } + " ")
+            openPane?.kind == PaneKind.CHAT -> {
+                composeText += (if (composeText.isEmpty() || composeText.endsWith(" ")) "" else " ") + t.replaceFirstChar { it.titlecase(Locale.US) } + " "
+                openPane?.let { renderPaneContent(it) }
+            }
+            // Launcher search → voice behaves exactly like TYPING into the search box. The spoken
+            // text fills the query and the launcher's own search surfaces the results (apps, contacts,
+            // type-to-do actions like "uber to airport", web, …). A few navigation words jump straight
+            // to their surface, the same as tapping them would. Nothing auto-runs — you press GO / tap
+            // a result, just like typing.
+            else -> {
+                if (!voiceNavKeyword(t)) {
+                    if (query.isNotBlank() && !query.endsWith(' ')) query += " "
+                    query += t
+                    cursorPos = null
+                    updateAutoCapState(); updateKeyLabels()
+                    // Run it if it maps to a real command/app; otherwise just show the search results
+                    // (a spoken phrase with no real match is never auto-Googled).
+                    if (!runVoiceGo()) renderRibbon()
+                }
+            }
+        }
+    }
+
+    /** Voice is a complete utterance, so it auto-enters — one step, no separate GO. It runs whatever
+     *  the phrase resolves to: a type-to-do action ("timer 10", "uber to airport"), an app, a contact,
+     *  a setting, an answer — and if nothing command-like matches, it's treated as a search/question
+     *  and opened (Google / a URL). Commands DO the thing; searches ("latest news", "meaning of life")
+     *  just search. Either way the user never has to press GO. */
+    private fun runVoiceGo(): Boolean {
+        val q = query.trim()
+        if (q.isBlank()) return false
+        if (executeTypeToDoCommand(q)) { query = ""; renderRibbon(); return true }
+        val results = universalSearchResults()
+        val match = results.firstOrNull { it.kind == SearchKind.APP && it.title.equals(q, ignoreCase = true) }
+            ?: results.firstOrNull { it.kind != SearchKind.WEB && it.kind != SearchKind.AI }
+        if (match != null) { openSearchResult(match); return true }
+        // No command/app match → it's a search or question. Auto-open it so voice stays one step.
+        launchInAppGoogleSearch(q)
+        return true
+    }
+
+    /** Spoken navigation shortcuts that jump to a launcher surface instead of filling the search box
+     *  (parity with typing the word). Returns true when it handled the phrase. */
+    private fun voiceNavKeyword(text: String): Boolean {
+        val phrase = text.trim().lowercase(Locale.US).trim('.', '!', '?', ',')
+        return when (phrase) {
+            "apps", "app library", "all apps", "open apps", "show apps", "my apps", "app drawer" -> {
+                query = ""; openLibrary(); true
+            }
+            else -> false
+        }
     }
 
     private fun launcherTypingStripText(): CharSequence {
@@ -15234,6 +15485,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val isDockedTeclasKey = label == "teclas" && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
         val useBrushedOpticalKey = keyboardTheme == KEYBOARD_THEME_BRUSHED && !isLetter && label != "teclas" && label != "space"
         return (if (isWidgetDockKey) DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
+            if (label == "space") spaceKeyView = this
             text = if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "teclas") "" else keyLabel(label)
             if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "teclas") {
                 contentDescription = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) "Docked, tap to undock" else "Undocked, tap to dock"
@@ -17894,6 +18146,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // When an app launched from the docked launcher is in the freeform top region, the keyboard
         // types into that app (via the accessibility injector) instead of the launcher's search.
         if (keysRouteToForegroundApp() && routeKeyToForegroundApp(label)) return
+        // The launcher's OWN search field needs the dictionary loaded too, or on-space autocorrect
+        // silently no-ops (on Samsung the launcher process can be recreated without the initial load
+        // finishing). Mirrors the docked-over-app path; cheap no-op once words are present.
+        ensureDictionaryLoaded()
         if (categoryFolderView != null && libraryOpen) {
             if (label == "teclas" || label == "back") closeCategoryFolder()
             return
@@ -26151,8 +26407,16 @@ Question: $prompt"""
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT || keyboardTheme == KEYBOARD_THEME_TECLAS) {
-            val shouldInset = label != "enter" && label != "123"
-            return if (shouldInset) android.graphics.drawable.InsetDrawable(base, hInset, vInset, hInset, vInset) else base
+            if (label == "enter" || label == "123") {
+                // Round, equal-diameter faces for 123 and GO: inset the drawn face to a square the
+                // width of the key (themedGoKeySize), vertically centered in the full-height touch
+                // cell — so the two read as matching round buttons instead of stretched vertical
+                // ovals, while the touch cell still fills the row top-to-bottom.
+                val side = themedGoKeySize()
+                val vpad = ((keyRowHeight() - side) / 2).coerceAtLeast(dp(2))
+                return android.graphics.drawable.InsetDrawable(base, 0, vpad, 0, vpad)
+            }
+            return android.graphics.drawable.InsetDrawable(base, hInset, vInset, hInset, vInset)
         }
         val fixedInset = dp(2)
         val topBottom = if (label == "enter" || label == "123") fixedInset else vInset

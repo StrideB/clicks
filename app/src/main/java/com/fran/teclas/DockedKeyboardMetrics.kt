@@ -3,7 +3,11 @@ package com.fran.teclas
 import android.content.Context
 
 internal object DockedKeyboardMetrics {
-    fun overlayBottomLiftPx(context: Context): Int = context.dp(0)
+    // Lifts the whole docked deck up off the screen's bottom edge. The band this opens up below the
+    // keyboard is claimed by the space key's touch delegate (see MainActivity.installSpaceTouchDelegate),
+    // so it types a space instead of being a dead strip — a dead zone at the bottom hurts typing more
+    // than a miss, so the lift and the touch-extension always ship together.
+    fun overlayBottomLiftPx(context: Context): Int = context.dp(10)
 
     fun externalReservedBandHeightPx(context: Context): Int {
         val density = context.resources.displayMetrics.density
