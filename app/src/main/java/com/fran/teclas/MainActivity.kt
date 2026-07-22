@@ -15396,6 +15396,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // Direct taps must trust the key view that received the event. Re-resolving
                         // against cached screen bounds after keyboard slot/move animations can map
                         // a correct tap to the wrong row (for example S -> E).
+                        // Capture the raw touch point of each letter for decode-at-space: the word is
+                        // reconsidered from the whole tap geometry when space is pressed (see
+                        // decodeLauncherTapWord), without changing which letter commits now.
+                        if (label.length == 1 && label[0].isLetter()) {
+                            if (launcherTapTrace.size < 32) launcherTapTrace.add(event.rawX to event.rawY)
+                        }
                         if (label == "shift") handleShiftTap() else handleKey(label)
                     }
                     MotionEvent.ACTION_CANCEL -> {
@@ -16713,12 +16719,21 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
                 android.util.Log.i("TeclasDiag",
                     "launcher dictionary loaded: union=${freqs.size} words, primary=${adaptive.primaryFreqs.size}")
+                // Gboard-style decode-at-space: a trie beam-searcher that reads the whole tap trail.
+                val tapTrie = com.fran.teclas.keyboard.neural.CharTrie().apply { addAll(adaptive.extendedWords) }
+                val decoder = com.fran.teclas.keyboard.TapLatticeDecoder(
+                    tapTrie,
+                    { x, y, key -> spatialScorer.probability(x, y, key.toString()).toFloat() },
+                    { w -> engineUnion.frequencyOf(w) },
+                    { prev, w -> if (prev.isNotEmpty() && ngramRepo.cachedNextWords(prev).any { it.equals(w, ignoreCase = true) }) 0.5f else 0.02f },
+                )
                 // Make glide available immediately with the statistical classifier; the heavy neural
                 // ONNX load must not block it (that stalls glide for seconds on a real device).
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
                     wordlistFrequencies = freqs
                     predictionEngine = engineUnion
+                    tapDecoder = decoder
                     predictionEnginePrimary = enginePrimary
                     hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                     latentLanguageActive = false
@@ -21800,21 +21815,25 @@ Question: $prompt"""
             "back" -> {
                 if (undoDockedForegroundAutocorrect()) return true   // backspace right after a correction = revert it
                 dockedFgUndo = null
+                if (launcherTapTrace.isNotEmpty()) launcherTapTrace.removeAt(launcherTapTrace.size - 1)
                 mirrorDockedForegroundBackspace()
                 injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
             }
             "space" -> {
                 applyDockedForegroundAutocorrect()
+                launcherTapTrace.clear()   // word committed — start the next word's geometry fresh
                 mirrorDockedForegroundInsert(" ")
                 injectToForegroundApp(" ")
             }
             "period" -> {
                 applyDockedForegroundAutocorrect()
+                launcherTapTrace.clear()
                 mirrorDockedForegroundInsert(".")
                 injectToForegroundApp(".")
             }
             "enter" -> {
                 dockedFgUndo = null
+                launcherTapTrace.clear()
                 injectToForegroundApp(InputInjectionService.KEY_ENTER)
                 clearDockedForegroundDraft(localOnly = true)
             }
@@ -21834,6 +21853,25 @@ Question: $prompt"""
     //    injector already owns the field text; a stale field makes the replace a silent no-op). ──
     private var dockedFgUndo: Pair<String, String>? = null   // typed -> corrected (armed until next key)
 
+    // Decode-at-space (Gboard-style): the raw touch point of each letter of the in-progress word,
+    // and the trie beam decoder that reconsiders the word from that whole geometry when space lands.
+    private val launcherTapTrace = ArrayList<Pair<Float, Float>>(32)
+    @Volatile private var tapDecoder: com.fran.teclas.keyboard.TapLatticeDecoder? = null
+
+    /** Decode the word from the tap GEOMETRY. Returns a confident dictionary word that differs from
+     *  what was typed, or null (fall back to string-edit autocorrect). Requires the trace to line up
+     *  with the typed letters, so a desync degrades to no-op rather than a wrong replace. */
+    private fun decodeLauncherTapWord(typed: String, prev: String): String? {
+        val dec = tapDecoder ?: return null
+        val trace = launcherTapTrace
+        if (trace.size < 2 || trace.size != typed.length) return null
+        val cands = dec.decode(trace.toList(), prev.lowercase(Locale.US), topK = 3)
+        val top = cands.firstOrNull() ?: return null
+        if (cands.size >= 2 && top.score - cands[1].score < 0.6) return null   // ambiguous — don't override
+        if (top.word.equals(typed, ignoreCase = true)) return null
+        return top.word
+    }
+
     private fun dockedForegroundCurrentWord(): String =
         dockedForegroundDraft.takeLastWhile { it.isLetter() }.toString()
 
@@ -21843,7 +21881,9 @@ Question: $prompt"""
         if (word.length < 2 || word.length > 24) return
         val before = dockedForegroundDraft.dropLast(word.length).toString()
         val prev = Regex("[A-Za-z]+").findAll(before).lastOrNull()?.value.orEmpty()
-        val corrected = autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) ?: return
+        // Geometry decode first (Gboard-style); fall back to string-edit correction.
+        val corrected = decodeLauncherTapWord(word, prev)
+            ?: autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) ?: return
         if (corrected.equals(word, ignoreCase = true)) return
         val cased = if (word.first().isUpperCase()) corrected.replaceFirstChar { it.uppercase(Locale.US) } else corrected
         injectReplaceTailInForegroundApp(word, cased)
