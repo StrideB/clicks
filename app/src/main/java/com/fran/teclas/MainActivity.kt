@@ -1954,21 +1954,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 visibility = View.GONE
             }
             addView(dockedSuggestChips, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            dockedEmojiButton = TextView(context).apply {
+                text = "☺"
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setTextColor(keyboardIndicatorTextColor(dim = false))
+                setPadding(dp(12), 0, dp(14), 0)
+                isClickable = true
+                visibility = View.GONE
+                setOnClickListener { keyHaptic("space"); openDockedEmojiPicker() }
+            }
+            addView(dockedEmojiButton, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
         }
     }
 
     // Tappable word suggestions shown in the typing strip while typing INTO a foreground app. When
     // present they replace the "CHIRP · hold GO" hint; tapping one inserts it.
     private var dockedSuggestChips: LinearLayout? = null
+    // Emoji shortcut button — only shown while typing into a third-party app (hidden in launcher search).
+    private var dockedEmojiButton: TextView? = null
 
     private fun updateDockedSuggestionChips() {
         val chips = dockedSuggestChips ?: return
         val active = dockedForegroundChirpActive()
+        dockedEmojiButton?.visibility = if (active) View.VISIBLE else View.GONE   // emoji button: app-typing only
         val word = if (active) dockedForegroundCurrentWord() else ""
-        val sugg = if (active && word.length >= 1 && predictionEngine.isDictWord("the"))
+        val dictReady = predictionEngine.isDictWord("the")
+        val words = if (active && word.length >= 1 && dictReady)
             predictionEngine.getSuggestions(word, 3).filterNot { it.equals(word, ignoreCase = true) }
         else emptyList()
-        if (sugg.isEmpty()) {
+        // Word→emoji suggestions: if the typed word maps to emoji, offer them first.
+        val emojis = if (active && word.length >= 2) SmartChips.emojiFor(prefs(), word.lowercase(Locale.US)).take(2) else emptyList()
+        if (words.isEmpty() && emojis.isEmpty()) {
             chips.visibility = View.GONE
             if (::searchHintView.isInitialized) searchHintView.visibility = View.VISIBLE
             return
@@ -1976,14 +1994,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::searchHintView.isInitialized) searchHintView.visibility = View.GONE
         chips.visibility = View.VISIBLE
         chips.removeAllViews()
-        sugg.take(3).forEachIndexed { i, s ->
+        val items = emojis.map { it to true } + words.take(3 - emojis.size).map { it to false }
+        items.forEachIndexed { i, (label, isEmoji) ->
             if (i > 0) chips.addView(View(this).apply {
-                setBackgroundColor((keyboardIndicatorTextColor(dim = true)))
-                alpha = 0.35f
+                setBackgroundColor(keyboardIndicatorTextColor(dim = true)); alpha = 0.35f
             }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { gravity = Gravity.CENTER_VERTICAL })
             chips.addView(TextView(this).apply {
-                text = s
-                textSize = 22f
+                text = label
+                textSize = if (isEmoji) 24f else 22f
                 gravity = Gravity.CENTER
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
@@ -1991,9 +2009,67 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                 setPadding(dp(6), dp(4), dp(6), dp(4))
                 isClickable = true
-                setOnClickListener { applyDockedSuggestion(s) }
+                setOnClickListener { if (isEmoji) applyDockedEmoji(label, word) else applyDockedSuggestion(label) }
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
         }
+    }
+
+    /** Insert an emoji chosen for the typed [forWord]: replace the word with the emoji + space. */
+    private fun applyDockedEmoji(emoji: String, forWord: String) {
+        val cur = dockedForegroundCurrentWord()
+        if (cur.isNotEmpty()) {
+            injectReplaceTailInForegroundApp(cur, "$emoji ")
+            dockedForegroundDraft.setLength(dockedForegroundDraft.length - cur.length)
+            dockedForegroundDraft.append("$emoji ")
+        } else {
+            injectToForegroundApp(emoji)
+            dockedForegroundDraft.append(emoji)
+        }
+        if (forWord.isNotEmpty()) SmartChips.recordEmojiPick(prefs(), forWord.lowercase(Locale.US), emoji)
+        dockedFgUndo = null
+        keyHaptic("space")
+        updateDockedForegroundChirpStrip()
+    }
+
+    private var emojiPickerPanel: View? = null
+
+    /** Show Google's emoji picker over the keyboard; tapping an emoji types it into the app. */
+    private fun openDockedEmojiPicker() {
+        if (emojiPickerPanel != null) { closeDockedEmojiPicker(); return }
+        val root = window.decorView as? ViewGroup ?: return
+        val picker = androidx.emoji2.emojipicker.EmojiPickerView(this).apply {
+            emojiGridColumns = 9
+            setOnEmojiPickedListener { item ->
+                injectToForegroundApp(item.emoji)
+                dockedForegroundDraft.append(item.emoji)
+                dockedFgUndo = null
+            }
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF14161B.toInt())
+            elevation = dp(8).toFloat()
+            addView(TextView(this@MainActivity).apply {
+                text = "✕   Emoji"
+                textSize = 15f
+                letterSpacing = 0.05f
+                setTextColor(0xFFE8EAF0.toInt())
+                setPadding(dp(18), dp(12), dp(18), dp(12))
+                isClickable = true
+                setOnClickListener { keyHaptic("back"); closeDockedEmojiPicker() }
+            })
+            addView(picker, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        root.addView(panel, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, dp(300), Gravity.BOTTOM))
+        emojiPickerPanel = panel
+    }
+
+    private fun closeDockedEmojiPicker() {
+        val p = emojiPickerPanel ?: return
+        (p.parent as? ViewGroup)?.removeView(p)
+        emojiPickerPanel = null
     }
 
     private fun applyDockedSuggestion(word: String) {

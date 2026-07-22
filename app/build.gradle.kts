@@ -135,6 +135,10 @@ dependencies {
     implementation(libs.shizuku.provider)
     implementation(libs.hiddenapibypass)
 
+    // Google's official emoji picker widget (categories, search, recents, skin tones) — used for the
+    // emoji button when typing into a third-party app.
+    implementation("androidx.emoji2:emoji2-emojipicker:1.4.0")
+
     // Unit tests for the shared keyboard core (pure-JVM logic: word placement, prediction/autocorrect).
     testImplementation(libs.junit)
     // Robolectric: the typing-accuracy gate drives the real TapResolver/SpatialScorer, which use
