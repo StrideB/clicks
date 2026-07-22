@@ -2432,6 +2432,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val stripChipViews = ArrayList<TextView>(5)
     private val stripChipDividers = ArrayList<View>(5)
     private var stripFixView: TextView? = null
+    private var stripMicView: TextView? = null
+    private var stripEmojiView: TextView? = null
+    private var emojiOverlay: View? = null
+    private var imeVoice: com.fran.teclas.keyboard.voice.VoiceInputEngine? = null
     private var stripFixDivider: View? = null
     private var stripPolishView: TextView? = null
     // Live data behind the slots; click listeners read these so they're bound once, not per repaint.
@@ -2451,6 +2455,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // Same as the strip container: we center vertically, so skip the baseline-alignment pass
             // that would otherwise re-measure all 3 suggestion slots + chips a second time per repaint.
             isBaselineAligned = false
+        }
+        stripMicView = TextView(this).apply {
+            gravity = Gravity.CENTER
+            background = imeMicBackground(false)
+            foreground = imeMicGlyph(0xFFB8C0CC.toInt())
+            isClickable = true
+            setOnClickListener { toggleImeVoice() }
+            row.addView(this, LinearLayout.LayoutParams(dp(32), dp(30)).apply { marginStart = dp(6); marginEnd = dp(2) })
         }
         stripFixView = TextView(this).apply {
             text = "⌁ Fix"; gravity = Gravity.CENTER; textSize = 14f
@@ -2494,9 +2506,114 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             setOnClickListener { polishField() }
             row.addView(this, LinearLayout.LayoutParams(dp(46), LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(4) })
         }
+        stripEmojiView = TextView(this).apply {
+            text = "☺"; gravity = Gravity.CENTER; textSize = 20f
+            setTextColor(0xFFB8C0CC.toInt()); setPadding(dp(8), 0, dp(10), 0)
+            isClickable = true
+            setOnClickListener { keyHaptic("space"); toggleImeEmojiPicker() }
+            row.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT).apply { marginStart = dp(2) })
+        }
         typingRow = row
         return row
     }
+
+    private fun toggleImeEmojiPicker() {
+        if (emojiOverlay != null) { hideImeEmojiPicker(); return }
+        val root = imeRoot ?: return
+        val picker = androidx.emoji2.emojipicker.EmojiPickerView(this).apply {
+            emojiGridColumns = 9
+            setOnEmojiPickedListener { item -> currentInputConnection?.commitText(item.emoji, 1) }
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF14161B.toInt())
+            addView(TextView(this@TeclasImeService).apply {
+                text = "✕   Emoji"; textSize = 15f; letterSpacing = 0.05f
+                setTextColor(0xFFE8EAF0.toInt())
+                setPadding(dp(18), dp(12), dp(18), dp(12)); isClickable = true
+                setOnClickListener { keyHaptic("back"); hideImeEmojiPicker() }
+            })
+            addView(picker, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        emojiOverlay = panel
+        root.addView(panel, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun hideImeEmojiPicker() {
+        val o = emojiOverlay ?: return
+        emojiOverlay = null
+        (o.parent as? android.view.ViewGroup)?.removeView(o)
+    }
+
+    // ── Voice mic (parity with the launcher) — dictates straight into the focused field ──────────
+    private fun imeMicGlyph(color: Int): Drawable {
+        val d = resources.getDrawable(R.drawable.ic_mic_modern, theme).mutate()
+        d.setTint(color)
+        return android.graphics.drawable.InsetDrawable(d, dp(7))
+    }
+
+    private fun imeMicBackground(listening: Boolean): Drawable =
+        if (listening) GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            gradientType = GradientDrawable.RADIAL_GRADIENT
+            gradientRadius = dp(22).toFloat()
+            colors = intArrayOf(0xFF3FC7FF.toInt(), 0x203FC7FF)
+        } else GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x1FFFFFFF) }
+
+    private fun setImeMicVisual(listening: Boolean) {
+        stripMicView?.apply {
+            background = imeMicBackground(listening)
+            foreground = imeMicGlyph(if (listening) 0xFFFFFFFF.toInt() else 0xFFB8C0CC.toInt())
+        }
+    }
+
+    private fun toggleImeVoice() {
+        imeVoice?.let { if (it.isListening) { it.stop(); setImeMicVisual(false); return } }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            // An IME can't request runtime permissions itself — bounce through a tiny helper activity.
+            runCatching { startActivity(Intent(this, MicPermissionActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            android.widget.Toast.makeText(this, "Allow the mic, then tap 🎤 again", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        startImeVoice()
+    }
+
+    private fun startImeVoice() {
+        val engine = imeVoice
+            ?: com.fran.teclas.keyboard.voice.AndroidVoiceInputEngine(this).also { imeVoice = it }
+        if (!engine.isAvailable()) {
+            android.widget.Toast.makeText(this, "Voice recognition unavailable on this device", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        keyHaptic("space")
+        engine.start(imeVoiceLanguageTag(), emptyList(), object : com.fran.teclas.keyboard.voice.VoiceInputEngine.Callbacks {
+            override fun onPartial(text: String) {}
+            override fun onFinal(text: String) { commitImeVoice(text) }
+            override fun onStateChanged(listening: Boolean) { setImeMicVisual(listening) }
+            override fun onError(message: String) {
+                setImeMicVisual(false)
+                android.widget.Toast.makeText(this@TeclasImeService, message, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        })
+    }
+
+    private fun commitImeVoice(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(1, 0)?.toString().orEmpty()
+        val prefix = if (before.isEmpty() || before.endsWith(" ")) "" else " "
+        val cased = if (before.isEmpty() || before.trimEnd().endsWith(".")) t.replaceFirstChar { it.titlecase(java.util.Locale.US) } else t
+        ic.commitText("$prefix$cased ", 1)
+        keyHaptic("space")
+    }
+
+    private fun imeVoiceLanguageTag(): String =
+        when (com.fran.teclas.keyboard.DictionaryLoader.enabledLanguages(this).firstOrNull()) {
+            "es" -> "es-ES"; "fr" -> "fr-FR"; "de" -> "de-DE"; "pt" -> "pt-BR"; "it" -> "it-IT"; else -> "en-US"
+        }
 
     /** Repaint the steady-state strip in place. All views are recycled; only text/visibility move. */
     private fun renderTypingStrip(
