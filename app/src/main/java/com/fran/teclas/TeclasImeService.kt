@@ -1908,6 +1908,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 // publish on main.
                 val enginePrimary = PredictionEngine(primaryFreqs)
                 val engineExtended = PredictionEngine(extendedFreqs)
+                android.util.Log.i("TeclasDiag",
+                    "dictionary loaded: primary=${primaryFreqs.size} words, extended=${extendedFreqs.size}, " +
+                    "glide=${words.size}, latent=$latent")
                 handler.post {
                     glideClassifier = clf
                     glideFreqs = freqs
@@ -2065,6 +2068,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 val base = if (tooLong) emptyList() else predictionCore.computeSuggestions(word, prev, trace)
                 val correction = if (!tooLong && word.length >= 2)
                     autocorrect.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev, trace) else null
+                if (word.length >= 2 && !tooLong) android.util.Log.i("TeclasDiag",
+                    "word='$word' dictWords=${predictionEngine.frequencyOf("the")} " +
+                    "suggestions=$base correction=$correction")
                 val computeMs = (System.nanoTime() - t0) / 1_000_000
                 handler.post {
                     if (gen != predictGeneration) return@post   // user typed past this answer
