@@ -2052,13 +2052,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val active = dockedForegroundChirpActive()
         dockedEmojiButton?.visibility = if (active) View.VISIBLE else View.GONE   // emoji button: app-typing only
         val word = if (active) dockedForegroundCurrentWord() else ""
-        val words = if (active && word.length >= 1)
-            predictionEngine.getSuggestions(word, 6).filterNot { it.equals(word, ignoreCase = true) }
-                .sortedByDescending { languageBias?.preference(it) ?: 1.0 }   // favor the language in use
-                .take(3)
-        else emptyList()
-        // Word→emoji suggestions: if the typed word maps to emoji, offer them first.
-        val emojis = if (active && word.length >= 2) SmartChips.emojiFor(prefs(), word.lowercase(Locale.US)).take(2) else emptyList()
+        // Read the off-thread cache (computeDockedSuggestionsAsync) — never scan the dictionary here.
+        val fresh = active && word.length >= 1 && word == dockedCachedWord
+        val words = if (fresh) dockedCachedSuggestions.take(3) else emptyList()
+        val emojis = if (fresh && word.length >= 2) dockedCachedEmojis else emptyList()
         if (words.isEmpty() && emojis.isEmpty()) {
             // Keep the chips up while the user is still on the SAME word: a transient empty result (an
             // async dictionary swap, a slow refresh) must not flip the strip back to the "CHIRP · hold
@@ -2399,13 +2396,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         launcherAgenticStatus?.let { return it }
         if (launcherPolishing) return "POLISHING…"
         return if (dockedForegroundDraft.isNotBlank()) {
-            // Mid-word: live suggestions from the same indexed engine the launcher fields use —
-            // this is what fills "the suggestion box" while typing into a third-party app.
+            // Mid-word: live suggestions from the cache computed off-thread (computeDockedSuggestionsAsync),
+            // never a dictionary scan on the keystroke. This is what fills the suggestion box while
+            // typing into a third-party app.
             val word = dockedForegroundCurrentWord()
-            if (word.length >= 2) {
-                val sugg = predictionEngine.getSuggestions(word, 3)
-                    .filterNot { it.equals(word, ignoreCase = true) }
-                if (sugg.isNotEmpty()) return sugg.joinToString("   ·   ")
+            if (word.length >= 2 && word == dockedCachedWord && dockedCachedSuggestions.isNotEmpty()) {
+                return dockedCachedSuggestions.take(3).joinToString("   ·   ")
             }
             "CHIRP · hold GO"
         } else {
@@ -15647,9 +15643,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
             }
             isClickable = true
-            fun idleBg() = keyVisualBackground(label, pressed = false, hInset = hInset, vInset = vInset)
-            fun pressedBg() = keyVisualBackground(label, pressed = true, hInset = hInset, vInset = vInset)
-            background = idleBg()
+            // Build each key's idle + pressed backgrounds ONCE, not on every touch. keyVisualBackground
+            // allocates a fresh GradientDrawable/LayerDrawable tree per call; the touch listener flips
+            // the background on every DOWN and UP, so re-deriving it there meant two full drawable trees
+            // per keystroke on the main thread in every keyboard config. Cached per-key-instance (a new
+            // key is built each render, so theme/size changes still refresh). Pressed is built lazily —
+            // most keys are never pressed. Re-assigning the same instance is a no-op in View.setBackground.
+            val idleBgDrawable = keyVisualBackground(label, pressed = false, hInset = hInset, vInset = vInset)
+            var pressedBgDrawable: Drawable? = null
+            fun idleBg(): Drawable = idleBgDrawable
+            fun pressedBg(): Drawable = pressedBgDrawable
+                ?: keyVisualBackground(label, pressed = true, hInset = hInset, vInset = vInset).also { pressedBgDrawable = it }
+            background = idleBgDrawable
             if (keyboardTheme != KEYBOARD_THEME_DEFAULT) {
                 elevation = dp(if (keyboardTheme == KEYBOARD_THEME_SKEUO) 5 else 3).toFloat()
                 stateListAnimator = null
@@ -21003,7 +21008,9 @@ Question: $prompt"""
     }
 
     internal fun renderRibbon() {
-        if (::ribbonView.isInitialized) {
+        // Only relayout when it actually holds children — an unconditional removeAllViews() still
+        // schedules a layout pass on this subtree every keystroke for nothing.
+        if (::ribbonView.isInitialized && ribbonView.childCount > 0) {
             ribbonView.removeAllViews()
         }
         val pane = openPane
@@ -22314,7 +22321,7 @@ Question: $prompt"""
     private fun learnDockedNgram(word: String) {
         if (word.length < 2) return
         val before = dockedForegroundDraft.dropLast(dockedForegroundCurrentWord().length).toString()
-        val prev = Regex("[A-Za-z]+").findAll(before).lastOrNull()?.value.orEmpty()
+        val prev = letterRunRegex.findAll(before).lastOrNull()?.value.orEmpty()
         if (prev.isNotEmpty()) ngramRepo.recordWord(word, prev)
         ngramRepo.prefetchNextWords(word)   // warm cachedNextWords(word) for the word you'll type next
     }
@@ -22324,7 +22331,7 @@ Question: $prompt"""
         val word = dockedForegroundCurrentWord()
         if (word.length < 2 || word.length > 24) return
         val before = dockedForegroundDraft.dropLast(word.length).toString()
-        val prev = Regex("[A-Za-z]+").findAll(before).lastOrNull()?.value.orEmpty()
+        val prev = letterRunRegex.findAll(before).lastOrNull()?.value.orEmpty()
         // Geometry decode first (Gboard-style); fall back to string-edit correction.
         val corrected = decodeLauncherTapWord(word, prev)
             ?: autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) ?: return
@@ -22368,11 +22375,52 @@ Question: $prompt"""
     // why widget stayed fast. The character still injects immediately; only the suggestion refresh
     // waits for a brief pause, so fast typing computes suggestions once per burst, not per key.
     private var dockedStripDebounce: Runnable? = null
+    // Cached suggestions for the current docked-over-app word, computed OFF the main thread (parity
+    // with own-search's scheduleSpellCheck). The strip reads this cache instead of scanning the
+    // dictionary on the keystroke — that ~800-edit-distance-pass scan was the docked-over-app lag.
+    private var dockedSuggestGeneration = 0
+    private var dockedCachedWord = ""
+    private var dockedCachedSuggestions: List<String> = emptyList()
+    private var dockedCachedEmojis: List<String> = emptyList()
+    // Compiled once — was rebuilt on every docked word commit (autocorrect + n-gram learn).
+    private val letterRunRegex = Regex("[A-Za-z]+")
+
     private fun scheduleDockedForegroundStrip() {
         dockedStripDebounce?.let { handler.removeCallbacks(it) }
-        val r = Runnable { dockedStripDebounce = null; updateDockedForegroundChirpStrip() }
+        val r = Runnable {
+            dockedStripDebounce = null
+            computeDockedSuggestionsAsync()      // background; re-refreshes the strip when results land
+            updateDockedForegroundChirpStrip()   // immediate refresh reads the cache (no dictionary scan)
+        }
         dockedStripDebounce = r
         handler.postDelayed(r, 60)
+    }
+
+    private fun computeDockedSuggestionsAsync() {
+        if (!dockedForegroundChirpActive()) return
+        val word = dockedForegroundCurrentWord()
+        if (word.length < 1) {
+            dockedCachedWord = word; dockedCachedSuggestions = emptyList(); dockedCachedEmojis = emptyList()
+            return
+        }
+        if (word == dockedCachedWord) return   // already have this word's suggestions
+        val gen = ++dockedSuggestGeneration
+        val p = prefs()
+        launcherPredictExecutor.execute {
+            if (gen != dockedSuggestGeneration) return@execute   // user typed past this answer
+            val sugg = predictionEngine.getSuggestions(word, 6)
+                .filterNot { it.equals(word, ignoreCase = true) }
+                .sortedByDescending { languageBias?.preference(it) ?: 1.0 }   // favor the language in use
+                .take(3)
+            val emojis = if (word.length >= 2) SmartChips.emojiFor(p, word.lowercase(Locale.US)).take(2) else emptyList()
+            handler.post {
+                if (gen != dockedSuggestGeneration) return@post
+                dockedCachedWord = word
+                dockedCachedSuggestions = sugg
+                dockedCachedEmojis = emojis
+                updateDockedForegroundChirpStrip()
+            }
+        }
     }
 
     private fun mirrorDockedForegroundInsert(text: String) {
@@ -26666,7 +26714,8 @@ Question: $prompt"""
             keyboardTheme == KEYBOARD_THEME_HYPER3D_LIGHT
     }
 
-    internal fun prefs() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefsCache by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
+    internal fun prefs() = prefsCache
 
     private fun hideStatusBarEnabled(): Boolean =
         prefs().getBoolean(HIDE_STATUS_BAR_PREF, false)
