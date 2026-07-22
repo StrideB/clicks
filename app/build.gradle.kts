@@ -125,6 +125,9 @@ dependencies {
     // Keyboard-safe on-device rewriting: AICore blocks the raw Prompt API when the IME types into
     // another app (ErrorCode 30), but the task-specific Rewriting API is built for keyboards.
     implementation(libs.mlkit.genai.rewriting)
+    // Pen mode: on-device handwriting recognition (Gboard's recognition family). Language
+    // models (~20 MB) download on first use, then everything runs locally.
+    implementation(libs.mlkit.digital.ink)
     // Semantic search now runs on the app's own llama.cpp (nomic-embed GGUF, EmbedEngine) —
     // no AI Edge RAG SDK, no license-gated model, no tokenizer file.
     // Shizuku: adb/root-privileged binder access so the launcher can pin apps into the docked

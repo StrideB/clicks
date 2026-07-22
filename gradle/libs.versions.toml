@@ -15,6 +15,7 @@ securityCrypto = "1.1.0"
 billing = "9.1.0"
 onnxruntime = "1.27.0"
 mlkitGenaiProofreading = "1.0.0-beta1"
+mlkitDigitalInk = "18.1.0"
 mlkitGenaiPrompt = "1.0.0-beta2"
 mlkitGenaiRewriting = "1.0.0-beta1"
 localagentsRag = "0.3.0"
@@ -48,6 +49,7 @@ security-crypto = { group = "androidx.security", name = "security-crypto", versi
 billing-ktx = { group = "com.android.billingclient", name = "billing-ktx", version.ref = "billing" }
 onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 mlkit-genai-proofreading = { group = "com.google.mlkit", name = "genai-proofreading", version.ref = "mlkitGenaiProofreading" }
+mlkit-digital-ink = { group = "com.google.mlkit", name = "digital-ink-recognition", version.ref = "mlkitDigitalInk" }
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
 mlkit-genai-rewriting = { group = "com.google.mlkit", name = "genai-rewriting", version.ref = "mlkitGenaiRewriting" }
 localagents-rag = { group = "com.google.ai.edge.localagents", name = "localagents-rag", version.ref = "localagentsRag" }
