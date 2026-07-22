@@ -16719,8 +16719,6 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // publish on Main (constructing them on the main thread stalled the first frame).
                 val engineUnion = PredictionEngine(freqs)
                 val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
-                android.util.Log.i("TeclasDiag",
-                    "launcher dictionary loaded: union=${freqs.size} words, primary=${adaptive.primaryFreqs.size}")
                 // Contextual language detection (bilingual users): bias toward the language being written.
                 val langBias = com.fran.teclas.keyboard.unified.LanguageBias(adaptive.perLangWords)
                 // Gboard-style decode-at-space: a trie beam-searcher that reads the whole tap trail.
