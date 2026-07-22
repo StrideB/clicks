@@ -42,6 +42,10 @@ class InputInjectionService : AccessibilityService() {
             if (!KeyboardSettings.isDocked(this@InputInjectionService)) return
             when (intent?.action) {
                 ACTION_INJECT_KEY -> injectKey(intent.getStringExtra(EXTRA_CHAR).orEmpty())
+                ACTION_REPLACE_TAIL -> replaceTail(
+                    intent.getStringExtra(EXTRA_EXPECT).orEmpty(),
+                    intent.getStringExtra(EXTRA_WITH).orEmpty()
+                )
                 ACTION_PREPARE_FIELD -> prepareForegroundField()
                 ACTION_TOGGLE_SPLIT_SCREEN -> performGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
                 ACTION_REPIN_FREEFORM -> repinForegroundFreeform()
@@ -52,6 +56,7 @@ class InputInjectionService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         val filter = IntentFilter(ACTION_INJECT_KEY).apply {
+            addAction(ACTION_REPLACE_TAIL)
             addAction(ACTION_PREPARE_FIELD)
             addAction(ACTION_TOGGLE_SPLIT_SCREEN)
             addAction(ACTION_REPIN_FREEFORM)
@@ -219,6 +224,45 @@ class InputInjectionService : AccessibilityService() {
             return
         }
         // Keep the cursor at the end so the next character appends cleanly.
+        runCatching {
+            target.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, next.length)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, next.length)
+            })
+        }
+    }
+
+    /**
+     * Autocorrect support: atomically replace the just-typed tail of the field — but ONLY if the
+     * tracked buffer still ends with exactly what the keyboard says it typed. Any mismatch (the user
+     * tapped elsewhere, the app rewrote its field, focus moved) makes this a silent no-op: a skipped
+     * correction costs nothing, a blind rewrite could destroy the user's text.
+     */
+    private fun replaceTail(expect: String, with: String) {
+        if (expect.isEmpty() || expect == with) return
+        // Search-session path: we own the whole text; swap the tail of our buffer.
+        if (searchSessionActive || pendingSearchText.isNotEmpty()) {
+            if (!pendingSearchText.endsWith(expect)) return
+            pendingSearchText.setLength(pendingSearchText.length - expect.length)
+            pendingSearchText.append(with)
+            val target = findForegroundAppEditable()
+                ?: focusedEditable?.takeIf { it.isEditable && it.refresh() } ?: return
+            focusAndSetText(target, pendingSearchText.toString())
+            return
+        }
+        val target = focusedEditable?.takeIf { it.isEditable && it.refresh() && it.packageName?.toString() != packageName }
+            ?: findForegroundAppEditable()
+            ?: findEditableTarget()
+            ?: return
+        if (fieldFingerprint(target) != focusedFieldKey) return   // field changed since we typed
+        if (!focusedBuffer.endsWith(expect)) return               // stale view of the text — bail
+        focusedBuffer.setLength(focusedBuffer.length - expect.length)
+        focusedBuffer.append(with)
+        val next = focusedBuffer.toString()
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, next)
+        }
+        if (!target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return
         runCatching {
             target.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, Bundle().apply {
                 putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, next.length)
@@ -493,6 +537,9 @@ class InputInjectionService : AccessibilityService() {
 
     companion object {
         const val ACTION_INJECT_KEY = "com.fran.teclas.ACTION_INJECT_KEY"
+        const val ACTION_REPLACE_TAIL = "com.fran.teclas.ACTION_REPLACE_TAIL"
+        const val EXTRA_EXPECT = "extra_expect"
+        const val EXTRA_WITH = "extra_with"
         const val ACTION_PREPARE_FIELD = "com.fran.teclas.ACTION_PREPARE_FIELD"
         const val ACTION_TOGGLE_SPLIT_SCREEN = "com.fran.teclas.ACTION_TOGGLE_SPLIT_SCREEN"
         const val ACTION_REPIN_FREEFORM = "com.fran.teclas.ACTION_REPIN_FREEFORM"
