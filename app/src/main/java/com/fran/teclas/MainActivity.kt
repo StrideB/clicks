@@ -2288,39 +2288,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 composeText += (if (composeText.isEmpty() || composeText.endsWith(" ")) "" else " ") + t.replaceFirstChar { it.titlecase(Locale.US) } + " "
                 openPane?.let { renderPaneContent(it) }
             }
-            // Launcher search → voice is a COMMAND: "uber to airport", "navigate to home", "timer 10",
-            // "play radiohead" run the action and open the app. Anything that isn't an action just
-            // fills the search box so you can refine it or press GO.
+            // Launcher search → voice behaves exactly like TYPING into the search box. The spoken
+            // text fills the query and the launcher's own search surfaces the results (apps, contacts,
+            // type-to-do actions like "uber to airport", web, …). A few navigation words jump straight
+            // to their surface, the same as tapping them would. Nothing auto-runs — you press GO / tap
+            // a result, just like typing.
             else -> {
-                query = t; cursorPos = null
-                if (!runVoiceCommand(t)) renderRibbon()
+                if (!voiceNavKeyword(t)) {
+                    if (query.isNotBlank() && !query.endsWith(' ')) query += " "
+                    query += t
+                    cursorPos = null
+                    updateAutoCapState(); updateKeyLabels()
+                    renderRibbon()
+                }
             }
         }
     }
 
-    /** Route a dictated launcher phrase to an action (open Uber/Maps/timer/play/…). Returns true if it
-     *  ran something, false if it's just a search to leave in the box. */
-    private fun runVoiceCommand(text: String): Boolean {
-        AgenticRouter.ensureLoaded(this)
-        AgenticRouter.classify(text)?.let { cmd ->
-            when {
-                cmd.intent != null -> {                       // opens an app / deep link — "say it, it happens"
-                    val status = AgenticRouter.execute(this, cmd)
-                    query = ""; renderRibbon()
-                    Toast.makeText(this, status ?: cmd.label, Toast.LENGTH_SHORT).show()
-                    return true
-                }
-                cmd.insertText != null -> {                   // calc / unit convert → drop the result in
-                    query = cmd.insertText; cursorPos = null; renderRibbon(); return true
-                }
-                cmd.insertsLocation || cmd.fetchWeather -> {  // location / weather → the normal applier
-                    pendingLauncherCommand = cmd; applyLauncherCommand(); return true
-                }
+    /** Spoken navigation shortcuts that jump to a launcher surface instead of filling the search box
+     *  (parity with typing the word). Returns true when it handled the phrase. */
+    private fun voiceNavKeyword(text: String): Boolean {
+        val phrase = text.trim().lowercase(Locale.US).trim('.', '!', '?', ',')
+        return when (phrase) {
+            "apps", "app library", "all apps", "open apps", "show apps", "my apps", "app drawer" -> {
+                query = ""; openLibrary(); true
             }
+            else -> false
         }
-        // Not a catalog skill — try type-to-do (opens a named app, dials a number, etc.).
-        if (executeTypeToDoCommand(text)) { query = ""; renderRibbon(); return true }
-        return false
     }
 
     private fun launcherTypingStripText(): CharSequence {
