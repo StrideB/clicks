@@ -1859,6 +1859,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 })
             }
             root.addView(keyboardDockView, LinearLayout.LayoutParams.MATCH_PARENT, activeRootDockHeight() + launcherDockedKeyboardBottomLift())
+            keyboardDockView.post { installSpaceTouchDelegate() }
         } else {
             keyboardDockView = FrameLayout(this)
         }
@@ -1994,14 +1995,37 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var dockedSuggestChips: LinearLayout? = null
     // Emoji shortcut button — only shown while typing into a third-party app (hidden in launcher search).
     private var dockedEmojiButton: TextView? = null
+    // The space bar view + the word its suggestion chips are currently showing for — used by the
+    // space touch-delegate and the docked suggestion-chip persistence just below.
+    private var spaceKeyView: View? = null
+    private var lastDockedChipWord: String = ""
+
+    /** Extend the space bar's touchable area down past the bottom of the deck (over the lift band and
+     *  any padding) and slightly out at the sides, so the strip under/around the space bar commits a
+     *  space instead of being a dead zone. Runs after layout each render; a no-op off the docked deck. */
+    private fun installSpaceTouchDelegate() {
+        val space = spaceKeyView ?: return
+        if (!::keyboardDockView.isInitialized) return
+        val dock = keyboardDockView
+        if (space.width == 0 || dock.height == 0) {
+            // Not laid out yet — try again on the next frame.
+            dock.post { installSpaceTouchDelegate() }
+            return
+        }
+        val r = android.graphics.Rect(0, 0, space.width, space.height)
+        dock.offsetDescendantRectToMyCoords(space, r)
+        r.bottom = dock.height                 // swallow the lift band + bottom padding under the bar
+        r.left -= space.width / 8              // a little slack at the corners
+        r.right += space.width / 8
+        dock.touchDelegate = android.view.TouchDelegate(r, space)
+    }
 
     private fun updateDockedSuggestionChips() {
         val chips = dockedSuggestChips ?: return
         val active = dockedForegroundChirpActive()
         dockedEmojiButton?.visibility = if (active) View.VISIBLE else View.GONE   // emoji button: app-typing only
         val word = if (active) dockedForegroundCurrentWord() else ""
-        val dictReady = predictionEngine.isDictWord("the")
-        val words = if (active && word.length >= 1 && dictReady)
+        val words = if (active && word.length >= 1)
             predictionEngine.getSuggestions(word, 6).filterNot { it.equals(word, ignoreCase = true) }
                 .sortedByDescending { languageBias?.preference(it) ?: 1.0 }   // favor the language in use
                 .take(3)
@@ -2009,10 +2033,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Word→emoji suggestions: if the typed word maps to emoji, offer them first.
         val emojis = if (active && word.length >= 2) SmartChips.emojiFor(prefs(), word.lowercase(Locale.US)).take(2) else emptyList()
         if (words.isEmpty() && emojis.isEmpty()) {
+            // Keep the chips up while the user is still on the SAME word: a transient empty result (an
+            // async dictionary swap, a slow refresh) must not flip the strip back to the "CHIRP · hold
+            // GO" hint and make the suggestions flicker away mid-word. Only clear when the word actually
+            // changed (space/backspace) or app-typing ended.
+            if (active && word.isNotEmpty() && word == lastDockedChipWord && chips.childCount > 0) {
+                chips.visibility = View.VISIBLE
+                if (::searchHintView.isInitialized) searchHintView.visibility = View.GONE
+                return
+            }
+            lastDockedChipWord = ""
             chips.visibility = View.GONE
             if (::searchHintView.isInitialized) searchHintView.visibility = View.VISIBLE
             return
         }
+        lastDockedChipWord = word
         if (::searchHintView.isInitialized) searchHintView.visibility = View.GONE
         chips.visibility = View.VISIBLE
         chips.removeAllViews()
@@ -15234,6 +15269,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val isDockedTeclasKey = label == "teclas" && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
         val useBrushedOpticalKey = keyboardTheme == KEYBOARD_THEME_BRUSHED && !isLetter && label != "teclas" && label != "space"
         return (if (isWidgetDockKey) DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
+            if (label == "space") spaceKeyView = this
             text = if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "teclas") "" else keyLabel(label)
             if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "teclas") {
                 contentDescription = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) "Docked, tap to undock" else "Undocked, tap to dock"
@@ -17894,6 +17930,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // When an app launched from the docked launcher is in the freeform top region, the keyboard
         // types into that app (via the accessibility injector) instead of the launcher's search.
         if (keysRouteToForegroundApp() && routeKeyToForegroundApp(label)) return
+        // The launcher's OWN search field needs the dictionary loaded too, or on-space autocorrect
+        // silently no-ops (on Samsung the launcher process can be recreated without the initial load
+        // finishing). Mirrors the docked-over-app path; cheap no-op once words are present.
+        ensureDictionaryLoaded()
         if (categoryFolderView != null && libraryOpen) {
             if (label == "teclas" || label == "back") closeCategoryFolder()
             return
@@ -26149,8 +26189,16 @@ Question: $prompt"""
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT || keyboardTheme == KEYBOARD_THEME_TECLAS) {
-            val shouldInset = label != "enter" && label != "123"
-            return if (shouldInset) android.graphics.drawable.InsetDrawable(base, hInset, vInset, hInset, vInset) else base
+            if (label == "enter" || label == "123") {
+                // Round, equal-diameter faces for 123 and GO: inset the drawn face to a square the
+                // width of the key (themedGoKeySize), vertically centered in the full-height touch
+                // cell — so the two read as matching round buttons instead of stretched vertical
+                // ovals, while the touch cell still fills the row top-to-bottom.
+                val side = themedGoKeySize()
+                val vpad = ((keyRowHeight() - side) / 2).coerceAtLeast(dp(2))
+                return android.graphics.drawable.InsetDrawable(base, 0, vpad, 0, vpad)
+            }
+            return android.graphics.drawable.InsetDrawable(base, hInset, vInset, hInset, vInset)
         }
         val fixedInset = dp(2)
         val topBottom = if (label == "enter" || label == "123") fixedInset else vInset
