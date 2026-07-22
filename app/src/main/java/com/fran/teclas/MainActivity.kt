@@ -1948,7 +1948,64 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             }
             addView(searchHintView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            dockedSuggestChips = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                visibility = View.GONE
+            }
+            addView(dockedSuggestChips, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
         }
+    }
+
+    // Tappable word suggestions shown in the typing strip while typing INTO a foreground app. When
+    // present they replace the "CHIRP · hold GO" hint; tapping one inserts it.
+    private var dockedSuggestChips: LinearLayout? = null
+
+    private fun updateDockedSuggestionChips() {
+        val chips = dockedSuggestChips ?: return
+        val active = dockedForegroundChirpActive()
+        val word = if (active) dockedForegroundCurrentWord() else ""
+        val sugg = if (active && word.length >= 1 && predictionEngine.isDictWord("the"))
+            predictionEngine.getSuggestions(word, 3).filterNot { it.equals(word, ignoreCase = true) }
+        else emptyList()
+        if (sugg.isEmpty()) {
+            chips.visibility = View.GONE
+            if (::searchHintView.isInitialized) searchHintView.visibility = View.VISIBLE
+            return
+        }
+        if (::searchHintView.isInitialized) searchHintView.visibility = View.GONE
+        chips.visibility = View.VISIBLE
+        chips.removeAllViews()
+        sugg.take(3).forEachIndexed { i, s ->
+            if (i > 0) chips.addView(View(this).apply {
+                setBackgroundColor((keyboardIndicatorTextColor(dim = true)))
+                alpha = 0.35f
+            }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { gravity = Gravity.CENTER_VERTICAL })
+            chips.addView(TextView(this).apply {
+                text = s
+                textSize = 22f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(keyboardIndicatorTextColor(dim = false))
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setPadding(dp(6), dp(4), dp(6), dp(4))
+                isClickable = true
+                setOnClickListener { applyDockedSuggestion(s) }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        }
+    }
+
+    private fun applyDockedSuggestion(word: String) {
+        val cur = dockedForegroundCurrentWord()
+        if (cur.isEmpty()) return
+        val cased = if (cur.first().isUpperCase()) word.replaceFirstChar { it.uppercase(Locale.US) } else word
+        injectReplaceTailInForegroundApp(cur, "$cased ")
+        dockedForegroundDraft.setLength(dockedForegroundDraft.length - cur.length)
+        dockedForegroundDraft.append("$cased ")
+        dockedFgUndo = null
+        keyHaptic("space")
+        updateDockedForegroundChirpStrip()
     }
 
     private fun launcherTypingStripText(): CharSequence {
@@ -2011,6 +2068,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         searchHintView.setPadding(dp(10), dp(2), dp(10), dp(3))
         searchHintView.setTextColor(keyboardIndicatorTextColor(dim = false))
         searchHintView.text = dockedForegroundChirpText()
+        updateDockedSuggestionChips()   // show tappable word chips over the hint when we have any
         return true
     }
 
@@ -15511,6 +15569,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshUnfoldedKeyboardSearchOverlay()
         val strip = suggestionStripView ?: run {
             updateDockedForegroundChirpStrip()
+            updateDockedSuggestionChips()   // clears the chips + restores the hint when not app-typing
             return
         }
         val fieldBlank = launcherSuggestionText().isBlank()
