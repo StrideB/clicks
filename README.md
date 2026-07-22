@@ -392,6 +392,29 @@ package first (`"$ADB" uninstall com.fran.clicks`) or you'll get two launchers.
 On the first call/dial, allow the CALL_PHONE prompt; MagicOS/OriginOS may also
 need "Install via USB" enabled in Developer options.
 
+## Pen / S Pen Input
+
+`pen/` gives both keyboards (launcher deck and system IME) a Gboard-style handwriting mode,
+hardware-gated so phones without a stylus see zero behavior change:
+
+- **Switching** (`pen/PenInput.kt`): a stylus hovering over the keyboard flips it to the
+  handwriting panel (hover is a separate event stream — glide/tap handling is untouched), and
+  Samsung's `com.samsung.pen.INSERT` silo broadcast auto-enters pen mode when the S Pen is
+  pulled out and restores typing when it's slotted back. Auto-switching sits behind the
+  default-on `pen_mode_auto` pref and a stylus-hardware check.
+- **Writing** (`pen/HandwritingPanelView.kt` + `pen/PenPanel.kt`): one shared panel — action
+  strip (ABC · language · SPACE · ⌫ · ⏎) over an ink canvas with the write-pause-commit rhythm.
+  In the launcher it swaps in for the key rows (like symbols/number pad); in the IME it mounts
+  as an overlay over the deck (the attach-picker pattern).
+- **Recognition** (`pen/InkRecognizers.kt`): ML Kit Digital Ink — on-device after a one-time
+  ~20 MB model download per language, keyed off the keyboard's first enabled language.
+  Recognized words commit exactly where typing would (query / chat composer / freeform chirp /
+  the app's input connection) with auto-spacing between segments.
+
+Not yet wired: Android 14's write-directly-in-any-text-field IME API
+(`supportsStylusHandwriting` + the stylus handwriting window) — a natural follow-up on top of
+this panel.
+
 ## Galaxy / Foldable Integration
 
 `galaxy/` holds the Samsung-facing integrations; everything in it is standard AOSP API

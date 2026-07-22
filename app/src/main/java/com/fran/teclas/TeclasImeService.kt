@@ -604,6 +604,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             imeRoot = it
             // Key previews render inside this window (one reused view), never as per-press popups.
             keyPreview.attachHost(it)
+            // Gboard-style pen switch: stylus hover over the keyboard flips to handwriting.
+            // Hover is a separate event stream — glide/tap handling is untouched.
+            it.setOnHoverListener { _, e ->
+                if (penOverlay == null && e.actionMasked == android.view.MotionEvent.ACTION_HOVER_ENTER &&
+                    com.fran.teclas.pen.PenInput.isStylus(e) && penAutoOn()
+                ) {
+                    handler.post { showPenOverlay() }
+                }
+                false
+            }
         }
     }
 
@@ -668,6 +678,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             return
         }
         armFrameSample()
+        // S Pen silo events while the keyboard is up: pull the pen → handwriting overlay,
+        // slot it back → typing. Registered only while the input view lives; stylus-gated.
+        if (penDetachReceiver == null) {
+            penDetachReceiver = com.fran.teclas.pen.PenInput.registerDetachListener(this) { detached ->
+                if (!penAutoOn()) return@registerDetachListener
+                handler.post { if (detached) showPenOverlay() else hidePenOverlay() }
+            }
+        }
         // Seed the shadow mirror from the fresh editor so the first keystrokes read locally.
         seedShadow(info?.initialSelStart?.takeIf { it >= 0 } ?: 0)
         refreshChromeOrRebuild()
@@ -701,6 +719,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Don't let the attach sheet or a share card linger across fields or when the keyboard hides.
         hideAttachPicker()
         hideShareCard()
+        hidePenOverlay()
+        com.fran.teclas.pen.PenInput.unregister(this, penDetachReceiver)
+        penDetachReceiver = null
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
@@ -4640,6 +4661,79 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun goKeyColor(): Int {
         // Default: Cursor Violet (brand accent). A user-chosen accent overrides it.
         return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(GO_KEY_COLOR_PREF, 0xFFC9A7FF.toInt())
+    }
+
+    // ── Pen mode (S Pen / stylus handwriting) ───────────────────────────────────────────────
+    // Same PenPanel surface as the launcher deck, mounted as an overlay over the key deck (the
+    // attach-picker/share-card overlay pattern). Entered by stylus hover over the keyboard or
+    // S Pen detach; exits via ABC or pen re-insert. Hardware-gated: no stylus, no behavior.
+
+    private var penOverlay: View? = null
+    private var penDetachReceiver: android.content.BroadcastReceiver? = null
+
+    private fun penAutoOn(): Boolean =
+        com.fran.teclas.pen.PenInput.autoEnabled(getSharedPreferences(PREFS_NAME, MODE_PRIVATE)) &&
+            com.fran.teclas.pen.PenInput.hasStylusHardware(this)
+
+    private fun penLanguageTag(): String = com.fran.teclas.pen.InkRecognizers.languageTagFor(
+        com.fran.teclas.keyboard.DictionaryLoader.enabledLanguages(this).firstOrNull() ?: "en")
+
+    private fun showPenOverlay() {
+        if (penOverlay != null) return
+        val root = imeRoot ?: return
+        val deck = deckView ?: return
+        val lp = (deck.layoutParams as? android.widget.FrameLayout.LayoutParams)
+            ?.let { android.widget.FrameLayout.LayoutParams(it) }
+            ?: android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, imeKeyboardHeight(), Gravity.BOTTOM)
+        val panel = com.fran.teclas.pen.PenPanel.build(
+            this,
+            accent = goKeyColor(),
+            ink = 0xFFE8EAF0.toInt(),
+            inkDim = 0x8AE8EAF0.toInt(),
+            panelFill = 0xFF13161D.toInt(),
+            line = 0x33FFFFFF,
+            callbacks = com.fran.teclas.pen.PenPanel.Callbacks(
+                languageTag = { penLanguageTag() },
+                onText = { text -> handler.post { penCommitFromIme(text) } },
+                onSpace = { commitValue(" ") },
+                onBackspace = { keyEvent(KeyEvent.KEYCODE_DEL) },
+                onEnter = { if (!sendDefaultEditorAction(true)) commitValue("\n") },
+                onExit = { hidePenOverlay() },
+                onStatus = { msg ->
+                    handler.post {
+                        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                },
+            ),
+        )
+        val overlay = android.widget.FrameLayout(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF0E1116.toInt())
+                cornerRadius = dp(14).toFloat()
+            }
+            addView(panel, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+        penOverlay = overlay
+        root.addView(overlay, lp)
+    }
+
+    private fun hidePenOverlay() {
+        val overlay = penOverlay ?: return
+        penOverlay = null
+        (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+    }
+
+    /** Auto-space between recognized segments: prepend one when the cursor sits after a
+     *  non-whitespace character, mirroring Gboard's handwriting commit rhythm. */
+    private fun penCommitFromIme(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        val before = currentInputConnection?.getTextBeforeCursor(1, 0)
+        val needsSpace = !before.isNullOrEmpty() && !before.last().isWhitespace()
+        commitValue(if (needsSpace) " $t" else t)
     }
 
     private fun seemeReleaseHaptic(view: View) {

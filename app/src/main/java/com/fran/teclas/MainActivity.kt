@@ -579,6 +579,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var glideRecognizedColor: Int? = null   // app brand color when a glided word names an app
     @Volatile private var glideGestureActive = false   // true while a keyboard glide owns the touch
     private var numberPadOpen = false
+    // Pen mode (S Pen / stylus): the key rows swap for a handwriting canvas. Entered by stylus
+    // hover over the deck or S Pen detach; exited via ABC, pen re-insert, or normally rendering.
+    private var penModeOpen = false
+    private var penDetachReceiver: android.content.BroadcastReceiver? = null
     private var symbolsOpen = false
     private var lastMusicSourcePackage: String? = null
     private var lastMusicPlaying = false
@@ -1161,6 +1165,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Next-event Live Update (Samsung Now Bar / lock screen): re-sync from the cached
         // events even when the 10 s calendar-load guard skipped a fresh load.
         NowBarLiveUpdate.sync(this, prefs(), calendarEvents, goKeyColor)
+        // S Pen silo events: pull the pen out → pen mode; slot it back → typing. Registered only
+        // while resumed, and only on stylus hardware.
+        penDetachReceiver = com.fran.teclas.pen.PenInput.registerDetachListener(this) { detached ->
+            if (!penAutoAvailable() || penModeOpen == detached) return@registerDetachListener
+            penModeOpen = detached
+            if (::rootView.isInitialized) handler.post { render() }
+        }
         if (::ribbonView.isInitialized) {
             updateClock()
             renderHub()
@@ -1198,6 +1209,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onPause() {
+        com.fran.teclas.pen.PenInput.unregister(this, penDetachReceiver)
+        penDetachReceiver = null
         cancelWidgetKeyboardSwap(resetTheme = true)
         widgetCoachAnimator?.cancel()
         // Halt periodic work while another app is in front: the 1 Hz music-progress tick, the
@@ -14485,7 +14498,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     bottomMargin = if (stableLauncherSuggestionShelf()) 0 else dp(1)
                 })
             }
-            if (symbolsOpen) {
+            if (penModeOpen) {
+                addView(launcherPenPanel(), LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight() * 4 - keyRowOverlap() * 3))
+            } else if (symbolsOpen) {
                 addKeyRow(com.fran.teclas.keyboard.KeyboardSymbols.ROW_DIGITS)
                 addKeyRow(com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_1)
                 addKeyRow(com.fran.teclas.keyboard.KeyboardSymbols.ROW_SYMBOLS_2 + listOf("back"), dp(3))
@@ -14522,6 +14538,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(overlayLayer, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            // Gboard-style pen switch: a stylus hovering over the deck flips it to handwriting.
+            // Hover is a separate event stream, so glide/tap handling is untouched.
+            if (penAutoAvailable()) {
+                setOnHoverListener { _, e ->
+                    if (!penModeOpen && e.actionMasked == MotionEvent.ACTION_HOVER_ENTER &&
+                        com.fran.teclas.pen.PenInput.isStylus(e)
+                    ) {
+                        penModeOpen = true
+                        post { render() }
+                    }
+                    false
+                }
+            }
         }
     }
 
@@ -14529,6 +14558,52 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // Gating exactly to where the translucent fill shows also means the blur plate is never
     // rendered invisibly behind an opaque themed deck.
     private fun glassKeyboardDeckActive(): Boolean = keyboardTheme == KEYBOARD_THEME_DEFAULT
+
+    // ── Pen mode (S Pen / stylus handwriting) ───────────────────────────────────────────────
+
+    private fun penAutoAvailable(): Boolean =
+        com.fran.teclas.pen.PenInput.autoEnabled(prefs()) && com.fran.teclas.pen.PenInput.hasStylusHardware(this)
+
+    private fun penLanguageTag(): String = com.fran.teclas.pen.InkRecognizers.languageTagFor(
+        com.fran.teclas.keyboard.DictionaryLoader.enabledLanguages(this).firstOrNull() ?: "en")
+
+    private fun launcherPenPanel(): View = com.fran.teclas.pen.PenPanel.build(
+        this,
+        accent = goKeyColor,
+        ink = Ink,
+        inkDim = InkDim,
+        panelFill = Panel,
+        line = Line,
+        callbacks = com.fran.teclas.pen.PenPanel.Callbacks(
+            languageTag = { penLanguageTag() },
+            onText = { text -> runOnUiThread { penCommitText(text) } },
+            onSpace = { handleKey("space") },
+            onBackspace = { handleKey("back") },
+            onEnter = { handleKey("enter") },
+            onExit = { penModeOpen = false; render() },
+            onStatus = { msg -> runOnUiThread { flashLauncherStatus(msg, 2000) } },
+        ),
+    )
+
+    /** Recognized handwriting lands exactly where typing would: the freeform chirp when a docked
+     *  app is foreground, the chat composer when a chat pane is open, otherwise the query. Words
+     *  get an auto-space between segments, matching Gboard's handwriting commit rhythm. */
+    private fun penCommitText(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        if (dockedForegroundChirpActive()) {
+            insertDockedForegroundText(t)
+            updateAutoCapState(); updateKeyLabels(); updateDockedForegroundChirpStrip()
+            return
+        }
+        if (openPane?.kind == PaneKind.CHAT) {
+            composeText += if (composeText.isEmpty() || composeText.endsWith(" ")) t else " $t"
+            openPane?.let { renderPaneContent(it) }
+        } else {
+            query += if (query.isEmpty() || query.endsWith(" ")) t else " $t"
+        }
+        updateAutoCapState(); updateKeyLabels(); render()
+    }
 
     private fun keyboardSettings(): View {
         return LinearLayout(this).apply {
