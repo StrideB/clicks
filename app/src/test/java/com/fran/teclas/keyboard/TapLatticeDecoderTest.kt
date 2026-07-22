@@ -93,6 +93,19 @@ class TapLatticeDecoderTest {
             "hello" in top || "help" in top)
     }
 
+    /** Stage 3 predictive targeting: with the geometry a tie between two words, the LM's expected
+     *  next letter wins — the "key grows toward what you'll type next". */
+    @Test fun predictiveTargetingBreaksTiesTowardExpectedLetter() {
+        val d = TapLatticeDecoder(trie, ::spatial, { 0.2f }, { _, _ -> 0f })   // flat freq/LM → geometry+prediction only
+        val (sx, sy) = center('s'); val (xxx, xyy) = center('x')
+        val mid = (sx + xxx) / 2 to (sy + xyy) / 2                              // tap between s and x
+        val taps = listOf(center('t'), center('e'), mid, center('t'))          // t-e-?-t
+        assertEquals("test", d.decode(taps, "", topK = 3,
+            nextCharWeights = { p -> if (p == "te") mapOf('s' to 1.6) else emptyMap() }).first().word)
+        assertEquals("text", d.decode(taps, "", topK = 3,
+            nextCharWeights = { p -> if (p == "te") mapOf('x' to 1.6) else emptyMap() }).first().word)
+    }
+
     /** Accent folding: a word tapped on plain a–z keys decodes to its accented Spanish form. */
     @Test fun accentFoldedWordDecodesToAccentedForm() {
         val accentTrie = CharTrie().apply {

@@ -15400,6 +15400,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // decodeLauncherTapWord), without changing which letter commits now.
                         if (label.length == 1 && label[0].isLetter()) {
                             if (launcherTapTrace.size < 32) launcherTapTrace.add(event.rawX to event.rawY)
+                            // Feed the spatial model so it learns this user's per-key bias AND tap
+                            // scatter (Stage 4) — sharpening the decode-at-space geometry. This never
+                            // changes which letter commits (the key-view is still trusted above).
+                            spatialScorer.recordTap(event.rawX, event.rawY)
                         }
                         if (label == "shift") handleShiftTap() else handleKey(label)
                     }
@@ -21880,7 +21884,8 @@ Question: $prompt"""
         val dec = tapDecoder ?: return null
         val trace = launcherTapTrace
         if (trace.size < 2 || trace.size != typed.length) return null
-        val cands = dec.decode(trace.toList(), prev.lowercase(Locale.US), topK = 3)
+        val cands = dec.decode(trace.toList(), prev.lowercase(Locale.US), topK = 3,
+            nextCharWeights = { prefix -> predictionEngine.nextCharWeights(prefix) })   // Stage 3: predictive targeting
         val top = cands.firstOrNull() ?: return null
         if (cands.size >= 2 && top.score - cands[1].score < 0.6) return null   // ambiguous — don't override
         if (top.word.equals(typed, ignoreCase = true)) return null
