@@ -22361,6 +22361,20 @@ Question: $prompt"""
         })
     }
 
+    // Coalesce the docked-over-app strip refresh off the keystroke. updateDockedForegroundChirpStrip
+    // does TWO dictionary scans (getSuggestions in dockedForegroundChirpText + updateDockedSuggestionChips)
+    // and rebuilds the chip views; running it synchronously on every injected character is what made
+    // DOCKED-over-app typing lag — widget mode has the chirp inactive and skips it entirely, which is
+    // why widget stayed fast. The character still injects immediately; only the suggestion refresh
+    // waits for a brief pause, so fast typing computes suggestions once per burst, not per key.
+    private var dockedStripDebounce: Runnable? = null
+    private fun scheduleDockedForegroundStrip() {
+        dockedStripDebounce?.let { handler.removeCallbacks(it) }
+        val r = Runnable { dockedStripDebounce = null; updateDockedForegroundChirpStrip() }
+        dockedStripDebounce = r
+        handler.postDelayed(r, 60)
+    }
+
     private fun mirrorDockedForegroundInsert(text: String) {
         if (!dockedForegroundChirpActive()) return
         dockedForegroundDraft.append(text)
@@ -22369,7 +22383,7 @@ Question: $prompt"""
         pendingLauncherStarters = emptyList()
         pendingLauncherResult = null
         launcherAgenticStatus = null
-        updateDockedForegroundChirpStrip()
+        scheduleDockedForegroundStrip()
     }
 
     private fun mirrorDockedForegroundBackspace() {
@@ -22380,7 +22394,7 @@ Question: $prompt"""
         pendingLauncherStarters = emptyList()
         pendingLauncherResult = null
         launcherAgenticStatus = null
-        updateDockedForegroundChirpStrip()
+        scheduleDockedForegroundStrip()
     }
 
     private fun insertDockedForegroundText(text: String) {
