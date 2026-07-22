@@ -1002,7 +1002,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             publishBounds()
         }
 
-        // Mirror keyRow()'s LinearLayout math: per-row horizontal inset, fixed-square 123/enter keys,
+        // Mirror keyRow()'s LinearLayout math: per-row horizontal inset, fixed-square utility keys,
         // the rest sharing the remaining width by keyWeight; rows stacked with keyRowOverlap.
         private fun relayoutKeys() = renderTime("canvas relayout") { relayoutKeysInner() }
         private fun relayoutKeysInner() {
@@ -1021,12 +1021,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 var weightSum = 0f
                 var fixedTotal = 0
                 row.forEach { lbl ->
-                    if (lbl == "enter" || lbl == "123") fixedTotal += goSize else weightSum += keyWeight(lbl)
+                    if (isRoundKeyboardKey(lbl)) fixedTotal += goSize else weightSum += keyWeight(lbl)
                 }
                 val flexible = (totalWidth - inset * 2 - fixedTotal).coerceAtLeast(0)
                 var x = inset
                 row.forEach { lbl ->
-                    val square = lbl == "enter" || lbl == "123"
+                    val square = isRoundKeyboardKey(lbl)
                     val kw = if (square) goSize
                         else if (weightSum > 0f) (flexible * keyWeight(lbl) / weightSum).toInt() else 0
                     val cellTop = if (square) rowTop + (rowH - goSize) / 2 else rowTop
@@ -1076,7 +1076,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private fun drawKey(canvas: Canvas, k: CanvasKeyCell, pressed: Boolean) {
             val d = if (pressed) k.pressed else k.idle
             d.setBounds(k.cell.left, k.cell.top, k.cell.right, k.cell.bottom)
-            d.draw(canvas)
+            canvas.withRoundKeyboardKeyClip(k.label, k.cell) { d.draw(canvas) }
             val cx = k.cell.exactCenterX()
             if (k.isFlickLetter) {
                 // Mirror DynamicFlickKeyView: symbol hint and letter each drawn at their own face bias,
@@ -1371,15 +1371,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             }
             setPadding(inset, 0, inset, 0)
             labels.forEach { label ->
-                if (label == "enter") {
+                if (isRoundKeyboardKey(label)) {
                     addView(keyView(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
-                        marginStart = dp(2)
-                    })
-                } else if (label == "123") {
-                    addView(keyView(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
-                        gravity = Gravity.CENTER_VERTICAL
-                        marginEnd = dp(2)
+                        if (label == "enter") marginStart = dp(2) else marginEnd = dp(2)
                     })
                 } else {
                     addView(keyView(label), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, keyWeight(label)))
@@ -1396,6 +1391,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             text = if (label == "teclas") "" else if (isLetter) visualLabel(label) else keyDisplayText(label)
             if (label == "teclas") contentDescription = "Teclas dock key"
             gravity = Gravity.CENTER
+            applyRoundKeyboardKeyOutline(label)
             includeFontPadding = false
             setPadding(0, 0, 0, 0)
             if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && this is com.fran.teclas.keyboard.OpticalKeyTextView) {
@@ -4586,13 +4582,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
         val theme = keyboardVisualTheme()
         if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) {
-            if (label == "enter" || label == "123") return base
+            if (isRoundKeyboardKey(label)) return base
             val vInset = keyVerticalInset()
             return InsetDrawable(base, keyHorizontalInset(), vInset, keyHorizontalInset(), vInset)
         }
         val vInset = keyVerticalInset()
         val fixedInset = dp(2)
-        val topBottom = if (label == "enter" || label == "123") fixedInset else vInset
+        val topBottom = if (isRoundKeyboardKey(label)) fixedInset else vInset
         return InsetDrawable(base, keyHorizontalInset(), topBottom, keyHorizontalInset(), topBottom)
     }
 
@@ -4969,7 +4965,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     private fun isFnKey(label: String): Boolean {
-        return label in setOf("123", "teclas", "back", "shift", ".")
+        return label in setOf("123", "abc", "teclas", "back", "shift", ".", "period")
     }
 
     private fun blend(foreground: Int, background: Int, amount: Float): Int {

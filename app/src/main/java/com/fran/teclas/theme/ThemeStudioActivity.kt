@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.fran.teclas.applyRoundKeyboardKeyOutline
 import com.fran.teclas.KeyboardThemeDrawables
 import com.fran.teclas.Neu
 import com.fran.teclas.NeuMode
@@ -625,6 +626,7 @@ class ThemeStudioActivity : ComponentActivity() {
     ): TextView =
         TextView(context).apply {
             gravity = Gravity.CENTER
+            applyRoundKeyboardKeyOutline(spec.rawLabel)
             includeFontPadding = false
             text = spec.displayLabel
             textSize = when {

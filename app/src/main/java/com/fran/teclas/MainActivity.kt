@@ -15546,10 +15546,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     "abc" -> 1.02f
                     else -> 1f
                 }
-                if (label == "enter" || label == "123") {
-                    // Full-height touch cell so the whole key is tappable top-to-bottom (was a fixed
-                    // square centered in a taller row → dead zone above/below). Width stays the round
-                    // face's size; MATCH_PARENT height means the touch fills the row.
+                if (isRoundKeyboardKey(label)) {
+                    // Full-height touch cell so the whole key is tappable top-to-bottom. Width stays
+                    // the round face's size; MATCH_PARENT height means the touch fills the row.
                     addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), ViewGroup.LayoutParams.MATCH_PARENT).apply {
                         if (label == "enter") marginStart = dp(2) else marginEnd = dp(2)
                     })
@@ -15578,6 +15577,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 contentDescription = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) "Docked, tap to undock" else "Undocked, tap to dock"
             }
             gravity = Gravity.CENTER
+            applyRoundKeyboardKeyOutline(label)
             textSize = keyTextSize(label)
             typeface = KeyboardThemeDrawables.typeface(keyboardTheme, label) ?: if (keyboardTheme == KEYBOARD_THEME_SEEME || keyboardTheme == KEYBOARD_THEME_BRUSHED) {
                 Typeface.create(Typeface.MONOSPACE, if (label == "enter") Typeface.BOLD else Typeface.NORMAL)
@@ -26572,10 +26572,10 @@ Question: $prompt"""
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT || keyboardTheme == KEYBOARD_THEME_TECLAS) {
-            if (label == "enter" || label == "123") {
-                // Round, equal-diameter faces for 123 and GO: inset the drawn face to a square the
+            if (isRoundKeyboardKey(label)) {
+                // Round, equal-diameter faces for 123/abc and GO: inset the drawn face to a square the
                 // width of the key (themedGoKeySize), vertically centered in the full-height touch
-                // cell — so the two read as matching round buttons instead of stretched vertical
+                // cell — so they read as matching round buttons instead of stretched vertical
                 // ovals, while the touch cell still fills the row top-to-bottom.
                 val side = themedGoKeySize()
                 val vpad = ((keyRowHeight() - side) / 2).coerceAtLeast(dp(2))
@@ -26584,7 +26584,7 @@ Question: $prompt"""
             return android.graphics.drawable.InsetDrawable(base, hInset, vInset, hInset, vInset)
         }
         val fixedInset = dp(2)
-        val topBottom = if (label == "enter" || label == "123") fixedInset else vInset
+        val topBottom = if (isRoundKeyboardKey(label)) fixedInset else vInset
         return android.graphics.drawable.InsetDrawable(base, hInset, topBottom, hInset, topBottom)
     }
 

@@ -429,6 +429,7 @@ class DockedKeyboardService : Service() {
                 contentDescription = "Docked, tap to undock"
             }
             gravity = Gravity.CENTER
+            applyRoundKeyboardKeyOutline(label)
             includeFontPadding = false
             setPadding(0, 0, 0, 0)
             if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && this is com.fran.teclas.keyboard.OpticalKeyTextView) {
@@ -750,11 +751,11 @@ class DockedKeyboardService : Service() {
         val base = keyFaceBackground(label, pressed)
         val theme = keyboardVisualTheme()
         if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) {
-            if (label == "enter") return base
+            if (isRoundKeyboardKey(label)) return base
             return InsetDrawable(base, keyVisualHorizontalInset(label), keyVerticalInset(), keyVisualHorizontalInset(label), keyVerticalInset())
         }
         val fixedInset = dp(2)
-        val topBottom = if (label == "enter" || label == "123") fixedInset else keyVerticalInset()
+        val topBottom = if (isRoundKeyboardKey(label)) fixedInset else keyVerticalInset()
         return InsetDrawable(base, keyVisualHorizontalInset(label), topBottom, keyVisualHorizontalInset(label), topBottom)
     }
 
@@ -1255,7 +1256,7 @@ class DockedKeyboardService : Service() {
         return getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(GO_KEY_COLOR_PREF, 0xFFC9A7FF.toInt())
     }
 
-    private fun isFnKey(label: String) = label in setOf("123", "teclas", "back", "shift", ".")
+    private fun isFnKey(label: String) = label in setOf("123", "abc", "teclas", "back", "shift", ".", "period")
 
     private fun brighten(color: Int): Int {
         val r = ((color shr 16 and 0xFF) * 1.18f).toInt().coerceAtMost(255)
