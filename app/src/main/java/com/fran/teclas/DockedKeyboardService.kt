@@ -154,7 +154,7 @@ class DockedKeyboardService : Service() {
             visibility = View.GONE
         }
         suggestionStrip = strip
-        deck.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(42)))
+        deck.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)))
         refreshSuggestions()
         listOf(
             "qwertyuiop".map { it.toString() },
@@ -648,10 +648,19 @@ class DockedKeyboardService : Service() {
         strip.removeAllViews()
         if (sugg.isEmpty()) { strip.visibility = View.GONE; return }
         strip.visibility = View.VISIBLE
-        for (s in sugg.take(3)) {
+        val items = sugg.take(3)
+        items.forEachIndexed { i, s ->
+            if (i > 0) {
+                // Thin vertical divider between suggestions.
+                strip.addView(View(this).apply {
+                    setBackgroundColor((textColor("space") and 0x00FFFFFF) or 0x40000000)
+                }, LinearLayout.LayoutParams(dp(1), dp(22)).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                })
+            }
             strip.addView(TextView(this).apply {
                 text = s
-                textSize = 19f
+                textSize = 25f
                 gravity = Gravity.CENTER
                 setTextColor(textColor("space"))
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
