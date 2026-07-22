@@ -1962,15 +1962,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             dockedMicButton = TextView(context).apply {
                 text = "🎤"
-                textSize = 20f
+                textSize = 15f
                 gravity = Gravity.CENTER
                 setTextColor(keyboardIndicatorTextColor(dim = false))
-                setPadding(dp(14), 0, dp(8), 0)
+                background = micButtonBackground(false)
                 isClickable = true
                 setOnClickListener { toggleVoiceInput() }
             }
-            addView(dockedMicButton, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            addView(dockedMicButton, LinearLayout.LayoutParams(dp(32), dp(32)).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                marginStart = dp(10); marginEnd = dp(2)
+            })
             searchHintView = TextView(context).apply {
                 text = launcherTypingStripText()
                 textSize = 15f
@@ -2183,6 +2185,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return
         }
         keyHaptic("space")
+        suppressRecognizerBeep()   // replace the jarring system chirp with our own haptic + pulse
         voicePartialActive = false
         engine.start(voiceLanguageTag(), voiceHotwords(), object : com.fran.teclas.keyboard.voice.VoiceInputEngine.Callbacks {
             override fun onPartial(text: String) { showVoicePartial(text) }
@@ -2208,22 +2211,66 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun setMicVisual(listening: Boolean) {
         dockedMicButton?.apply {
-            text = if (listening) "🔴" else "🎤"
-            setTextColor(if (listening) 0xFFFF5A60.toInt() else keyboardIndicatorTextColor(dim = false))
+            background = micButtonBackground(listening)
+            setTextColor(if (listening) 0xFFFFFFFF.toInt() else keyboardIndicatorTextColor(dim = false))
+            if (listening) {
+                // Soft "breathing" pulse while listening — the animated cue instead of a system beep.
+                val pulse = android.view.animation.ScaleAnimation(
+                    1f, 1.16f, 1f, 1.16f,
+                    android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f,
+                    android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f
+                ).apply {
+                    duration = 620
+                    repeatCount = android.view.animation.Animation.INFINITE
+                    repeatMode = android.view.animation.Animation.REVERSE
+                    interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+                }
+                startAnimation(pulse)
+            } else {
+                clearAnimation()
+            }
+        }
+    }
+
+    /** Round icon background for the mic key — a raised neu circle, or a solid red circle while it's
+     *  listening — so it reads as a round button matching the round 123/GO keys. */
+    private fun micButtonBackground(listening: Boolean): Drawable =
+        if (listening) GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFFFF5A60.toInt()) }
+        else Neu.drawable(activeNeuTokens, dp(99).toFloat(), NeuLevel.RAISED_SM)
+
+    /** Mute the system streams the built-in recognizer chirps on (NOT music) for ~1s around start, so
+     *  activation is our soft haptic + the mic pulse instead of the OS's abrupt double-beep. */
+    private fun suppressRecognizerBeep() {
+        runCatching {
+            val am = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            val streams = intArrayOf(
+                android.media.AudioManager.STREAM_SYSTEM,
+                android.media.AudioManager.STREAM_NOTIFICATION
+            )
+            streams.forEach { runCatching { am.adjustStreamVolume(it, android.media.AudioManager.ADJUST_MUTE, 0) } }
+            handler.postDelayed({
+                streams.forEach { runCatching { am.adjustStreamVolume(it, android.media.AudioManager.ADJUST_UNMUTE, 0) } }
+            }, 950)
         }
     }
 
     private fun showVoicePartial(text: String) {
         if (!::searchHintView.isInitialized) return
+        val starting = !voicePartialActive
         voicePartialActive = true
         dockedSuggestChips?.visibility = View.GONE
         searchHintView.visibility = View.VISIBLE
-        searchHintView.text = "🎤 $text"
+        searchHintView.text = "🎤  $text"
+        if (starting) {   // ease the live transcript in the first time, not on every partial (that'd flicker)
+            searchHintView.alpha = 0.35f
+            searchHintView.animate().alpha(1f).setDuration(200).start()
+        }
     }
 
     private fun clearVoicePartial() {
         if (!voicePartialActive) return
         voicePartialActive = false
+        if (::searchHintView.isInitialized) { searchHintView.animate().cancel(); searchHintView.alpha = 1f }
         if (dockedForegroundChirpActive()) updateDockedForegroundChirpStrip() else updateSuggestionBar()
     }
 
@@ -2233,20 +2280,47 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val t = text.trim()
         if (t.isEmpty()) { clearVoicePartial(); return }
         voicePartialActive = false
-        val cased = t.replaceFirstChar { it.titlecase(Locale.US) }
+        keyHaptic("space")
         when {
-            dockedForegroundChirpActive() -> insertDockedForegroundText("$cased ")
+            // Typing INTO an app or a chat compose → dictation: drop the words in as text.
+            dockedForegroundChirpActive() -> insertDockedForegroundText(t.replaceFirstChar { it.titlecase(Locale.US) } + " ")
             openPane?.kind == PaneKind.CHAT -> {
-                composeText += (if (composeText.isEmpty() || composeText.endsWith(" ")) "" else " ") + "$cased "
+                composeText += (if (composeText.isEmpty() || composeText.endsWith(" ")) "" else " ") + t.replaceFirstChar { it.titlecase(Locale.US) } + " "
                 openPane?.let { renderPaneContent(it) }
             }
+            // Launcher search → voice is a COMMAND: "uber to airport", "navigate to home", "timer 10",
+            // "play radiohead" run the action and open the app. Anything that isn't an action just
+            // fills the search box so you can refine it or press GO.
             else -> {
-                query += (if (query.isEmpty() || query.endsWith(" ")) "" else " ") + "$cased "
-                cursorPos = null
-                renderRibbon()
+                query = t; cursorPos = null
+                if (!runVoiceCommand(t)) renderRibbon()
             }
         }
-        keyHaptic("space")
+    }
+
+    /** Route a dictated launcher phrase to an action (open Uber/Maps/timer/play/…). Returns true if it
+     *  ran something, false if it's just a search to leave in the box. */
+    private fun runVoiceCommand(text: String): Boolean {
+        AgenticRouter.ensureLoaded(this)
+        AgenticRouter.classify(text)?.let { cmd ->
+            when {
+                cmd.intent != null -> {                       // opens an app / deep link — "say it, it happens"
+                    val status = AgenticRouter.execute(this, cmd)
+                    query = ""; renderRibbon()
+                    Toast.makeText(this, status ?: cmd.label, Toast.LENGTH_SHORT).show()
+                    return true
+                }
+                cmd.insertText != null -> {                   // calc / unit convert → drop the result in
+                    query = cmd.insertText; cursorPos = null; renderRibbon(); return true
+                }
+                cmd.insertsLocation || cmd.fetchWeather -> {  // location / weather → the normal applier
+                    pendingLauncherCommand = cmd; applyLauncherCommand(); return true
+                }
+            }
+        }
+        // Not a catalog skill — try type-to-do (opens a named app, dials a number, etc.).
+        if (executeTypeToDoCommand(text)) { query = ""; renderRibbon(); return true }
+        return false
     }
 
     private fun launcherTypingStripText(): CharSequence {
