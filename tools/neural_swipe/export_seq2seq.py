@@ -98,6 +98,34 @@ def synth_path(word, rng):
     return path.astype(np.float32), times
 
 
+def synth_tap_path(word, rng):
+    """A DISCRETE tap sequence for [word]: one point per letter near its key center, with
+    tap-cadence timestamps — the shape a *tap* typist produces, not a continuous swipe.
+
+    Stage 1b makes the neural decoder tap-aware. A swipe-only model is out-of-distribution on taps:
+    a tap trace is N well-separated points (one per letter) sampled ~90–220 ms apart, so the
+    per-point velocity/acceleration features are an order of magnitude smaller than a swipe's, and
+    there is no interpolated arc between keys. Feeding the model this exact shape at train time is
+    what lets the same encoder/decoder decode both gestures on-device. None if the word is unusable.
+    """
+    ctrl = word_key_path(word)
+    if len(ctrl) < 1:
+        return None, None
+    ctrl = np.asarray(ctrl, dtype=np.float64)
+    # Per-tap scatter around the key center — real fingers land off-center but rarely leave the key.
+    # Independent draw per letter (no shared arc), matching how a device buffers one point per press.
+    sx, sy = KEY_W * rng.uniform(0.12, 0.32), KEY_H * rng.uniform(0.12, 0.32)
+    path = ctrl + rng.normal(0, [sx, sy], size=ctrl.shape)
+    path = np.clip(path, 0.0, 1.0)
+
+    # Tap cadence: a fresh press every ~90–220 ms (vs a swipe's 6–18 ms sample interval). The wide
+    # gaps are the signal — they drive velocity toward zero, telling the model "these are taps".
+    dt = rng.uniform(90.0, 220.0)
+    times = np.cumsum(rng.normal(dt, dt * 0.25, size=len(path))).astype(np.float32)
+    times[0] = 0.0
+    return path.astype(np.float32), times
+
+
 def features_from_path(path, times):
     """[MAX_TRAJ, FEATURE_DIM] features + [MAX_TRAJ] int mask. IDENTICAL math to SwipeFeaturizer.kt."""
     n = len(path)
@@ -135,7 +163,9 @@ def word_tokens(word):
     return toks
 
 
-def iter_batch(words, rng, batch, max_word_len):
+def iter_batch(words, rng, batch, max_word_len, tap_prob=0.0):
+    """Synthetic batch. Each sample is a swipe by default, or a discrete TAP trace with probability
+    [tap_prob] (Stage 1b) — so one synthetic stream teaches the model both gestures at once."""
     feats, masks, tgts = [], [], []
     while len(feats) < batch:
         w = words[int(rng.integers(0, len(words)))]
@@ -144,9 +174,15 @@ def iter_batch(words, rng, batch, max_word_len):
         toks = word_tokens(w)
         if toks is None:
             continue
-        path, times = synth_path(w, rng)
-        if path is None or len(path) < 2:
-            continue
+        if tap_prob > 0.0 and rng.random() < tap_prob:
+            path, times = synth_tap_path(w, rng)
+            # A 1-letter tap word is a single point; that's a legitimate trace, keep it.
+            if path is None or len(path) < 1:
+                continue
+        else:
+            path, times = synth_path(w, rng)
+            if path is None or len(path) < 2:
+                continue
         f, m = features_from_path(path, times)
         feats.append(f); masks.append(m); tgts.append(toks)
     tlen = max(len(t) for t in tgts)
@@ -322,6 +358,11 @@ def main():
                     help="fraction of batches drawn from the synthetic generator when --futo is set "
                          "(real swipes cover ~12k donors' common words; synthetic covers the full "
                          "wordlist's long tail — mixing keeps rare-word decoding from regressing)")
+    ap.add_argument("--tap-mix", type=float, default=0.0,
+                    help="Stage 1b: fraction of batches that are synthetic DISCRETE TAP traces "
+                         "(one point per letter, tap cadence) instead of swipes. Makes the model "
+                         "tap-aware so the same encoder/decoder decodes tap typing on-device, not "
+                         "just glides. 0 = swipe-only (legacy). ~0.35 is a good tap+swipe balance.")
     ap.add_argument("--own", metavar="GLOB", default=None,
                     help="your own collected swipes (jsonl, collector-app or GlideLearningStore "
                          "export) — oversampled via --own-prob, not drowned in the corpus")
@@ -355,6 +396,8 @@ def main():
             own_rows = futo_data.load_jsonl_rows(args.own)
             print(f"own swipes: {len(own_rows)} rows, drawn with p={args.own_prob} per real sample")
         print(f"mix: {int((1 - args.synth_mix) * 100)}% real batches / {int(args.synth_mix * 100)}% synthetic")
+    if args.tap_mix > 0.0:
+        print(f"tap-aware (Stage 1b): {int(args.tap_mix * 100)}% of batches are synthetic TAP traces")
     print(f"loaded {len(words)} words; device={device}; data={'FUTO-real+synth' if args.futo else 'synthetic'}")
 
     encoder = SwipeEncoder(args.d_model, args.nhead, args.layers, args.ff).to(device)
@@ -391,7 +434,11 @@ def main():
 
     encoder.train(); decoder.train()
     for step in range(start_step, args.steps + 1):
-        if futo_rows is not None and rng.random() >= args.synth_mix:
+        # Stage 1b: carve out a tap-trace fraction first, then split the rest real/synthetic. Tap
+        # batches are always synthetic (the FUTO corpus is swipes only) — one point per letter.
+        if args.tap_mix > 0.0 and rng.random() < args.tap_mix:
+            feats, masks, tgt = iter_batch(words, rng, args.batch, args.max_word_len, tap_prob=1.0)
+        elif futo_rows is not None and rng.random() >= args.synth_mix:
             import futo_data
             feats, masks, tgt = futo_data.iter_futo_batch(
                 futo_rows, rng, args.batch, affine=futo_affine,

@@ -33,6 +33,7 @@ LAYERS="${LAYERS:-4}"
 NHEAD="${NHEAD:-6}"
 FF="${FF:-384}"
 SYNTH_MIX="${SYNTH_MIX:-0.25}"   # fraction of synthetic batches (long-tail vocab coverage)
+TAP_MIX="${TAP_MIX:-0.35}"       # Stage 1b: fraction of batches that are TAP traces (tap-aware model)
 OWN="${OWN:-}"                   # optional glob of your own collected swipes (jsonl)
 DEV_EVERY=200                    # every Nth corpus line is held out for evaluation
 OUT="model_candidate"
@@ -52,7 +53,7 @@ fi
 
 # 3. Train on the GPU: real swipes (minus the dev split) + synthetic long-tail mix (+ your own
 #    swipes oversampled, if provided).
-echo "== training: steps=$STEPS limit=$LIMIT batch=$BATCH synth-mix=$SYNTH_MIX own='${OWN}' =="
+echo "== training: steps=$STEPS limit=$LIMIT batch=$BATCH synth-mix=$SYNTH_MIX tap-mix=$TAP_MIX own='${OWN}' =="
 mkdir -p "$OUT"
 # --resume + --checkpoint-every: progress is checkpointed to $OUT/checkpoint.pt every N steps, so
 # a crash, reboot, or accidental file deletion costs at most CKPT_EVERY steps — just rerun this
@@ -60,7 +61,7 @@ mkdir -p "$OUT"
 python export_seq2seq.py \
   --wordlist ../../app/src/main/assets/dict/en_wordlist.txt \
   --futo futo_data/train.jsonl --futo-limit "$LIMIT" --exclude-every "$DEV_EVERY" \
-  --synth-mix "$SYNTH_MIX" \
+  --synth-mix "$SYNTH_MIX" --tap-mix "$TAP_MIX" \
   ${OWN:+--own "$OWN"} \
   --steps "$STEPS" --batch "$BATCH" --d-model "$DMODEL" --nhead "$NHEAD" --layers "$LAYERS" --ff "$FF" \
   --checkpoint-every "${CKPT_EVERY:-2000}" --resume \
@@ -81,9 +82,10 @@ echo "== run archived to tools/neural_swipe/$RUN_DIR (models + eval verdict) =="
 
 cat <<EOF
 
-Done. Ship ONLY if BOTH lines above say so:
+Done. Ship ONLY if ALL of these lines above say so:
   1. "candidate WINS"          (beats the shipped model on held-out real swipes)
   2. "DEVICE-SPACE GATE: PASS" (decodes swipes in the device's own coordinate space)
+  3. "TAP-SPACE GATE: PASS"    (decodes discrete tap traces — the tap-aware Stage 1b model)
 Then:
   cp $OUT/swipe_encoder.onnx $OUT/swipe_decoder.onnx ../../app/src/main/assets/
   # then rebuild + install the app

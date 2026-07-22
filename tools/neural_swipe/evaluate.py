@@ -67,22 +67,17 @@ GATE_WORDS = [
 ]
 
 
-def device_gate(model_dir, wordset, pref, per_word=2, min_top1=0.70, min_top3=0.85):
-    """
-    Gate #2: decode SYNTHETIC swipes generated DIRECTLY in device key-box space — no affine,
-    no FUTO coordinates anywhere. This is the check the dev-split eval structurally cannot do:
-    train and dev share the canvas→key-box mapping, so a misfit mapping scores 95%+ there while
-    the model misdecodes every real device swipe (the shipped-then-reverted 'google'→'good' bug).
-    A model that can't read clean device-space paths must never ship.
-    """
+def _space_gate(model_dir, wordset, pref, path_fn, per_word, min_top1, min_top3, seed):
+    """Decode SYNTHETIC gestures generated DIRECTLY in device key-box space — no affine, no FUTO
+    coordinates anywhere. [path_fn](word, rng) picks the gesture shape (swipe vs discrete tap)."""
     enc, dec = load(model_dir)
     words = [w for w in GATE_WORDS if w in wordset]
-    rng = np.random.default_rng(7)
+    rng = np.random.default_rng(seed)
     t1 = t3 = n = 0
     misses = []
     for w in words:
         for _ in range(per_word):
-            path, times = M.synth_path(w, rng)
+            path, times = path_fn(w, rng)
             if path is None:
                 continue
             f, m = M.features_from_path(path, times)
@@ -96,6 +91,18 @@ def device_gate(model_dir, wordset, pref, per_word=2, min_top1=0.70, min_top3=0.
                 misses.append(f"{w}→{cand[0] if cand else '?'}")
     r1, r3 = (t1 / n, t3 / n) if n else (0.0, 0.0)
     ok = n >= 20 and r1 >= min_top1 and r3 >= min_top3
+    return ok, r1, r3, n, misses
+
+
+def device_gate(model_dir, wordset, pref, per_word=2, min_top1=0.70, min_top3=0.85):
+    """
+    Gate #2: SWIPE decode in device key-box space. This is the check the dev-split eval structurally
+    cannot do: train and dev share the canvas→key-box mapping, so a misfit mapping scores 95%+ there
+    while the model misdecodes every real device swipe (the shipped-then-reverted 'google'→'good'
+    bug). A model that can't read clean device-space swipes must never ship.
+    """
+    ok, r1, r3, n, misses = _space_gate(
+        model_dir, wordset, pref, M.synth_path, per_word, min_top1, min_top3, seed=7)
     print(f"  device-space synthetic decode: top-1 {100 * r1:.1f}%  top-3 {100 * r3:.1f}%  ({n} swipes)")
     if misses:
         print(f"    top-3 misses: {', '.join(misses)}")
@@ -105,6 +112,27 @@ def device_gate(model_dir, wordset, pref, per_word=2, min_top1=0.70, min_top3=0.
         print("  DEVICE-SPACE GATE: FAIL — model cannot decode swipes in the device's own coordinate "
               "space. DO NOT SHIP: this is the calibration-misfit failure mode the dev-split eval "
               "cannot see (it evaluates in the same, possibly wrong, mapped space).")
+    return ok
+
+
+def tap_gate(model_dir, wordset, pref, per_word=3, min_top1=0.65, min_top3=0.82):
+    """
+    Gate #3 (Stage 1b): decode SYNTHETIC discrete TAP traces in device key-box space — one point
+    per letter at tap cadence, the shape a *tap* typist produces. A swipe-only model is
+    out-of-distribution here and will FAIL; a tap-aware model (trained with --tap-mix) must decode
+    taps as well as swipes before it ships, since tapping is the primary on-device input path.
+    """
+    ok, r1, r3, n, misses = _space_gate(
+        model_dir, wordset, pref, M.synth_tap_path, per_word, min_top1, min_top3, seed=11)
+    print(f"  device-space synthetic TAP decode: top-1 {100 * r1:.1f}%  top-3 {100 * r3:.1f}%  ({n} taps)")
+    if misses:
+        print(f"    top-3 misses: {', '.join(misses)}")
+    if ok:
+        print("  TAP-SPACE GATE: PASS")
+    else:
+        print("  TAP-SPACE GATE: FAIL — model cannot decode discrete tap traces. A tap-aware model "
+              "(trained with --tap-mix) must pass this; a swipe-only model is expected to fail it and "
+              "should not be shipped as the on-device tap decoder.")
     return ok
 
 
@@ -141,8 +169,10 @@ def main():
         b1, b3, _ = score(sys.argv[2], rows, aff, wordset, pref)
         print(f"  baseline  {sys.argv[2]}: top-1 {b1:.1f}%  top-3 {b3:.1f}%")
         print(f"  => candidate {'WINS' if c1 > b1 else 'does NOT beat baseline'} (top-1 {c1 - b1:+.1f} pts)")
-    # Shipping requires BOTH: beating the baseline above AND passing the device-space gate below.
+    # Shipping requires ALL: beating the baseline above AND passing both device-space gates below
+    # (swipe decode, and — for a tap-aware Stage 1b model — tap decode).
     device_gate(sys.argv[1], wordset, pref)
+    tap_gate(sys.argv[1], wordset, pref)
 
 
 if __name__ == "__main__":
