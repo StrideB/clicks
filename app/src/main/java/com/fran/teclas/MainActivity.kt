@@ -1969,6 +1969,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         launcherAgenticStatus?.let { return it }
         if (launcherPolishing) return "POLISHING…"
         return if (dockedForegroundDraft.isNotBlank()) {
+            // Mid-word: live suggestions from the same indexed engine the launcher fields use —
+            // this is what fills "the suggestion box" while typing into a third-party app.
+            val word = dockedForegroundCurrentWord()
+            if (word.length >= 2) {
+                val sugg = predictionEngine.getSuggestions(word, 3)
+                    .filterNot { it.equals(word, ignoreCase = true) }
+                if (sugg.isNotEmpty()) return sugg.joinToString("   ·   ")
+            }
             "CHIRP · hold GO"
         } else {
             "TYPING IN APP · HOLD GO FOR CHIRP"
@@ -21615,22 +21623,28 @@ Question: $prompt"""
             "123", "abc" -> return false
             "teclas" -> { bringLauncherToFront(); return true }
             "back" -> {
+                if (undoDockedForegroundAutocorrect()) return true   // backspace right after a correction = revert it
+                dockedFgUndo = null
                 mirrorDockedForegroundBackspace()
                 injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
             }
             "space" -> {
+                applyDockedForegroundAutocorrect()
                 mirrorDockedForegroundInsert(" ")
                 injectToForegroundApp(" ")
             }
             "period" -> {
+                applyDockedForegroundAutocorrect()
                 mirrorDockedForegroundInsert(".")
                 injectToForegroundApp(".")
             }
             "enter" -> {
+                dockedFgUndo = null
                 injectToForegroundApp(InputInjectionService.KEY_ENTER)
                 clearDockedForegroundDraft(localOnly = true)
             }
             else -> {
+                dockedFgUndo = null
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 if (shiftState == ShiftState.ONCE) { shiftState = ShiftState.OFF; updateKeyLabels() }
                 mirrorDockedForegroundInsert(char)
@@ -21638,6 +21652,54 @@ Question: $prompt"""
             }
         }
         return true
+    }
+
+    // ── Docked-foreground autocorrect: same AutocorrectCore decision as the launcher's own fields,
+    //    applied to the third-party app's field via one atomic guarded tail-replace (no lag: the
+    //    injector already owns the field text; a stale field makes the replace a silent no-op). ──
+    private var dockedFgUndo: Pair<String, String>? = null   // typed -> corrected (armed until next key)
+
+    private fun dockedForegroundCurrentWord(): String =
+        dockedForegroundDraft.takeLastWhile { it.isLetter() }.toString()
+
+    private fun applyDockedForegroundAutocorrect() {
+        dockedFgUndo = null
+        val word = dockedForegroundCurrentWord()
+        if (word.length < 2 || word.length > 24) return
+        val before = dockedForegroundDraft.dropLast(word.length).toString()
+        val prev = Regex("[A-Za-z]+").findAll(before).lastOrNull()?.value.orEmpty()
+        val corrected = autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) ?: return
+        if (corrected.equals(word, ignoreCase = true)) return
+        val cased = if (word.first().isUpperCase()) corrected.replaceFirstChar { it.uppercase(Locale.US) } else corrected
+        injectReplaceTailInForegroundApp(word, cased)
+        dockedForegroundDraft.setLength(dockedForegroundDraft.length - word.length)
+        dockedForegroundDraft.append(cased)
+        dockedFgUndo = word to cased
+        updateDockedForegroundChirpStrip()
+    }
+
+    /** Backspace immediately after an auto-correction restores the typed word (and remembers the
+     *  rejection so the same "fix" is never forced again). Returns true when the key is consumed. */
+    private fun undoDockedForegroundAutocorrect(): Boolean {
+        val (typed, cased) = dockedFgUndo ?: return false
+        dockedFgUndo = null
+        val tail = "$cased "
+        if (!dockedForegroundDraft.endsWith(tail)) return false
+        val restore = "$typed "
+        injectReplaceTailInForegroundApp(tail, restore)
+        dockedForegroundDraft.setLength(dockedForegroundDraft.length - tail.length)
+        dockedForegroundDraft.append(restore)
+        rejectedStore.add(typed.lowercase(Locale.US), cased.lowercase(Locale.US))
+        updateDockedForegroundChirpStrip()
+        return true
+    }
+
+    private fun injectReplaceTailInForegroundApp(expect: String, with: String) {
+        sendBroadcast(Intent(InputInjectionService.ACTION_REPLACE_TAIL).apply {
+            setPackage(packageName)
+            putExtra(InputInjectionService.EXTRA_EXPECT, expect)
+            putExtra(InputInjectionService.EXTRA_WITH, with)
+        })
     }
 
     private fun mirrorDockedForegroundInsert(text: String) {
