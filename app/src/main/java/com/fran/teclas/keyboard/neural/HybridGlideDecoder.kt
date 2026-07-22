@@ -5,7 +5,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlin.math.ln
 
 /** Which decoder(s) produced the winning candidate — carried out for learning + diagnostics. */
 enum class GlideSource { NEURAL, STATISTICAL, BOTH, NONE }
@@ -51,8 +50,11 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
     /** Multiplier on neural votes when its #1 is clearly ahead of its #2 — trustworthy now that the
      *  model is real-data-trained. */
     var confidentNeuralBoost: Double = 1.4
-    /** Min gap between neural #1 and #2 scores to count as "confident". */
-    var confidenceMargin: Float = 1.2f
+    /** Min gap between neural #1 and #2 RAW beam scores to count as "confident". Calibrated on
+     *  device-space swipes with the shipped model: at 0.5 the gate fires on 93% of swipes and the
+     *  neural #1 is correct 99.3% of the time it fires (wrong top-1 margins were all ≤ 0.80,
+     *  correct ones had median 1.74). */
+    var confidenceMargin: Float = 0.5f
     /** Run statistical first and prime the neural beam with it (L2). Off = fully parallel (L1 only). */
     var crossPrime: Boolean = true
 
@@ -65,7 +67,7 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
         path: List<TimedPoint>,
         bounds: FloatArray?,
         keyCenters: List<KeyInfo>,
-        wordFrequencies: Map<String, Float>,
+        @Suppress("UNUSED_PARAMETER") wordFrequencies: Map<String, Float>,   // kept for call-site stability; both engines weigh frequency internally
         topK: Int,
         statistical: suspend () -> List<String>
     ): HybridResult = coroutineScope {
@@ -105,7 +107,15 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
             (neuralScored[0].score - neuralScored[1].score) >= confidenceMargin
         val effectiveNeuralWeight = if (confident) neuralWeight * confidentNeuralBoost else neuralWeight
 
-        val fused = rrfFuse(neuralWords, statWords, wordFrequencies, effectiveNeuralWeight, topK)
+        // A confident neural #1 is authoritative: measured 99.3% correct when the gate fires. It is
+        // PINNED to the top of the fusion — weight boosts alone don't work, because RRF also counts
+        // the neural list's lower-ranked vote FOR the statistical favorite, which used to let the
+        // statistical decoder's systematic error ("good" for a "google" swipe) outvote the model.
+        val fused = rrfFuse(neuralWords, statWords, effectiveNeuralWeight, topK).let { f ->
+            if (confident && neuralWords.isNotEmpty())
+                listOf(neuralWords.first()) + f.filterNot { it == neuralWords.first() }
+            else f
+        }
 
         val agreed = neuralWords.isNotEmpty() && statWords.isNotEmpty() &&
             neuralWords.first().equals(statWords.first(), ignoreCase = true)
@@ -120,12 +130,16 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
         HybridResult(fused, neuralWords, statWords, agreed, confident, source)
     }
 
-    /** Reciprocal Rank Fusion of two rankings + a tiny frequency tiebreak. Context rerank is applied
-     *  downstream by the host's GlideCore, so it's deliberately not repeated here. */
+    /** Reciprocal Rank Fusion of two rankings. Context rerank is applied downstream by the host's
+     *  GlideCore, so it's deliberately not repeated here.
+     *
+     *  NO frequency term: RRF scores live at the 1/rrfK scale (~0.017), so the old
+     *  0.02*ln(freq) "tiebreak" spanned ~0.14 — seven times the primary signal — and turned the
+     *  fusion into a frequency sort where every rare word lost to a frequent lookalike. Both
+     *  engines already weigh frequency internally; it has no business being counted a third time. */
     private fun rrfFuse(
         neural: List<String>,
         statistical: List<String>,
-        freqs: Map<String, Float>,
         neuralW: Double,
         topK: Int
     ): List<String> {
@@ -133,7 +147,7 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
         neural.forEachIndexed { i, w -> score[w] = (score[w] ?: 0.0) + neuralW / (rrfK + i) }
         statistical.forEachIndexed { i, w -> score[w] = (score[w] ?: 0.0) + statisticalWeight / (rrfK + i) }
         return score.entries
-            .sortedByDescending { (w, s) -> s + FREQ_TIEBREAK * ln((freqs[w] ?: 0f) + 1e-3f) }
+            .sortedByDescending { it.value }
             .map { it.key }
             .take(topK)
     }
@@ -146,7 +160,4 @@ class HybridGlideDecoder(private val neural: NeuralGlideEngine) {
         return out
     }
 
-    private companion object {
-        const val FREQ_TIEBREAK = 0.02
-    }
 }

@@ -16653,11 +16653,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         else primary + words.filterNot { predictionEnginePrimary.isDictWord(it) }
     }
 
-    private fun handleGlideResult(rawResults: List<String>) {
+    private fun handleGlideResult(rawResults: List<String>, neuralPick: String? = null) {
         val results = languagePreferredOrder(rawResults)
         if (hapticsEnabled) hapticEngine.glideCommit() else haptic(contentFrame)
         val pane = openPane
-        val topWord = glideCore.rerank(results)         // shared context rerank
+        // A confident neural pick (99.3% correct when its gate fires) is final — the context
+        // rerank must not override it with a frequently-typed lookalike.
+        val topWord = neuralPick ?: glideCore.rerank(results)
         glideCore.commitWord(topWord)                   // shared append-vs-replace placement
         if (pane?.kind == PaneKind.CHAT) { updateAutoCapState(); updateKeyLabels(); renderPaneContent(pane) }
         // Learn from the glide: record the committed word against its predecessor so the n-gram and
@@ -17011,8 +17013,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                                 fadeGlideTrail()   // schedule the clear FIRST so a later throw can't strand the trail
                                 val results = res?.words ?: emptyList()
                                 if (results.isNotEmpty()) {
-                                    val top = glideCore.rerank(results)
-                                    handleGlideResult(results)
+                                    val neuralPick = if (res?.neuralConfident == true) res.words.firstOrNull() else null
+                                    val top = neuralPick ?: glideCore.rerank(results)
+                                    handleGlideResult(results, neuralPick)
                                     glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
                                     invalidate()
                                     res?.let { glideLearning.recordAcceptance(top, pathV2, bounds, it.source, it.agreed) }

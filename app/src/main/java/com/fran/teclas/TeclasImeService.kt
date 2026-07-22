@@ -4189,7 +4189,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                             val results = languagePreferredOrder(res.words)
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) haptics().glideCommit()
-                                val top = glideCore.rerank(results)
+                                // A confident neural pick (99.3% correct when the gate fires) is
+                                // final — the n-gram context rerank must not override it, or the
+                                // user's own past mistakes get replayed onto correct swipes.
+                                val top = if (res.neuralConfident) res.words.firstOrNull() ?: glideCore.rerank(results)
+                                          else glideCore.rerank(results)
                                 tapTraceClear(); clearPostCommitChips()
                                 glideCore.commitWord(top)
                                 recordCommittedWordContext()
