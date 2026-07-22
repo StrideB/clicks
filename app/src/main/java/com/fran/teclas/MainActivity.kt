@@ -659,6 +659,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var callPhoneLauncher: ActivityResultLauncher<String>
     private var pendingCallNumber: String? = null
     private lateinit var smsPermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var micPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var calendarPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var weatherPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var photosPermissionLauncher: ActivityResultLauncher<String>
@@ -797,6 +798,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         smsPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) triggerSmsSeeding()
+        }
+        micPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) beginVoiceInput()
+            else Toast.makeText(this, "Microphone permission needed for voice typing", Toast.LENGTH_SHORT).show()
         }
         calendarPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
             refreshCalendarEventsAsync { scheduleSemanticIndexRefresh() }
@@ -1955,6 +1960,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             elevation = dp(3).toFloat()
             isClickable = true
             setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
+            dockedMicButton = TextView(context).apply {
+                text = "🎤"
+                textSize = 20f
+                gravity = Gravity.CENTER
+                setTextColor(keyboardIndicatorTextColor(dim = false))
+                setPadding(dp(14), 0, dp(8), 0)
+                isClickable = true
+                setOnClickListener { toggleVoiceInput() }
+            }
+            addView(dockedMicButton, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
             searchHintView = TextView(context).apply {
                 text = launcherTypingStripText()
                 textSize = 15f
@@ -1999,6 +2015,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // space touch-delegate and the docked suggestion-chip persistence just below.
     private var spaceKeyView: View? = null
     private var lastDockedChipWord: String = ""
+    // Voice input: the mic key (left of the strip, mirroring the emoji key) and its swappable engine.
+    private var dockedMicButton: TextView? = null
+    private var voiceEngine: com.fran.teclas.keyboard.voice.VoiceInputEngine? = null
+    private var voicePartialActive = false
 
     /** Extend the space bar's touchable area down past the bottom of the deck (over the lift band and
      *  any padding) and slightly out at the sides, so the strip under/around the space bar commits a
@@ -2139,6 +2159,94 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         dockedFgUndo = null
         keyHaptic("space")
         updateDockedForegroundChirpStrip()
+    }
+
+    // ── Voice input ──────────────────────────────────────────────────────────
+    // Mic key → dictate into whatever field is active (launcher search, chat compose, or the
+    // foreground app via injection). The engine sits behind VoiceInputEngine so the OSS on-device
+    // recognizer (Whisper / streaming Zipformer via sherpa-onnx) swaps in without touching this UI.
+
+    private fun toggleVoiceInput() {
+        voiceEngine?.let { if (it.isListening) { it.stop(); setMicVisual(false); clearVoicePartial(); return } }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        beginVoiceInput()
+    }
+
+    private fun beginVoiceInput() {
+        val engine = voiceEngine
+            ?: com.fran.teclas.keyboard.voice.AndroidVoiceInputEngine(this).also { voiceEngine = it }
+        if (!engine.isAvailable()) {
+            Toast.makeText(this, "Voice recognition unavailable on this device", Toast.LENGTH_SHORT).show()
+            return
+        }
+        keyHaptic("space")
+        voicePartialActive = false
+        engine.start(voiceLanguageTag(), voiceHotwords(), object : com.fran.teclas.keyboard.voice.VoiceInputEngine.Callbacks {
+            override fun onPartial(text: String) { showVoicePartial(text) }
+            override fun onFinal(text: String) { commitVoiceText(text) }
+            override fun onStateChanged(listening: Boolean) { setMicVisual(listening); if (!listening) clearVoicePartial() }
+            override fun onError(message: String) {
+                setMicVisual(false)
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
+            }
+        })
+    }
+
+    /** Recognizer language from the keyboard's primary enabled language (en/es/fr/de/pt/it). */
+    private fun voiceLanguageTag(): String =
+        when (com.fran.teclas.keyboard.DictionaryLoader.enabledLanguages(this).firstOrNull()) {
+            "es" -> "es-ES"; "fr" -> "fr-FR"; "de" -> "de-DE"; "pt" -> "pt-BR"; "it" -> "it-IT"; else -> "en-US"
+        }
+
+    /** Personal vocabulary to bias the recognizer toward — installed app names (contacts can follow).
+     *  Honored by engines with contextual biasing (the OSS sherpa-onnx backend); ignored otherwise. */
+    private fun voiceHotwords(): List<String> =
+        apps.take(60).map { it.label }.distinct().take(80)
+
+    private fun setMicVisual(listening: Boolean) {
+        dockedMicButton?.apply {
+            text = if (listening) "🔴" else "🎤"
+            setTextColor(if (listening) 0xFFFF5A60.toInt() else keyboardIndicatorTextColor(dim = false))
+        }
+    }
+
+    private fun showVoicePartial(text: String) {
+        if (!::searchHintView.isInitialized) return
+        voicePartialActive = true
+        dockedSuggestChips?.visibility = View.GONE
+        searchHintView.visibility = View.VISIBLE
+        searchHintView.text = "🎤 $text"
+    }
+
+    private fun clearVoicePartial() {
+        if (!voicePartialActive) return
+        voicePartialActive = false
+        if (dockedForegroundChirpActive()) updateDockedForegroundChirpStrip() else updateSuggestionBar()
+    }
+
+    /** Drop recognized text into the active field with a trailing space, through the same commit
+     *  paths typing uses. Capitalizes the first word so a dictated sentence reads right. */
+    private fun commitVoiceText(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) { clearVoicePartial(); return }
+        voicePartialActive = false
+        val cased = t.replaceFirstChar { it.titlecase(Locale.US) }
+        when {
+            dockedForegroundChirpActive() -> insertDockedForegroundText("$cased ")
+            openPane?.kind == PaneKind.CHAT -> {
+                composeText += (if (composeText.isEmpty() || composeText.endsWith(" ")) "" else " ") + "$cased "
+                openPane?.let { renderPaneContent(it) }
+            }
+            else -> {
+                query += (if (query.isEmpty() || query.endsWith(" ")) "" else " ") + "$cased "
+                cursorPos = null
+                renderRibbon()
+            }
+        }
+        keyHaptic("space")
     }
 
     private fun launcherTypingStripText(): CharSequence {
