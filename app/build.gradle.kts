@@ -14,8 +14,8 @@ android {
         applicationId = "com.fran.teclas"
         minSdk = 31
         targetSdk = 37
-        versionCode = 10
-        versionName = "0.1.9"
+        versionCode = 11
+        versionName = "0.2.0"
 
         // Personal sideload app: every target device (Honor fold, Pixel, Apple-Silicon emulator)
         // is arm64-v8a. Shipping the other three ABIs tripled the APK's native-lib payload.
@@ -125,6 +125,10 @@ dependencies {
     // Keyboard-safe on-device rewriting: AICore blocks the raw Prompt API when the IME types into
     // another app (ErrorCode 30), but the task-specific Rewriting API is built for keyboards.
     implementation(libs.mlkit.genai.rewriting)
+    // Depth wallpaper: on-device foreground-subject extraction (iOS-style depth effect). Runs once
+    // per wallpaper at set-time to produce a cached transparent cutout — no runtime cost after.
+    // Module downloads on demand via Play services; absent devices fall back to the flat wallpaper.
+    implementation(libs.mlkit.subject.segmentation)
     // Semantic search now runs on the app's own llama.cpp (nomic-embed GGUF, EmbedEngine) —
     // no AI Edge RAG SDK, no license-gated model, no tokenizer file.
     // Shizuku: adb/root-privileged binder access so the launcher can pin apps into the docked
