@@ -14495,12 +14495,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow(listOf("abc", "0", "back", "enter"))
             } else {
                 addKeyRow("qwertyuiop".map { it.toString() })
-                // No horizontal inset on the a–l row: the inset was dead space belonging to no key,
-                // so a thumb landing at the far-left edge (where "a" is) hit nothing and missed every
-                // time. Full-width means "a" and "l" touch cells reach the screen edge.
+                // No horizontal insets on the letter/function rows: the inset was dead space
+                // belonging to no key, so a thumb landing at a row's far edge (e.g. "a", "shift",
+                // "123") hit nothing and missed. Full-width rows mean the edge keys' touch cells
+                // reach the screen edge. The visual key gap is still drawn by the per-key inset.
                 addKeyRow("asdfghjkl".map { it.toString() })
-                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(3))
-                addKeyRow(listOf("123", "teclas", "space", "period", "enter"), dp(5))
+                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"))
+                addKeyRow(listOf("123", "teclas", "space", "period", "enter"))
             }
         }
 
