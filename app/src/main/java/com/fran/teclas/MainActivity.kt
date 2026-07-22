@@ -16558,6 +16558,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // publish on Main (constructing them on the main thread stalled the first frame).
                 val engineUnion = PredictionEngine(freqs)
                 val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                android.util.Log.i("TeclasDiag",
+                    "launcher dictionary loaded: union=${freqs.size} words, primary=${adaptive.primaryFreqs.size}")
                 // Make glide available immediately with the statistical classifier; the heavy neural
                 // ONNX load must not block it (that stalls glide for seconds on a real device).
                 launch(Dispatchers.Main) {
@@ -21635,6 +21637,7 @@ Question: $prompt"""
      * through so the deck can still change number/symbol modes.
      */
     private fun routeKeyToForegroundApp(label: String): Boolean {
+        android.util.Log.i("TeclasDiag", "MainActivity.routeKeyToForegroundApp('$label') — launcher path, autocorrect active")
         when (label) {
             "123", "abc" -> return false
             "teclas" -> { bringLauncherToFront(); return true }

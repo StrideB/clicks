@@ -426,21 +426,32 @@ class DockedKeyboardService : Service() {
                 val handler = Handler(Looper.getMainLooper())
                 var longPressFired = false
                 var longPressRunnable: Runnable? = null
+                // "teclas" is the only key that distinguishes tap from long-press (hold = enter swap
+                // mode), so it must wait for finger-lift. EVERY OTHER key commits on ACTION_DOWN:
+                // waiting for ACTION_UP meant a tap whose finger drifted a pixel (→ ACTION_CANCEL, no
+                // ACTION_UP) was silently dropped, which is the "have to press twice" bug. Down-commit
+                // never loses a press because ACTION_DOWN is always delivered first.
+                val holdsForLongPress = label == "teclas"
+                var downCommitted = false
                 setOnTouchListener { v, event ->
                     if (swapMode) return@setOnTouchListener handleDockedKeyboardSwapTouch(event)
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
                             longPressFired = false
+                            downCommitted = false
                             v.isPressed = true
                             v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                             v.animate().translationY(dp(4).toFloat()).setDuration(35L).start()
-                            if (label == "teclas") {
+                            if (holdsForLongPress) {
                                 val runnable = Runnable {
                                     longPressFired = true
                                     enterDockedKeyboardSwap(v)
                                 }
                                 longPressRunnable = runnable
                                 handler.postDelayed(runnable, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                            } else {
+                                handleKey(label)      // down-commit: the press can never be lost to a cancel
+                                downCommitted = true
                             }
                             true
                         }
@@ -450,8 +461,10 @@ class DockedKeyboardService : Service() {
                             longPressRunnable = null
                             seemeReleaseHaptic(v)
                             v.animate().translationY(0f).setDuration(35L).start()
-                            if (!longPressFired) handleKey(label)
+                            // Only the hold-key commits on lift; everything else already fired on down.
+                            if (holdsForLongPress && !longPressFired && !downCommitted) handleKey(label)
                             longPressFired = false
+                            downCommitted = false
                             true
                         }
                         MotionEvent.ACTION_CANCEL -> {
@@ -459,6 +472,7 @@ class DockedKeyboardService : Service() {
                             longPressRunnable?.let { handler.removeCallbacks(it) }
                             longPressRunnable = null
                             longPressFired = false
+                            downCommitted = false
                             v.animate().translationY(0f).setDuration(35L).start()
                             true
                         }
@@ -476,6 +490,7 @@ class DockedKeyboardService : Service() {
     }
 
     private fun handleKey(label: String) {
+        android.util.Log.i("TeclasDiag", "DockedKeyboardService.handleKey('$label') — overlay keyboard, raw inject (no autocorrect path)")
         when (label) {
             "shift" -> {
                 shifted = !shifted
