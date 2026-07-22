@@ -141,7 +141,8 @@ class InputInjectionService : AccessibilityService() {
         // Prefer an editable in the FOREGROUND APP window (not this launcher's own window, which can
         // take focus when its keyboard deck is tapped). Then fall back to the tracked focused node
         // and finally the active window.
-        val target = focusedEditable?.takeIf { it.isEditable && it.refresh() && it.packageName?.toString() != packageName }
+        val fromFocused = focusedEditable?.takeIf { it.isEditable && it.refresh() && it.packageName?.toString() != packageName }
+        val target = fromFocused
             ?: findForegroundAppEditable()
             ?: findEditableTarget()
 
@@ -196,10 +197,17 @@ class InputInjectionService : AccessibilityService() {
         // Field the user focused themselves. Track what we typed in a local buffer keyed to the
         // field, so we never read (and re-append) the app's placeholder and deletes always clear.
         // Focus the field if it isn't already, so apps that search-as-you-type react to the input.
-        if (!target.isFocused) {
+        val needsFocus = !target.isFocused
+        if (needsFocus) {
             target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         }
-        target.refresh()   // fresh text + isShowingHintText before we seed the buffer
+        // Re-read the node only when it's actually needed: the cached focused node was already
+        // refreshed while resolving `target` above, so on the steady typing path (same, already-focused
+        // field) skip the second refresh — it was a full accessibility IPC on every keystroke. Refresh
+        // when target came from a fallback lookup, or when we just changed focus (post-focus state matters).
+        if (target !== fromFocused || needsFocus) {
+            target.refresh()   // fresh text + isShowingHintText before we seed the buffer
+        }
         if (raw == KEY_ENTER && submitImeAction(target)) return
         val key = fieldFingerprint(target)
         if (key != focusedFieldKey) {
