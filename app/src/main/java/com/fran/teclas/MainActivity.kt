@@ -1961,11 +1961,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             isClickable = true
             setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             dockedMicButton = TextView(context).apply {
-                text = "🎤"
-                textSize = 15f
-                gravity = Gravity.CENTER
-                setTextColor(keyboardIndicatorTextColor(dim = false))
                 background = micButtonBackground(false)
+                foreground = micGlyph(keyboardIndicatorTextColor(dim = false))
                 isClickable = true
                 setOnClickListener { toggleVoiceInput() }
             }
@@ -2185,7 +2182,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return
         }
         keyHaptic("space")
-        suppressRecognizerBeep()   // replace the jarring system chirp with our own haptic + pulse
+        suppressRecognizerBeep()   // mute the OS's jarring recognizer chirp
+        playSubtleVoiceCue()       // our own soft, quiet blip instead
         voicePartialActive = false
         engine.start(voiceLanguageTag(), voiceHotwords(), object : com.fran.teclas.keyboard.voice.VoiceInputEngine.Callbacks {
             override fun onPartial(text: String) { showVoicePartial(text) }
@@ -2212,15 +2210,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun setMicVisual(listening: Boolean) {
         dockedMicButton?.apply {
             background = micButtonBackground(listening)
-            setTextColor(if (listening) 0xFFFFFFFF.toInt() else keyboardIndicatorTextColor(dim = false))
+            foreground = micGlyph(if (listening) 0xFFFFFFFF.toInt() else keyboardIndicatorTextColor(dim = false))
             if (listening) {
-                // Soft "breathing" pulse while listening — the animated cue instead of a system beep.
+                // Soft "breathing" pulse — the aura glow gently expands/contracts while listening.
                 val pulse = android.view.animation.ScaleAnimation(
-                    1f, 1.16f, 1f, 1.16f,
+                    1f, 1.18f, 1f, 1.18f,
                     android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f,
                     android.view.animation.Animation.RELATIVE_TO_SELF, 0.5f
                 ).apply {
-                    duration = 620
+                    duration = 720
                     repeatCount = android.view.animation.Animation.INFINITE
                     repeatMode = android.view.animation.Animation.REVERSE
                     interpolator = android.view.animation.AccelerateDecelerateInterpolator()
@@ -2232,10 +2230,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    /** Round icon background for the mic key — a raised neu circle, or a solid red circle while it's
-     *  listening — so it reads as a round button matching the round 123/GO keys. */
+    /** The modern mic glyph (a vector, not an emoji), tinted and inset inside the round button. */
+    private fun micGlyph(color: Int): Drawable {
+        val d = resources.getDrawable(R.drawable.ic_mic_modern, theme).mutate()
+        d.setTint(color)
+        return android.graphics.drawable.InsetDrawable(d, dp(8))
+    }
+
+    /** Round background for the mic key — a raised neu circle at rest; a soft cyan AURA GLOW (radial,
+     *  fading to transparent) while listening, instead of a flat system-red fill. */
     private fun micButtonBackground(listening: Boolean): Drawable =
-        if (listening) GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xFFFF5A60.toInt()) }
+        if (listening) GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            gradientType = GradientDrawable.RADIAL_GRADIENT
+            gradientRadius = dp(24).toFloat()
+            colors = intArrayOf(0xFF3FC7FF.toInt(), adjustAlpha(0xFF3FC7FF.toInt(), 0.12f))
+        }
         else Neu.drawable(activeNeuTokens, dp(99).toFloat(), NeuLevel.RAISED_SM)
 
     /** Mute the system streams the built-in recognizer chirps on (NOT music) for ~1s around start, so
@@ -2251,6 +2261,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             handler.postDelayed({
                 streams.forEach { runCatching { am.adjustStreamVolume(it, android.media.AudioManager.ADJUST_UNMUTE, 0) } }
             }, 950)
+        }
+    }
+
+    /** A soft, quiet "listening" blip in place of the OS's loud recognizer beep. Low volume, short,
+     *  on the media stream (which we don't mute), so it mixes gently over anything playing. */
+    private fun playSubtleVoiceCue() {
+        runCatching {
+            val tg = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 28)
+            tg.startTone(android.media.ToneGenerator.TONE_PROP_BEEP, 70)
+            handler.postDelayed({ runCatching { tg.release() } }, 240)
         }
     }
 
@@ -2299,10 +2319,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     query += t
                     cursorPos = null
                     updateAutoCapState(); updateKeyLabels()
-                    renderRibbon()
+                    // Run it if it maps to a real command/app; otherwise just show the search results
+                    // (a spoken phrase with no real match is never auto-Googled).
+                    if (!runVoiceGo()) renderRibbon()
                 }
             }
         }
+    }
+
+    /** After voice fills the launcher query, act on it if it resolves to a real command or result —
+     *  a type-to-do action ("timer 10", "uber to airport"), an app, a contact, a setting, an answer —
+     *  but NEVER the web-search fallback. So spoken commands DO the thing instead of Googling; a phrase
+     *  with no real match just stays in the box as a search for you to refine or send. */
+    private fun runVoiceGo(): Boolean {
+        val q = query.trim()
+        if (q.isBlank()) return false
+        if (executeTypeToDoCommand(q)) { query = ""; renderRibbon(); return true }
+        val results = universalSearchResults()
+        val match = results.firstOrNull { it.kind == SearchKind.APP && it.title.equals(q, ignoreCase = true) }
+            ?: results.firstOrNull { it.kind != SearchKind.WEB && it.kind != SearchKind.AI }
+        if (match != null) { openSearchResult(match); return true }
+        return false
     }
 
     /** Spoken navigation shortcuts that jump to a launcher surface instead of filling the search box
