@@ -15155,15 +15155,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     "abc" -> 1.02f
                     else -> 1f
                 }
-                if (label == "enter") {
-                    addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
-                        gravity = Gravity.CENTER_VERTICAL
-                        marginStart = dp(2)
-                    })
-                } else if (label == "123") {
-                    addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
-                        gravity = Gravity.CENTER_VERTICAL
-                        marginEnd = dp(2)
+                if (label == "enter" || label == "123") {
+                    // Full-height touch cell so the whole key is tappable top-to-bottom (was a fixed
+                    // square centered in a taller row → dead zone above/below). Width stays the round
+                    // face's size; MATCH_PARENT height means the touch fills the row.
+                    addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                        if (label == "enter") marginStart = dp(2) else marginEnd = dp(2)
                     })
                 } else {
                     // Touch target fills the full cell — no horizontal margins — so there are no
