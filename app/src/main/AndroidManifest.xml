@@ -19,6 +19,12 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Spaces: actionable "Is this Home?" suggestion notifications (runtime on 33+). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 16 Live Updates: promotes the next-event notification into Samsung's Now Bar
+         (One UI 8+) / the stock lock-screen chip. Install-time permission; no-op below API 36. -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- Samsung DeX / Android 16 desktop windowing: the launcher runs windowed on an external
+         display without claiming the feature is required on phones. -->
+    <uses-feature android:name="android.software.freeform_window_management" android:required="false" />
     <!-- Shizuku: pin apps into the docked top region via privileged IActivityTaskManager. -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <queries>
@@ -35,7 +41,14 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
+        android:resizeableActivity="true"
         android:theme="@style/AppTheme">
+        <!-- Samsung DeX: keep the process alive when the display configuration changes
+             (dock/undock, fold/unfold onto an external display) instead of relaunching.
+             Documented Samsung meta-data; ignored everywhere else. -->
+        <meta-data
+            android:name="com.samsung.android.multidisplay.keep_process_alive"
+            android:value="true" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
