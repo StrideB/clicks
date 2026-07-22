@@ -720,6 +720,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var nowPlayingCardView: ComposeView
     private lateinit var keyboardDockView: FrameLayout
     private var dockedStatusShieldView: View? = null
+    private var dockedFreeformBackdropView: View? = null
     private lateinit var searchHintView: TextView
     private var widgetSearchRendered = false
     internal var widgetSearchContentArea: FrameLayout? = null
@@ -1188,7 +1189,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun clearDockedExternalStateOnLauncherFocus() {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return
-        if (!DockedFreeform.externalAppInFront && dockedStatusShieldView?.visibility != View.VISIBLE) return
+        if (!DockedFreeform.externalAppInFront &&
+            dockedStatusShieldView?.visibility != View.VISIBLE &&
+            dockedFreeformBackdropView?.visibility != View.VISIBLE
+        ) return
         handler.post {
             if (!hasWindowFocus() || keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return@post
             DockedFreeform.externalAppInFront = false
@@ -1795,6 +1799,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         keyViews.clear()
         keyBounds.clear()
         dockedStatusShieldView = null
+        dockedFreeformBackdropView = null
         unfoldedKeyboardSearchOverlayText = null
         applyTheme()
         syncSystemBars()
@@ -1872,6 +1877,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                 }
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                dockedFreeformBackdropView = View(context).apply {
+                    background = dockedFreeformBackdropDrawable()
+                    visibility = if (dockedFreeformBackdropHeightPx() > 0) View.VISIBLE else View.GONE
+                    isClickable = false
+                    isFocusable = false
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }
+                addView(
+                    dockedFreeformBackdropView,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        dockedFreeformBackdropHeightPx().coerceAtLeast(1),
+                        Gravity.TOP
+                    )
+                )
                 dockedStatusShieldView = View(context).apply {
                     setBackgroundColor(dockedStatusShieldColor())
                     visibility = if (dockedStatusShieldHeightPx() > 0) View.VISIBLE else View.GONE
@@ -11873,6 +11893,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!::rootView.isInitialized) return
         val wallpaperCanvas = launcherWallpaperCanvasActive()
         rootView.setBackgroundColor(if (wallpaperCanvas) Color.TRANSPARENT else activeNeuTokens.base)
+        syncDockedFreeformBackdrop(wallpaperCanvas)
         // Opaque only the status-bar strip when the library is open OR an app sits in the
         // freeform top region. Painting the whole root here hid the wallpaper behind docked apps.
         dockedStatusShieldView?.apply {
@@ -11889,9 +11910,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    private fun syncDockedFreeformBackdrop(wallpaperCanvas: Boolean) {
+        dockedFreeformBackdropView?.apply {
+            val backdropHeight = if (wallpaperCanvas) dockedFreeformBackdropHeightPx() else 0
+            background = dockedFreeformBackdropDrawable()
+            (layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                val nextHeight = backdropHeight.coerceAtLeast(1)
+                if (lp.height != nextHeight) {
+                    lp.height = nextHeight
+                    layoutParams = lp
+                }
+            }
+            visibility = if (backdropHeight > 0) View.VISIBLE else View.GONE
+        }
+    }
+
     private fun dockedStatusShieldNeeded(): Boolean =
         keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
             (libraryOpen || DockedFreeform.externalAppInFront)
+
+    private fun dockedFreeformBackdropHeightPx(): Int {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED || !DockedFreeform.externalAppInFront) return 0
+        refreshDockedExternalKeyboardTop()
+        val displayHeight = resources.displayMetrics.heightPixels
+        val minHeight = dp(320).coerceAtMost(displayHeight - 1)
+        return DockedFreeform.pinBounds(this).bottom.coerceIn(minHeight, displayHeight)
+    }
+
+    private fun dockedFreeformBackdropDrawable(): Drawable {
+        val top = if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFF7F8FA.toInt() else 0xFF202124.toInt()
+        val mid = if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFF0F2F5.toInt() else 0xFF191B1F.toInt()
+        val bottom = if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFE8EBEF.toInt() else 0xFF111316.toInt()
+        return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(top, mid, bottom)).apply {
+            shape = GradientDrawable.RECTANGLE
+        }
+    }
 
     private fun dockedStatusShieldHeightPx(): Int {
         if (!dockedStatusShieldNeeded()) return 0
