@@ -81,7 +81,12 @@ class TapLatticeDecoder(
             // silently dropping the 4th tap. A word using every tap (t == last) pays nothing.
             val unconsumed = taps.size - (t + 1)
             for (b in beams) if (trie.isWord(b.cursor)) {
-                finished += finalize(b.prefix, b.logp + unconsumed * COMPLETION_PENALTY, prevWord)
+                val penalized = b.logp + unconsumed * COMPLETION_PENALTY
+                // Emit the accented surface form(s) if the trie stored any (Spanish "cómo" from a
+                // "como" tap path); otherwise the plain a–z prefix.
+                val forms = trie.formsAt(b.cursor)
+                if (forms.isNullOrEmpty()) finished += finalize(b.prefix, penalized, prevWord)
+                else for (w in forms) finished += finalize(w, penalized, prevWord)
             }
         }
 
@@ -112,7 +117,11 @@ class TapLatticeDecoder(
             val c = trie.advance(cursor, li) ?: continue
             val np = prefix + ('a' + li)
             val nlp = logp + COMPLETION_PENALTY            // unseen taps cost a flat penalty
-            if (trie.isWord(c)) out += finalize(np, nlp, prev)
+            if (trie.isWord(c)) {
+                val forms = trie.formsAt(c)
+                if (forms.isNullOrEmpty()) out += finalize(np, nlp, prev)
+                else for (w in forms) out += finalize(w, nlp, prev)
+            }
             collectCompletions(c, np, nlp, prev, out, depth + 1)
         }
     }

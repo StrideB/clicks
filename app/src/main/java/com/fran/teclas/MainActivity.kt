@@ -16724,7 +16724,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // Contextual language detection (bilingual users): bias toward the language being written.
                 val langBias = com.fran.teclas.keyboard.unified.LanguageBias(adaptive.perLangWords)
                 // Gboard-style decode-at-space: a trie beam-searcher that reads the whole tap trail.
-                val tapTrie = com.fran.teclas.keyboard.neural.CharTrie().apply { addAll(adaptive.extendedWords) }
+                val tapTrie = com.fran.teclas.keyboard.neural.CharTrie().apply { addAllAccentFolded(adaptive.extendedWords) }
                 val decoder = com.fran.teclas.keyboard.TapLatticeDecoder(
                     tapTrie,
                     { x, y, key -> spatialScorer.probability(x, y, key.toString()).toFloat() },
