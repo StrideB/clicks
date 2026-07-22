@@ -154,7 +154,7 @@ class DockedKeyboardService : Service() {
             visibility = View.GONE
         }
         suggestionStrip = strip
-        deck.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(34)))
+        deck.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(42)))
         refreshSuggestions()
         listOf(
             "qwertyuiop".map { it.toString() },
@@ -651,7 +651,7 @@ class DockedKeyboardService : Service() {
         for (s in sugg.take(3)) {
             strip.addView(TextView(this).apply {
                 text = s
-                textSize = 15f
+                textSize = 19f
                 gravity = Gravity.CENTER
                 setTextColor(textColor("space"))
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
