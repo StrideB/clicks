@@ -181,6 +181,23 @@ class CustomHapticEngine(context: Context) {
         }
     }
 
+    /** Hard final detent when a browsed keyboard theme seats/locks into the dock. */
+    fun dockSeatSnap() {
+        val v = vibrator ?: return
+        if (!v.hasVibrator()) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                v.vibrate(
+                    VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scaled(1.0f))
+                        .compose()
+                )
+            }.onFailure { pulse(22L, scaledAmp(245)) }
+        } else {
+            pulse(22L, scaledAmp(245))
+        }
+    }
+
     private fun fallback(label: String) {
         val durationMs = if (label == "space" || label == "back") 12L else 8L
         val amp = (150 * amplitude()).toInt()

@@ -364,6 +364,12 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
                             return true
                         }
                     }
+                    removeChipRect()?.let { chip ->
+                        if (chip.contains(ev.x, ev.y)) {
+                            resizeItem?.let { removeItemCompletely(it) }
+                            return true
+                        }
+                    }
                     resizeEdge = hitResizeEdge(ev.x, ev.y)
                     if (resizeEdge != 0) return true
                     val onSelected = childAt(ev.x, ev.y)?.id == resizeItem?.id
@@ -492,11 +498,7 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
 
         // Remove zone along the top edge.
         if (y < removeZoneHeight) {
-            widgetIdsOf(item).forEach { host.widgetRemoved(it); widgetViewCache.remove(it) }
-            items.removeAll { it.id == item.id }
-            dragging = false; dragItem = null; dragView = null
-            host.itemsChanged(items.toList())
-            rebuild()
+            removeItemCompletely(item)
             return
         }
 
@@ -810,6 +812,30 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
         return RectF(f.left + dpF(8f), f.top + dpF(8f), f.left + dpF(64f), f.top + dpF(34f))
     }
 
+    private fun removeChipRect(): RectF? {
+        val item = resizeItem ?: return null
+        if (item.type != GridItemType.WIDGET && item.type != GridItemType.STACK) return null
+        val f = resizeFrame() ?: return null
+        return RectF(f.right - dpF(78f), f.top + dpF(8f), f.right - dpF(8f), f.top + dpF(34f))
+    }
+
+    private fun removeItemCompletely(item: GridItem) {
+        widgetIdsOf(item).forEach { widgetId ->
+            host.widgetRemoved(widgetId)
+            widgetViewCache.remove(widgetId)
+        }
+        items.removeAll { it.id == item.id }
+        dragging = false
+        dragItem = null
+        dragView = null
+        resizeItem = null
+        resizeEdge = 0
+        pendingSpanX = 0
+        pendingSpanY = 0
+        host.itemsChanged(items.toList())
+        rebuild()
+    }
+
     /** Swipeable pile of hosted widgets sharing one footprint — Pixel widget-stack behaviour. */
     private inner class StackContainer(context: Context, val item: GridItem) : FrameLayout(context) {
         private var active = item.activeChild.coerceIn(0, (item.children.size - 1).coerceAtLeast(0))
@@ -897,6 +923,23 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
                     textAlign = Paint.Align.CENTER; letterSpacing = 0.1f
                 }
                 canvas.drawText("POP", chip.centerX(), chip.centerY() + dpF(3.5f), p)
+            }
+            removeChipRect()?.let { chip ->
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = danger
+                    textSize = dpF(10f)
+                    typeface = Typeface.MONOSPACE
+                    textAlign = Paint.Align.CENTER
+                    letterSpacing = 0.1f
+                }
+                handlePaint.style = Paint.Style.FILL
+                handlePaint.color = removeBgPaint.color
+                canvas.drawRoundRect(chip, dpF(8f), dpF(8f), handlePaint)
+                handlePaint.style = Paint.Style.STROKE
+                handlePaint.strokeWidth = dpF(1f)
+                handlePaint.color = danger
+                canvas.drawRoundRect(chip, dpF(8f), dpF(8f), handlePaint)
+                canvas.drawText("DELETE", chip.centerX(), chip.centerY() + dpF(3.5f), p)
             }
         }
     }

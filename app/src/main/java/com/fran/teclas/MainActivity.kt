@@ -162,6 +162,10 @@ import com.fran.teclas.brief.glassTintColorInt
 import com.fran.teclas.brief.mutedColorInt
 import com.fran.teclas.brief.textColorInt
 import com.fran.teclas.brief.typeface
+import com.fran.teclas.clock.ClockContainer
+import com.fran.teclas.clock.ClockState
+import com.fran.teclas.clock.ClockThemes
+import com.fran.teclas.clock.ClockWidgetView
 import androidx.compose.ui.platform.ComposeView
 import org.json.JSONArray
 import org.json.JSONObject
@@ -381,6 +385,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var categoryFolderView: View? = null
     private var widgetBoardView: View? = null
     private var widgetPickerView: View? = null
+    private var homeAddMenuView: View? = null
     private var widgetPickerListHost: FrameLayout? = null
     private var widgetPickerQuery = ""
     private val widgetPickerExpandedApps = mutableSetOf<String>()
@@ -441,6 +446,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedFocusContentArea: FrameLayout? = null
     private var unfoldedFocusDockView: View? = null
     private var unfoldedWeatherSpacerView: View? = null
+    private var clockWidgetFrameView: View? = null
+    private var clockWidgetView: ClockWidgetView? = null
+    private var clockStylePickerView: View? = null
     private var weatherWidgetFrameView: View? = null
     private var agendaWidgetFrameView: View? = null
     private var briefWidgetFrameView: View? = null
@@ -450,6 +458,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedWeatherHoldFired = false
     private var unfoldedWeatherHoldStartX = 0f
     private var unfoldedWeatherHoldStartY = 0f
+    private var homeAddLongPressRunnable: Runnable? = null
+    private var homeAddLongPressFired = false
+    private var homeAddLongPressStartX = 0f
+    private var homeAddLongPressStartY = 0f
     private var innerKeyboardPreviewBoost: Int? = null
     private var innerKeyboardEditMode = false
     private var composeText = ""
@@ -554,6 +566,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetSwapDownX = 0f
     private var widgetSwapDownY = 0f
     private var widgetSwapHasDown = false
+    private var dockedKeyboardSwapMode = false
+    private var dockedKeyboardSwapIgnoreCurrentGesture = false
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
     private var neuralSwipe: com.fran.teclas.keyboard.NeuralSwipeEngine? = null
     // New encoder-decoder + beam-search decoder, wired via the same shared engine the IME uses.
@@ -671,6 +685,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var weatherAmbientView: WeatherAmbientView? = null
     private var weatherDripView: WeatherDripView? = null
     internal var homeWallpaperDrawable: Drawable? = null
+    private var lastGoodHomeWallpaperDrawable: Drawable? = null
     private var homeWallpaperSourceSig: String? = null
     private var homeWallpaperUnavailableSig: String? = null
     private var fluidHoursRefreshRunnable: Runnable? = null
@@ -704,6 +719,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     internal fun hasBriefRepository() = ::briefRepository.isInitialized
     private lateinit var nowPlayingCardView: ComposeView
     private lateinit var keyboardDockView: FrameLayout
+    private var dockedStatusShieldView: View? = null
     private lateinit var searchHintView: TextView
     private var widgetSearchRendered = false
     internal var widgetSearchContentArea: FrameLayout? = null
@@ -806,19 +822,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         innerWallpaperPickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val uri = result.data?.data ?: return@registerForActivityResult
+            val uri = result.data?.data
+            if (uri == null) {
+                pendingWallpaperInnerScope = null
+                innerWallpaperEditMode = false
+                return@registerForActivityResult
+            }
             val flags = result.data?.flags ?: 0
             val readFlag = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
             runCatching { contentResolver.takePersistableUriPermission(uri, readFlag) }
             val innerScope = pendingWallpaperInnerScope ?: isUnfoldedInnerLayoutActive()
             pendingWallpaperInnerScope = null
+            innerWallpaperEditMode = false
             prefs().edit()
                 .putBoolean(homeScopedKey(HOME_SYSTEM_WALLPAPER_PREF), false)
                 .putString(activeWallpaperUriPref(innerScope), uri.toString())
                 .apply()
             maybeAutoSaveDemoStage(activeWallpaperUriPref(innerScope))
             homeWallpaperDrawable = null
+            homeWallpaperUnavailableSig = null
+            deviceWallpaperFileDeniedSig = null
+            homeWallpaperSourceSig = null
             Toast.makeText(this, if (innerScope) "Inner wallpaper applied." else "Cover wallpaper applied.", Toast.LENGTH_SHORT).show()
+            refreshHomeWallpaperAsync()
             if (::rootView.isInitialized) render()
         }
         // Semantic model is now an ungated auto-download (EmbedEngine) — no file import. The launcher
@@ -934,7 +960,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaUiScope.launch {
             briefRepository.brief.collect {
                 if (::rootView.isInitialized && openPane == null && !libraryOpen && !isWidgetUniversalSearchActive()) {
-                    val shouldShowAgenda = agendaEntries().isNotEmpty()
+                    val shouldShowAgenda = agendaWidgetVisible() && agendaEntries().isNotEmpty()
                     if (agendaWidgetFrameView?.isAttachedToWindow == true || shouldShowAgenda) render()
                 }
             }
@@ -1081,18 +1107,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
-        // Reload when we're mirroring the device wallpaper (no launcher-picked override), so a
-        // wallpaper the user changes device-side shows up here on the next resume. Compare the
-        // wallpaper ids first: launchers resume on every home press, and unconditionally
-        // re-decoding the image + rebuilding the whole view tree each time was a major heat source.
-        if (useSystemWallpaperOnHome()) {
+        // Reload when the source changes, whether it is the device wallpaper, a picked file, or a
+        // Theme Studio wall. Compare the source signature first: launchers resume on every home
+        // press, and unconditionally re-decoding the image + rebuilding the whole view tree was a
+        // major heat source.
+        if (launcherWallpaperCanvasActive()) {
             val sig = deviceWallpaperSignature()
             if (sig != homeWallpaperSourceSig || (homeWallpaperDrawable == null && homeWallpaperUnavailableSig != sig)) {
                 refreshHomeWallpaperAsync()
             }
-        } else if (fluidHoursWallpaperActive()) {
-            val sig = deviceWallpaperSignature()
-            if (sig != homeWallpaperSourceSig || homeWallpaperDrawable == null) refreshHomeWallpaperAsync()
+        }
+        if (::rootView.isInitialized && openPane == null && launcherWallpaperCanvasActive()) {
+            rootView.post {
+                if (::rootView.isInitialized && openPane == null) render()
+            }
         }
         scheduleFluidHoursWallpaperRefresh()
         ensureBillingConnected()
@@ -1364,6 +1392,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onBackPressed() {
+        if (homeAddMenuView?.isAttachedToWindow == true) { closeHomeAddMenu(); return }
+        if (clockStylePickerView?.isAttachedToWindow == true) { closeClockStylePicker(); return }
         if (weatherPlacementView?.isAttachedToWindow == true) { exitWeatherPlacementMode(); return }
         if (weatherStylePickerView?.isAttachedToWindow == true) { closeWeatherStylePicker(); return }
         if (themePaneHost.briefThemePickerShowing()) { themePaneHost.closeBriefThemePicker(); return }
@@ -1539,9 +1569,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // (library/board swipes, triple-tap wallpaper, pane swipes) may fire — the touch goes straight to
     // the widget UI so a move/placement isn't hijacked mid-gesture.
     private fun widgetEditGestureLock(): Boolean {
-        if (homeEditMode || innerKeyboardEditMode || weatherWidgetDragging || widgetPickerView != null) return true
+        if (homeEditMode || innerKeyboardEditMode || weatherWidgetDragging || widgetPickerView != null || homeAddMenuView != null) return true
         // Theme/style pickers + placement mode own the screen too: no swipe-up-for-library etc.
-        if (weatherStylePickerView?.isAttachedToWindow == true || themePaneHost.briefThemePickerShowing()) return true
+        if (clockStylePickerView?.isAttachedToWindow == true || weatherStylePickerView?.isAttachedToWindow == true || themePaneHost.briefThemePickerShowing()) return true
         if (weatherPlacementView?.isAttachedToWindow == true) return true
         if (::spaceBoardController.isInitialized && spaceBoardController.isEditing()) return true
         if (::homeLeftController.isInitialized && homeLeftController.isEditing()) return true
@@ -1748,6 +1778,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         ensureDockedHomeSeed()   // one-time: copy the shared home setup into the docked namespace
         keyViews.clear()
         keyBounds.clear()
+        dockedStatusShieldView = null
         unfoldedKeyboardSearchOverlayText = null
         applyTheme()
         syncSystemBars()
@@ -1813,7 +1844,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (wallpaperCanvas) {
             val shell = FrameLayout(this).apply {
                 setBackgroundColor(if (useSystemWallpaperOnHome()) Color.TRANSPARENT else activeNeuTokens.base)
-                if (!useSystemWallpaperOnHome()) {
+                val hasCachedWallpaper = homeWallpaperDrawable != null || lastGoodHomeWallpaperDrawable != null
+                if (!useSystemWallpaperOnHome() || hasCachedWallpaper) {
                     homeWallpaperLayer()?.let {
                         val lp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                         // Docked: fit the wallpaper to the home area above the keyboard instead of
@@ -1824,6 +1856,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     }
                 }
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                dockedStatusShieldView = View(context).apply {
+                    setBackgroundColor(dockedStatusShieldColor())
+                    visibility = if (dockedStatusShieldHeightPx() > 0) View.VISIBLE else View.GONE
+                }
+                addView(
+                    dockedStatusShieldView,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        dockedStatusShieldHeightPx().coerceAtLeast(1),
+                        Gravity.TOP
+                    )
+                )
                 if (innerWallpaperEditMode) {
                     addView(innerWallpaperEditOverlay(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                 }
@@ -1843,12 +1887,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
+        syncDockedSearchStatusBar()
         root.post { captureKeyBounds() }
         // Key previews render inside our own window (one reused view) instead of a popup window.
         (findViewById<View>(android.R.id.content) as? FrameLayout)?.let { keyPreviewManager.attachHost(it) }
     }
 
     private fun clearTransientHomeOverlaysForRender() {
+        homeAddMenuView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        homeAddMenuView = null
+        homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
+        homeAddLongPressRunnable = null
+        homeAddLongPressFired = false
+        clockStylePickerView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        clockStylePickerView = null
         weatherStylePickerView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         weatherStylePickerView = null
         weatherPlacementView?.let { (it.parent as? ViewGroup)?.removeView(it) }
@@ -2757,8 +2809,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             withContext(Dispatchers.Main) {
                 homeWallpaperLoading = false
                 if (homeWallpaperSourceSig == sig) {
-                    homeWallpaperDrawable = loaded
-                    if (::rootView.isInitialized && openPane == null && !libraryOpen) render()
+                    if (loaded != null) {
+                        homeWallpaperDrawable = loaded
+                        lastGoodHomeWallpaperDrawable = loaded.constantState?.newDrawable(resources)?.mutate() ?: loaded
+                    } else if (homeWallpaperDrawable == null && lastGoodHomeWallpaperDrawable != null) {
+                        homeWallpaperDrawable = lastGoodHomeWallpaperDrawable?.constantState?.newDrawable(resources)?.mutate()
+                            ?: lastGoodHomeWallpaperDrawable
+                    }
+                    if (::rootView.isInitialized && openPane == null) render()
                 } else {
                     // Source changed mid-decode: this result is stale — decode the new one.
                     refreshHomeWallpaperAsync()
@@ -2770,13 +2828,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun homeWallpaperLayer(): View? {
         // Cached-only on the render path: a miss kicks the async decode and this pass renders
         // the base color; the decode completion re-renders with the wallpaper.
-        val wallpaper = homeWallpaperDrawable
-        if (wallpaper == null && launcherWallpaperCanvasActive() && !homeWallpaperLoading) refreshHomeWallpaperAsync()
+        val wallpaper = homeWallpaperDrawable ?: lastGoodHomeWallpaperDrawable
+        if (wallpaper == null &&
+            launcherWallpaperCanvasActive() &&
+            !homeWallpaperLoading &&
+            homeWallpaperUnavailableSig != deviceWallpaperSignature()
+        ) {
+            refreshHomeWallpaperAsync()
+        }
         if (wallpaper == null && !launcherWallpaperCanvasActive()) return null
         innerWallpaperImageView = null
         return object : FrameLayout(this) {
             override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
                 if (handleUnfoldedWeatherHold(ev)) return true
+                if (handleHomeAddLongPress(this, ev)) return true
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
@@ -2877,16 +2942,368 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     internal fun cancelWallpaperLongPress() {
         wallpaperLongPressRunnable?.let { handler.removeCallbacks(it) }
         wallpaperLongPressRunnable = null
+        homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
+        homeAddLongPressRunnable = null
+        homeAddLongPressFired = false
     }
 
     private fun installWallpaperEditLongPress(surface: View) {
-        // Disabled for now: home-surface wallpaper long-press was ghost-triggering during
-        // navigation gestures and could leave the launcher in edit mode. Wallpaper controls
-        // remain available from settings/search; this hook should not arm any gesture.
+        // Wallpaper edit stays out of the home long-press path: this gesture now opens the
+        // lightweight Add-to-Home sheet, with its own slop/eligibility guard in dispatch.
         cancelWallpaperLongPress()
         surface.isLongClickable = false
         surface.setOnLongClickListener(null)
         surface.setOnTouchListener(null)
+    }
+
+    private fun handleHomeAddLongPress(surface: View, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                homeAddLongPressStartX = event.rawX
+                homeAddLongPressStartY = event.rawY
+                homeAddLongPressFired = false
+                homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
+                homeAddLongPressRunnable = null
+                if (!canArmHomeAddLongPress(event.rawX, event.rawY)) return false
+                val runnable = Runnable {
+                    homeAddLongPressRunnable = null
+                    if (!canArmHomeAddLongPress(homeAddLongPressStartX, homeAddLongPressStartY)) return@Runnable
+                    homeAddLongPressFired = true
+                    haptic(surface)
+                    showHomeAddMenu()
+                }
+                homeAddLongPressRunnable = runnable
+                handler.postDelayed(runnable, android.view.ViewConfiguration.getLongPressTimeout().toLong() + 120L)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val slop = maxOf(dp(18), android.view.ViewConfiguration.get(surface.context).scaledTouchSlop * 2)
+                if (abs(event.rawX - homeAddLongPressStartX) > slop || abs(event.rawY - homeAddLongPressStartY) > slop) {
+                    homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
+                    homeAddLongPressRunnable = null
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
+                homeAddLongPressRunnable = null
+                if (homeAddLongPressFired) {
+                    homeAddLongPressFired = false
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun canArmHomeAddLongPress(rawX: Float, rawY: Float): Boolean {
+        if (homeAddMenuView?.isAttachedToWindow == true) return false
+        if (libraryOpen || isWidgetUniversalSearchActive() || openPane != null) return false
+        if (spaceBoardOverlay != null || homeLeftOverlay != null || widgetBoardView != null || widgetPickerView != null) return false
+        if (keyboardSettingsOpen || homeEditMode || innerKeyboardEditMode || innerWallpaperEditMode) return false
+        if (clockStylePickerView?.isAttachedToWindow == true || weatherStylePickerView?.isAttachedToWindow == true || weatherPlacementView?.isAttachedToWindow == true) return false
+        if (themePaneHost.briefThemePickerShowing()) return false
+        if (isInsideKeyboard(rawX, rawY) || isInsideKeyboardRevealZone(rawX, rawY) || isInsideTypingStrip(rawX, rawY)) return false
+        return !isInsideHomeAddExcludedSurface(rawX, rawY)
+    }
+
+    private fun isInsideHomeAddExcludedSurface(rawX: Float, rawY: Float): Boolean {
+        fun inside(view: View?): Boolean {
+            val target = view ?: return false
+            if (!target.isShown || target.width <= 0 || target.height <= 0) return false
+            val loc = IntArray(2)
+            target.getLocationOnScreen(loc)
+            return rawX >= loc[0] && rawX <= loc[0] + target.width &&
+                rawY >= loc[1] && rawY <= loc[1] + target.height
+        }
+        if (::favoritesDockFrameView.isInitialized && inside(favoritesDockFrameView)) return true
+        return inside(clockWidgetFrameView) ||
+            inside(weatherWidgetFrameView) ||
+            inside(agendaWidgetFrameView) ||
+            inside(briefWidgetFrameView) ||
+            inside(if (::nowPlayingCardView.isInitialized) nowPlayingCardView else null)
+    }
+
+    private fun showHomeAddMenu() {
+        if (!::contentFrame.isInitialized || homeAddMenuView?.isAttachedToWindow == true) return
+        val overlay = FrameLayout(this).apply {
+            isClickable = true
+            setBackgroundColor(adjustAlpha(Color.BLACK, if (activeNeuTokens.mode == NeuMode.DARK) 0.28f else 0.14f))
+            setOnClickListener { closeHomeAddMenu() }
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(16), dp(15), dp(16), dp(16))
+            background = homeAddPanelBackground()
+            elevation = dp(20).toFloat()
+
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply {
+                        text = "Add to Home"
+                        textSize = 21f
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        includeFontPadding = false
+                        setTextColor(activeNeuTokens.ink)
+                    })
+                    addView(mono("PRESS · PICK · PLACE", 8.3f, activeNeuTokens.inkFaint).apply {
+                        letterSpacing = 0.16f
+                        setPadding(0, dp(5), 0, 0)
+                    })
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(TextView(context).apply {
+                    text = "×"
+                    gravity = Gravity.CENTER
+                    textSize = 18f
+                    includeFontPadding = false
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.inkDim)
+                    background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
+                    setOnClickListener {
+                        haptic(this)
+                        closeHomeAddMenu()
+                    }
+                }, LinearLayout.LayoutParams(dp(36), dp(36)))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)).apply {
+                bottomMargin = dp(12)
+            })
+
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(homeAddWidgetCard(
+                    glyph = "◷",
+                    title = "Clock",
+                    subtitle = if (clockWidgetVisible()) clockWidgetStyleName() else "Live time card",
+                    accent = 0xFFC9A7FF.toInt(),
+                    tall = true
+                ) { addClockWidgetFromHomeMenu() }, LinearLayout.LayoutParams(0, dp(116), 1f).apply {
+                    rightMargin = dp(8)
+                })
+                addView(homeAddWidgetCard(
+                    glyph = "☼",
+                    title = "Weather",
+                    subtitle = if (weatherWidgetVisible()) "Choose style" else "Local forecast",
+                    accent = 0xFFF5C451.toInt(),
+                    tall = true
+                ) { addWeatherWidgetFromHomeMenu() }, LinearLayout.LayoutParams(0, dp(116), 1f))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(116)).apply {
+                bottomMargin = dp(8)
+            })
+
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(homeAddWidgetCard(
+                    glyph = "›",
+                    title = "Brief",
+                    subtitle = if (briefWidgetVisible()) "Choose theme" else "Daily actions",
+                    accent = 0xFF5FD0C4.toInt(),
+                    tall = true
+                ) { addBriefWidgetFromHomeMenu() }, LinearLayout.LayoutParams(0, dp(100), 1f).apply {
+                    rightMargin = dp(8)
+                })
+                addView(homeAddWidgetCard(
+                    glyph = "◌",
+                    title = "Agenda",
+                    subtitle = if (agendaWidgetVisible()) "On home" else "Next event",
+                    accent = 0xFFFF8F8F.toInt(),
+                    tall = true
+                ) { addAgendaWidgetFromHomeMenu() }, LinearLayout.LayoutParams(0, dp(100), 1f))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(100)).apply {
+                bottomMargin = dp(12)
+            })
+
+            addView(homeAddAndroidWidgetsButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
+        }
+        overlay.addView(panel, FrameLayout.LayoutParams(
+            minOf(resources.displayMetrics.widthPixels - dp(28), dp(430)),
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ).apply {
+            bottomMargin = if (!isUnfoldedInnerLayoutActive() && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && !widgetKeyboardHidden) {
+                widgetKeyboardSlotHeight() + dp(10)
+            } else {
+                dp(18)
+            }
+        })
+        homeAddMenuView = overlay
+        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        panel.translationY = dp(34).toFloat()
+        panel.alpha = 0f
+        overlay.alpha = 0f
+        overlay.animate().alpha(1f).setDuration(140).start()
+        panel.animate().alpha(1f).translationY(0f).setDuration(260)
+            .setInterpolator(android.view.animation.OvershootInterpolator(0.55f))
+            .start()
+    }
+
+    private fun closeHomeAddMenu() {
+        val overlay = homeAddMenuView ?: return
+        homeAddMenuView = null
+        overlay.animate().alpha(0f).setDuration(130)
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }
+            .start()
+    }
+
+    private fun homeAddPanelBackground(): Drawable {
+        val surface = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            adjustAlpha(activeNeuTokens.baseHi, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.92f else 0.92f),
+            adjustAlpha(activeNeuTokens.base, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.96f else 0.94f),
+            adjustAlpha(activeNeuTokens.baseLo, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.84f else 0.82f)
+        )).apply {
+            cornerRadius = dp(28).toFloat()
+        }
+        val rim = GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+            cornerRadius = dp(28).toFloat()
+            setStroke(dp(1), adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.24f else 0.10f))
+        }
+        return LayerDrawable(arrayOf(surface, rim))
+    }
+
+    private fun homeAddWidgetCard(
+        glyph: String,
+        title: String,
+        subtitle: String,
+        accent: Int,
+        tall: Boolean,
+        onClick: () -> Unit
+    ): View = LinearLayout(this).apply {
+        orientation = if (tall) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        gravity = if (tall) Gravity.LEFT or Gravity.CENTER_VERTICAL else Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED_SM)
+        isClickable = true
+        setOnClickListener {
+            haptic(this)
+            onClick()
+        }
+        val glyphView = TextView(context).apply {
+            text = glyph
+            gravity = Gravity.CENTER
+            textSize = if (tall) 22f else 18f
+            includeFontPadding = false
+            typeface = Typeface.create("serif", Typeface.BOLD)
+            setTextColor(accent)
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(
+                adjustAlpha(accent, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.22f else 0.20f),
+                adjustAlpha(activeNeuTokens.baseLo, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.10f else 0.38f)
+            )).apply {
+                shape = GradientDrawable.OVAL
+                setStroke(dp(1), adjustAlpha(accent, 0.28f))
+            }
+        }
+        addView(glyphView, LinearLayout.LayoutParams(dp(if (tall) 42 else 38), dp(if (tall) 42 else 38)).apply {
+            if (tall) bottomMargin = dp(12) else marginEnd = dp(12)
+        })
+        val labelBlock = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(context).apply {
+                text = title
+                textSize = if (tall) 15.4f else 15.8f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                includeFontPadding = false
+                setTextColor(activeNeuTokens.ink)
+            })
+            addView(TextView(context).apply {
+                text = subtitle
+                textSize = 10.2f
+                includeFontPadding = false
+                setTextColor(activeNeuTokens.inkDim)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, dp(4), 0, 0)
+            })
+        }
+        val labelLp = if (tall) {
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        } else {
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        addView(labelBlock, labelLp)
+    }
+
+    private fun homeAddAndroidWidgetsButton(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), 0, dp(12), 0)
+        background = Neu.drawable(activeNeuTokens, dp(19).toFloat(), NeuLevel.PRESSED_SM)
+        isClickable = true
+        setOnClickListener {
+            haptic(this)
+            openAndroidWidgetPickerFromHomeMenu()
+        }
+        addView(TextView(context).apply {
+            text = "+"
+            gravity = Gravity.CENTER
+            textSize = 22f
+            includeFontPadding = false
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setTextColor(activeNeuTokens.ink)
+            background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED_SM)
+        }, LinearLayout.LayoutParams(dp(38), dp(38)).apply { marginEnd = dp(12) })
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(context).apply {
+                text = "Android widgets"
+                textSize = 14.8f
+                includeFontPadding = false
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(activeNeuTokens.ink)
+            })
+            addView(mono("ADD ANY INSTALLED APP WIDGET", 8.2f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.13f
+                setPadding(0, dp(4), 0, 0)
+            })
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        addView(mono("›", 20f, activeNeuTokens.inkDim).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(22), LinearLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun addClockWidgetFromHomeMenu() {
+        if (clockWidgetVisible()) {
+            closeHomeAddMenu()
+            handler.postDelayed({ if (::contentFrame.isInitialized) openClockStylePicker() }, 160L)
+            return
+        }
+        prefs().edit().putBoolean(homeScopedKey(CLOCK_WIDGET_VISIBLE_PREF), true).apply()
+        closeHomeAddMenu()
+        render()
+        handler.postDelayed({ if (::contentFrame.isInitialized) openClockStylePicker() }, 180L)
+    }
+
+    private fun addWeatherWidgetFromHomeMenu() {
+        prefs().edit().putBoolean(homeScopedKey(ThemeRepository.WEATHER_VISIBLE_PREF), true).apply()
+        closeHomeAddMenu()
+        render()
+        handler.postDelayed({ if (::contentFrame.isInitialized) openWeatherStylePicker() }, 180L)
+    }
+
+    private fun addBriefWidgetFromHomeMenu() {
+        prefs().edit().putBoolean(homeScopedKey(ThemeRepository.BRIEF_VISIBLE_PREF), true).apply()
+        scheduleBriefGeneration(force = true)
+        closeHomeAddMenu()
+        render()
+        handler.postDelayed({ if (::contentFrame.isInitialized) themePaneHost.openBriefThemePicker() }, 180L)
+    }
+
+    private fun addAgendaWidgetFromHomeMenu() {
+        prefs().edit().putBoolean(homeScopedKey(AGENDA_WIDGET_VISIBLE_PREF), true).apply()
+        closeHomeAddMenu()
+        if (agendaEntries().isEmpty()) refreshCalendarEventsAsync { render() } else render()
+        Toast.makeText(this, "Agenda added.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun openAndroidWidgetPickerFromHomeMenu() {
+        closeHomeAddMenu()
+        if (widgetBoardView == null) openWidgetBoard()
+        handler.postDelayed({
+            if (widgetBoardView != null && widgetPickerView == null) showWidgetPicker()
+        }, 420L)
     }
 
     private fun innerWallpaperEditOverlay(): View = FrameLayout(this).apply {
@@ -3003,7 +3420,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun openInnerWallpaperPicker() {
         pendingWallpaperInnerScope = isUnfoldedInnerLayoutActive()
-        homeWallpaperDrawable = null
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "image/*"
@@ -3099,6 +3515,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetSearchRendered = widgetSearchActive
         homeEditMode = false
         homeEditChipView = null
+        clockWidgetFrameView = null
+        clockWidgetView = null
         weatherWidgetFrameView = null
         agendaWidgetFrameView = null
         weatherHoldTargetView = null
@@ -3167,6 +3585,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return object : FrameLayout(this) {
             override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
                 if (handleUnfoldedWeatherHold(ev)) return true
+                if (handleHomeAddLongPress(this, ev)) return true
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
@@ -3179,6 +3598,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh()
             if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive && clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
             if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
             if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
@@ -3191,12 +3611,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetSearchRendered = widgetSearchActive
         homeEditMode = false
         homeEditChipView = null
+        clockWidgetFrameView = null
+        clockWidgetView = null
         weatherWidgetFrameView = null
         agendaWidgetFrameView = null
         weatherHoldTargetView = null
         return object : FrameLayout(this) {
             override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
                 if (handleUnfoldedWeatherHold(ev)) return true
+                if (handleHomeAddLongPress(this, ev)) return true
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
@@ -3243,6 +3666,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             if (!widgetSearchActive && weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (!widgetSearchActive && clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
             if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
             if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { addView(it, briefWidgetFrameLayoutParams()) }
         }
@@ -3345,6 +3769,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetSearchRendered = false
         homeEditMode = false
         homeEditChipView = null
+        clockWidgetFrameView = null
+        clockWidgetView = null
         unfoldedLibraryContentArea = null
         unfoldedFocusContentArea = null
         unfoldedFocusDockView = null
@@ -3408,6 +3834,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh(playMoment = false)
             if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            if (clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
             if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
             post { refreshUnfoldedFocusContent() }
         }
@@ -5597,7 +6024,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     setColor(if (selected) 0xFF7AF0A0.toInt() else 0x55727782)
                 }
                 setOnClickListener {
-                    if (widgetSwapState == WidgetKeyboardSwapState.DETACHED) previewWidgetTheme(theme, fromLeft = null)
+                    when {
+                        widgetSwapState == WidgetKeyboardSwapState.DETACHED -> previewWidgetTheme(theme, fromLeft = null)
+                        dockedKeyboardSwapMode -> previewDockedKeyboardTheme(theme, fromLeft = null)
+                    }
                 }
             }
             dots.addView(dot, LinearLayout.LayoutParams(if (selected) dp(22) else dp(9), dp(9)).apply {
@@ -5605,6 +6035,195 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rightMargin = dp(4)
             })
         }
+    }
+
+    private fun beginDockedKeyboardThemeSwap(anchor: View) {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED || dockedKeyboardSwapMode || openPane != null || libraryOpen) return
+        val module = widgetKeyboardModule ?: return
+        dockedKeyboardSwapMode = true
+        dockedKeyboardSwapIgnoreCurrentGesture = true
+        widgetCommittedTheme = keyboardTheme
+        widgetPreviewTheme = keyboardTheme
+        widgetSwapHasDown = false
+        dockDetachHaptic(anchor)
+        showWidgetSwapChrome()
+        module.animate().cancel()
+        module.elevation = dp(18).toFloat()
+        module.cameraDistance = 12000f
+        module.animate()
+            .translationY(-dp(46).toFloat())
+            .translationX(0f)
+            .rotation(0f)
+            .rotationX(7f)
+            .scaleX(0.975f)
+            .scaleY(0.962f)
+            .setDuration(280L)
+            .setInterpolator(android.view.animation.OvershootInterpolator(0.82f))
+            .start()
+    }
+
+    private fun previewDockedKeyboardTheme(theme: String, fromLeft: Boolean?) {
+        if (!dockedKeyboardSwapMode) return
+        if (theme == widgetPreviewTheme) {
+            updateWidgetThemeDots()
+            snapDockedKeyboardSwapPose()
+            return
+        }
+        val module = widgetKeyboardModule ?: return
+        widgetPreviewTheme = theme
+        keyboardTheme = theme
+        haptic(module)
+        updateWidgetThemeDots()
+        val outX = if (fromLeft == true) dp(48).toFloat() else -dp(48).toFloat()
+        val inX = -outX
+        module.animate().cancel()
+        module.animate()
+            .alpha(0.2f)
+            .translationX(outX)
+            .rotation(outX * 0.02f)
+            .setDuration(95L)
+            .withEndAction {
+                module.removeAllViews()
+                module.addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                module.alpha = 0.2f
+                module.translationX = inX
+                module.translationY = -dp(46).toFloat()
+                module.rotation = inX * 0.02f
+                module.rotationX = 7f
+                module.scaleX = 0.975f
+                module.scaleY = 0.962f
+                module.animate()
+                    .alpha(1f)
+                    .translationX(0f)
+                    .rotation(0f)
+                    .setDuration(210L)
+                    .setInterpolator(android.view.animation.OvershootInterpolator(1.0f))
+                    .withEndAction { snapDockedKeyboardSwapPose() }
+                    .start()
+            }
+            .start()
+    }
+
+    private fun handleDockedKeyboardThemeSwapTouch(event: MotionEvent): Boolean {
+        if (!dockedKeyboardSwapMode) return false
+        if (dockedKeyboardSwapIgnoreCurrentGesture && event.actionMasked != MotionEvent.ACTION_DOWN) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                dockedKeyboardSwapIgnoreCurrentGesture = false
+            }
+            return true
+        }
+        val module = widgetKeyboardModule ?: return true
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                dockedKeyboardSwapIgnoreCurrentGesture = false
+                widgetSwapDownX = event.rawX
+                widgetSwapDownY = event.rawY
+                widgetSwapHasDown = true
+                module.animate().cancel()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!widgetSwapHasDown) return true
+                val dx = event.rawX - widgetSwapDownX
+                val dy = event.rawY - widgetSwapDownY
+                if (Math.abs(dx) > dp(8) && Math.abs(dx) > Math.abs(dy)) dismissWidgetCoach()
+                module.translationX = dx * 0.28f
+                module.rotation = dx * 0.015f
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!widgetSwapHasDown) {
+                    snapDockedKeyboardSwapPose()
+                    return true
+                }
+                widgetSwapHasDown = false
+                val dx = event.rawX - widgetSwapDownX
+                val dy = event.rawY - widgetSwapDownY
+                val absDx = Math.abs(dx)
+                val absDy = Math.abs(dy)
+                return when {
+                    absDx > dp(42) && absDx > absDy -> {
+                        val current = widgetSwapThemes.indexOf(widgetPreviewTheme).coerceAtLeast(0)
+                        val next = if (dx < 0f) (current + 1) % widgetSwapThemes.size else (current - 1 + widgetSwapThemes.size) % widgetSwapThemes.size
+                        dismissWidgetCoach()
+                        previewDockedKeyboardTheme(widgetSwapThemes[next], fromLeft = dx > 0f)
+                        true
+                    }
+                    absDx < dp(10) && absDy < dp(10) -> {
+                        seatDockedKeyboardTheme()
+                        true
+                    }
+                    else -> {
+                        snapDockedKeyboardSwapPose()
+                        true
+                    }
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                widgetSwapHasDown = false
+                snapDockedKeyboardSwapPose()
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun snapDockedKeyboardSwapPose() {
+        val module = widgetKeyboardModule ?: return
+        if (!dockedKeyboardSwapMode) return
+        module.animate()
+            .translationY(-dp(46).toFloat())
+            .translationX(0f)
+            .rotation(0f)
+            .rotationX(7f)
+            .scaleX(0.975f)
+            .scaleY(0.962f)
+            .setDuration(145L)
+            .setInterpolator(DecelerateInterpolator(1.8f))
+            .start()
+    }
+
+    private fun seatDockedKeyboardTheme() {
+        if (!dockedKeyboardSwapMode) return
+        val module = widgetKeyboardModule ?: return
+        dockedKeyboardSwapMode = false
+        dockedKeyboardSwapIgnoreCurrentGesture = false
+        widgetSwapHasDown = false
+        dismissWidgetCoach()
+        widgetDotsView?.animate()?.alpha(0f)?.setDuration(120L)?.withEndAction { widgetDotsView?.visibility = View.GONE }?.start()
+        module.animate().cancel()
+        module.animate()
+            .translationY(dp(8).toFloat())
+            .translationX(0f)
+            .rotation(0f)
+            .rotationX(0f)
+            .scaleX(1.012f)
+            .scaleY(0.994f)
+            .setDuration(145L)
+            .setInterpolator(android.view.animation.AccelerateInterpolator(1.45f))
+            .withEndAction {
+                keyboardTheme = widgetPreviewTheme
+                prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
+                widgetCommittedTheme = keyboardTheme
+                module.animate()
+                    .translationY(0f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(150L)
+                    .setInterpolator(android.view.animation.OvershootInterpolator(0.55f))
+                    .withEndAction {
+                        module.elevation = 0f
+                        playKeyboardDockSeatFeedback(module)
+                        showWidgetLockedPill()
+                        handler.postDelayed({
+                            hideWidgetSwapChrome()
+                            module.removeAllViews()
+                            module.addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                        }, 560L)
+                    }
+                    .start()
+            }
+            .start()
     }
 
     private fun previewWidgetTheme(theme: String, fromLeft: Boolean?) {
@@ -5761,9 +6380,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .setInterpolator(android.view.animation.AccelerateInterpolator(1.65f))
             .withEndAction {
                 haptic(module)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    module.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                }
                 widgetProngsView?.pulse()
                 widgetSocketView?.pulseGlow()
                 module.animate()
@@ -5784,6 +6400,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                                 prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
                                 widgetCommittedTheme = keyboardTheme
                                 module.elevation = 0f
+                                playKeyboardDockSeatFeedback(module)
                                 showWidgetLockedPill()
                                 widgetSwapState = WidgetKeyboardSwapState.SEATED
                                 handler.postDelayed({
@@ -5812,9 +6429,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .setInterpolator(android.view.animation.AccelerateInterpolator(1.45f))
             .withEndAction {
                 haptic(module)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    module.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                }
                 widgetProngsView?.pulse()
                 widgetSocketView?.pulseGlow()
                 module.animate()
@@ -5837,6 +6451,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                                 prefs().edit().putString(KEYBOARD_THEME_PREF, keyboardTheme).apply()
                                 widgetCommittedTheme = keyboardTheme
                                 module.elevation = 0f
+                                playKeyboardDockSeatFeedback(module)
                                 showWidgetLockedPill()
                                 widgetSwapState = WidgetKeyboardSwapState.SEATED
                                 handler.postDelayed({
@@ -5849,6 +6464,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     .start()
             }
             .start()
+    }
+
+    private fun playKeyboardDockSeatFeedback(module: View) {
+        if (hapticsEnabled) {
+            hapticEngine.dockSeatSnap()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                module.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            }
+        }
+        (module as? ViewGroup)?.let { KeyboardDockRippleView.play(it, goKeyColor) }
     }
 
     private fun showWidgetLockedPill() {
@@ -6606,6 +7231,414 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // It floats in the home FrameLayout above the content column; the column keeps
     // an invisible header-sized slot so nothing below it ever reflows.
 
+    private fun clockWidgetStyleId(): String =
+        ClockThemes.byId(prefs().getString(homeScopedKey(CLOCK_WIDGET_THEME_PREF), ClockThemes.DEFAULT_ID)).id
+
+    private fun clockWidgetStyleName(): String =
+        ClockThemes.byId(clockWidgetStyleId()).label
+
+    private fun clockWidgetVisible(): Boolean =
+        prefs().getBoolean(homeScopedKey(CLOCK_WIDGET_VISIBLE_PREF), false)
+
+    private fun clockWidgetHasCustomPos(): Boolean =
+        prefs().contains(homeScopedKey(CLOCK_WIDGET_POS_X_PREF)) && prefs().contains(homeScopedKey(CLOCK_WIDGET_POS_Y_PREF))
+
+    private fun saveClockWidgetPos(x: Int, y: Int) {
+        prefs().edit().putInt(homeScopedKey(CLOCK_WIDGET_POS_X_PREF), x).putInt(homeScopedKey(CLOCK_WIDGET_POS_Y_PREF), y).apply()
+    }
+
+    private fun buildClockWidgetFrame(context: Context): ClockWidgetFrame {
+        val frame = ClockWidgetFrame(context)
+        clockWidgetFrameView = frame
+        val data = weatherDataFromPrefs()
+        val clock = ClockWidgetView(context).apply {
+            themeId = clockWidgetStyleId()
+            accentColor = goKeyColor
+            isDarkMode = activeNeuTokens.mode == NeuMode.DARK
+            weatherTempF = data.temp
+            city = data.place
+        }
+        clockWidgetView = clock
+        frame.addView(clock, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        frame.elevation = dp(8).toFloat()
+        updateClockWidget()
+        return frame
+    }
+
+    private fun updateClockWidget() {
+        val data = weatherDataFromPrefs()
+        clockWidgetView?.apply {
+            themeId = clockWidgetStyleId()
+            accentColor = goKeyColor
+            isDarkMode = activeNeuTokens.mode == NeuMode.DARK
+            weatherTempF = data.temp
+            city = data.place
+            invalidate()
+        }
+    }
+
+    private fun clockWidgetHeight(styleId: String = clockWidgetStyleId()): Int = when (styleId) {
+        "compact_chip" -> dp(76)
+        "analog_glass", "ring" -> dp(152)
+        "wide_bar" -> dp(104)
+        else -> dp(124)
+    }
+
+    private fun clockWidgetWidth(styleId: String = clockWidgetStyleId()): Int {
+        val maxPhoneWidth = resources.displayMetrics.widthPixels
+        val targetDp = when (styleId) {
+            "compact_chip" -> 178
+            "analog_glass", "ring" -> 168
+            "vertical_rail" -> 178
+            "wide_bar" -> 340
+            "tile_grid", "glass_slab", "date_card" -> 260
+            else -> 228
+        }
+        val target = dp(targetDp)
+        return if (isUnfoldedInnerLayoutActive()) {
+            minOf(target.coerceAtLeast(dp(188)), resources.displayMetrics.widthPixels / 3)
+        } else {
+            minOf(maxPhoneWidth, target).coerceAtLeast(dp(156))
+        }
+    }
+
+    private fun clockWidgetFrameLayoutParams(): FrameLayout.LayoutParams {
+        val styleId = clockWidgetStyleId()
+        val width = clockWidgetWidth(styleId)
+        return FrameLayout.LayoutParams(width, clockWidgetHeight(styleId)).apply {
+            if (isUnfoldedInnerLayoutActive()) {
+                leftMargin = ((resources.displayMetrics.widthPixels - width) / 2).coerceAtLeast(dp(30))
+                topMargin = dp(220)
+            } else {
+                leftMargin = ((resources.displayMetrics.widthPixels - width) / 2).coerceAtLeast(0)
+                topMargin = dp(214)
+            }
+        }
+    }
+
+    private fun applyPersistedClockWidgetPos(frame: View) {
+        if (!clockWidgetHasCustomPos()) return
+        val parent = frame.parent as? View ?: return
+        if (parent.width <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        val x = prefs().getInt(homeScopedKey(CLOCK_WIDGET_POS_X_PREF), lp.leftMargin)
+        val y = prefs().getInt(homeScopedKey(CLOCK_WIDGET_POS_Y_PREF), lp.topMargin)
+        val (cx, cy) = clampClockWidgetPos(parent, frame.width, frame.height, x, y)
+        lp.leftMargin = cx
+        lp.topMargin = cy
+        frame.layoutParams = lp
+    }
+
+    private fun clampClockWidgetPos(ancestor: View, w: Int, h: Int, x: Int, y: Int): Pair<Int, Int> {
+        val maxX = (ancestor.width - w).coerceAtLeast(0)
+        val bottomLimit = if (isUnfoldedInnerLayoutActive()) ancestor.height else weatherWidgetBottomLimitIn(ancestor)
+        val maxY = (bottomLimit - h).coerceAtLeast(0)
+        return x.coerceIn(0, maxX) to y.coerceIn(0, maxY)
+    }
+
+    private fun moveClockWidget(frame: View, left: Int, top: Int) {
+        val parent = frame.parent as? View ?: return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        val (x, y) = clampClockWidgetPos(parent, frame.width, frame.height, left, top)
+        lp.leftMargin = x
+        lp.topMargin = y
+        frame.layoutParams = lp
+    }
+
+    private inner class ClockWidgetFrame(context: Context) : MovableWidgetFrame(context) {
+        private var persistedPosApplied = false
+
+        init {
+            clipChildren = false
+            clipToPadding = false
+            isClickable = true
+        }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!persistedPosApplied && width > 0 && ((parent as? View)?.width ?: 0) > 0) {
+                persistedPosApplied = true
+                post { applyPersistedClockWidgetPos(this) }
+            }
+        }
+
+        override fun onLongPress() = showClockWidgetManageMenu(this)
+
+        override fun moveDuringDrag(left: Int, top: Int) = moveClockWidget(this, left, top)
+
+        override fun onSettle(fallbackLeft: Int, fallbackTop: Int) {
+            val parentView = parent as? View ?: return
+            val lp = layoutParams as FrameLayout.LayoutParams
+            val (cx, cy) = clampClockWidgetPos(parentView, width, height, lp.leftMargin, lp.topMargin)
+            lp.leftMargin = cx
+            lp.topMargin = cy
+            layoutParams = lp
+            saveClockWidgetPos(cx, cy)
+            haptic(this)
+        }
+    }
+
+    private fun showClockWidgetManageMenu(anchor: View) {
+        showNativeWidgetManageMenu(
+            anchor = anchor,
+            title = "Clock",
+            accent = 0xFFC9A7FF.toInt(),
+            styleLabel = "Clock themes",
+            onStyle = { openClockStylePicker() },
+            onRemove = { removeClockWidget() }
+        )
+    }
+
+    private fun showWeatherWidgetManageMenu(anchor: View) {
+        showNativeWidgetManageMenu(
+            anchor = anchor,
+            title = "Weather",
+            accent = 0xFFF5C451.toInt(),
+            styleLabel = "Weather themes",
+            onStyle = { openWeatherStylePicker() },
+            onRemove = { removeWeatherWidget() }
+        )
+    }
+
+    private fun showBriefWidgetManageMenu(anchor: View) {
+        showNativeWidgetManageMenu(
+            anchor = anchor,
+            title = "Brief",
+            accent = 0xFF5FD0C4.toInt(),
+            styleLabel = "Brief themes",
+            onStyle = { themePaneHost.openBriefThemePicker() },
+            onRemove = { removeBriefWidget() }
+        )
+    }
+
+    private fun showAgendaWidgetManageMenu(anchor: View) {
+        showNativeWidgetManageMenu(
+            anchor = anchor,
+            title = "Agenda",
+            accent = 0xFFFF8F8F.toInt(),
+            styleLabel = "New event",
+            onStyle = { createCalendarEvent() },
+            onRemove = { removeAgendaWidget() }
+        )
+    }
+
+    private fun showNativeWidgetManageMenu(
+        anchor: View,
+        title: String,
+        accent: Int,
+        styleLabel: String,
+        onStyle: () -> Unit,
+        onRemove: () -> Unit
+    ) {
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.RAISED)
+            elevation = dp(18).toFloat()
+            addView(mono(title.uppercase(Locale.US), 8.5f, activeNeuTokens.inkDim).apply {
+                letterSpacing = 0.17f
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(13), 0, dp(13), dp(7))
+            }, LinearLayout.LayoutParams(dp(190), dp(26)))
+            addView(widgetQuickMenuItem(styleLabel, accent), LinearLayout.LayoutParams(dp(190), dp(44)))
+            addView(widgetQuickMenuDivider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                leftMargin = dp(10); rightMargin = dp(10)
+            })
+            addView(widgetQuickMenuItem("Remove", 0xFFFF6B6B.toInt()), LinearLayout.LayoutParams(dp(190), dp(44)))
+        }
+        val popup = PopupWindow(menu, dp(206), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
+            isOutsideTouchable = true
+            elevation = dp(18).toFloat()
+            setBackgroundDrawable(GradientDrawable().apply { setColor(Color.TRANSPARENT) })
+            animationStyle = android.R.style.Animation_Dialog
+        }
+        val styleRow = menu.getChildAt(1)
+        val removeRow = menu.getChildAt(3)
+        styleRow.setOnClickListener {
+            popup.dismiss()
+            haptic(anchor)
+            onStyle()
+        }
+        removeRow.setOnClickListener {
+            popup.dismiss()
+            if (hapticsEnabled) anchor.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            onRemove()
+        }
+        haptic(anchor)
+        val loc = IntArray(2)
+        anchor.getLocationOnScreen(loc)
+        val spaceBelow = resources.displayMetrics.heightPixels - (loc[1] + anchor.height)
+        val yoff = if (spaceBelow > dp(144)) dp(8) else -anchor.height - dp(130)
+        popup.showAsDropDown(anchor, dp(8), yoff, Gravity.TOP or Gravity.START)
+    }
+
+    private fun removeClockWidget() {
+        prefs().edit().putBoolean(homeScopedKey(CLOCK_WIDGET_VISIBLE_PREF), false).apply()
+        clockWidgetFrameView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        clockWidgetFrameView = null
+        clockWidgetView = null
+        Toast.makeText(this, "Clock removed.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun removeWeatherWidget() {
+        prefs().edit().putBoolean(homeScopedKey(ThemeRepository.WEATHER_VISIBLE_PREF), false).apply()
+        weatherWidgetFrameView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        weatherWidgetFrameView = null
+        weatherHoldTargetView = null
+        Toast.makeText(this, "Weather removed.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun removeBriefWidget() {
+        prefs().edit().putBoolean(homeScopedKey(ThemeRepository.BRIEF_VISIBLE_PREF), false).apply()
+        briefWidgetFrameView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        briefWidgetFrameView = null
+        Toast.makeText(this, "Brief removed.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun removeAgendaWidget() {
+        prefs().edit().putBoolean(homeScopedKey(AGENDA_WIDGET_VISIBLE_PREF), false).apply()
+        agendaWidgetFrameView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        agendaWidgetFrameView = null
+        Toast.makeText(this, "Agenda removed.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun openClockStylePicker() {
+        if (!::contentFrame.isInitialized || clockStylePickerView?.isAttachedToWindow == true) return
+        val overlay = FrameLayout(this).apply {
+            isClickable = true
+            setBackgroundColor(adjustAlpha(Color.BLACK, if (activeNeuTokens.mode == NeuMode.DARK) 0.48f else 0.30f))
+            setOnClickListener { closeClockStylePicker() }
+        }
+        val selected = clockWidgetStyleId()
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(16), dp(12), dp(16), dp(16))
+            background = homeAddPanelBackground()
+            elevation = dp(22).toFloat()
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply {
+                        text = "Clock Themes"
+                        textSize = 21f
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        includeFontPadding = false
+                        setTextColor(activeNeuTokens.ink)
+                    })
+                    addView(mono("20 LIVE CLOCK WIDGET STYLES", 8.2f, activeNeuTokens.inkFaint).apply {
+                        letterSpacing = 0.15f
+                        setPadding(0, dp(5), 0, 0)
+                    })
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(TextView(context).apply {
+                    text = "×"
+                    gravity = Gravity.CENTER
+                    textSize = 18f
+                    includeFontPadding = false
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.inkDim)
+                    background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
+                    setOnClickListener {
+                        haptic(this)
+                        closeClockStylePicker()
+                    }
+                }, LinearLayout.LayoutParams(dp(36), dp(36)))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply { bottomMargin = dp(10) })
+
+            addView(ScrollView(context).apply {
+                isVerticalScrollBarEnabled = false
+                overScrollMode = View.OVER_SCROLL_NEVER
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    ClockThemes.all.chunked(2).forEach { rowThemes ->
+                        addView(LinearLayout(context).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            rowThemes.forEach { theme ->
+                                addView(clockThemeCell(theme, selected == theme.id), LinearLayout.LayoutParams(0, dp(148), 1f).apply {
+                                    marginEnd = if (theme != rowThemes.last()) dp(10) else 0
+                                })
+                            }
+                            repeat(2 - rowThemes.size) { addView(View(context), LinearLayout.LayoutParams(0, dp(148), 1f)) }
+                        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(148)).apply { bottomMargin = dp(10) })
+                    }
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        overlay.addView(panel, FrameLayout.LayoutParams(
+            minOf(resources.displayMetrics.widthPixels - dp(20), dp(520)),
+            (resources.displayMetrics.heightPixels * 0.74f).toInt(),
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ))
+        clockStylePickerView = overlay
+        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        panel.translationY = dp(38).toFloat()
+        panel.alpha = 0f
+        overlay.alpha = 0f
+        overlay.animate().alpha(1f).setDuration(140).start()
+        panel.animate().alpha(1f).translationY(0f).setDuration(245).setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    private fun clockThemeCell(theme: com.fran.teclas.clock.ClockThemeSpec, selected: Boolean): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), if (selected) NeuLevel.RAISED else NeuLevel.PRESSED_SM)
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                applyClockWidgetStyle(theme.id)
+            }
+            addView(ClockWidgetView(context).apply {
+                themeId = theme.id
+                accentColor = goKeyColor
+                isDarkMode = activeNeuTokens.mode == NeuMode.DARK
+                previewState = ClockState(1, 54, 0, true, false, "Tuesday", "Jul 21", 80, "Fort Myers")
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(TextView(context).apply {
+                    text = theme.label
+                    textSize = 10.5f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    includeFontPadding = false
+                    setTextColor(activeNeuTokens.ink)
+                }, LinearLayout.LayoutParams(0, dp(24), 1f))
+                addView(mono(if (theme.container == ClockContainer.GLASS_BOX) "GLASS" else "OPEN", 7.4f, if (selected) goKeyColor else activeNeuTokens.inkFaint).apply {
+                    gravity = Gravity.CENTER
+                    letterSpacing = 0.15f
+                    background = Neu.drawable(activeNeuTokens, dp(9).toFloat(), NeuLevel.PRESSED_SM)
+                    setPadding(dp(6), 0, dp(6), 0)
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(22)))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(26)).apply { topMargin = dp(6) })
+        }
+
+    private fun applyClockWidgetStyle(styleId: String) {
+        val id = ClockThemes.byId(styleId).id
+        prefs().edit()
+            .putBoolean(homeScopedKey(CLOCK_WIDGET_VISIBLE_PREF), true)
+            .putString(homeScopedKey(CLOCK_WIDGET_THEME_PREF), id)
+            .apply()
+        haptic(contentFrame)
+        closeClockStylePicker()
+        render()
+    }
+
+    private fun closeClockStylePicker() {
+        val overlay = clockStylePickerView ?: return
+        clockStylePickerView = null
+        overlay.animate().alpha(0f).setDuration(130)
+            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }
+            .start()
+    }
+
     private fun weatherWidgetStyleId(): String =
         prefs().getString(homeScopedKey(WEATHER_WIDGET_STYLE_PREF), WEATHER_STYLE_CLASSIC_ID) ?: WEATHER_STYLE_CLASSIC_ID
 
@@ -6687,7 +7720,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         fired = true
                         view.parent?.requestDisallowInterceptTouchEvent(true)
                         haptic(view)
-                        openWeatherStylePicker()
+                        showWeatherWidgetManageMenu(view)
                     }
                     armed = r
                     view.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
@@ -6714,7 +7747,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         isLongClickable = true
         setOnLongClickListener { view ->
             haptic(view)
-            openWeatherStylePicker()
+            showWeatherWidgetManageMenu(view)
             true
         }
         if (this is ViewGroup) {
@@ -6732,22 +7765,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Default = the header's flow position (content column padding), so an unset
         // position renders pixel-identically to the old fixed top header.
         if (isUnfoldedInnerLayoutActive()) {
-            lp.leftMargin = dp(30)
+            lp.leftMargin = 0
             lp.topMargin = dp(74)
         } else {
-            lp.leftMargin = dp(14)
+            lp.leftMargin = 0
             lp.topMargin = 0
         }
         return lp
     }
 
     private fun weatherWidgetFreeformWidth(): Int {
-        val max = (resources.displayMetrics.widthPixels - dp(28)).coerceAtLeast(dp(260))
+        val max = resources.displayMetrics.widthPixels.coerceAtLeast(dp(260))
         return minOf(max, dp(420)).coerceAtLeast(dp(280))
     }
 
     private fun weatherWidgetStyledWidth(): Int {
-        val max = (resources.displayMetrics.widthPixels - dp(28)).coerceAtLeast(dp(220))
+        val max = resources.displayMetrics.widthPixels.coerceAtLeast(dp(220))
         return minOf(max, dp(360)).coerceAtLeast(dp(240))
     }
 
@@ -6933,6 +7966,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         protected open fun onLockedSingleTap() {}
         protected open fun lockedLongPressDelayMs(): Long = 700L
         protected open fun lockedLongPressCancelSlopPx(): Int = dp(6)
+        protected open fun moveDuringDrag(left: Int, top: Int) = moveWeatherWidget(this, left, top)
 
         protected fun dispatchCancelToChildren() {
             val t = android.os.SystemClock.uptimeMillis()
@@ -7019,7 +8053,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         freezeWeatherWidgetWidthForDrag(this)
                         dispatchCancelToChildren()
                     }
-                    if (dragging) { moveWeatherWidget(this, startLeft + dx, startTop + dy); armAutoLock() }
+                    if (dragging) { moveDuringDrag(startLeft + dx, startTop + dy); armAutoLock() }
                     return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -7080,7 +8114,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         override fun onSettle(fallbackLeft: Int, fallbackTop: Int) = settleWeatherWidget(this, fallbackLeft, fallbackTop)
         override fun lockedLongPressDelayMs(): Long = android.view.ViewConfiguration.getLongPressTimeout().toLong()
         override fun lockedLongPressCancelSlopPx(): Int = maxOf(dp(18), android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop * 2)
-        override fun onLongPress() = openWeatherStylePicker()
+        override fun onLongPress() = showWeatherWidgetManageMenu(this)
     }
 
     // ── Daily brief widget ───────────────────────────────────────────────────
@@ -7369,7 +8403,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
     private fun agendaStripVisible(): Boolean =
-        query.isBlank() && !libraryOpen && openPane == null && !isWidgetUniversalSearchActive()
+        agendaWidgetVisible() && query.isBlank() && !libraryOpen && openPane == null && !isWidgetUniversalSearchActive()
+
+    private fun agendaWidgetVisible(): Boolean =
+        prefs().getBoolean(homeScopedKey(AGENDA_WIDGET_VISIBLE_PREF), true)
 
     private fun agendaStripLabel(entry: AgendaEntry): String =
         when (entry.label) {
@@ -7392,14 +8429,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (isUnfoldedInnerLayoutActive()) {
             val width = agendaWidgetCardWidth()
             FrameLayout.LayoutParams(width, agendaWidgetCardHeight()).apply {
-                leftMargin = (resources.displayMetrics.widthPixels - width - dp(30)).coerceAtLeast(dp(30))
+                leftMargin = (resources.displayMetrics.widthPixels - width).coerceAtLeast(0)
                 topMargin = dp(74)
             }
         } else {
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(42)).apply {
-                leftMargin = dp(14)
+            FrameLayout.LayoutParams(agendaWidgetCardWidth(), dp(42)).apply {
+                leftMargin = 0
                 topMargin = dp(86)
-                rightMargin = dp(14)
             }
         }
 
@@ -7446,7 +8482,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        override fun onLongPress() = createCalendarEvent()
+        override fun onLongPress() = showAgendaWidgetManageMenu(this)
 
         override fun handlesLockedSingleTap(): Boolean = true
 
@@ -7729,14 +8765,68 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             applyShadow(content)
         }
+        content.installBriefManageLongPress(frame)
         frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         frame.elevation = if (briefTheme.isBoxed) dp(8).toFloat() else 0f
         return frame
     }
 
+    private fun View.installBriefManageLongPress(frame: BriefWidgetFrame) {
+        var startX = 0f
+        var startY = 0f
+        var fired = false
+        var armed: Runnable? = null
+
+        fun cancelHold(view: View) {
+            armed?.let { view.removeCallbacks(it) }
+            armed = null
+        }
+
+        setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.rawX
+                    startY = event.rawY
+                    fired = false
+                    cancelHold(view)
+                    val r = Runnable {
+                        armed = null
+                        fired = true
+                        view.parent?.requestDisallowInterceptTouchEvent(true)
+                        if (hapticsEnabled) view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        showBriefWidgetManageMenu(frame)
+                    }
+                    armed = r
+                    view.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                    false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val slop = maxOf(dp(18), android.view.ViewConfiguration.get(view.context).scaledTouchSlop * 2)
+                    if (abs(event.rawX - startX) > slop || abs(event.rawY - startY) > slop) cancelHold(view)
+                    fired
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    cancelHold(view)
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    if (fired) {
+                        fired = false
+                        true
+                    } else {
+                        false
+                    }
+                }
+                else -> fired
+            }
+        }
+        if (this is ViewGroup) {
+            for (i in 0 until childCount) getChildAt(i).installBriefManageLongPress(frame)
+        }
+    }
+
     private fun briefWidgetFrameLayoutParams(): FrameLayout.LayoutParams =
-        FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            leftMargin = dp(14); topMargin = dp(120); rightMargin = dp(14)
+        FrameLayout.LayoutParams(weatherWidgetFreeformWidth(), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = 0
+            topMargin = dp(120)
         }
 
     private fun applyPersistedBriefWidgetPos(frame: View) {
@@ -7767,7 +8857,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
 
-        override fun onLongPress() = themePaneHost.openBriefThemePicker()
+        override fun onLongPress() = showBriefWidgetManageMenu(this)
+        override fun lockedLongPressDelayMs(): Long = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        override fun lockedLongPressCancelSlopPx(): Int = maxOf(dp(18), android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop * 2)
 
         override fun onSettle(fallbackLeft: Int, fallbackTop: Int) {
             val parentView = parent as? View ?: return
@@ -9682,6 +10774,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private var startCellY = 0
         private var startSpanX = 1
         private var startSpanY = 1
+        private var quickMenuLongPressRunnable: Runnable? = null
+        private var quickMenuLongPressFired = false
+        private var quickMenuDownRawX = 0f
+        private var quickMenuDownRawY = 0f
+        private val quickMenuTouchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
 
         init {
             clipChildren = true
@@ -9703,6 +10800,48 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             showWidgetQuickMenu(this, spec) {
                 enterEditMode()
             }
+        }
+
+        private fun cancelQuickMenuLongPress() {
+            quickMenuLongPressRunnable?.let { removeCallbacks(it) }
+            quickMenuLongPressRunnable = null
+        }
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            if (!editing && !moving && !resizing) {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        quickMenuDownRawX = event.rawX
+                        quickMenuDownRawY = event.rawY
+                        quickMenuLongPressFired = false
+                        cancelQuickMenuLongPress()
+                        val runnable = Runnable {
+                            quickMenuLongPressFired = true
+                            val now = android.os.SystemClock.uptimeMillis()
+                            val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+                            super.dispatchTouchEvent(cancel)
+                            cancel.recycle()
+                            showQuickMenu()
+                        }
+                        quickMenuLongPressRunnable = runnable
+                        postDelayed(runnable, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (kotlin.math.abs(event.rawX - quickMenuDownRawX) > quickMenuTouchSlop ||
+                            kotlin.math.abs(event.rawY - quickMenuDownRawY) > quickMenuTouchSlop) {
+                            cancelQuickMenuLongPress()
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        cancelQuickMenuLongPress()
+                        if (quickMenuLongPressFired) {
+                            quickMenuLongPressFired = false
+                            return true
+                        }
+                    }
+                }
+            }
+            return super.dispatchTouchEvent(event)
         }
 
         override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
@@ -10572,13 +11711,42 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
      */
     private fun syncDockedSearchStatusBar() {
         if (!::rootView.isInitialized) return
-        // Opaque behind the status bar when the library is open OR an app sits in the freeform top
-        // region — otherwise the launcher wallpaper bleeds into the status-bar strip above the app.
-        val opaque = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
+        val wallpaperCanvas = launcherWallpaperCanvasActive()
+        rootView.setBackgroundColor(if (wallpaperCanvas) Color.TRANSPARENT else activeNeuTokens.base)
+        // Opaque only the status-bar strip when the library is open OR an app sits in the
+        // freeform top region. Painting the whole root here hid the wallpaper behind docked apps.
+        dockedStatusShieldView?.apply {
+            val shieldHeight = if (wallpaperCanvas) dockedStatusShieldHeightPx() else 0
+            setBackgroundColor(dockedStatusShieldColor())
+            (layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                val nextHeight = shieldHeight.coerceAtLeast(1)
+                if (lp.height != nextHeight) {
+                    lp.height = nextHeight
+                    layoutParams = lp
+                }
+            }
+            visibility = if (shieldHeight > 0) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun dockedStatusShieldNeeded(): Boolean =
+        keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
             (libraryOpen || DockedFreeform.externalAppInFront)
-        rootView.setBackgroundColor(
-            if (opaque || !launcherWallpaperCanvasActive()) activeNeuTokens.base else Color.TRANSPARENT
-        )
+
+    private fun dockedStatusShieldHeightPx(): Int {
+        if (!dockedStatusShieldNeeded()) return 0
+        val statusInset = launcherStatusBarInset()
+        if (!DockedFreeform.externalAppInFront) return statusInset
+        // Galaxy/One UI freeform windows keep a small rounded chrome gap at the top even when the
+        // Android status bar is hidden. Fill that exposed band so the window reads as one app
+        // instead of showing the launcher wallpaper above it.
+        val externalGap = if (Build.MANUFACTURER.contains("samsung", ignoreCase = true)) dp(44) else dp(34)
+        return maxOf(statusInset, systemStatusBarHeight(), externalGap)
+    }
+
+    private fun dockedStatusShieldColor(): Int {
+        if (!DockedFreeform.externalAppInFront) return activeNeuTokens.base
+        return if (activeNeuTokens.mode == NeuMode.LIGHT) 0xFFF7F8FA.toInt() else 0xFF202124.toInt()
     }
 
     private fun dockedLibrarySlideUp(): Boolean =
@@ -12567,8 +13735,40 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rightMargin = dp(10)
                 bottomMargin = dp(8)
             })
+
+            widgetCoachView = TextView(context).apply {
+                text = "Swipe to browse · tap to install"
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                textSize = 11f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(0xFFEAF7EF.toInt())
+                setPadding(dp(12), 0, dp(12), 0)
+                background = swapPillBackground(0xCC111A16.toInt(), 0x6638D67A)
+                alpha = 0f
+                visibility = View.GONE
+            }
+            addView(widgetCoachView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(30), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(8)
+            })
+
+            widgetDotsView = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                alpha = 0f
+                visibility = View.GONE
+            }
+            addView(widgetDotsView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(24), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = dp(8)
+            })
+            updateWidgetThemeDots()
+
             setOnTouchListener { _, event ->
-                if (widgetKeyboardHidden) handleWidgetKeyboardSliderHostTouch(event) else false
+                when {
+                    dockedKeyboardSwapMode -> handleDockedKeyboardThemeSwapTouch(event)
+                    widgetKeyboardHidden -> handleWidgetKeyboardSliderHostTouch(event)
+                    else -> false
+                }
             }
             applyWidgetKeyboardHiddenState(animate = false)
         }
@@ -13656,6 +14856,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         saveWidgetKeyboardHiddenForCurrentPosture(false)
         widgetKeyboardSliderAnimating = false
         keyboardSettingsOpen = false
+        dockedKeyboardSwapMode = false
+        dockedKeyboardSwapIgnoreCurrentGesture = false
+        widgetSwapHasDown = false
         KeyboardSettings.setPlacementMode(this, safe)
         if (safe == KEYBOARD_PLACEMENT_WIDGET) {
             VivoDockedExperiment.clearViewportTruncation(this)
@@ -13905,7 +15108,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // View's built-in long-click detection never runs. Detect it ourselves.
             val longPressAction: (() -> Unit)? = when {
                 isWidgetDockKey -> { -> beginWidgetKeyboardDetach(this@apply) }
-                isDockedTeclasKey -> { -> beginDockedKeyboardPopToWidget(this@apply) }
+                isDockedTeclasKey -> { -> beginDockedKeyboardThemeSwap(this@apply) }
                 // Hold go/enter to run the typed line as an agentic command (the powerful trigger).
                 label == "enter" -> { -> haptic(this@apply); runLauncherAgenticCommand() }
                 label == "123" -> { -> haptic(this@apply); symbolsOpen = true; numberPadOpen = false; render() }
@@ -13926,6 +15129,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 longPressRunnable = null
             }
             setOnTouchListener { v, event ->
+                if (dockedKeyboardSwapMode && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+                    if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                        v.background = idleBg()
+                        v.translationY = 0f
+                        cancelPickerLongPress()
+                        if (label == "back") stopDeleteRepeat(clearFired = true)
+                        spaceCursorMoved = false
+                    }
+                    return@setOnTouchListener handleDockedKeyboardThemeSwapTouch(event)
+                }
                 if (widgetSwapState != WidgetKeyboardSwapState.SEATED && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
                     if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                         v.background = idleBg()
@@ -16507,17 +17720,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
                     return
                 }
-                if (openPane != null) {
-                    keyboardSettingsOpen = false
-                    refreshKeyboardDock()
-                    return
-                }
-                if (libraryOpen) {
-                    if (query.isNotBlank()) { query = ""; refreshLibraryContent(); renderRibbon() }
-                    else closeLibrary()
-                    return
-                }
-                openTeclasSettingsFromKeyboard(); return
+                keyboardSettingsOpen = false
+                setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
+                return
             }
             "enter" -> {
                 // Number pad first: typing a digit auto-opens the library as the search surface
@@ -16714,8 +17919,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             }
             "teclas" -> {
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
-                else if (openPane != null) { keyboardSettingsOpen = false; refreshKeyboardDock() }
-                else openTeclasSettingsFromKeyboard()
+                else {
+                    keyboardSettingsOpen = false
+                    setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
+                }
                 return
             }
             "enter" -> {
@@ -17566,8 +18773,10 @@ Question: $prompt"""
             }
             "teclas" -> {
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) setKeyboardPlacement(KEYBOARD_PLACEMENT_DOCKED)
-                else if (openPane != null) { keyboardSettingsOpen = false; refreshKeyboardDock() }
-                else openTeclasSettingsFromKeyboard()
+                else {
+                    keyboardSettingsOpen = false
+                    setKeyboardPlacement(KEYBOARD_PLACEMENT_WIDGET)
+                }
                 return
             }
             "enter" -> postComposeBubble(pane)
@@ -23022,6 +24231,7 @@ Question: $prompt"""
         weatherAmbientView?.setWeather(prefs().getInt(WEATHER_CODE_PREF, 0), activeNeuTokens.mode, animate = false)
         weatherDripView?.refresh(playMoment = false)
         refreshWeatherWidgetComposeData()
+        updateClockWidget()
         refreshNowPlayingCard()
     }
 
@@ -26007,7 +27217,12 @@ Question: $prompt"""
         private const val WEATHER_WIDGET_STYLE_PREF = "weather_widget_style"
         private const val WEATHER_WIDGET_POS_X_PREF = "weather_widget_pos_x"
         private const val WEATHER_WIDGET_POS_Y_PREF = "weather_widget_pos_y"
+        private const val CLOCK_WIDGET_THEME_PREF = "clock_widget_theme"
+        private const val CLOCK_WIDGET_VISIBLE_PREF = "clock_widget_visible"
+        private const val CLOCK_WIDGET_POS_X_PREF = "clock_widget_x"
+        private const val CLOCK_WIDGET_POS_Y_PREF = "clock_widget_y"
         private const val AGENDA_TARGET_ID = "agenda-timeline"
+        private const val AGENDA_WIDGET_VISIBLE_PREF = "agenda_widget_visible"
         private const val AGENDA_POS_X_PREF = "agenda_widget_x"
         private const val AGENDA_POS_Y_PREF = "agenda_widget_y"
         // Docked mode keeps its own copy of the phone home setup (wallpaper + weather widget), so
@@ -26090,6 +27305,7 @@ Question: $prompt"""
             ThemeRepository.THEME_WALLPAPER_ID_PREF,
             HOME_COVER_WALLPAPER_URI_PREF,
             HOME_INNER_WALLPAPER_URI_PREF,
+            CLOCK_WIDGET_THEME_PREF,
             BRIEF_THEME_PREF,
             WEATHER_WIDGET_STYLE_PREF,
             "brief_edition_key",
@@ -26106,6 +27322,8 @@ Question: $prompt"""
             HOME_INNER_WALLPAPER_ZOOM_PREF,
             HOME_INNER_WALLPAPER_OFFSET_X_PREF,
             HOME_INNER_WALLPAPER_OFFSET_Y_PREF,
+            CLOCK_WIDGET_POS_X_PREF,
+            CLOCK_WIDGET_POS_Y_PREF,
             WEATHER_WIDGET_POS_X_PREF,
             WEATHER_WIDGET_POS_Y_PREF,
             BRIEF_POS_X_PREF,
@@ -26114,6 +27332,8 @@ Question: $prompt"""
         private val DEMO_SNAPSHOT_BOOLEAN_KEYS = listOf(
             HOME_SYSTEM_WALLPAPER_PREF,
             HOME_LOCK_WALLPAPER_PREF,
+            CLOCK_WIDGET_VISIBLE_PREF,
+            AGENDA_WIDGET_VISIBLE_PREF,
             ThemeRepository.WEATHER_VISIBLE_PREF,
             ThemeRepository.BRIEF_VISIBLE_PREF,
             "brief_edition_forced"

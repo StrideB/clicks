@@ -22,6 +22,7 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -36,6 +37,13 @@ class DockedKeyboardService : Service() {
     private var shifted = false
     private var overlayVisible = true
     private var lastBuiltMode: NeuMode? = null
+    private var swapMode = false
+    private var swapPreviewTheme: String? = null
+    private var swapDownX = 0f
+    private var swapDownY = 0f
+    private var swapHasDown = false
+    private var themeDotsView: LinearLayout? = null
+    private val hapticEngine by lazy { com.fran.teclas.keyboard.CustomHapticEngine(this) }
 
     private val overlayVisibilityReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -75,24 +83,26 @@ class DockedKeyboardService : Service() {
             background = deckBackground()
         }
         keyboardDeck = deck
-        listOf(
-            "qwertyuiop".map { it.toString() },
-            "asdfghjkl".map { it.toString() },
-            listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"),
-            listOf("123", "teclas", "space", ".", "enter")
-        ).forEachIndexed { rowIndex, row ->
-            deck.addView(keyRow(row, rowIndex), LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                keyRowHeight()
-            ).apply {
-                if (rowIndex > 0) topMargin = -keyRowOverlap()
-            })
-        }
+        populateKeyboardDeck(deck)
         val root = FrameLayout(this).apply {
             addView(deck, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
+                overlayKeyboardHeight(),
+                Gravity.BOTTOM
             ))
+            themeDotsView = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                alpha = 0f
+                visibility = View.GONE
+            }
+            addView(themeDotsView, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                dp(24),
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            ).apply {
+                bottomMargin = dp(9)
+            })
             addView(freeformRestoreButton(), FrameLayout.LayoutParams(dp(44), dp(30), Gravity.TOP or Gravity.END).apply {
                 topMargin = dp(9)
                 rightMargin = dp(16)
@@ -113,7 +123,224 @@ class DockedKeyboardService : Service() {
         windowManager?.addView(root, lp)
         overlayParams = lp
         deckView = root
+        updateSwapLayout(animate = false)
     }
+
+    private fun populateKeyboardDeck(deck: LinearLayout) {
+        deck.removeAllViews()
+        listOf(
+            "qwertyuiop".map { it.toString() },
+            "asdfghjkl".map { it.toString() },
+            listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"),
+            listOf("123", "teclas", "space", ".", "enter")
+        ).forEachIndexed { rowIndex, row ->
+            deck.addView(keyRow(row, rowIndex), LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                keyRowHeight()
+            ).apply {
+                if (rowIndex > 0) topMargin = -keyRowOverlap()
+            })
+        }
+    }
+
+    private fun dockedSwapLiftPx(): Int = dp(132)
+
+    private fun dockedSwapOverlayHeight(): Int =
+        overlayKeyboardHeight() + dockedSwapLiftPx() + dp(18)
+
+    private fun updateSwapLayout(animate: Boolean) {
+        val params = overlayParams ?: return
+        val root = deckView ?: return
+        val deck = keyboardDeck ?: return
+        val targetHeight = if (swapMode) dockedSwapOverlayHeight() else overlayKeyboardHeight()
+        if (params.height != targetHeight) {
+            params.height = targetHeight
+            runCatching { windowManager?.updateViewLayout(root, params) }
+        }
+        val targetY = if (swapMode) -dockedSwapLiftPx().toFloat() else 0f
+        deck.animate().cancel()
+        if (animate) {
+            deck.animate()
+                .translationY(targetY)
+                .scaleX(if (swapMode) 0.962f else 1f)
+                .scaleY(if (swapMode) 0.952f else 1f)
+                .rotationX(if (swapMode) 12f else 0f)
+                .setDuration(if (swapMode) 260L else 180L)
+                .setInterpolator(android.view.animation.DecelerateInterpolator(1.7f))
+                .start()
+        } else {
+            deck.translationY = targetY
+            deck.scaleX = if (swapMode) 0.962f else 1f
+            deck.scaleY = if (swapMode) 0.952f else 1f
+            deck.rotationX = if (swapMode) 12f else 0f
+        }
+        themeDotsView?.apply {
+            if (swapMode) {
+                updateDockedThemeDots()
+                visibility = View.VISIBLE
+                animate().alpha(1f).setDuration(140L).start()
+            } else {
+                animate().alpha(0f).setDuration(120L).withEndAction { visibility = View.GONE }.start()
+            }
+        }
+    }
+
+    private fun enterDockedKeyboardSwap(anchor: View) {
+        if (swapMode) return
+        swapMode = true
+        swapPreviewTheme = keyboardThemeFromPrefs()
+        swapHasDown = false
+        anchor.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        keyboardDeck?.cameraDistance = 12000f
+        updateSwapLayout(animate = true)
+    }
+
+    private fun seatDockedKeyboardSwap(anchor: View? = keyboardDeck) {
+        val selected = swapPreviewTheme ?: keyboardThemeFromPrefs()
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putString(KEYBOARD_THEME_PREF, selected)
+            .apply()
+        swapMode = false
+        swapPreviewTheme = null
+        swapHasDown = false
+        keyboardDeck?.let { deck ->
+            populateKeyboardDeck(deck)
+        }
+        updateSwapLayout(animate = true)
+        Handler(Looper.getMainLooper()).postDelayed({
+            playDockedSeatFeedback(anchor ?: keyboardDeck)
+        }, 190L)
+    }
+
+    private fun playDockedSeatFeedback(anchor: View?) {
+        hapticEngine.dockSeatSnap()
+        anchor?.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        (deckView as? ViewGroup)?.let { KeyboardDockRippleView.play(it, goKeyColor()) }
+    }
+
+    private fun previewDockedKeyboardTheme(theme: String, fromLeft: Boolean?) {
+        if (!swapMode || theme == swapPreviewTheme) {
+            updateDockedThemeDots()
+            return
+        }
+        val deck = keyboardDeck ?: return
+        swapPreviewTheme = theme
+        deck.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        updateDockedThemeDots()
+        val outX = if (fromLeft == true) dp(38).toFloat() else -dp(38).toFloat()
+        val inX = -outX
+        deck.animate().cancel()
+        deck.animate()
+            .alpha(0.22f)
+            .translationX(outX)
+            .setDuration(90L)
+            .withEndAction {
+                populateKeyboardDeck(deck)
+                deck.alpha = 0.22f
+                deck.translationX = inX
+                deck.translationY = -dockedSwapLiftPx().toFloat()
+                deck.scaleX = 0.962f
+                deck.scaleY = 0.952f
+                deck.rotationX = 12f
+                deck.animate()
+                    .alpha(1f)
+                    .translationX(0f)
+                    .setDuration(180L)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator(1.9f))
+                    .start()
+            }
+            .start()
+    }
+
+    private fun handleDockedKeyboardSwapTouch(event: MotionEvent): Boolean {
+        if (!swapMode) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                swapDownX = event.rawX
+                swapDownY = event.rawY
+                swapHasDown = true
+                keyboardDeck?.animate()?.cancel()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!swapHasDown) return true
+                val dx = event.rawX - swapDownX
+                keyboardDeck?.translationX = dx * 0.22f
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (!swapHasDown) return true
+                swapHasDown = false
+                val dx = event.rawX - swapDownX
+                val dy = event.rawY - swapDownY
+                val absDx = kotlin.math.abs(dx)
+                val absDy = kotlin.math.abs(dy)
+                return when {
+                    absDx > dp(42) && absDx > absDy -> {
+                        val themes = dockedSwapThemes
+                        val current = themes.indexOf(swapPreviewTheme ?: keyboardThemeFromPrefs()).coerceAtLeast(0)
+                        val next = if (dx < 0f) (current + 1) % themes.size else (current - 1 + themes.size) % themes.size
+                        previewDockedKeyboardTheme(themes[next], fromLeft = dx > 0f)
+                        true
+                    }
+                    absDx < dp(10) && absDy < dp(10) -> {
+                        seatDockedKeyboardSwap()
+                        true
+                    }
+                    else -> {
+                        keyboardDeck?.animate()
+                            ?.translationX(0f)
+                            ?.setDuration(120L)
+                            ?.setInterpolator(android.view.animation.DecelerateInterpolator())
+                            ?.start()
+                        true
+                    }
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                swapHasDown = false
+                keyboardDeck?.animate()?.translationX(0f)?.setDuration(100L)?.start()
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun updateDockedThemeDots() {
+        val dots = themeDotsView ?: return
+        dots.removeAllViews()
+        val active = swapPreviewTheme ?: keyboardThemeFromPrefs()
+        dockedSwapThemes.forEach { theme ->
+            val selected = theme == active
+            dots.addView(View(this).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dp(5).toFloat()
+                    setColor(if (selected) 0xFF7AF0A0.toInt() else 0x66727782)
+                }
+                setOnClickListener {
+                    if (swapMode) previewDockedKeyboardTheme(theme, fromLeft = null)
+                }
+            }, LinearLayout.LayoutParams(if (selected) dp(22) else dp(9), dp(9)).apply {
+                leftMargin = dp(4)
+                rightMargin = dp(4)
+            })
+        }
+    }
+
+    private val dockedSwapThemes: List<String>
+        get() = listOf(
+            KEYBOARD_THEME_DEFAULT,
+            KEYBOARD_THEME_TECLAS,
+            KEYBOARD_THEME_SKEUO,
+            KEYBOARD_THEME_GOKEYS,
+            KEYBOARD_THEME_HYPER3D,
+            KEYBOARD_THEME_HYPER3D_BLACK,
+            KEYBOARD_THEME_HYPER3D_LIGHT,
+            KEYBOARD_THEME_BRUSHED,
+            KEYBOARD_THEME_SEEME
+        ) + KeyboardThemeDrawables.cycleThemes
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
@@ -200,6 +427,7 @@ class DockedKeyboardService : Service() {
                 var longPressFired = false
                 var longPressRunnable: Runnable? = null
                 setOnTouchListener { v, event ->
+                    if (swapMode) return@setOnTouchListener handleDockedKeyboardSwapTouch(event)
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
                             longPressFired = false
@@ -209,8 +437,7 @@ class DockedKeyboardService : Service() {
                             if (label == "teclas") {
                                 val runnable = Runnable {
                                     longPressFired = true
-                                    v.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                    openLauncherKeyboardAction(TeclasKeyboardActions.SWITCH_TO_WIDGET_MODE)
+                                    enterDockedKeyboardSwap(v)
                                 }
                                 longPressRunnable = runnable
                                 handler.postDelayed(runnable, android.view.ViewConfiguration.getLongPressTimeout().toLong())
@@ -241,8 +468,7 @@ class DockedKeyboardService : Service() {
             }
             if (label == "teclas") {
                 setOnLongClickListener {
-                    performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                    openLauncherKeyboardAction(TeclasKeyboardActions.SWITCH_TO_WIDGET_MODE)
+                    enterDockedKeyboardSwap(this)
                     true
                 }
             }
@@ -267,7 +493,7 @@ class DockedKeyboardService : Service() {
             "back" -> sendKey(InputInjectionService.KEY_BACKSPACE)
             "enter" -> sendKey(InputInjectionService.KEY_ENTER)
             "space" -> sendKey(" ")
-            "teclas" -> openLauncherKeyboardAction(TeclasKeyboardActions.OPEN_KEYBOARD_SETTINGS)
+            "teclas" -> openLauncherKeyboardAction(TeclasKeyboardActions.SWITCH_TO_WIDGET_MODE)
             "123" -> Unit
             else -> sendKey(if (shifted && label.length == 1) label.uppercase() else label)
         }
@@ -832,7 +1058,9 @@ class DockedKeyboardService : Service() {
             theme == KEYBOARD_THEME_HYPER3D_LIGHT
     }
 
-    private fun keyboardTheme(): String {
+    private fun keyboardTheme(): String = swapPreviewTheme ?: keyboardThemeFromPrefs()
+
+    private fun keyboardThemeFromPrefs(): String {
         return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getString(KEYBOARD_THEME_PREF, KEYBOARD_THEME_DEFAULT) ?: KEYBOARD_THEME_DEFAULT
     }
