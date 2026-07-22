@@ -16540,7 +16540,21 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         updateGlideLayout()
     }
 
+    @Volatile private var dictLoadInFlight = false
+
+    /** Guarantee the launcher's prediction dictionary is (being) loaded. The docked-over-app typing
+     *  path needs it for autocorrect + suggestions, and on Samsung the launcher process can be killed
+     *  and recreated without the original onCreate load having completed — so we lazily (re)trigger
+     *  it the moment the user types over an app. Cheap: no-ops once the engine has words. */
+    private fun ensureDictionaryLoaded() {
+        if (dictLoadInFlight) return
+        if (predictionEngine.isDictWord("the")) return   // already populated
+        loadGlideWords()
+    }
+
     private fun loadGlideWords() {
+        if (dictLoadInFlight) return
+        dictLoadInFlight = true
         mediaUiScope.launch(Dispatchers.IO) {
             runCatching {
                 // Adaptive dictionary (parity with the IME): primary language active by default, with
@@ -16583,7 +16597,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     neuralGlideV2 = neuralV2
                     hybridDecoderV2 = com.fran.teclas.keyboard.neural.HybridGlideDecoder(neuralV2)
                 }
-            }
+            }.onFailure { android.util.Log.w("TeclasDiag", "launcher dictionary load failed: ${it.message}") }
+            dictLoadInFlight = false
+            // If the strip is up over an app, refresh it now that words are available.
+            launch(Dispatchers.Main) { if (dockedForegroundChirpActive()) updateDockedForegroundChirpStrip() }
         }
     }
 
@@ -21637,7 +21654,7 @@ Question: $prompt"""
      * through so the deck can still change number/symbol modes.
      */
     private fun routeKeyToForegroundApp(label: String): Boolean {
-        android.util.Log.i("TeclasDiag", "MainActivity.routeKeyToForegroundApp('$label') — launcher path, autocorrect active")
+        ensureDictionaryLoaded()   // typing over an app must have the dictionary (autocorrect + suggestions)
         when (label) {
             "123", "abc" -> return false
             "teclas" -> { bringLauncherToFront(); return true }
