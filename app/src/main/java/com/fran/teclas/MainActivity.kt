@@ -1948,7 +1948,142 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setOnTouchListener { _, event -> handleTypingStripPassiveTouch(event) }
             }
             addView(searchHintView, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            dockedSuggestChips = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                visibility = View.GONE
+            }
+            addView(dockedSuggestChips, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+            dockedEmojiButton = TextView(context).apply {
+                text = "☺"
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setTextColor(keyboardIndicatorTextColor(dim = false))
+                setPadding(dp(12), 0, dp(14), 0)
+                isClickable = true
+                visibility = View.GONE
+                setOnClickListener { keyHaptic("space"); openDockedEmojiPicker() }
+            }
+            addView(dockedEmojiButton, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT))
         }
+    }
+
+    // Tappable word suggestions shown in the typing strip while typing INTO a foreground app. When
+    // present they replace the "CHIRP · hold GO" hint; tapping one inserts it.
+    private var dockedSuggestChips: LinearLayout? = null
+    // Emoji shortcut button — only shown while typing into a third-party app (hidden in launcher search).
+    private var dockedEmojiButton: TextView? = null
+
+    private fun updateDockedSuggestionChips() {
+        val chips = dockedSuggestChips ?: return
+        val active = dockedForegroundChirpActive()
+        dockedEmojiButton?.visibility = if (active) View.VISIBLE else View.GONE   // emoji button: app-typing only
+        val word = if (active) dockedForegroundCurrentWord() else ""
+        val dictReady = predictionEngine.isDictWord("the")
+        val words = if (active && word.length >= 1 && dictReady)
+            predictionEngine.getSuggestions(word, 6).filterNot { it.equals(word, ignoreCase = true) }
+                .sortedByDescending { languageBias?.preference(it) ?: 1.0 }   // favor the language in use
+                .take(3)
+        else emptyList()
+        // Word→emoji suggestions: if the typed word maps to emoji, offer them first.
+        val emojis = if (active && word.length >= 2) SmartChips.emojiFor(prefs(), word.lowercase(Locale.US)).take(2) else emptyList()
+        if (words.isEmpty() && emojis.isEmpty()) {
+            chips.visibility = View.GONE
+            if (::searchHintView.isInitialized) searchHintView.visibility = View.VISIBLE
+            return
+        }
+        if (::searchHintView.isInitialized) searchHintView.visibility = View.GONE
+        chips.visibility = View.VISIBLE
+        chips.removeAllViews()
+        val items = emojis.map { it to true } + words.take(3 - emojis.size).map { it to false }
+        items.forEachIndexed { i, (label, isEmoji) ->
+            if (i > 0) chips.addView(View(this).apply {
+                setBackgroundColor(keyboardIndicatorTextColor(dim = true)); alpha = 0.35f
+            }, LinearLayout.LayoutParams(dp(1), dp(22)).apply { gravity = Gravity.CENTER_VERTICAL })
+            chips.addView(TextView(this).apply {
+                text = label
+                textSize = if (isEmoji) 24f else 22f
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(keyboardIndicatorTextColor(dim = false))
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setPadding(dp(6), dp(4), dp(6), dp(4))
+                isClickable = true
+                setOnClickListener { if (isEmoji) applyDockedEmoji(label, word) else applyDockedSuggestion(label) }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        }
+    }
+
+    /** Insert an emoji chosen for the typed [forWord]: replace the word with the emoji + space. */
+    private fun applyDockedEmoji(emoji: String, forWord: String) {
+        val cur = dockedForegroundCurrentWord()
+        if (cur.isNotEmpty()) {
+            injectReplaceTailInForegroundApp(cur, "$emoji ")
+            dockedForegroundDraft.setLength(dockedForegroundDraft.length - cur.length)
+            dockedForegroundDraft.append("$emoji ")
+        } else {
+            injectToForegroundApp(emoji)
+            dockedForegroundDraft.append(emoji)
+        }
+        if (forWord.isNotEmpty()) SmartChips.recordEmojiPick(prefs(), forWord.lowercase(Locale.US), emoji)
+        dockedFgUndo = null
+        keyHaptic("space")
+        updateDockedForegroundChirpStrip()
+    }
+
+    private var emojiPickerPanel: View? = null
+
+    /** Show Google's emoji picker over the keyboard; tapping an emoji types it into the app. */
+    private fun openDockedEmojiPicker() {
+        if (emojiPickerPanel != null) { closeDockedEmojiPicker(); return }
+        val root = window.decorView as? ViewGroup ?: return
+        val picker = androidx.emoji2.emojipicker.EmojiPickerView(this).apply {
+            emojiGridColumns = 9
+            setOnEmojiPickedListener { item ->
+                injectToForegroundApp(item.emoji)
+                dockedForegroundDraft.append(item.emoji)
+                dockedFgUndo = null
+            }
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF14161B.toInt())
+            elevation = dp(8).toFloat()
+            addView(TextView(this@MainActivity).apply {
+                text = "✕   Emoji"
+                textSize = 15f
+                letterSpacing = 0.05f
+                setTextColor(0xFFE8EAF0.toInt())
+                setPadding(dp(18), dp(12), dp(18), dp(12))
+                isClickable = true
+                setOnClickListener { keyHaptic("back"); closeDockedEmojiPicker() }
+            })
+            addView(picker, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        root.addView(panel, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, dp(300), Gravity.BOTTOM))
+        emojiPickerPanel = panel
+    }
+
+    private fun closeDockedEmojiPicker() {
+        val p = emojiPickerPanel ?: return
+        (p.parent as? ViewGroup)?.removeView(p)
+        emojiPickerPanel = null
+    }
+
+    private fun applyDockedSuggestion(word: String) {
+        val cur = dockedForegroundCurrentWord()
+        if (cur.isEmpty()) return
+        val cased = if (cur.first().isUpperCase()) word.replaceFirstChar { it.uppercase(Locale.US) } else word
+        injectReplaceTailInForegroundApp(cur, "$cased ")
+        dockedForegroundDraft.setLength(dockedForegroundDraft.length - cur.length)
+        dockedForegroundDraft.append("$cased ")
+        dockedFgUndo = null
+        keyHaptic("space")
+        updateDockedForegroundChirpStrip()
     }
 
     private fun launcherTypingStripText(): CharSequence {
@@ -2011,6 +2146,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         searchHintView.setPadding(dp(10), dp(2), dp(10), dp(3))
         searchHintView.setTextColor(keyboardIndicatorTextColor(dim = false))
         searchHintView.text = dockedForegroundChirpText()
+        updateDockedSuggestionChips()   // show tappable word chips over the hint when we have any
         return true
     }
 
@@ -14361,9 +14497,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addKeyRow(listOf("abc", "0", "back", "enter"))
             } else {
                 addKeyRow("qwertyuiop".map { it.toString() })
-                addKeyRow("asdfghjkl".map { it.toString() }, dp(6))
-                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"), dp(3))
-                addKeyRow(listOf("123", "teclas", "space", "period", "enter"), dp(5))
+                // No horizontal insets on the letter/function rows: the inset was dead space
+                // belonging to no key, so a thumb landing at a row's far edge (e.g. "a", "shift",
+                // "123") hit nothing and missed. Full-width rows mean the edge keys' touch cells
+                // reach the screen edge. The visual key gap is still drawn by the per-key inset.
+                addKeyRow("asdfghjkl".map { it.toString() })
+                addKeyRow(listOf("shift") + "zxcvbnm".map { it.toString() } + listOf("back"))
+                addKeyRow(listOf("123", "teclas", "space", "period", "enter"))
             }
         }
 
@@ -15015,15 +15155,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     "abc" -> 1.02f
                     else -> 1f
                 }
-                if (label == "enter") {
-                    addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
-                        gravity = Gravity.CENTER_VERTICAL
-                        marginStart = dp(2)
-                    })
-                } else if (label == "123") {
-                    addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
-                        gravity = Gravity.CENTER_VERTICAL
-                        marginEnd = dp(2)
+                if (label == "enter" || label == "123") {
+                    // Full-height touch cell so the whole key is tappable top-to-bottom (was a fixed
+                    // square centered in a taller row → dead zone above/below). Width stays the round
+                    // face's size; MATCH_PARENT height means the touch fills the row.
+                    addView(key(label), LinearLayout.LayoutParams(themedGoKeySize(), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                        if (label == "enter") marginStart = dp(2) else marginEnd = dp(2)
                     })
                 } else {
                     // Touch target fills the full cell — no horizontal margins — so there are no
@@ -15258,6 +15395,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // Direct taps must trust the key view that received the event. Re-resolving
                         // against cached screen bounds after keyboard slot/move animations can map
                         // a correct tap to the wrong row (for example S -> E).
+                        // Capture the raw touch point of each letter for decode-at-space: the word is
+                        // reconsidered from the whole tap geometry when space is pressed (see
+                        // decodeLauncherTapWord), without changing which letter commits now.
+                        if (label.length == 1 && label[0].isLetter()) {
+                            if (launcherTapTrace.size < 32) launcherTapTrace.add(event.rawX to event.rawY)
+                        }
                         if (label == "shift") handleShiftTap() else handleKey(label)
                     }
                     MotionEvent.ACTION_CANCEL -> {
@@ -15511,6 +15654,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshUnfoldedKeyboardSearchOverlay()
         val strip = suggestionStripView ?: run {
             updateDockedForegroundChirpStrip()
+            updateDockedSuggestionChips()   // clears the chips + restores the hint when not app-typing
             return
         }
         val fieldBlank = launcherSuggestionText().isBlank()
@@ -16540,7 +16684,21 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         updateGlideLayout()
     }
 
+    @Volatile private var dictLoadInFlight = false
+
+    /** Guarantee the launcher's prediction dictionary is (being) loaded. The docked-over-app typing
+     *  path needs it for autocorrect + suggestions, and on Samsung the launcher process can be killed
+     *  and recreated without the original onCreate load having completed — so we lazily (re)trigger
+     *  it the moment the user types over an app. Cheap: no-ops once the engine has words. */
+    private fun ensureDictionaryLoaded() {
+        if (dictLoadInFlight) return
+        if (predictionEngine.isDictWord("the")) return   // already populated
+        loadGlideWords()
+    }
+
     private fun loadGlideWords() {
+        if (dictLoadInFlight) return
+        dictLoadInFlight = true
         mediaUiScope.launch(Dispatchers.IO) {
             runCatching {
                 // Adaptive dictionary (parity with the IME): primary language active by default, with
@@ -16558,12 +16716,32 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // publish on Main (constructing them on the main thread stalled the first frame).
                 val engineUnion = PredictionEngine(freqs)
                 val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                // Contextual language detection (bilingual users): bias toward the language being written.
+                val langBias = com.fran.teclas.keyboard.unified.LanguageBias(adaptive.perLangWords)
+                // Gboard-style decode-at-space: a trie beam-searcher that reads the whole tap trail.
+                val tapTrie = com.fran.teclas.keyboard.neural.CharTrie().apply { addAllAccentFolded(adaptive.extendedWords) }
+                val decoder = com.fran.teclas.keyboard.TapLatticeDecoder(
+                    tapTrie,
+                    { x, y, key -> spatialScorer.probability(x, y, key.toString()).toFloat() },
+                    { w -> engineUnion.frequencyOf(w) },
+                    { prev, w ->
+                        // Graded context from your own phrasing: the higher w ranks among the words
+                        // you actually type after `prev`, the stronger the prior (rank 0 ≈ 0.7).
+                        val ctx = if (prev.isEmpty()) 0.02f else {
+                            val idx = ngramRepo.cachedNextWords(prev).indexOfFirst { it.equals(w, ignoreCase = true) }
+                            if (idx < 0) 0.02f else (0.7f - 0.08f * idx).coerceAtLeast(0.15f)
+                        }
+                        (ctx * langBias.preference(w).toFloat()).coerceIn(0.001f, 1f)   // fold in language bias
+                    },
+                )
                 // Make glide available immediately with the statistical classifier; the heavy neural
                 // ONNX load must not block it (that stalls glide for seconds on a real device).
                 launch(Dispatchers.Main) {
                     glideClassifier = clf
                     wordlistFrequencies = freqs
                     predictionEngine = engineUnion
+                    tapDecoder = decoder
+                    languageBias = langBias
                     predictionEnginePrimary = enginePrimary
                     hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                     latentLanguageActive = false
@@ -16581,7 +16759,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     neuralGlideV2 = neuralV2
                     hybridDecoderV2 = com.fran.teclas.keyboard.neural.HybridGlideDecoder(neuralV2)
                 }
-            }
+            }.onFailure { android.util.Log.w("TeclasDiag", "launcher dictionary load failed: ${it.message}") }
+            dictLoadInFlight = false
+            // If the strip is up over an app, refresh it now that words are available.
+            launch(Dispatchers.Main) { if (dockedForegroundChirpActive()) updateDockedForegroundChirpStrip() }
         }
     }
 
@@ -21635,27 +21816,38 @@ Question: $prompt"""
      * through so the deck can still change number/symbol modes.
      */
     private fun routeKeyToForegroundApp(label: String): Boolean {
+        ensureDictionaryLoaded()   // typing over an app must have the dictionary (autocorrect + suggestions)
         when (label) {
             "123", "abc" -> return false
             "teclas" -> { bringLauncherToFront(); return true }
             "back" -> {
                 if (undoDockedForegroundAutocorrect()) return true   // backspace right after a correction = revert it
                 dockedFgUndo = null
+                if (launcherTapTrace.isNotEmpty()) launcherTapTrace.removeAt(launcherTapTrace.size - 1)
                 mirrorDockedForegroundBackspace()
                 injectToForegroundApp(InputInjectionService.KEY_BACKSPACE)
             }
             "space" -> {
                 applyDockedForegroundAutocorrect()
+                val committed = dockedForegroundCurrentWord()
+                languageBias?.observe(committed)   // detect the language being written
+                learnDockedNgram(committed)        // grow your phrasing model from what you actually type
+                launcherTapTrace.clear()   // word committed — start the next word's geometry fresh
                 mirrorDockedForegroundInsert(" ")
                 injectToForegroundApp(" ")
             }
             "period" -> {
                 applyDockedForegroundAutocorrect()
+                val committed = dockedForegroundCurrentWord()
+                languageBias?.observe(committed)
+                learnDockedNgram(committed)
+                launcherTapTrace.clear()
                 mirrorDockedForegroundInsert(".")
                 injectToForegroundApp(".")
             }
             "enter" -> {
                 dockedFgUndo = null
+                launcherTapTrace.clear()
                 injectToForegroundApp(InputInjectionService.KEY_ENTER)
                 clearDockedForegroundDraft(localOnly = true)
             }
@@ -21675,8 +21867,38 @@ Question: $prompt"""
     //    injector already owns the field text; a stale field makes the replace a silent no-op). ──
     private var dockedFgUndo: Pair<String, String>? = null   // typed -> corrected (armed until next key)
 
+    // Decode-at-space (Gboard-style): the raw touch point of each letter of the in-progress word,
+    // and the trie beam decoder that reconsiders the word from that whole geometry when space lands.
+    private val launcherTapTrace = ArrayList<Pair<Float, Float>>(32)
+    @Volatile private var tapDecoder: com.fran.teclas.keyboard.TapLatticeDecoder? = null
+    @Volatile private var languageBias: com.fran.teclas.keyboard.unified.LanguageBias? = null
+
+    /** Decode the word from the tap GEOMETRY. Returns a confident dictionary word that differs from
+     *  what was typed, or null (fall back to string-edit autocorrect). Requires the trace to line up
+     *  with the typed letters, so a desync degrades to no-op rather than a wrong replace. */
+    private fun decodeLauncherTapWord(typed: String, prev: String): String? {
+        val dec = tapDecoder ?: return null
+        val trace = launcherTapTrace
+        if (trace.size < 2 || trace.size != typed.length) return null
+        val cands = dec.decode(trace.toList(), prev.lowercase(Locale.US), topK = 3)
+        val top = cands.firstOrNull() ?: return null
+        if (cands.size >= 2 && top.score - cands[1].score < 0.6) return null   // ambiguous — don't override
+        if (top.word.equals(typed, ignoreCase = true)) return null
+        return top.word
+    }
+
     private fun dockedForegroundCurrentWord(): String =
         dockedForegroundDraft.takeLastWhile { it.isLetter() }.toString()
+
+    /** Stage 2a: every word you commit over an app grows your personal n-gram model, and we prewarm
+     *  the next-word cache for it so the decoder's context prior is ready on the very next word. */
+    private fun learnDockedNgram(word: String) {
+        if (word.length < 2) return
+        val before = dockedForegroundDraft.dropLast(dockedForegroundCurrentWord().length).toString()
+        val prev = Regex("[A-Za-z]+").findAll(before).lastOrNull()?.value.orEmpty()
+        if (prev.isNotEmpty()) ngramRepo.recordWord(word, prev)
+        ngramRepo.prefetchNextWords(word)   // warm cachedNextWords(word) for the word you'll type next
+    }
 
     private fun applyDockedForegroundAutocorrect() {
         dockedFgUndo = null
@@ -21684,7 +21906,9 @@ Question: $prompt"""
         if (word.length < 2 || word.length > 24) return
         val before = dockedForegroundDraft.dropLast(word.length).toString()
         val prev = Regex("[A-Za-z]+").findAll(before).lastOrNull()?.value.orEmpty()
-        val corrected = autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) ?: return
+        // Geometry decode first (Gboard-style); fall back to string-edit correction.
+        val corrected = decodeLauncherTapWord(word, prev)
+            ?: autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) ?: return
         if (corrected.equals(word, ignoreCase = true)) return
         val cased = if (word.first().isUpperCase()) corrected.replaceFirstChar { it.uppercase(Locale.US) } else corrected
         injectReplaceTailInForegroundApp(word, cased)

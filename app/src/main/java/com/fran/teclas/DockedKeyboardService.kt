@@ -45,6 +45,24 @@ class DockedKeyboardService : Service() {
     private var themeDotsView: LinearLayout? = null
     private val hapticEngine by lazy { com.fran.teclas.keyboard.CustomHapticEngine(this) }
 
+    // ── Text intelligence for typing INTO third-party apps (this overlay was a raw key-sender). ──
+    @Volatile private var predictor: com.fran.teclas.keyboard.PredictionEngine? = null
+    private val fgDraft = StringBuilder()                 // mirrors what we've injected into the app's field
+    private var suggestionStrip: LinearLayout? = null
+    private var lastCorrection: Pair<String, String>? = null   // typed -> corrected, armed for backspace-undo
+    private val bgHandler = Handler(Looper.getMainLooper())
+
+    private fun loadPredictor() {
+        if (predictor != null) return
+        Thread {
+            runCatching {
+                val loaded = com.fran.teclas.keyboard.DictionaryLoader.load(this)
+                val engine = com.fran.teclas.keyboard.PredictionEngine(loaded.freqs)
+                bgHandler.post { predictor = engine; refreshSuggestions() }
+            }.onFailure { android.util.Log.w("TeclasDiag", "docked predictor load failed: ${it.message}") }
+        }.start()
+    }
+
     private val overlayVisibilityReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != InputInjectionService.ACTION_SET_DOCKED_OVERLAY_VISIBLE) return
@@ -63,6 +81,7 @@ class DockedKeyboardService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         registerOverlayVisibilityReceiver()
         VivoDockedExperiment.applyViewportTruncation(this)
+        loadPredictor()
         showDeck()
     }
 
@@ -128,6 +147,15 @@ class DockedKeyboardService : Service() {
 
     private fun populateKeyboardDeck(deck: LinearLayout) {
         deck.removeAllViews()
+        // Suggestion strip above the keys (typing into the foreground app).
+        val strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        suggestionStrip = strip
+        deck.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)))
+        refreshSuggestions()
         listOf(
             "qwertyuiop".map { it.toString() },
             "asdfghjkl".map { it.toString() },
@@ -426,21 +454,32 @@ class DockedKeyboardService : Service() {
                 val handler = Handler(Looper.getMainLooper())
                 var longPressFired = false
                 var longPressRunnable: Runnable? = null
+                // "teclas" is the only key that distinguishes tap from long-press (hold = enter swap
+                // mode), so it must wait for finger-lift. EVERY OTHER key commits on ACTION_DOWN:
+                // waiting for ACTION_UP meant a tap whose finger drifted a pixel (→ ACTION_CANCEL, no
+                // ACTION_UP) was silently dropped, which is the "have to press twice" bug. Down-commit
+                // never loses a press because ACTION_DOWN is always delivered first.
+                val holdsForLongPress = label == "teclas"
+                var downCommitted = false
                 setOnTouchListener { v, event ->
                     if (swapMode) return@setOnTouchListener handleDockedKeyboardSwapTouch(event)
                     when (event.actionMasked) {
                         MotionEvent.ACTION_DOWN -> {
                             longPressFired = false
+                            downCommitted = false
                             v.isPressed = true
                             v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                             v.animate().translationY(dp(4).toFloat()).setDuration(35L).start()
-                            if (label == "teclas") {
+                            if (holdsForLongPress) {
                                 val runnable = Runnable {
                                     longPressFired = true
                                     enterDockedKeyboardSwap(v)
                                 }
                                 longPressRunnable = runnable
                                 handler.postDelayed(runnable, android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                            } else {
+                                handleKey(label)      // down-commit: the press can never be lost to a cancel
+                                downCommitted = true
                             }
                             true
                         }
@@ -450,8 +489,10 @@ class DockedKeyboardService : Service() {
                             longPressRunnable = null
                             seemeReleaseHaptic(v)
                             v.animate().translationY(0f).setDuration(35L).start()
-                            if (!longPressFired) handleKey(label)
+                            // Only the hold-key commits on lift; everything else already fired on down.
+                            if (holdsForLongPress && !longPressFired && !downCommitted) handleKey(label)
                             longPressFired = false
+                            downCommitted = false
                             true
                         }
                         MotionEvent.ACTION_CANCEL -> {
@@ -459,6 +500,7 @@ class DockedKeyboardService : Service() {
                             longPressRunnable?.let { handler.removeCallbacks(it) }
                             longPressRunnable = null
                             longPressFired = false
+                            downCommitted = false
                             v.animate().translationY(0f).setDuration(35L).start()
                             true
                         }
@@ -476,6 +518,47 @@ class DockedKeyboardService : Service() {
     }
 
     private fun handleKey(label: String) {
+        when (label) {
+            "back" -> {
+                if (undoDockedAutocorrect()) return          // backspace right after a fix reverts it
+                lastCorrection = null
+                if (fgDraft.isNotEmpty()) fgDraft.deleteCharAt(fgDraft.length - 1)
+                sendKey(InputInjectionService.KEY_BACKSPACE)
+                refreshSuggestions()
+                return
+            }
+            "space" -> {
+                autocorrectDraft()                            // fix the word BEFORE the space lands
+                fgDraft.append(' ')
+                sendKey(" ")
+                refreshSuggestions()
+                return
+            }
+            "." -> {
+                autocorrectDraft()
+                fgDraft.append('.')
+                sendKey(".")
+                refreshSuggestions()
+                return
+            }
+            "enter" -> {
+                lastCorrection = null
+                fgDraft.setLength(0)
+                sendKey(InputInjectionService.KEY_ENTER)
+                refreshSuggestions()
+                return
+            }
+            "shift", "teclas", "123" -> { /* handled below, no draft change */ }
+            else -> {
+                // A letter/symbol: mirror it into the draft so autocorrect and suggestions see it.
+                lastCorrection = null
+                val ch = if (shifted && label.length == 1) label.uppercase() else label
+                fgDraft.append(ch)
+                sendKey(ch)
+                refreshSuggestions()
+                return
+            }
+        }
         when (label) {
             "shift" -> {
                 shifted = !shifted
@@ -511,6 +594,93 @@ class DockedKeyboardService : Service() {
             setPackage(packageName)
             putExtra(InputInjectionService.EXTRA_CHAR, value)
         })
+    }
+
+    // ── Autocorrect + suggestions for typing into the foreground app ─────────────────────────────
+
+    private fun currentDraftWord(): String = fgDraft.takeLastWhile { it.isLetter() }.toString()
+
+    /** Correct the in-progress word before a space/period lands, via one atomic guarded tail-replace
+     *  (the InputInjectionService no-ops it if the field no longer ends with what we typed). */
+    private fun autocorrectDraft() {
+        lastCorrection = null
+        val p = predictor ?: return
+        val word = currentDraftWord()
+        if (word.length < 2 || word.length > 24) return
+        val corrected = p.bestCorrection(word.lowercase()) ?: return
+        if (corrected.equals(word, ignoreCase = true)) return
+        val cased = if (word.first().isUpperCase())
+            corrected.replaceFirstChar { it.uppercase() } else corrected
+        sendReplaceTail(word, cased)
+        fgDraft.setLength(fgDraft.length - word.length)
+        fgDraft.append(cased)
+        lastCorrection = word to cased
+    }
+
+    /** Backspace immediately after an autocorrection restores the typed word. */
+    private fun undoDockedAutocorrect(): Boolean {
+        val (typed, cased) = lastCorrection ?: return false
+        lastCorrection = null
+        val tail = "$cased "
+        if (!fgDraft.endsWith(tail)) return false
+        sendReplaceTail(tail, "$typed ")
+        fgDraft.setLength(fgDraft.length - tail.length)
+        fgDraft.append("$typed ")
+        refreshSuggestions()
+        return true
+    }
+
+    private fun sendReplaceTail(expect: String, with: String) {
+        sendBroadcast(Intent(InputInjectionService.ACTION_REPLACE_TAIL).apply {
+            setPackage(packageName)
+            putExtra(InputInjectionService.EXTRA_EXPECT, expect)
+            putExtra(InputInjectionService.EXTRA_WITH, with)
+        })
+    }
+
+    /** Repaint the suggestion strip from the current in-progress word. */
+    private fun refreshSuggestions() {
+        val strip = suggestionStrip ?: return
+        val p = predictor
+        val word = currentDraftWord()
+        val sugg = if (p != null && word.length >= 1)
+            p.getSuggestions(word, 3).filterNot { it.equals(word, ignoreCase = true) } else emptyList()
+        strip.removeAllViews()
+        if (sugg.isEmpty()) { strip.visibility = View.GONE; return }
+        strip.visibility = View.VISIBLE
+        val items = sugg.take(3)
+        items.forEachIndexed { i, s ->
+            if (i > 0) {
+                // Thin vertical divider between suggestions.
+                strip.addView(View(this).apply {
+                    setBackgroundColor((textColor("space") and 0x00FFFFFF) or 0x40000000)
+                }, LinearLayout.LayoutParams(dp(1), dp(22)).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                })
+            }
+            strip.addView(TextView(this).apply {
+                text = s
+                textSize = 25f
+                gravity = Gravity.CENTER
+                setTextColor(textColor("space"))
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                isClickable = true
+                setOnClickListener { applySuggestion(s) }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+    }
+
+    /** Tap a suggestion: replace the in-progress word with it and add a space. */
+    private fun applySuggestion(word: String) {
+        val cur = currentDraftWord()
+        if (cur.isEmpty()) return
+        val cased = if (cur.first().isUpperCase()) word.replaceFirstChar { it.uppercase() } else word
+        sendReplaceTail(cur, "$cased ")
+        fgDraft.setLength(fgDraft.length - cur.length)
+        fgDraft.append("$cased ")
+        lastCorrection = null
+        refreshSuggestions()
     }
 
     private fun freeformRestoreButton(): TextView {

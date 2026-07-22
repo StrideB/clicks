@@ -100,8 +100,28 @@ object DictionaryLoader {
         val extendedFreqs: Map<String, Float>,
         val extendedWords: List<String>,
         val activeLangs: List<String>,
-        val latentLangs: List<String>
+        val latentLangs: List<String>,
+        // lang code -> set of that language's words, for contextual language detection when the user
+        // enables more than one language (so we don't blindly mix vocabularies).
+        val perLangWords: Map<String, Set<String>> = emptyMap()
     )
+
+    /** Word membership per language (lowercased) — used to detect which language is being written. */
+    fun perLanguageWords(context: Context, langs: List<String>): Map<String, Set<String>> {
+        val out = LinkedHashMap<String, Set<String>>()
+        for (lang in langs) {
+            val path = BUNDLED[lang] ?: continue
+            val set = HashSet<String>(24000)
+            runCatching {
+                context.assets.open(path).bufferedReader().forEachLine { line ->
+                    val w = line.trim().substringBefore(' ').lowercase()
+                    if (w.length in 2..20 && w.all { it.isLetter() }) set.add(w)
+                }
+            }
+            out[lang] = set
+        }
+        return out
+    }
 
     fun loadAdaptive(context: Context): Adaptive {
         // Gboard model: use ONLY the languages the user actually enabled ([enabledLanguages] — the
@@ -113,7 +133,9 @@ object DictionaryLoader {
         // and share one dictionary, with no flipping. Single language stays a single dictionary.
         val active = enabledLanguages(context)
         val primaryFreqs = merge(context, active)
-        return Adaptive(primaryFreqs, primaryFreqs, capWords(primaryFreqs), active, emptyList())
+        // Only pay for per-language membership when the user is actually multilingual.
+        val perLang = if (active.size > 1) perLanguageWords(context, active) else emptyMap()
+        return Adaptive(primaryFreqs, primaryFreqs, capWords(primaryFreqs), active, emptyList(), perLang)
     }
 
     /** Every bundled language present in the phone's locale list, primary first. */

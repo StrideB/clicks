@@ -93,6 +93,18 @@ class TapLatticeDecoderTest {
             "hello" in top || "help" in top)
     }
 
+    /** Accent folding: a word tapped on plain a–z keys decodes to its accented Spanish form. */
+    @Test fun accentFoldedWordDecodesToAccentedForm() {
+        val accentTrie = CharTrie().apply {
+            addAccentFolded("cómo"); addAccentFolded("come"); addAccentFolded("core")
+        }
+        val d = TapLatticeDecoder(accentTrie, ::spatial,
+            { w -> if (w == "cómo") 0.6f else 0.1f }, { _, _ -> 0f })
+        val top = d.decode(tapsFor("como"), "", topK = 3)   // taps land on c-o-m-o (a–z keys)
+        assertTrue("expected the accented 'cómo' among results, got ${top.map { it.word }}",
+            top.any { it.word == "cómo" })
+    }
+
     /** Nonsense geometry (a tap far from every key path) yields no confident decode rather than a
      *  wrong one — the decoder declines instead of inventing. */
     @Test fun offGridTapsDoNotInventWords() {
