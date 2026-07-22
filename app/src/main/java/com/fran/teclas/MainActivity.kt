@@ -541,6 +541,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetKeyboardSliderHandleView: KeyboardSliderHandleView? = null
     private var widgetKeyboardHidden = false
     private var widgetKeyboardSliderAnimating = false
+    // System-keyboard (Gboard) mode: hand launcher search to the OS keyboard, shelve the custom deck.
+    private var useSystemKeyboard = false
+    private var systemKeyboardEditText: EditText? = null
     private var widgetKeyboardHandleDownY = 0f
     private var widgetKeyboardHandleDragging = false
     private var widgetKeyboardTapDownX = 0f
@@ -879,6 +882,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         applyTheme()
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
+        useSystemKeyboard = prefs().getBoolean(USE_SYSTEM_KEYBOARD_PREF, false)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
         libraryOpen = appLibraryDefaultHome()
         goKeyColor = prefs().getInt(GO_KEY_COLOR_PREF, CursorViolet)
@@ -14160,10 +14164,84 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun rootDockInputView(): View =
         when {
+            // Gboard mode: the custom deck is shelved; a real text field takes its slot and summons
+            // the system keyboard. Only for the launcher's own search (not while a pane is open).
+            useSystemKeyboard && openPane == null -> systemKeyboardSearchField()
             isUnfoldedInnerLayoutActive() && openPane == null -> unfoldedInnerKeyboardDock()
             keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && openPane == null -> dockedKeyboardSliderDock()
             else -> dockedInputView()
         }
+
+    /** Gboard mode (behind the "Use Gboard" toggle): a real EditText where the custom keyboard would
+     *  be. Focusing it raises the system keyboard docked at the bottom; typing drives the same launcher
+     *  search, and the search/enter action runs the same GO logic (type-to-do → best result → web). */
+    private fun systemKeyboardSearchField(): View {
+        return FrameLayout(this).apply {
+            setBackgroundColor(activeNeuTokens.base)
+            setPadding(dp(10), dp(8), dp(10), dp(10))
+            val et = EditText(context).apply {
+                setText(query)
+                setSelection(query.length)
+                hint = "Search or say a command…"
+                setSingleLine()
+                maxLines = 1
+                imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH or
+                    android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                    android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                textSize = 17f
+                setTextColor(activeNeuTokens.ink)
+                setHintTextColor(activeNeuTokens.inkDim)
+                background = roundedPanel(Panel2, dp(14), Line)
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+                    override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+                    override fun afterTextChanged(s: android.text.Editable?) {
+                        val t = s?.toString() ?: ""
+                        if (t == query) return
+                        query = t
+                        cursorPos = null
+                        scheduleSpellCheck()
+                        renderRibbon()   // refresh results (ribbonView) without rebuilding this field
+                    }
+                })
+                setOnEditorActionListener { _, actionId, _ ->
+                    val go = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH ||
+                        actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
+                        actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+                    if (go) { performSystemKeyboardGo(); true } else false
+                }
+            }
+            systemKeyboardEditText = et
+            addView(et, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_VERTICAL))
+            et.requestFocus()
+            et.post {
+                runCatching {
+                    getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                        ?.showSoftInput(et, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                }
+            }
+        }
+    }
+
+    /** Run the current query as if GO were pressed: a type-to-do action, the best result, or the web. */
+    private fun performSystemKeyboardGo() {
+        val q = query.trim()
+        if (q.isBlank()) return
+        if (executeTypeToDoCommand(q)) { query = ""; systemKeyboardEditText?.setText(""); renderRibbon(); return }
+        val result = bestLauncherResultForGo()
+        if (result != null) openSearchResult(result) else launchInAppGoogleSearch(q)
+    }
+
+    private fun hideSystemKeyboardIme() {
+        val et = systemKeyboardEditText ?: return
+        runCatching {
+            getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(et.windowToken, 0)
+        }
+    }
 
     private fun dockedKeyboardSliderDock(): View {
         return FrameLayout(this).apply {
@@ -14892,6 +14970,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 keyboardTiltLighting = !keyboardTiltLighting
                 prefs().edit().putBoolean(KBD_TILT_LIGHT_PREF, keyboardTiltLighting).apply()
                 haptic(this); render()
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
+
+            addView(settingToggle("USE GBOARD (SYSTEM KEYBOARD)", useSystemKeyboard) {
+                useSystemKeyboard = !useSystemKeyboard
+                prefs().edit().putBoolean(USE_SYSTEM_KEYBOARD_PREF, useSystemKeyboard).apply()
+                haptic(this)
+                keyboardSettingsOpen = false
+                if (!useSystemKeyboard) hideSystemKeyboardIme()
+                render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
 
             addView(settingAction("AGENTIC SKILLS") {
@@ -20930,6 +21017,8 @@ Question: $prompt"""
         }
         if (updateDockedForegroundChirpStrip()) {
             // Third-party app owns the real text field; keep this fixed well as the Chirp/action bar.
+        } else if (!::searchHintView.isInitialized) {
+            // Gboard mode (or before the custom deck has ever built): there is no hint view to drive.
         } else if (typedText.isNotBlank() && !keyboardSettingsOpen) {
             // Type-to-do echo: mono command face, "> " affordance, Cursor Violet caret.
             searchHintView.translationX = 0f
@@ -26625,6 +26714,13 @@ Question: $prompt"""
                 else controller.show(WindowInsets.Type.navigationBars())
             }
         }
+
+        // Gboard mode: resize the launcher above the system keyboard so the search field rides on top
+        // of it. The custom-keyboard mode never raises an IME, so ADJUST_NOTHING is a safe default there.
+        window.setSoftInputMode(
+            if (useSystemKeyboard) WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            else WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+        )
     }
 
     internal fun updateLauncherTheme(animated: Boolean, forceRender: Boolean = false) {
@@ -27800,6 +27896,7 @@ Question: $prompt"""
         private const val PHOTO_SELECTED_ID_PREF = "photo_selected_id"
         private const val PHOTO_FAVORITES_PREF = "photo_favorites"
         private const val HAPTICS_PREF = "haptics"
+        private const val USE_SYSTEM_KEYBOARD_PREF = "use_system_keyboard"
         private const val KBD_TILT_LIGHT_PREF = "kbd_tilt_light"
         private const val LIBRARY_GRID_MODE_PREF = "library_grid_mode"
         private const val GRID_APP_TILE_TAG = "grid_app_tile"
