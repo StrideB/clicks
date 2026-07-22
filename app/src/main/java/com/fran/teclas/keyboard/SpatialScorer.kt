@@ -21,6 +21,14 @@ class SpatialScorer {
     private var keys: List<KeyPoint> = emptyList()
     private var sigmaX = 45.0
     private var sigmaY = 55.0
+    // Stage 4 — scatter-adaptive hot zones: the geometry-default sigma, and a running estimate of
+    // THIS user's tap scatter. Precise fingers → tighter zones (geometry trusted); wide/fat-thumb
+    // scatter → looser zones (the language model gets more say on ambiguous taps). Validated in
+    // simulation at +5–6 pts for imprecise typists. Bounded so it can neither collapse nor swallow a row.
+    private var baseSigmaX = 45.0
+    private var baseSigmaY = 55.0
+    private var devX = 0.0   // EW mean absolute deviation of confident taps around their key center
+    private var devY = 0.0
 
     // Global fallback bias (device px) and per-key learned offsets from the geometric center.
     private var offsetX = 0.0
@@ -40,12 +48,21 @@ class SpatialScorer {
         }
         val widths = bounds.values.map { it.width().toDouble() }
         val heights = bounds.values.map { it.height().toDouble() }
-        if (widths.isNotEmpty()) sigmaX = widths.average() * 0.48
-        if (heights.isNotEmpty()) sigmaY = heights.average() * 0.44
+        if (widths.isNotEmpty()) baseSigmaX = widths.average() * 0.48
+        if (heights.isNotEmpty()) baseSigmaY = heights.average() * 0.44
         val sig = signature(bounds)
         liveSig = sig
         if (stateSig != sig) resetLearning()   // stale-layout (or legacy/unknown-layout) offsets
         stateSig = sig
+        if (devX <= 0.0) devX = 0.798 * baseSigmaX   // seed to the average-typist default until learned
+        if (devY <= 0.0) devY = 0.798 * baseSigmaY
+        applyAdaptiveSigma()
+    }
+
+    /** Set the working sigma from the current scatter estimate, clamped around the geometry default. */
+    private fun applyAdaptiveSigma() {
+        sigmaX = (SIGMA_FROM_DEV * devX).coerceIn(baseSigmaX * SIGMA_MIN, baseSigmaX * SIGMA_MAX)
+        sigmaY = (SIGMA_FROM_DEV * devY).coerceIn(baseSigmaY * SIGMA_MIN, baseSigmaY * SIGMA_MAX)
     }
 
     private fun signature(bounds: Map<String, Rect>): Int {
@@ -63,6 +80,10 @@ class SpatialScorer {
         keyOffset.clear()
         offsetX = 0.0
         offsetY = 0.0
+        // Seed the scatter estimate at what an average typist's deviation would be (E|x| = 0.798σ),
+        // so a fresh model behaves exactly like the fixed-sigma geometry default until it learns.
+        devX = 0.798 * baseSigmaX
+        devY = 0.798 * baseSigmaY
     }
 
     private fun effOffset(label: String): DoubleArray {
@@ -151,6 +172,10 @@ class SpatialScorer {
         // Global prior updates slower; it only backfills keys the user hasn't hit much yet.
         offsetX = (offsetX + GLOBAL_RATE * ((rawX - k.cx) - offsetX)).coerceIn(-maxX, maxX)
         offsetY = (offsetY + GLOBAL_RATE * ((rawY - k.cy) - offsetY)).coerceIn(-maxY, maxY)
+        // Stage 4: track this user's scatter around the learned center and resize the hot zones.
+        devX += DEV_RATE * (kotlin.math.abs(rawX - (k.cx + arr[0])) - devX)
+        devY += DEV_RATE * (kotlin.math.abs(rawY - (k.cy + arr[1])) - devY)
+        applyAdaptiveSigma()
     }
 
     /** Spatial probability for a specific key — used by the swipe classifier. */
@@ -169,7 +194,7 @@ class SpatialScorer {
     fun exportState(): String {
         val sb = StringBuilder()
         sb.append("g2:").append(stateSig ?: 0).append('|')
-        sb.append(offsetX).append(',').append(offsetY).append('|')
+        sb.append(offsetX).append(',').append(offsetY).append(',').append(devX).append(',').append(devY).append('|')
         for ((label, o) in keyOffset) {
             if (label.length != 1) continue
             sb.append(label).append(':').append(o[0]).append(',').append(o[1]).append(';')
@@ -197,6 +222,7 @@ class SpatialScorer {
             val parts = s.split('|')
             val g = parts[0].split(',')
             offsetX = g[0].toDouble(); offsetY = g[1].toDouble()
+            if (g.size >= 4) { devX = g[2].toDouble(); devY = g[3].toDouble() }   // restore scatter (Stage 4)
             keyOffset.clear()
             if (parts.size > 1) {
                 for (entry in parts[1].split(';')) {
@@ -217,5 +243,12 @@ class SpatialScorer {
         // reconsider candidates within BAND of the top spatial score.
         private const val DOMINANCE = 1.6
         private const val BAND = 0.65
+        // Stage 4 scatter-adaptive hot zones: sigma = SIGMA_FROM_DEV * mean-abs-deviation (for a
+        // Gaussian, σ = 1.253·E|x|), clamped to [MIN, MAX] × the geometry-default sigma so the zone
+        // can't collapse onto a point or swallow neighbouring rows. DEV_RATE = slow EW adaptation.
+        private const val SIGMA_FROM_DEV = 1.253
+        private const val SIGMA_MIN = 0.65
+        private const val SIGMA_MAX = 1.50
+        private const val DEV_RATE = 0.02
     }
 }

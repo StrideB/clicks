@@ -15400,6 +15400,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // decodeLauncherTapWord), without changing which letter commits now.
                         if (label.length == 1 && label[0].isLetter()) {
                             if (launcherTapTrace.size < 32) launcherTapTrace.add(event.rawX to event.rawY)
+                            // Feed the spatial model so it learns this user's per-key bias AND tap
+                            // scatter (Stage 4) — sharpening the decode-at-space geometry. This never
+                            // changes which letter commits (the key-view is still trusted above).
+                            spatialScorer.recordTap(event.rawX, event.rawY)
                         }
                         if (label == "shift") handleShiftTap() else handleKey(label)
                     }
