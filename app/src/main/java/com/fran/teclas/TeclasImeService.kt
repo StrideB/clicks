@@ -797,7 +797,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         lastBuiltMode = selectedNeuTokens().mode
         return SwipeImeKeyboardLayout().apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             // Side padding reclaimed for the key grid: wider touch cells on every row (the visual
             // breathing room now comes from each key face's inset, not dead deck border).
             setPadding(dp(2), dp(10), dp(2), dp(8))
@@ -2842,6 +2842,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 panel.removeAllViews()
                 panel.visibility = View.GONE
                 panel.background = null
+                applyImeDeckHeight()
             }
             return
         }
@@ -2895,6 +2896,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 setOnClickListener { keyHaptic("back"); agenticHud = null; updateStrip() }
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
             if (wasHidden) animateAgenticPanelIn(panel)
+            syncAgenticPanelHeight(panel)
             return
         }
 
@@ -2926,6 +2928,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 setOnClickListener { keyHaptic("back"); agenticStarters = emptyList(); updateStrip() }
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(4) })
             if (wasHidden) animateAgenticPanelIn(panel)
+            syncAgenticPanelHeight(panel)
             return
         }
 
@@ -2944,6 +2947,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             else -> {
                 panel.visibility = View.GONE
                 panel.background = null
+                applyImeDeckHeight()
                 return
             }
         }
@@ -2990,6 +2994,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
 
         if (wasHidden) animateAgenticPanelIn(panel)
+        syncAgenticPanelHeight(panel)
+    }
+
+    private fun syncAgenticPanelHeight(panel: View) {
+        applyImeDeckHeight()
+        panel.post { applyImeDeckHeight() }
     }
 
     private fun fieldTextForPolish(): String =
@@ -4484,7 +4494,15 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun imeKeyboardHeight(): Int {
         val rowCount = 4
         val stripHeight = if (suggestionStripExpanded) dp(38) else 0
-        return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6) + stripHeight
+        return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6) + stripHeight + agenticPanelReservedHeight()
+    }
+
+    private fun agenticPanelReservedHeight(): Int {
+        val panel = agenticPanel ?: return 0
+        if (panel.visibility != View.VISIBLE) return 0
+        val lp = panel.layoutParams as? LinearLayout.LayoutParams
+        val measured = panel.measuredHeight.takeIf { it > 0 } ?: dp(52)
+        return measured + (lp?.topMargin ?: 0) + (lp?.bottomMargin ?: 0)
     }
 
     private fun keyRowHeight(): Int {

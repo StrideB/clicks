@@ -7720,7 +7720,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun clockWidgetWidth(styleId: String = clockWidgetStyleId()): Int {
-        val maxPhoneWidth = resources.displayMetrics.widthPixels
         val targetDp = when (styleId) {
             "compact_chip" -> 178
             "analog_glass", "ring" -> 168
@@ -7733,7 +7732,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return if (isUnfoldedInnerLayoutActive()) {
             minOf(target.coerceAtLeast(dp(188)), resources.displayMetrics.widthPixels / 3)
         } else {
-            minOf(maxPhoneWidth, target).coerceAtLeast(dp(156))
+            val canvasWidth = homeFreeformCanvasWidth()
+            val maxByCanvas = (canvasWidth - dp(28)).coerceAtLeast(dp(156))
+            val maxByFraction = (canvasWidth * 0.82f).toInt().coerceAtLeast(dp(156))
+            minOf(target, maxByCanvas, maxByFraction).coerceAtLeast(minOf(dp(156), maxByCanvas))
         }
     }
 
@@ -7742,10 +7744,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val width = clockWidgetWidth(styleId)
         return FrameLayout.LayoutParams(width, clockWidgetHeight(styleId)).apply {
             if (isUnfoldedInnerLayoutActive()) {
-                leftMargin = ((resources.displayMetrics.widthPixels - width) / 2).coerceAtLeast(dp(30))
+                leftMargin = defaultFreeformWidgetLeft(width)
                 topMargin = dp(220)
             } else {
-                leftMargin = ((resources.displayMetrics.widthPixels - width) / 2).coerceAtLeast(0)
+                leftMargin = defaultFreeformWidgetLeft(width)
                 topMargin = dp(214)
             }
         }
@@ -8197,26 +8199,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else {
             FrameLayout.LayoutParams(weatherWidgetStyledWidth(), weatherWidgetStyledHeight(weatherWidgetStyleId()))
         }
-        // Default = the header's flow position (content column padding), so an unset
-        // position renders pixel-identically to the old fixed top header.
         if (isUnfoldedInnerLayoutActive()) {
-            lp.leftMargin = 0
+            lp.leftMargin = defaultFreeformWidgetLeft(lp.width)
             lp.topMargin = dp(74)
         } else {
-            lp.leftMargin = 0
+            lp.leftMargin = defaultFreeformWidgetLeft(lp.width)
             lp.topMargin = 0
         }
         return lp
     }
 
+    private fun homeFreeformCanvasWidth(): Int {
+        val liveWidth = if (::contentFrame.isInitialized && contentFrame.width > 0) contentFrame.width else 0
+        return (liveWidth.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).coerceAtLeast(dp(220))
+    }
+
+    private fun defaultFreeformWidgetLeft(width: Int): Int =
+        ((homeFreeformCanvasWidth() - width) / 2).coerceAtLeast(0)
+
+    private fun freeformWidgetWidth(maxDp: Int, minDp: Int, widthFraction: Float): Int {
+        val canvasWidth = homeFreeformCanvasWidth()
+        val maxByCanvas = (canvasWidth - dp(28)).coerceAtLeast(dp(180))
+        val maxByFraction = (canvasWidth * widthFraction).toInt().coerceAtLeast(dp(180))
+        val target = minOf(dp(maxDp), maxByFraction, maxByCanvas)
+        val minWidth = minOf(dp(minDp), maxByCanvas)
+        return target.coerceAtLeast(minWidth)
+    }
+
     private fun weatherWidgetFreeformWidth(): Int {
-        val max = resources.displayMetrics.widthPixels.coerceAtLeast(dp(260))
-        return minOf(max, dp(420)).coerceAtLeast(dp(280))
+        return freeformWidgetWidth(maxDp = 360, minDp = 248, widthFraction = 0.82f)
     }
 
     private fun weatherWidgetStyledWidth(): Int {
-        val max = resources.displayMetrics.widthPixels.coerceAtLeast(dp(220))
-        return minOf(max, dp(360)).coerceAtLeast(dp(240))
+        return freeformWidgetWidth(maxDp = 340, minDp = 232, widthFraction = 0.78f)
     }
 
     private fun weatherWidgetStyledHeight(styleId: String): Int {
@@ -8864,12 +8879,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (isUnfoldedInnerLayoutActive()) {
             val width = agendaWidgetCardWidth()
             FrameLayout.LayoutParams(width, agendaWidgetCardHeight()).apply {
-                leftMargin = (resources.displayMetrics.widthPixels - width).coerceAtLeast(0)
+                leftMargin = defaultFreeformWidgetLeft(width)
                 topMargin = dp(74)
             }
         } else {
-            FrameLayout.LayoutParams(agendaWidgetCardWidth(), dp(42)).apply {
-                leftMargin = 0
+            val width = agendaWidgetCardWidth()
+            FrameLayout.LayoutParams(width, dp(42)).apply {
+                leftMargin = defaultFreeformWidgetLeft(width)
                 topMargin = dp(86)
             }
         }
@@ -9260,7 +9276,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun briefWidgetFrameLayoutParams(): FrameLayout.LayoutParams =
         FrameLayout.LayoutParams(weatherWidgetFreeformWidth(), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            leftMargin = 0
+            leftMargin = defaultFreeformWidgetLeft(width)
             topMargin = dp(120)
         }
 
