@@ -16730,7 +16730,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     { x, y, key -> spatialScorer.probability(x, y, key.toString()).toFloat() },
                     { w -> engineUnion.frequencyOf(w) },
                     { prev, w ->
-                        val ctx = if (prev.isNotEmpty() && ngramRepo.cachedNextWords(prev).any { it.equals(w, ignoreCase = true) }) 0.5f else 0.02f
+                        // Graded context from your own phrasing: the higher w ranks among the words
+                        // you actually type after `prev`, the stronger the prior (rank 0 ≈ 0.7).
+                        val ctx = if (prev.isEmpty()) 0.02f else {
+                            val idx = ngramRepo.cachedNextWords(prev).indexOfFirst { it.equals(w, ignoreCase = true) }
+                            if (idx < 0) 0.02f else (0.7f - 0.08f * idx).coerceAtLeast(0.15f)
+                        }
                         (ctx * langBias.preference(w).toFloat()).coerceIn(0.001f, 1f)   // fold in language bias
                     },
                 )
@@ -21829,14 +21834,18 @@ Question: $prompt"""
             }
             "space" -> {
                 applyDockedForegroundAutocorrect()
-                languageBias?.observe(dockedForegroundCurrentWord())   // detect the language being written
+                val committed = dockedForegroundCurrentWord()
+                languageBias?.observe(committed)   // detect the language being written
+                learnDockedNgram(committed)        // grow your phrasing model from what you actually type
                 launcherTapTrace.clear()   // word committed — start the next word's geometry fresh
                 mirrorDockedForegroundInsert(" ")
                 injectToForegroundApp(" ")
             }
             "period" -> {
                 applyDockedForegroundAutocorrect()
-                languageBias?.observe(dockedForegroundCurrentWord())
+                val committed = dockedForegroundCurrentWord()
+                languageBias?.observe(committed)
+                learnDockedNgram(committed)
                 launcherTapTrace.clear()
                 mirrorDockedForegroundInsert(".")
                 injectToForegroundApp(".")
@@ -21885,6 +21894,16 @@ Question: $prompt"""
 
     private fun dockedForegroundCurrentWord(): String =
         dockedForegroundDraft.takeLastWhile { it.isLetter() }.toString()
+
+    /** Stage 2a: every word you commit over an app grows your personal n-gram model, and we prewarm
+     *  the next-word cache for it so the decoder's context prior is ready on the very next word. */
+    private fun learnDockedNgram(word: String) {
+        if (word.length < 2) return
+        val before = dockedForegroundDraft.dropLast(dockedForegroundCurrentWord().length).toString()
+        val prev = Regex("[A-Za-z]+").findAll(before).lastOrNull()?.value.orEmpty()
+        if (prev.isNotEmpty()) ngramRepo.recordWord(word, prev)
+        ngramRepo.prefetchNextWords(word)   // warm cachedNextWords(word) for the word you'll type next
+    }
 
     private fun applyDockedForegroundAutocorrect() {
         dockedFgUndo = null
