@@ -44,8 +44,13 @@ class TapLatticeDecoder(
         topK: Int = 5,
         allowCompletion: Boolean = false,
         beamWidth: Int = 12,
+        // Stage 3 — predictive key-target resizing: per-prefix weights (>1 = likely next letter) that
+        // enlarge the effective target of the letter the language model expects next. After "th", "e"
+        // gets a boost, so a tap between "e"/"r"/"w" resolves to "e" the way Gboard grows the key.
+        nextCharWeights: (prefix: String) -> Map<Char, Double> = { emptyMap() },
     ): List<Scored> {
         if (taps.isEmpty() || taps.size > MAX_TAPS) return emptyList()
+        val weightCache = HashMap<String, Map<Char, Double>>()
 
         // Precompute, per tap, the letters worth exploring: a small shortlist of the nearest keys.
         // A tap only ever extends a beam by one of ITS top-[FANOUT] keys, which is what keeps the
@@ -68,9 +73,13 @@ class TapLatticeDecoder(
         for (t in taps.indices) {
             val next = ArrayList<Beam>(beams.size * FANOUT)
             for (b in beams) {
+                val pred = weightCache.getOrPut(b.prefix) { nextCharWeights(b.prefix) }
                 for ((li, lp) in perTap[t]) {
                     if (!trie.canExtend(b.cursor, li)) continue
-                    next.add(Beam(trie.advance(b.cursor, li), b.prefix + ('a' + li), b.logp + lp))
+                    // Grow the predicted next letter's target: add a bounded log-boost for a letter
+                    // the LM expects after this prefix (never a penalty, so it can't fight the geometry).
+                    val boost = pred['a' + li]?.let { ln(it.coerceIn(1.0, PRED_MAX)) } ?: 0.0
+                    next.add(Beam(trie.advance(b.cursor, li), b.prefix + ('a' + li), b.logp + lp + boost))
                 }
             }
             if (next.isEmpty()) break
@@ -138,5 +147,8 @@ class TapLatticeDecoder(
         const val W_SPATIAL = 1.0
         const val W_FREQ = 0.35
         const val W_LM = 0.55
+        // Stage 3: cap the predicted-next-letter boost so target-growth nudges near-ties without
+        // overriding a decisive tap (ln(1.6) ≈ +0.47, below a confident geometry margin).
+        const val PRED_MAX = 1.6
     }
 }
