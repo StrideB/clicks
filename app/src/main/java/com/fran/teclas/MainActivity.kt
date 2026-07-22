@@ -2022,15 +2022,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     /** Extend the space bar's touchable area down past the bottom of the deck (over the lift band and
      *  any padding) and slightly out at the sides, so the strip under/around the space bar commits a
      *  space instead of being a dead zone. Runs after layout each render; a no-op off the docked deck. */
+    private var spaceDelegateRetries = 0
     private fun installSpaceTouchDelegate() {
         val space = spaceKeyView ?: return
         if (!::keyboardDockView.isInitialized) return
         val dock = keyboardDockView
-        if (space.width == 0 || dock.height == 0) {
-            // Not laid out yet — try again on the next frame.
-            dock.post { installSpaceTouchDelegate() }
+        // Bail (don't re-post) when the space key isn't in the current layout (number pad / symbols use
+        // a stale, detached spaceKeyView) or the deck isn't laid out yet — a few bounded retries only,
+        // so this can never become a per-frame main-thread busy loop.
+        if (space.parent == null || space.width == 0 || dock.height == 0) {
+            if (spaceDelegateRetries++ < 4) dock.post { installSpaceTouchDelegate() }
             return
         }
+        spaceDelegateRetries = 0
         val r = android.graphics.Rect(0, 0, space.width, space.height)
         dock.offsetDescendantRectToMyCoords(space, r)
         r.bottom = dock.height                 // swallow the lift band + bottom padding under the bar
@@ -16994,14 +16998,16 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     @Volatile private var dictLoadInFlight = false
+    @Volatile private var dictLoadedOnce = false
 
-    /** Guarantee the launcher's prediction dictionary is (being) loaded. The docked-over-app typing
-     *  path needs it for autocorrect + suggestions, and on Samsung the launcher process can be killed
-     *  and recreated without the original onCreate load having completed — so we lazily (re)trigger
-     *  it the moment the user types over an app. Cheap: no-ops once the engine has words. */
+    /** Guarantee the launcher's prediction dictionary is (being) loaded. The typing paths need it for
+     *  autocorrect + suggestions, and on Samsung the launcher process can be killed and recreated
+     *  without the original onCreate load having completed — so we lazily (re)trigger it the moment
+     *  the user types. Guarded by a "loaded once this process" flag, NOT a per-keystroke dictionary
+     *  probe: a probe word missing from the active language (e.g. "the" when Spanish is primary) made
+     *  this re-kick a full load on EVERY keystroke, which lagged typing. */
     private fun ensureDictionaryLoaded() {
-        if (dictLoadInFlight) return
-        if (predictionEngine.isDictWord("the")) return   // already populated
+        if (dictLoadedOnce || dictLoadInFlight) return
         loadGlideWords()
     }
 
@@ -17054,6 +17060,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     predictionEnginePrimary = enginePrimary
                     hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                     latentLanguageActive = false
+                    dictLoadedOnce = true   // words are published — ensureDictionaryLoaded() must stop re-triggering
                     updateGlideLayout()
                 }
                 // Legacy encoder-only decoder (kept for A/B) + the new encoder-decoder engine load
