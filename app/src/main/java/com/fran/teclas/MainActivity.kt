@@ -1982,7 +1982,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val word = if (active) dockedForegroundCurrentWord() else ""
         val dictReady = predictionEngine.isDictWord("the")
         val words = if (active && word.length >= 1 && dictReady)
-            predictionEngine.getSuggestions(word, 3).filterNot { it.equals(word, ignoreCase = true) }
+            predictionEngine.getSuggestions(word, 6).filterNot { it.equals(word, ignoreCase = true) }
+                .sortedByDescending { languageBias?.preference(it) ?: 1.0 }   // favor the language in use
+                .take(3)
         else emptyList()
         // Word→emoji suggestions: if the typed word maps to emoji, offer them first.
         val emojis = if (active && word.length >= 2) SmartChips.emojiFor(prefs(), word.lowercase(Locale.US)).take(2) else emptyList()
@@ -16719,13 +16721,18 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
                 android.util.Log.i("TeclasDiag",
                     "launcher dictionary loaded: union=${freqs.size} words, primary=${adaptive.primaryFreqs.size}")
+                // Contextual language detection (bilingual users): bias toward the language being written.
+                val langBias = com.fran.teclas.keyboard.unified.LanguageBias(adaptive.perLangWords)
                 // Gboard-style decode-at-space: a trie beam-searcher that reads the whole tap trail.
                 val tapTrie = com.fran.teclas.keyboard.neural.CharTrie().apply { addAll(adaptive.extendedWords) }
                 val decoder = com.fran.teclas.keyboard.TapLatticeDecoder(
                     tapTrie,
                     { x, y, key -> spatialScorer.probability(x, y, key.toString()).toFloat() },
                     { w -> engineUnion.frequencyOf(w) },
-                    { prev, w -> if (prev.isNotEmpty() && ngramRepo.cachedNextWords(prev).any { it.equals(w, ignoreCase = true) }) 0.5f else 0.02f },
+                    { prev, w ->
+                        val ctx = if (prev.isNotEmpty() && ngramRepo.cachedNextWords(prev).any { it.equals(w, ignoreCase = true) }) 0.5f else 0.02f
+                        (ctx * langBias.preference(w).toFloat()).coerceIn(0.001f, 1f)   // fold in language bias
+                    },
                 )
                 // Make glide available immediately with the statistical classifier; the heavy neural
                 // ONNX load must not block it (that stalls glide for seconds on a real device).
@@ -16734,6 +16741,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     wordlistFrequencies = freqs
                     predictionEngine = engineUnion
                     tapDecoder = decoder
+                    languageBias = langBias
                     predictionEnginePrimary = enginePrimary
                     hasLatentLanguages = adaptive.latentLangs.isNotEmpty()
                     latentLanguageActive = false
@@ -21821,12 +21829,14 @@ Question: $prompt"""
             }
             "space" -> {
                 applyDockedForegroundAutocorrect()
+                languageBias?.observe(dockedForegroundCurrentWord())   // detect the language being written
                 launcherTapTrace.clear()   // word committed — start the next word's geometry fresh
                 mirrorDockedForegroundInsert(" ")
                 injectToForegroundApp(" ")
             }
             "period" -> {
                 applyDockedForegroundAutocorrect()
+                languageBias?.observe(dockedForegroundCurrentWord())
                 launcherTapTrace.clear()
                 mirrorDockedForegroundInsert(".")
                 injectToForegroundApp(".")
@@ -21857,6 +21867,7 @@ Question: $prompt"""
     // and the trie beam decoder that reconsiders the word from that whole geometry when space lands.
     private val launcherTapTrace = ArrayList<Pair<Float, Float>>(32)
     @Volatile private var tapDecoder: com.fran.teclas.keyboard.TapLatticeDecoder? = null
+    @Volatile private var languageBias: com.fran.teclas.keyboard.unified.LanguageBias? = null
 
     /** Decode the word from the tap GEOMETRY. Returns a confident dictionary word that differs from
      *  what was typed, or null (fall back to string-edit autocorrect). Requires the trace to line up
