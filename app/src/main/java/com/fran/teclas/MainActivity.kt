@@ -559,6 +559,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetKeyboardHostHeightAnimator: ValueAnimator? = null
     // Interactive slide-to-reveal (flag-gated). progress: 1f = keyboard fully shown, 0f = collapsed to the search bar.
     private var slideKeyboardEnabled = false
+    private var slideAutoFocusEnabled = false
     private var widgetKeyboardSlideProgress = 1f
     private var widgetKeyboardDragActive = false
     private var widgetKeyboardDragStartRawY = 0f
@@ -906,6 +907,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
         slideKeyboardEnabled = prefs().getBoolean(SLIDE_KEYBOARD_PREF, false)
+        slideAutoFocusEnabled = prefs().getBoolean(SLIDE_AUTOFOCUS_PREF, false)
         widgetKeyboardSlideProgress = if (widgetKeyboardHidden) 0f else 1f
         useSystemKeyboard = prefs().getBoolean(USE_SYSTEM_KEYBOARD_PREF, false)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
@@ -15921,6 +15923,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
 
+            addView(settingToggle("AUTO-FOCUS FIELDS (DOCKED)", slideAutoFocusEnabled) {
+                slideAutoFocusEnabled = !slideAutoFocusEnabled
+                prefs().edit().putBoolean(SLIDE_AUTOFOCUS_PREF, slideAutoFocusEnabled).apply()
+                haptic(this)
+                render()
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
+
             addView(settingAction("AGENTIC SKILLS") {
                 keyboardSettingsOpen = false
                 startActivity(android.content.Intent(this@MainActivity, AgenticSkillsActivity::class.java))
@@ -28934,6 +28943,7 @@ Question: $prompt"""
         private const val USE_SYSTEM_KEYBOARD_PREF = "use_system_keyboard"
         private const val KBD_TILT_LIGHT_PREF = "kbd_tilt_light"
         private const val SLIDE_KEYBOARD_PREF = "slide_keyboard_interactive"
+        private const val SLIDE_AUTOFOCUS_PREF = "slide_keyboard_autofocus"
         private const val LIBRARY_GRID_MODE_PREF = "library_grid_mode"
         private const val GRID_APP_TILE_TAG = "grid_app_tile"
         internal const val GO_KEY_COLOR_PREF = "go_key_color"

@@ -398,7 +398,16 @@ class DockedKeyboardService : Service() {
             baseFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
         runCatching { windowManager?.updateViewLayout(view, params) }
+        // Auto-focus (opt-in): when the docked deck appears over an app, focus the foreground
+        // field (or open its search) via the accessibility service so you can just start typing
+        // without reaching up to tap the field. Reuses the proven ACTION_PREPARE_FIELD path.
+        if (visible && slideAutoFocusEnabled()) {
+            sendBroadcast(Intent(InputInjectionService.ACTION_PREPARE_FIELD).apply { setPackage(packageName) })
+        }
     }
+
+    private fun slideAutoFocusEnabled(): Boolean =
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("slide_keyboard_autofocus", false)
 
     private fun keyRow(labels: List<String>, rowIndex: Int): LinearLayout {
         return LinearLayout(this).apply {
