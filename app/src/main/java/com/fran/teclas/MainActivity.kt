@@ -3464,10 +3464,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             wallpaperCutoutImageView = this
             post {
                 applyCutoutMatrix(this)
+                clipCutoutAboveDock(this)
                 if (depthSettlePending) { depthSettlePending = false; playDepthSettle() }
                 if (wallpaperDriftEnabled()) startWallpaperDrift() else cancelWallpaperDrift()
             }
         }
+    }
+
+    /** The depth effect lives in the wallpaper/widget area only — the dock and the keyboard below it
+     *  always sit IN FRONT of it. Clip the subject cutout's bottom to the top of the favorites dock
+     *  so the subject never draws over the dock (or anything beneath it). */
+    private fun clipCutoutAboveDock(cutout: View, tries: Int = 0) {
+        if (!::favoritesDockFrameView.isInitialized || cutout.width <= 0) return
+        val dock = favoritesDockFrameView
+        if (dock.width <= 0 || dock.height <= 0) {
+            if (tries < 4) cutout.post { clipCutoutAboveDock(cutout, tries + 1) }   // dock not laid out yet
+            return
+        }
+        val dl = IntArray(2); dock.getLocationInWindow(dl)
+        val cl = IntArray(2); cutout.getLocationInWindow(cl)
+        val dockTop = (dl[1] - cl[1]).coerceIn(0, cutout.height)
+        cutout.clipBounds = android.graphics.Rect(0, 0, cutout.width, dockTop)
     }
 
     /** Aligns the cutout exactly over the wallpaper by copying the wallpaper ImageView's ACTUAL
