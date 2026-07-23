@@ -9,8 +9,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.graphics.LinearGradient
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
@@ -312,6 +314,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private var pendingAttachment: Triple<java.io.File, String, String>? = null
     private val handler = Handler(Looper.getMainLooper())
     private val keyViews = mutableMapOf<String, TextView>()
+    private val keyRowIndexes = mutableMapOf<String, Int>()
     private val keyBounds = linkedMapOf<String, Rect>()
     private var glideClassifier: StatisticalGlideTypingClassifier? = null
     // Optional neural glide decoder (encoder-decoder + beam search). No-op until a model ships in
@@ -462,9 +465,6 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // Swipe up on a key to insert its symbol without leaving letters (mirrors the symbols layout).
     private val keyUpSymbols get() = com.fran.teclas.keyboard.KeyboardSymbols.keyUp
     private var suggestions: List<String> = emptyList()
-    private val teclasLogoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-    }
     // True right after a glide commits a word, while the strip shows the swipe's other decodings as
     // tap-to-correct alternatives. Any physical key press clears it (back to normal typing/next-word).
     private var glideJustCommitted = false
@@ -793,6 +793,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun buildKeyboard(): SwipeImeKeyboardLayout {
         keyViews.clear()
+        keyRowIndexes.clear()
         lastBuiltTheme = keyboardTheme()
         lastBuiltMode = selectedNeuTokens().mode
         return SwipeImeKeyboardLayout().apply {
@@ -919,6 +920,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val symbolBias: Float,
         val labelMaxScale: Float,
         val symbolScale: Float,
+        val faceInsetPx: Float,
         val engraved: Boolean,
         val offsetX: Float,
         val offsetY: Float
@@ -1043,8 +1045,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     out.add(CanvasKeyCell(
                         lbl,
                         Rect(x, cellTop, x + kw, cellTop + cellH),
-                        cachedKeyBackground(lbl, pressed = false),
-                        cachedKeyBackground(lbl, pressed = true),
+                        cachedKeyBackground(lbl, pressed = false, rowIndex = rowIndex),
+                        cachedKeyBackground(lbl, pressed = true, rowIndex = rowIndex),
                         primary,
                         if (flick) com.fran.teclas.keyboard.KeyboardSymbols.keyUp[lbl.lowercase(Locale.US)] else null,
                         flick,
@@ -1052,7 +1054,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         symbolHintColor(),
                         keyTypeface(lbl),
                         keyTextSize(lbl) * density,
-                        spec.labelBias, spec.symbolBias, spec.labelMaxScale, spec.symbolScale, spec.engraved,
+                        spec.labelBias,
+                        spec.symbolBias,
+                        spec.labelMaxScale,
+                        spec.symbolScale,
+                        keyVerticalInset(rowIndex).toFloat(),
+                        spec.engraved,
                         ox, oy
                     ))
                     x += kw
@@ -1083,7 +1090,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 // inside a face inset by keyVerticalInset(), with sizes scaled off the face height. The
                 // bias/scale/engrave values are theme-driven (canvasLetterSpec), so Brushed's higher,
                 // engraved placement and every other theme's default both render from one path.
-                val faceInset = keyVerticalInset().toFloat()
+                val faceInset = k.faceInsetPx
                 val faceTop = k.cell.top + faceInset
                 val faceHeight = (k.cell.height() - faceInset * 2).coerceAtLeast(1f)
                 k.symbolHint?.let { s ->
@@ -1320,6 +1327,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         while (deck.childCount > chromeChildCount) deck.removeViewAt(deck.childCount - 1)
         keyViews.clear()
+        keyRowIndexes.clear()
         addKeyRows(deck)
         deck.post { captureKeyBounds() }
     }
@@ -1372,22 +1380,23 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             setPadding(inset, 0, inset, 0)
             labels.forEach { label ->
                 if (isRoundKeyboardKey(label)) {
-                    addView(keyView(label), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
+                    addView(keyView(label, rowIndex), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
                         gravity = Gravity.CENTER_VERTICAL
                         if (label == "enter") marginStart = dp(2) else marginEnd = dp(2)
                     })
                 } else {
-                    addView(keyView(label), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, keyWeight(label)))
+                    addView(keyView(label, rowIndex), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, keyWeight(label)))
                 }
             }
         }
     }
 
-    private fun keyView(label: String): TextView {
+    private fun keyView(label: String, rowIndex: Int): TextView {
         val isLetter = label.length == 1 && label[0].isLetter() && !symbolsMode
         val useBrushedOpticalKey = keyboardTheme() == KEYBOARD_THEME_BRUSHED && !isLetter && label != "teclas"
         return (if (isLetter) com.fran.teclas.keyboard.DynamicFlickKeyView(this) else if (label == "teclas") TeclasLogoKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
             tag = label
+            keyRowIndexes[label] = rowIndex
             text = if (label == "teclas") "" else if (isLetter) visualLabel(label) else keyDisplayText(label)
             if (label == "teclas") contentDescription = "Teclas dock key"
             gravity = Gravity.CENTER
@@ -1412,7 +1421,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
             if (isLetter && this is com.fran.teclas.keyboard.DynamicFlickKeyView) {
-                setKeyFaceInsets(keyHorizontalInset(), keyVerticalInset())
+                setKeyFaceInsets(keyHorizontalInset(), keyVerticalInset(rowIndex))
                 if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                     setLabelPlacement(
                         labelBias = 0.28f,
@@ -1437,12 +1446,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     )
                 }
             }
-            background = visualKeyBackground(label, pressed = false)
+            background = visualKeyBackground(label, pressed = false, rowIndex = rowIndex)
             isClickable = true
             // No per-key hardware layer: 30+ layers cost texture memory and force a texture
             // re-upload on every press/label change. Default display-list rendering redraws only
             // the pressed key's small dirty rect, which is cheaper for views this size.
-            setOnTouchListener(ImeKeyTouchListener(label))
+            setOnTouchListener(ImeKeyTouchListener(label, rowIndex))
             keyViews[label] = this
         }
     }
@@ -1456,21 +1465,24 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun drawTeclasLauncherMark(canvas: Canvas, cx: Float, cy: Float, viewportSize: Float, ink: Int) {
-        val scale = viewportSize / 108f
-        canvas.save()
-        canvas.translate(cx - 54f * scale, cy - 54f * scale)
-        canvas.scale(scale, scale)
-        teclasLogoPaint.color = ink
-        canvas.drawRect(42f, 31f, 54f, 77f, teclasLogoPaint)
-        canvas.drawRect(32f, 41f, 64f, 52f, teclasLogoPaint)
-        teclasLogoPaint.color = 0xFFC9A7FF.toInt()
-        canvas.drawRect(62f, 59f, 77f, 77f, teclasLogoPaint)
-        canvas.restore()
+        val half = viewportSize / 2f
+        val phase = (android.os.SystemClock.uptimeMillis() % 1600L) / 1600f
+        KeyboardDockGlyph.draw(
+            canvas,
+            cx - half,
+            cy - half,
+            cx + half,
+            cy + half,
+            docked = false,
+            ink = ink,
+            accent = goKeyColor(),
+            phase = phase
+        )
     }
 
     private val touchSlopPx by lazy { ViewConfiguration.get(this).scaledTouchSlop }
 
-    private inner class ImeKeyTouchListener(private val label: String) : View.OnTouchListener {
+    private inner class ImeKeyTouchListener(private val label: String, private val rowIndex: Int?) : View.OnTouchListener {
         private var downRawX = 0f
         private var downRawY = 0f
         private var teclasLongPressRunnable: Runnable? = null
@@ -1479,8 +1491,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         private var spaceCursorMoved = false
         // Cache backgrounds once per key so press/release don't allocate a drawable every tap —
         // that per-keystroke allocation was the main reason the IME felt slower than the launcher.
-        private val idleBg = visualKeyBackground(label, pressed = false)
-        private val pressedBg = visualKeyBackground(label, pressed = true)
+        private val idleBg = visualKeyBackground(label, pressed = false, rowIndex = rowIndex)
+        private val pressedBg = visualKeyBackground(label, pressed = true, rowIndex = rowIndex)
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
@@ -2368,7 +2380,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // We center children vertically ourselves, so the default baseline-alignment measure pass
             // buys nothing and only costs an extra measure of every text child on each strip repaint.
             isBaselineAligned = false
-            setPadding(dp(6), dp(3), dp(6), dp(3))
+            setPadding(dp(6), 0, dp(6), 0)
         }
         suggestionStrip = strip
         updateStrip()
@@ -2382,7 +2394,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             suggestionStripExpanded = expanded
             applyImeDeckHeight()
         }
-        val targetHeight = if (expanded) dp(38) else 0
+        val targetHeight = if (expanded) imeSuggestionStripHeight() else 0
         (strip.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
             if (lp.height != targetHeight) {
                 lp.height = targetHeight
@@ -2408,12 +2420,86 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         imeRoot?.requestLayout()
     }
 
-    // One well-background instance for the strip's lifetime; setBackground(same instance) is a
-    // no-op in View, so repaints don't re-allocate or re-invalidate.
-    private var stripWellCache: android.graphics.drawable.GradientDrawable? = null
-    private fun stripWellBackground(): Drawable = stripWellCache ?: GradientDrawable().apply {
-        setColor(0x14FFFFFF); cornerRadius = dp(10).toFloat()
-    }.also { stripWellCache = it }
+    private var stripWellCache: Drawable? = null
+    private var stripWellCacheSig: String? = null
+    private fun stripWellBackground(): Drawable {
+        val sig = "${keyboardVisualTheme()}|${selectedNeuTokens().mode}"
+        stripWellCache?.takeIf { stripWellCacheSig == sig }?.let { return it }
+        val tokens = selectedNeuTokens()
+        return SuggestionTrayDrawable(tokens, dp(13).toFloat()).also {
+            stripWellCache = it
+            stripWellCacheSig = sig
+        }
+    }
+
+    private class SuggestionTrayDrawable(
+        private val tokens: NeuTokens,
+        private val radiusPx: Float
+    ) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val rect = RectF()
+        private val topLine = RectF()
+        private val bottomLine = RectF()
+
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            if (b.isEmpty) return
+            val padX = 3f
+            val padTop = 4f
+            // Keep the tray visually seated against the keyboard deck; a bottom inset made it
+            // read like a floating shelf above the keys.
+            rect.set(b.left + padX, b.top + padTop, b.right - padX, b.bottom.toFloat())
+            if (rect.width() <= 0f || rect.height() <= 0f) return
+
+            val light = tokens.mode == NeuMode.LIGHT
+            val fillTop = withAlpha(if (light) tokens.baseHi else tokens.baseLo, if (light) 0.42f else 0.28f)
+            val fillMid = withAlpha(tokens.base, if (light) 0.58f else 0.18f)
+            val fillBottom = withAlpha(if (light) tokens.baseLo else Color.BLACK, if (light) 0.32f else 0.34f)
+            paint.style = Paint.Style.FILL
+            paint.shader = LinearGradient(
+                0f, rect.top, 0f, rect.bottom,
+                intArrayOf(fillTop, fillMid, fillBottom),
+                floatArrayOf(0f, 0.42f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(rect, radiusPx, radiusPx, paint)
+            paint.shader = null
+
+            // Very thin inner edges: enough separation to read as a machined recess, not a floating card.
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f
+            paint.color = withAlpha(if (light) Color.WHITE else tokens.baseHi, if (light) 0.22f else 0.16f)
+            canvas.drawRoundRect(rect, radiusPx, radiusPx, paint)
+
+            paint.style = Paint.Style.FILL
+            topLine.set(rect.left + 10f, rect.top + 1f, rect.right - 10f, rect.top + 2.5f)
+            paint.color = withAlpha(if (light) tokens.baseLo else Color.BLACK, if (light) 0.22f else 0.42f)
+            canvas.drawRoundRect(topLine, 1.5f, 1.5f, paint)
+
+            bottomLine.set(rect.left + 12f, rect.bottom - 2.5f, rect.right - 12f, rect.bottom - 1f)
+            paint.color = withAlpha(if (light) Color.WHITE else tokens.baseHi, if (light) 0.30f else 0.10f)
+            canvas.drawRoundRect(bottomLine, 1.5f, 1.5f, paint)
+        }
+
+        override fun setAlpha(alpha: Int) {
+            paint.alpha = alpha
+        }
+
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {
+            paint.colorFilter = colorFilter
+        }
+
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+
+        private fun withAlpha(color: Int, alpha: Float): Int =
+            Color.argb(
+                (255 * alpha).toInt().coerceIn(0, 255),
+                Color.red(color),
+                Color.green(color),
+                Color.blue(color)
+            )
+    }
 
     // ── Typing-strip fast path ──────────────────────────────────────────────────────────────────
     // The steady-state strip (word suggestions + emoji/symbol chips + Fix/Polish) repaints on every
@@ -2454,14 +2540,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         stripMicView = TextView(this).apply {
             gravity = Gravity.CENTER
+            includeFontPadding = false
             background = imeMicBackground(false)
             foreground = imeMicGlyph(0xFFB8C0CC.toInt())
             isClickable = true
             setOnClickListener { toggleImeVoice() }
-            row.addView(this, LinearLayout.LayoutParams(dp(32), dp(30)).apply { marginStart = dp(6); marginEnd = dp(2) })
+            row.addView(this, LinearLayout.LayoutParams(dp(32), dp(30)).apply { marginStart = dp(8); marginEnd = dp(5) })
         }
         stripFixView = TextView(this).apply {
             text = "⌁ Fix"; gravity = Gravity.CENTER; textSize = 14f
+            includeFontPadding = false
             setTextColor(0xFF33E1C4.toInt()); setPadding(dp(12), 0, dp(12), 0)
             isClickable = true
             setOnClickListener { keyHaptic("space"); runNanoProofread() }
@@ -2472,6 +2560,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             stripSuggestionViews.add(TextView(this).apply {
                 gravity = Gravity.CENTER
                 textSize = 15f
+                includeFontPadding = false
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 isClickable = true
@@ -2485,6 +2574,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         repeat(5) { i ->
             stripChipViews.add(TextView(this).apply {
                 gravity = Gravity.CENTER
+                includeFontPadding = false
                 maxLines = 1
                 setPadding(dp(8), 0, dp(8), 0)
                 isClickable = true
@@ -2497,6 +2587,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         stripPolishView = TextView(this).apply {
             text = "✨"; gravity = Gravity.CENTER; textSize = 17f
+            includeFontPadding = false
             background = GradientDrawable().apply { setColor(0x338B5CF6); cornerRadius = dp(9).toFloat() }
             isClickable = true
             setOnClickListener { polishField() }
@@ -2504,6 +2595,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         }
         stripEmojiView = TextView(this).apply {
             text = "☺"; gravity = Gravity.CENTER; textSize = 20f
+            includeFontPadding = false
             setTextColor(0xFFB8C0CC.toInt()); setPadding(dp(8), 0, dp(10), 0)
             isClickable = true
             setOnClickListener { keyHaptic("space"); toggleImeEmojiPicker() }
@@ -2556,7 +2648,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             gradientType = GradientDrawable.RADIAL_GRADIENT
             gradientRadius = dp(22).toFloat()
             colors = intArrayOf(0xFF3FC7FF.toInt(), 0x203FC7FF)
-        } else GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x1FFFFFFF) }
+        } else GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(if (agenticPanelLight()) 0x0F000000 else 0x00000000)
+            setStroke(dp(1), if (agenticPanelLight()) 0x12000000 else 0x10FFFFFF)
+        }
 
     private fun setImeMicVisual(listening: Boolean) {
         stripMicView?.apply {
@@ -2623,7 +2719,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (row.parent !== strip) {
             (row.parent as? ViewGroup)?.removeView(row)
             strip.removeAllViews()
-            strip.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT))
+            strip.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                imeSuggestionStripHeight()
+            ).apply {
+                gravity = Gravity.CENTER_VERTICAL
+            })
         }
         stripShown = shown
         stripChipData = chips
@@ -3949,6 +4050,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     val ink = textColor(raw)
                     if (key.currentTextColor != ink) key.setTextColor(ink)
                     if (key is com.fran.teclas.keyboard.DynamicFlickKeyView && raw.length == 1 && raw[0].isLetter() && !symbolsMode) {
+                        key.setKeyFaceInsets(keyHorizontalInset(), keyVerticalInset(keyRowIndexes[raw]))
                         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                             key.setLabelPlacement(
                                 labelBias = 0.28f,
@@ -3982,7 +4084,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                             if (key.text?.toString() != newText.toString()) key.text = newText
                         }
                     }
-                    if (rebuildBackgrounds) key.background = visualKeyBackground(raw, pressed = false)
+                    if (rebuildBackgrounds) key.background = visualKeyBackground(raw, pressed = false, rowIndex = keyRowIndexes[raw])
                 }
             }
         }
@@ -4452,7 +4554,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             "space" -> 3.65f
             "enter" -> 0.82f
             "." -> 0.86f
-            "teclas" -> 1.55f
+            "teclas" -> 0.86f
             "123", "back", "shift" -> 1.02f
             else -> 1f
         }
@@ -4493,9 +4595,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun imeKeyboardHeight(): Int {
         val rowCount = 4
-        val stripHeight = if (suggestionStripExpanded) dp(38) else 0
+        val stripHeight = if (suggestionStripExpanded) imeSuggestionStripHeight() else 0
         return keyRowHeight() * rowCount - keyRowOverlap() * (rowCount - 1) + dp(6) + stripHeight + agenticPanelReservedHeight()
     }
+
+    private fun imeSuggestionStripHeight(): Int = dp(48)
 
     private fun agenticPanelReservedHeight(): Int {
         val panel = agenticPanel ?: return 0
@@ -4515,15 +4619,23 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         return dp(12 + size * 3 / 100)
     }
 
-    private fun keyVerticalInset(): Int {
+    private fun keyVerticalInset(rowIndex: Int? = null): Int {
         val size = effectiveKeyboardSize()
         val theme = keyboardVisualTheme()
-        if (theme == KEYBOARD_THEME_DEFAULT) return dp(7 + size * 4 / 100)
-        if (theme != KEYBOARD_THEME_TECLAS) return dp(10 + size * 5 / 100)
-        if (theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme)) {
-            return dp(10 + size * 5 / 100)
+        val base = when {
+            theme == KEYBOARD_THEME_DEFAULT -> dp(7 + size * 4 / 100)
+            theme != KEYBOARD_THEME_TECLAS -> dp(10 + size * 5 / 100)
+            theme == KEYBOARD_THEME_TECLAS || theme == KEYBOARD_THEME_GOKEYS || theme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme(theme) ->
+                dp(10 + size * 5 / 100)
+            else -> dp(7 + size * 4 / 100)
         }
-        return dp(7 + size * 4 / 100)
+        // Touch cells already fill the whole row; this only grows the drawn cap inside the cell so
+        // the visible target better matches the actual hit zone. Row one tucks closer to the strip.
+        return if (rowIndex == 0) {
+            (base - dp(10)).coerceAtLeast(dp(2))
+        } else {
+            (base - dp(2)).coerceAtLeast(dp(4))
+        }
     }
 
     private fun keyHorizontalInset(): Int {
@@ -4596,15 +4708,15 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         }
     }
 
-    private fun visualKeyBackground(label: String, pressed: Boolean): Drawable {
+    private fun visualKeyBackground(label: String, pressed: Boolean, rowIndex: Int? = null): Drawable {
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
         val theme = keyboardVisualTheme()
         if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) {
             if (isRoundKeyboardKey(label)) return base
-            val vInset = keyVerticalInset()
+            val vInset = keyVerticalInset(rowIndex)
             return InsetDrawable(base, keyHorizontalInset(), vInset, keyHorizontalInset(), vInset)
         }
-        val vInset = keyVerticalInset()
+        val vInset = keyVerticalInset(rowIndex)
         val fixedInset = dp(2)
         val topBottom = if (isRoundKeyboardKey(label)) fixedInset else vInset
         return InsetDrawable(base, keyHorizontalInset(), topBottom, keyHorizontalInset(), topBottom)
@@ -4618,10 +4730,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // across rebuilds: the canvas sets bounds before every draw and no View owns these drawables.
     private val keyBgCache = HashMap<String, Drawable>()
     private var keyBgCacheSig: String? = null
-    private fun cachedKeyBackground(label: String, pressed: Boolean): Drawable {
+    private fun cachedKeyBackground(label: String, pressed: Boolean, rowIndex: Int? = null): Drawable {
         val sig = "${keyboardVisualTheme()}|${selectedNeuTokens().mode}|${goKeyColor()}|$capsLock"
         if (sig != keyBgCacheSig) { keyBgCache.clear(); keyBgCacheSig = sig }
-        return keyBgCache.getOrPut("$label|$pressed") { visualKeyBackground(label, pressed) }
+        return keyBgCache.getOrPut("$label|$pressed|${rowIndex ?: -1}") { visualKeyBackground(label, pressed, rowIndex) }
     }
 
     private fun keyIdleBackground(label: String): Drawable {
@@ -4691,7 +4803,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         }
         if (theme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (theme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
-        if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(16).toFloat(), NeuLevel.RAISED)
+        if (theme == KEYBOARD_THEME_DEFAULT) return DefaultKeyboardGlass.deck(selectedNeuTokens(), dp(16).toFloat())
         val light = keyboardLightMode(theme)
         val colors = if (light) {
             when (theme) {

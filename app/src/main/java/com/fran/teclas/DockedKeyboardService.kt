@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
+import android.graphics.Canvas
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
@@ -422,10 +423,10 @@ class DockedKeyboardService : Service() {
 
     private fun keyView(label: String): TextView {
         val useBrushedOpticalKey = keyboardTheme() == KEYBOARD_THEME_BRUSHED && label != "teclas"
-        return (if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
+        return (if (label == "teclas") DockModeKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
             tag = label
-            text = if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "teclas") "" else visualLabel(label)
-            if (keyboardTheme() == KEYBOARD_THEME_BRUSHED && label == "teclas") {
+            text = if (label == "teclas") "" else visualLabel(label)
+            if (label == "teclas") {
                 contentDescription = "Docked, tap to undock"
             }
             gravity = Gravity.CENTER
@@ -518,6 +519,24 @@ class DockedKeyboardService : Service() {
         }
     }
 
+    private inner class DockModeKeyView(context: Context) : TextView(context) {
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val phase = (android.os.SystemClock.uptimeMillis() % 1600L) / 1600f
+            KeyboardDockGlyph.draw(
+                canvas,
+                dp(4).toFloat(),
+                dp(5).toFloat(),
+                width - dp(4).toFloat(),
+                height - dp(5).toFloat(),
+                docked = true,
+                ink = textColor("teclas"),
+                accent = goKeyColor(),
+                phase = phase
+            )
+        }
+    }
+
     private fun handleKey(label: String) {
         when (label) {
             "back" -> {
@@ -569,7 +588,7 @@ class DockedKeyboardService : Service() {
                         for (keyIndex in 0 until row.childCount) {
                             val key = row.getChildAt(keyIndex) as? TextView ?: continue
                             val raw = key.tag as? String ?: continue
-                            key.text = visualLabel(raw)
+                            key.text = if (raw == "teclas") "" else visualLabel(raw)
                         }
                     }
                 }
@@ -730,7 +749,7 @@ class DockedKeyboardService : Service() {
             "space" -> 3.65f
             "enter" -> 0.82f
             "." -> 0.86f
-            "teclas" -> 1.55f
+            "teclas" -> 0.86f
             "123", "back", "shift" -> 1.02f
             else -> 1f
         }
@@ -806,7 +825,7 @@ class DockedKeyboardService : Service() {
         }
         if (theme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (theme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
-        if (theme == KEYBOARD_THEME_DEFAULT) return Neu.drawable(selectedNeuTokens(), dp(16).toFloat(), NeuLevel.RAISED)
+        if (theme == KEYBOARD_THEME_DEFAULT) return DefaultKeyboardGlass.deck(selectedNeuTokens(), dp(16).toFloat())
         val light = keyboardLightMode(theme)
         val colors = if (light) {
             when (theme) {

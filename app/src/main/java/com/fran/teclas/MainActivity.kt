@@ -1849,7 +1849,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             setBackgroundColor(if (wallpaperCanvas) Color.TRANSPARENT else activeNeuTokens.base)
-            setPadding(0, launcherStatusBarInset(), 0, if (phoneDockedFullBleed) 0 else keyboardBottomLift())
+            setPadding(0, launcherStatusBarInset(), 0, if (phoneDockedFullBleed || phoneWidgetCanvas) 0 else keyboardBottomLift())
         }
         rootView = root
         contentFrame = FrameLayout(this).apply {
@@ -1903,7 +1903,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         addView(it, lp)
                     }
                 }
+                if (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock()) {
+                    addView(View(context).apply {
+                        background = keyboardDeckBackground()
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }, FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        systemGestureReservedBottomInset() + dp(18),
+                        Gravity.BOTTOM
+                    ))
+                }
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                if (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock()) {
+                    addView(View(context).apply {
+                        background = keyboardDeckBottomEdgeBackground()
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }, FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        dp(10),
+                        Gravity.BOTTOM
+                    ))
+                }
                 dockedFreeformBackdropView = View(context).apply {
                     background = dockedFreeformBackdropDrawable()
                     visibility = if (dockedFreeformBackdropHeightPx() > 0) View.VISIBLE else View.GONE
@@ -4239,7 +4259,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER_HORIZONTAL
                 clipChildren = false
                 clipToPadding = false
-            setPadding(dp(14), dp(6), dp(14), 0)
+            setPadding(0, dp(6), 0, 0)
             if (widgetSearchActive) {
                 val searchArea = FrameLayout(context).apply {
                     clipChildren = true
@@ -4283,6 +4303,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 favoritesDockFrameView = favoritesDockFlipSurface(context)
                 addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
                     topMargin = dp(6)
+                    if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                        leftMargin = dp(16)
+                        rightMargin = dp(16)
+                    }
                     // Small gap above the docked keyboard deck (its height now accounts for the
                     // suggestion strip, so it no longer bleeds up — see activeRootDockHeight()).
                     bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else dp(6)
@@ -4344,7 +4368,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 gravity = Gravity.CENTER_HORIZONTAL
                 clipChildren = false
                 clipToPadding = false
-                setPadding(dp(14), dp(6), dp(14), 0)
+                setPadding(0, dp(6), 0, 0)
 
                 if (widgetSearchActive) {
                     val searchArea = FrameLayout(context).apply {
@@ -4365,6 +4389,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
                         topMargin = dp(6)
                         bottomMargin = dp(4)
+                        leftMargin = dp(16)
+                        rightMargin = dp(16)
                     })
                 }
 
@@ -6448,10 +6474,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 alpha = if (widgetKeyboardHidden) 1f else 0f
                 setOnTouchListener { _, event -> handleWidgetKeyboardSliderHandleTouch(event) }
             }
-            // Full-width: the collapsed keyboard reads as the search bar, not a grip pill.
+            // The keyboard host bleeds horizontally so the expanded deck can reach the edges.
+            // Pull the collapsed search back in so it aligns with the favorites dock.
             addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                leftMargin = dp(10)
-                rightMargin = dp(10)
+                leftMargin = widgetKeyboardHorizontalBleed() + dp(16)
+                rightMargin = widgetKeyboardHorizontalBleed() + dp(16)
                 bottomMargin = dp(8)
             })
             setOnTouchListener { _, event ->
@@ -7751,16 +7778,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun layoutHomeGrid() {
         if (!::homeGridView.isInitialized || homeGridView.width <= 0 || homeGridView.height <= 0) return
-        val contentWidth = homeGridView.width - homeGridView.paddingLeft - homeGridView.paddingRight
-        val contentHeight = homeGridView.height - homeGridView.paddingTop - homeGridView.paddingBottom
+        val contentWidth = homeGridView.width
+        val contentHeight = homeGridView.height
         if (contentWidth <= 0 || contentHeight <= 0) return
         val gap = dp(10)
         val cellW = (contentWidth - gap * (HOME_GRID_COLUMNS - 1)) / HOME_GRID_COLUMNS.toFloat()
         val cellH = (contentHeight - gap * (HOME_GRID_ROWS - 1)) / HOME_GRID_ROWS.toFloat()
         homeTileViews.forEach { (id, tile) ->
             val spec = homeTileSpec(id)
-            val left = homeGridView.paddingLeft + ((cellW + gap) * spec.col).toInt()
-            val top = homeGridView.paddingTop + ((cellH + gap) * spec.row).toInt()
+            val left = ((cellW + gap) * spec.col).toInt()
+            val top = ((cellH + gap) * spec.row).toInt()
             val width = (cellW * spec.colSpan + gap * (spec.colSpan - 1)).toInt()
             val height = (cellH * spec.rowSpan + gap * (spec.rowSpan - 1)).toInt()
             val lp = (tile.layoutParams as? FrameLayout.LayoutParams) ?: FrameLayout.LayoutParams(width, height)
@@ -7907,10 +7934,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun moveHomeTile(view: View, left: Int, top: Int) {
         val lp = view.layoutParams as FrameLayout.LayoutParams
-        val minLeft = homeGridView.paddingLeft
-        val minTop = homeGridView.paddingTop
-        val maxLeft = (homeGridView.width - homeGridView.paddingRight - view.width).coerceAtLeast(minLeft)
-        val maxTop = (homeGridView.height - homeGridView.paddingBottom - view.height).coerceAtLeast(minTop)
+        val minLeft = 0
+        val minTop = 0
+        val maxLeft = (homeGridView.width - view.width).coerceAtLeast(minLeft)
+        val maxTop = (homeGridView.height - view.height).coerceAtLeast(minTop)
         lp.leftMargin = left.coerceIn(minLeft, maxLeft)
         lp.topMargin = top.coerceIn(minTop, maxTop)
         view.layoutParams = lp
@@ -7918,14 +7945,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun snapHomeTile(id: String, view: View) {
         val spec = homeTileSpec(id)
-        val contentWidth = homeGridView.width - homeGridView.paddingLeft - homeGridView.paddingRight
-        val contentHeight = homeGridView.height - homeGridView.paddingTop - homeGridView.paddingBottom
+        val contentWidth = homeGridView.width
+        val contentHeight = homeGridView.height
         val gap = dp(10)
         val cellW = (contentWidth - gap * (HOME_GRID_COLUMNS - 1)) / HOME_GRID_COLUMNS.toFloat()
         val cellH = (contentHeight - gap * (HOME_GRID_ROWS - 1)) / HOME_GRID_ROWS.toFloat()
         val lp = view.layoutParams as FrameLayout.LayoutParams
-        val localLeft = (lp.leftMargin - homeGridView.paddingLeft).coerceAtLeast(0)
-        val localTop = (lp.topMargin - homeGridView.paddingTop).coerceAtLeast(0)
+        val localLeft = lp.leftMargin.coerceAtLeast(0)
+        val localTop = lp.topMargin.coerceAtLeast(0)
         val next = sanitizeHomeTileSpec(spec.copy(
             col = (localLeft / (cellW + gap)).toInt().coerceIn(0, HOME_GRID_COLUMNS - spec.colSpan),
             row = (localTop / (cellH + gap)).toInt().coerceIn(0, HOME_GRID_ROWS - spec.rowSpan)
@@ -9001,7 +9028,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // Soft snap: only pulls onto the nearest 4×12 grid line when already within dp(12) of it.
     // Scoped to the weather widget — nothing else reads or reflows from this.
     private fun softSnapWeatherWidgetPos(ancestor: View, x: Int, y: Int): Pair<Int, Int> {
-        val padL = dp(14)
+        val padL = 0
         val padT = 0
         val gap = dp(10)
         val contentW = ancestor.width - padL * 2
@@ -15578,8 +15605,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             background = keyboardDeckBackground()
-            // Side padding reclaimed for the key grid (parity with the IME): wider touch cells.
-            setPadding(dp(2), keyboardTopPadding(), dp(2), keyboardBottomPadding())
+            // Docked mode stays tightly fitted to the freeform app window; widget mode needs a
+            // small hardware-like side gutter so Q/P and the round GO key never kiss the shell edge.
+            val sideGutter = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(10) else dp(2)
+            setPadding(sideGutter, keyboardTopPadding(), sideGutter, keyboardBottomPadding())
 
             if (keyboardSettingsOpen) addView(keyboardSettings(), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             if (showKeyboardTypingWell()) {
@@ -15613,6 +15642,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                background = keyboardDeckBackground()
+            }
             // Glass tray on every device: fold-native glass where supported, dynamic blur plate
             // elsewhere (foldAwareGlassPlate picks). The deck fill above goes translucent so the
             // wallpaper reads through. Added art themes (Google/iOS/Sand/SeeMe/Brushed…) keep
@@ -15621,6 +15655,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(
                     foldAwareGlassPlate(this@MainActivity, radiusDp = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 22 else 16),
                     FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                )
+            }
+            if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+                addView(
+                    View(this@MainActivity).apply {
+                        background = keyboardDeckBackground()
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    },
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(18), Gravity.BOTTOM)
                 )
             }
             addView(swipeLayout, FrameLayout.LayoutParams(
@@ -16297,7 +16340,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     "space" -> 3.65f
                     "enter" -> if (numberPadOpen) 1f else 0.82f
                     "period" -> 0.86f
-                    "teclas" -> 1.55f
+                    "teclas" -> 0.86f
                     "123" -> 1.02f
                     "back", "shift" -> 1.02f
                     "abc" -> 1.02f
@@ -16327,10 +16370,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val isWidgetDockKey = label == "teclas" && keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET
         val isDockedTeclasKey = label == "teclas" && keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
         val useBrushedOpticalKey = keyboardTheme == KEYBOARD_THEME_BRUSHED && !isLetter && label != "teclas" && label != "space"
-        return (if (isWidgetDockKey) DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
+        return (if (label == "teclas") DockKeyView(this) else if (label == "space") SpaceKeyView(this) else if (isLetter) DynamicFlickKeyView(this) else if (useBrushedOpticalKey) com.fran.teclas.keyboard.OpticalKeyTextView(this) else TextView(this)).apply {
             if (label == "space") spaceKeyView = this
-            text = if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "teclas") "" else keyLabel(label)
-            if (keyboardTheme == KEYBOARD_THEME_BRUSHED && label == "teclas") {
+            text = if (label == "teclas") "" else keyLabel(label)
+            if (label == "teclas") {
                 contentDescription = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) "Docked, tap to undock" else "Undocked, tap to dock"
             }
             gravity = Gravity.CENTER
@@ -26721,6 +26764,18 @@ Question: $prompt"""
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
+            val phase = (android.os.SystemClock.uptimeMillis() % 1600L) / 1600f
+            KeyboardDockGlyph.draw(
+                canvas,
+                dp(4).toFloat(),
+                dp(5).toFloat(),
+                width - dp(4).toFloat(),
+                height - dp(5).toFloat(),
+                docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED,
+                ink = keyTextColor("teclas"),
+                accent = goKeyColor,
+                phase = phase
+            )
             if (holdProgress <= 0f) return
             val accent = if (keyboardTheme == KEYBOARD_THEME_HYPER3D_LIGHT) 0xFF6D7FFF.toInt() else 0xFF7AF0A0.toInt()
             val cx = width / 2f
@@ -26948,7 +27003,26 @@ Question: $prompt"""
     // The hidden-keyboard affordance. Not a grip pill: when the keyboard slides down, what remains
     // IS the search bar — a full-width field with a magnifier and placeholder, representing what
     // typing here does. Tapping it slides the keyboard back in (same handle touch handling).
-    private inner class KeyboardSliderHandleView(context: Context) : View(context) {
+    private inner class KeyboardSliderHandleView(context: Context) : FrameLayout(context) {
+        init {
+            clipChildren = false
+            clipToPadding = false
+            background = ColorDrawable(Color.TRANSPARENT)
+            addView(
+                NativeFoldGlassPanel(context, radiusDp = 19, compactDockGlass = true),
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                ).apply {
+                    topMargin = dp(3)
+                    bottomMargin = dp(3)
+                }
+            )
+            addView(SearchHandleContentView(context), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+    }
+
+    private inner class SearchHandleContentView(context: Context) : View(context) {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -26959,31 +27033,7 @@ Question: $prompt"""
             super.onDraw(canvas)
             val tokens = selectedNeuTokens()
             val light = tokens.mode == NeuMode.LIGHT
-            val radius = dp(16).toFloat()
-            rect.set(dp(2).toFloat(), dp(3).toFloat(), width - dp(2).toFloat(), height - dp(3).toFloat())
-
-            // Field: raised surface with a soft top light, like the launcher's glass cards.
-            paint.style = Paint.Style.FILL
-            paint.shader = android.graphics.LinearGradient(
-                0f, rect.top, 0f, rect.bottom,
-                if (light) {
-                    intArrayOf(0xFFFFFFFF.toInt(), 0xFFEDEFF4.toInt(), 0xFFE2E6EC.toInt())
-                } else {
-                    intArrayOf(0xFF262B34.toInt(), 0xFF181B21.toInt(), 0xFF101319.toInt())
-                },
-                null, Shader.TileMode.CLAMP
-            )
-            canvas.drawRoundRect(rect, radius, radius, paint)
-            paint.shader = null
-
-            // Hairline + a whisper of the accent so it reads as the live search field.
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = dp(1).toFloat()
-            paint.color = adjustAlpha(Color.WHITE, if (light) 0.62f else 0.14f)
-            canvas.drawRoundRect(rect, radius, radius, paint)
-            paint.color = adjustAlpha(goKeyColor, 0.34f)
-            canvas.drawRoundRect(rect, radius, radius, paint)
-
+            rect.set(0f, dp(3).toFloat(), width.toFloat(), height - dp(3).toFloat())
             // Magnifier in the accent color.
             val cx = rect.left + dp(22).toFloat()
             val cy = rect.centerY() - dp(1).toFloat()
@@ -26999,11 +27049,22 @@ Question: $prompt"""
             paint.strokeCap = Paint.Cap.BUTT
 
             // Placeholder text — the invitation.
-            textPaint.color = tokens.inkDim
+            textPaint.color = if (light) {
+                adjustAlpha(Color.BLACK, 0.68f)
+            } else {
+                adjustAlpha(Color.WHITE, 0.80f)
+            }
+            textPaint.setShadowLayer(
+                dp(1).toFloat(),
+                0f,
+                dp(1).toFloat(),
+                if (light) adjustAlpha(Color.WHITE, 0.32f) else adjustAlpha(Color.BLACK, 0.58f)
+            )
             textPaint.textSize = dp(14).toFloat()
             val textX = rect.left + dp(40).toFloat()
             val textY = rect.centerY() - (textPaint.ascent() + textPaint.descent()) / 2f
             canvas.drawText("Search apps, people, rides…", textX, textY, textPaint)
+            textPaint.clearShadowLayer()
         }
     }
 
@@ -27118,16 +27179,12 @@ Question: $prompt"""
         if (keyboardTheme == KEYBOARD_THEME_SEEME) return SeemeDrawables.panel(darkTint = true)
         if (keyboardTheme == KEYBOARD_THEME_BRUSHED) return BrushedDrawables.panel(selectedNeuTokens().mode == NeuMode.DARK, resources.displayMetrics.density)
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT) {
-            // Glass deck: translucent sheet over the blur plate keyboard() puts behind the deck.
-            val light = activeNeuTokens.mode == NeuMode.LIGHT
-            return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
-                intArrayOf(adjustAlpha(Color.WHITE, 0.44f), adjustAlpha(activeNeuTokens.baseHi, 0.34f), adjustAlpha(activeNeuTokens.baseLo, 0.30f))
-            } else {
-                intArrayOf(adjustAlpha(activeNeuTokens.baseHi, 0.50f), adjustAlpha(activeNeuTokens.base, 0.42f), adjustAlpha(activeNeuTokens.baseLo, 0.55f))
-            }).apply {
-                cornerRadius = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(22).toFloat() else dp(16).toFloat()
-                setStroke(dp(1), adjustAlpha(Color.WHITE, if (light) 0.40f else 0.14f))
-            }
+            // Glass deck: translucent sheet over the native blur plate keyboard() puts behind it.
+            return DefaultKeyboardGlass.deck(
+                activeNeuTokens,
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(22).toFloat() else dp(16).toFloat(),
+                galaxy = isSamsungDevice()
+            )
         }
         val light = keyboardLightMode()
         val colors = if (light) {
@@ -27160,6 +27217,20 @@ Question: $prompt"""
         }
     }
 
+    private fun keyboardDeckBottomEdgeBackground(): Drawable {
+        val dark = !keyboardLightMode()
+        val color = when {
+            keyboardTheme == KEYBOARD_THEME_BRUSHED -> if (dark) 0xFF101113.toInt() else 0xFFD4D8DF.toInt()
+            keyboardTheme == KEYBOARD_THEME_SEEME -> 0xFF050608.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK -> 0xFF050506.toInt()
+            keyboardTheme == KEYBOARD_THEME_HYPER3D || keyboardTheme == KEYBOARD_THEME_TECLAS -> if (dark) 0xFF08090C.toInt() else 0xFFC7CED9.toInt()
+            keyboardTheme == KEYBOARD_THEME_GOKEYS -> if (dark) 0xFF0B0C0F.toInt() else 0xFFC9D0DA.toInt()
+            KeyboardThemeDrawables.isAddedTheme(keyboardTheme) -> if (dark) 0xFF111318.toInt() else 0xFFDDE2E9.toInt()
+            else -> if (dark) 0xFF1B1D21.toInt() else 0xFFE3E7EE.toInt()
+        }
+        return ColorDrawable(color)
+    }
+
     private fun keyboardLightMode(): Boolean {
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
             return KeyboardThemeDrawables.isLight(keyboardTheme, activeNeuTokens.mode == NeuMode.DARK)
@@ -27172,6 +27243,8 @@ Question: $prompt"""
     }
 
     private fun keyIdleBackground(label: String): Drawable {
+        if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
+        if (label == "123" || label == "abc") return themed123KeyBackground(pressed = false)
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
             return KeyboardThemeDrawables.keyLayer(
                 this,
@@ -27189,10 +27262,8 @@ Question: $prompt"""
             val visualLabel = if (label == "shift" && shiftState == ShiftState.LOCK) "shift_lock" else label
             return BrushedDrawables.key(visualLabel, pressed = false, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED, goColor = goKeyColor)
         }
-        if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
         hyper3dKeyDrawable(label)?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = false, light = keyboardLightMode())
-        if (label == "123") return themed123KeyBackground(pressed = false)
         return when (keyboardTheme) {
             KEYBOARD_THEME_TECLAS -> physicalKeyBackground(pressed = false, premium = false, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
             KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = false, premium = true, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
@@ -27201,6 +27272,8 @@ Question: $prompt"""
     }
 
     private fun keyPressedBackground(label: String): Drawable {
+        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
+        if (label == "123" || label == "abc") return themed123KeyBackground(pressed = true)
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
             return KeyboardThemeDrawables.keyLayer(
                 this,
@@ -27218,10 +27291,8 @@ Question: $prompt"""
             val visualLabel = if (label == "shift" && shiftState == ShiftState.LOCK) "shift_lock" else label
             return BrushedDrawables.key(visualLabel, pressed = true, dark = selectedNeuTokens().mode == NeuMode.DARK, density = resources.displayMetrics.density, docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED, goColor = brighten(goKeyColor))
         }
-        if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
         hyper3dKeyDrawable(label)?.let { return it }
         if (keyboardTheme == KEYBOARD_THEME_GOKEYS) return goKeysKeyBackground(label, pressed = true, light = keyboardLightMode())
-        if (label == "123") return themed123KeyBackground(pressed = true)
         return when (keyboardTheme) {
             KEYBOARD_THEME_TECLAS -> physicalKeyBackground(pressed = true, premium = false, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
             KEYBOARD_THEME_SKEUO -> physicalKeyBackground(pressed = true, premium = true, fn = isFnKey(label), teclas = keyboardTheme == KEYBOARD_THEME_TECLAS, light = keyboardLightMode())
@@ -27358,27 +27429,25 @@ Question: $prompt"""
 
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
+        if (isRoundKeyboardKey(label)) {
+            val inset = dp(1)
+            return roundKeyboardKeyDrawable(label, base, inset)
+        }
         if (keyboardTheme == KEYBOARD_THEME_DEFAULT || keyboardTheme == KEYBOARD_THEME_TECLAS) {
-            if (isRoundKeyboardKey(label)) {
-                // Round, equal-diameter faces for 123/abc and GO: inset the drawn face to a square the
-                // width of the key (themedGoKeySize), vertically centered in the full-height touch
-                // cell — so they read as matching round buttons instead of stretched vertical
-                // ovals, while the touch cell still fills the row top-to-bottom.
-                val side = themedGoKeySize()
-                val vpad = ((keyRowHeight() - side) / 2).coerceAtLeast(dp(2))
-                return android.graphics.drawable.InsetDrawable(base, 0, vpad, 0, vpad)
-            }
             return android.graphics.drawable.InsetDrawable(base, hInset, vInset, hInset, vInset)
         }
         val fixedInset = dp(2)
-        val topBottom = if (isRoundKeyboardKey(label)) fixedInset else vInset
-        return android.graphics.drawable.InsetDrawable(base, hInset, topBottom, hInset, topBottom)
+        return android.graphics.drawable.InsetDrawable(base, hInset, vInset.coerceAtLeast(fixedInset), hInset, vInset.coerceAtLeast(fixedInset))
     }
 
     private fun goKeySize() = dp(43 + (effectiveKeyboardSize() * 8 / 100))
 
     private fun themedGoKeySize(): Int {
-        return dp(39 + (effectiveKeyboardSize() * 6 / 100))
+        return if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
+            dp(36 + (effectiveKeyboardSize() * 5 / 100))
+        } else {
+            dp(39 + (effectiveKeyboardSize() * 6 / 100))
+        }
     }
 
     internal fun clickWheelSize(): Int {
@@ -27398,7 +27467,7 @@ Question: $prompt"""
         return rowsHeight - overlap + keyboardTopPadding() + keyboardBottomPadding() + settingsHeight + suggestionStripHeight()
     }
     private fun keyboardTopPadding() = dp(4)
-    private fun keyboardBottomPadding() = dp(2)
+    private fun keyboardBottomPadding() = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(18) else dp(2)
     private fun keyboardBottomLift() = dp(3)
 
     private fun keyTextSize(label: String): Float {
