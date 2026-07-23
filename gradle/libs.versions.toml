@@ -18,6 +18,7 @@ mlkitGenaiProofreading = "1.0.0-beta1"
 mlkitGenaiPrompt = "1.0.0-beta2"
 mlkitGenaiRewriting = "1.0.0-beta1"
 mlkitSubjectSegmentation = "16.0.0-beta1"
+mlkitDigitalInk = "19.0.0"
 localagentsRag = "0.3.0"
 tasksGenai = "0.10.35"
 junit = "4.13.2"
@@ -52,6 +53,7 @@ mlkit-genai-proofreading = { group = "com.google.mlkit", name = "genai-proofread
 mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", version.ref = "mlkitGenaiPrompt" }
 mlkit-genai-rewriting = { group = "com.google.mlkit", name = "genai-rewriting", version.ref = "mlkitGenaiRewriting" }
 mlkit-subject-segmentation = { group = "com.google.android.gms", name = "play-services-mlkit-subject-segmentation", version.ref = "mlkitSubjectSegmentation" }
+mlkit-digital-ink = { group = "com.google.mlkit", name = "digital-ink-recognition", version.ref = "mlkitDigitalInk" }
 localagents-rag = { group = "com.google.ai.edge.localagents", name = "localagents-rag", version.ref = "localagentsRag" }
 mediapipe-tasks-genai = { group = "com.google.mediapipe", name = "tasks-genai", version.ref = "tasksGenai" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

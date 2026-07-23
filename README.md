@@ -100,6 +100,24 @@ Motion: two options, and they respect the battery rule above.
   This is the deliberate, opt-in exception to the no-continuous-motion rule; do
   not make it the default.
 
+## Pen Handwriting (S Pen)
+
+On by default; search "pen" (or Settings → Pen handwriting) to toggle.
+`HandwritingPad.kt` holds it all: `HandwritingRecognizer` wraps ML Kit Digital
+Ink Recognition (`com.google.mlkit:digital-ink-recognition`, en-US model that
+downloads once on first use and runs offline, fully guarded so a missing model
+just yields no text); `HandwritingPadView` is a transparent overlay added on top
+of the keys in `keyboard()`.
+
+The safety property: the pad's `onTouchEvent` returns false for anything that
+isn't `TOOL_TYPE_STYLUS`, so finger touches fall straight through to the keys —
+normal typing is completely unaffected even if handwriting misbehaves. A stylus
+stroke draws ink, and ~700ms after the last stroke the accumulated `Ink` is
+recognized and the top candidate is appended to `query` exactly like typed text
+(`appendHandwrittenText`). Skipped in number-pad / symbols / keyboard-settings
+states. v1 is launcher-search only; system-wide IME handwriting (Android 14+
+`onStartStylusHandwriting`) is a later, separate piece.
+
 ## Today (Daily Brief)
 
 Swiping right on the homescreen opens the Today page — a Compose live timeline (`brief/TodayPage.kt`, hosted by `TodayPaneHost`) built from notification signals, calendar, weather, and travel. The `brief/` package owns collection (`BriefRepository`, refreshed on resume and every 45 minutes while the launcher is foreground), classification, and Gemini-assisted summarization. It needs Notification Listener access for the richest content and degrades to an access prompt without it. Brief style/visibility is a themable layer with its own picker (`BriefThemePicker`).
