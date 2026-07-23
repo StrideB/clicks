@@ -2047,13 +2047,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val space = spaceKeyView ?: return
         if (!::keyboardDockView.isInitialized) return
         val dock = keyboardDockView
-        // Bail (don't re-post) when the space key isn't in the current layout (number pad / symbols use
-        // a stale, detached spaceKeyView) or the deck isn't laid out yet — a few bounded retries only,
-        // so this can never become a per-frame main-thread busy loop.
-        if (space.parent == null || space.width == 0 || dock.height == 0) {
+        // Not laid out yet — a few bounded retries, so this can never become a per-frame busy loop.
+        if (space.width == 0 || dock.height == 0) {
             if (spaceDelegateRetries++ < 4) dock.post { installSpaceTouchDelegate() }
             return
         }
+        // The space key must be a DESCENDANT of the current dock before we can map its rect into the
+        // dock's coords. In number-pad / symbols layouts there is no space key, so spaceKeyView is a
+        // stale reference still attached to a PREVIOUS dock — it has a parent (so a null-parent check
+        // misses it) but isn't inside this dock, and offsetDescendantRectToMyCoords would crash with
+        // "parameter must be a descendant of this view". Bail without retry; the next render that has
+        // a real space key re-runs this.
+        var ancestor: android.view.ViewParent? = space.parent
+        while (ancestor != null && ancestor !== dock) ancestor = ancestor.parent
+        if (ancestor !== dock) return
         spaceDelegateRetries = 0
         val r = android.graphics.Rect(0, 0, space.width, space.height)
         dock.offsetDescendantRectToMyCoords(space, r)
