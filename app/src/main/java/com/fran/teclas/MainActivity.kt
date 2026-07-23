@@ -164,6 +164,7 @@ import com.fran.teclas.brief.textColorInt
 import com.fran.teclas.brief.typeface
 import com.fran.teclas.clock.ClockContainer
 import com.fran.teclas.clock.ClockState
+import com.fran.teclas.clock.ClockTextTone
 import com.fran.teclas.clock.ClockThemes
 import com.fran.teclas.clock.ClockWidgetView
 import androidx.compose.ui.platform.ComposeView
@@ -7947,6 +7948,40 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun clockWidgetVisible(): Boolean =
         prefs().getBoolean(homeScopedKey(CLOCK_WIDGET_VISIBLE_PREF), false)
 
+    private fun clockFontScalePercent(): Int =
+        prefs().getInt(homeScopedKey(CLOCK_WIDGET_FONT_SCALE_PREF), 100).coerceIn(70, 155)
+
+    private fun clockWeightOffset(): Int =
+        prefs().getInt(homeScopedKey(CLOCK_WIDGET_WEIGHT_OFFSET_PREF), 0).coerceIn(-300, 300)
+
+    private fun clockWidthPercent(): Int =
+        prefs().getInt(homeScopedKey(CLOCK_WIDGET_WIDTH_PREF), 100).coerceIn(70, 140)
+
+    private fun clockHeightPercent(): Int =
+        prefs().getInt(homeScopedKey(CLOCK_WIDGET_HEIGHT_PREF), 100).coerceIn(70, 155)
+
+    private fun clockGlassEnabled(): Boolean =
+        prefs().getBoolean(homeScopedKey(CLOCK_WIDGET_GLASS_PREF), false)
+
+    private fun clockGlassStrength(): Int =
+        prefs().getInt(homeScopedKey(CLOCK_WIDGET_GLASS_STRENGTH_PREF), 58).coerceIn(0, 100)
+
+    private fun clockTextToneId(): String =
+        prefs().getString(homeScopedKey(CLOCK_WIDGET_TEXT_TONE_PREF), "auto").orEmpty()
+            .lowercase(Locale.US)
+            .takeIf { it in setOf("auto", "light", "dark", "accent") }
+            ?: "auto"
+
+    private fun clockTextTone(): ClockTextTone = when (clockTextToneId()) {
+        "light" -> ClockTextTone.LIGHT
+        "dark" -> ClockTextTone.DARK
+        "accent" -> ClockTextTone.ACCENT
+        else -> ClockTextTone.AUTO
+    }
+
+    private fun clockShadowStrength(): Int =
+        prefs().getInt(homeScopedKey(CLOCK_WIDGET_SHADOW_PREF), 55).coerceIn(0, 100)
+
     private fun clockWidgetHasCustomPos(): Boolean =
         prefs().contains(homeScopedKey(CLOCK_WIDGET_POS_X_PREF)) && prefs().contains(homeScopedKey(CLOCK_WIDGET_POS_Y_PREF))
 
@@ -7960,11 +7995,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val data = weatherDataFromPrefs()
         val clock = ClockWidgetView(context).apply {
             themeId = clockWidgetStyleId()
-            accentColor = goKeyColor
-            isDarkMode = activeNeuTokens.mode == NeuMode.DARK
             weatherTempF = data.temp
             city = data.place
         }
+        applyClockWidgetCustomizations(clock)
         clockWidgetView = clock
         frame.addView(clock, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.elevation = dp(8).toFloat()
@@ -7976,22 +8010,86 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val data = weatherDataFromPrefs()
         clockWidgetView?.apply {
             themeId = clockWidgetStyleId()
-            accentColor = goKeyColor
-            isDarkMode = activeNeuTokens.mode == NeuMode.DARK
             weatherTempF = data.temp
             city = data.place
+            applyClockWidgetCustomizations(this)
             invalidate()
         }
     }
 
-    private fun clockWidgetHeight(styleId: String = clockWidgetStyleId()): Int = when (styleId) {
+    private fun applyClockWidgetCustomizations(clock: ClockWidgetView) {
+        clock.accentColor = goKeyColor
+        clock.isDarkMode = activeNeuTokens.mode == NeuMode.DARK
+        clock.fontScale = clockFontScalePercent() / 100f
+        clock.fontWeightOffset = clockWeightOffset()
+        clock.glassEnabled = clockGlassEnabled()
+        clock.glassStrength = clockGlassStrength() / 100f
+        clock.textTone = clockTextTone()
+        clock.backgroundIsLight = clockBackgroundLooksLight()
+        clock.contrastShadow = clockShadowStrength() / 100f
+    }
+
+    private fun clockBackgroundLooksLight(): Boolean =
+        sampleClockWallpaperLightness() ?: (activeNeuTokens.mode == NeuMode.LIGHT)
+
+    private fun sampleClockWallpaperLightness(): Boolean? {
+        val bitmap = ((homeWallpaperDrawable ?: lastGoodHomeWallpaperDrawable) as? BitmapDrawable)
+            ?.bitmap
+            ?.takeUnless { it.isRecycled }
+            ?: return null
+        val frame = clockWidgetFrameView ?: return null
+        val host = (rootView.parent as? ViewGroup) ?: rootView
+        if (host.width <= 0 || host.height <= 0 || frame.width <= 0 || frame.height <= 0) return null
+        val hostLoc = IntArray(2)
+        val frameLoc = IntArray(2)
+        host.getLocationOnScreen(hostLoc)
+        frame.getLocationOnScreen(frameLoc)
+        val viewW = host.width.toFloat()
+        val viewH = host.height.toFloat()
+        val drawW = bitmap.width.toFloat().takeIf { it > 0f } ?: return null
+        val drawH = bitmap.height.toFloat().takeIf { it > 0f } ?: return null
+        val scale = maxOf(viewW / drawW, viewH / drawH) * innerWallpaperZoom()
+        val scaledW = drawW * scale
+        val scaledH = drawH * scale
+        val maxX = ((scaledW - viewW) / 2f).coerceAtLeast(0f)
+        val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
+        val tx = (viewW - scaledW) / 2f + maxX * innerWallpaperOffsetX().coerceIn(-1f, 1f)
+        val ty = (viewH - scaledH) / 2f + maxY * innerWallpaperOffsetY().coerceIn(-1f, 1f)
+        val cx = frameLoc[0] - hostLoc[0] + frame.width / 2f
+        val cy = frameLoc[1] - hostLoc[1] + frame.height / 2f
+        val offsets = arrayOf(0f to 0f, -0.24f to 0f, 0.24f to 0f, 0f to -0.24f, 0f to 0.24f)
+        var total = 0f
+        var count = 0
+        offsets.forEach { (ox, oy) ->
+            val screenX = cx + frame.width * ox
+            val screenY = cy + frame.height * oy
+            val bx = ((screenX - tx) / scale).toInt().coerceIn(0, bitmap.width - 1)
+            val by = ((screenY - ty) / scale).toInt().coerceIn(0, bitmap.height - 1)
+            total += colorLuminance(bitmap.getPixel(bx, by))
+            count++
+        }
+        return count > 0 && total / count >= 0.58f
+    }
+
+    private fun colorLuminance(color: Int): Float {
+        fun channel(v: Int): Float {
+            val c = v / 255f
+            return if (c <= 0.03928f) c / 12.92f else Math.pow(((c + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
+        }
+        return 0.2126f * channel(Color.red(color)) + 0.7152f * channel(Color.green(color)) + 0.0722f * channel(Color.blue(color))
+    }
+
+    private fun baseClockWidgetHeight(styleId: String = clockWidgetStyleId()): Int = when (styleId) {
         "compact_chip" -> dp(76)
         "analog_glass", "ring" -> dp(152)
         "wide_bar" -> dp(104)
         else -> dp(124)
     }
 
-    private fun clockWidgetWidth(styleId: String = clockWidgetStyleId()): Int {
+    private fun clockWidgetHeight(styleId: String = clockWidgetStyleId()): Int =
+        (baseClockWidgetHeight(styleId) * (clockHeightPercent() / 100f)).toInt().coerceAtLeast(dp(58))
+
+    private fun baseClockWidgetWidth(styleId: String = clockWidgetStyleId()): Int {
         val targetDp = when (styleId) {
             "compact_chip" -> 178
             "analog_glass", "ring" -> 168
@@ -8000,7 +8098,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             "tile_grid", "glass_slab", "date_card" -> 260
             else -> 228
         }
-        val target = dp(targetDp)
+        return dp(targetDp)
+    }
+
+    private fun clockWidgetWidth(styleId: String = clockWidgetStyleId()): Int {
+        val target = (baseClockWidgetWidth(styleId) * (clockWidthPercent() / 100f)).toInt()
         return if (isUnfoldedInnerLayoutActive()) {
             minOf(target.coerceAtLeast(dp(188)), resources.displayMetrics.widthPixels / 3)
         } else {
@@ -8052,6 +8154,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.leftMargin = x
         lp.topMargin = y
         frame.layoutParams = lp
+        if (clockTextToneId() == "auto") updateClockWidget()
+    }
+
+    private fun refreshClockWidgetFrameSize() {
+        val frame = clockWidgetFrameView ?: return
+        val parent = frame.parent as? View ?: return
+        val lp = frame.layoutParams as? FrameLayout.LayoutParams ?: return
+        lp.width = clockWidgetWidth()
+        lp.height = clockWidgetHeight()
+        val (x, y) = clampClockWidgetPos(parent, lp.width, lp.height, lp.leftMargin, lp.topMargin)
+        lp.leftMargin = x
+        lp.topMargin = y
+        frame.layoutParams = lp
+        saveClockWidgetPos(x, y)
+        updateClockWidget()
     }
 
     private inner class ClockWidgetFrame(context: Context) : MovableWidgetFrame(context) {
@@ -8083,6 +8200,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             lp.topMargin = cy
             layoutParams = lp
             saveClockWidgetPos(cx, cy)
+            updateClockWidget()
             haptic(this)
         }
     }
@@ -8094,6 +8212,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             accent = 0xFFC9A7FF.toInt(),
             styleLabel = "Clock themes",
             onStyle = { openClockStylePicker() },
+            customLabel = "Customize",
+            onCustom = { openClockCustomizePanel() },
             onRemove = { removeClockWidget() },
             depthId = "clock"
         )
@@ -8141,6 +8261,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         accent: Int,
         styleLabel: String,
         onStyle: () -> Unit,
+        customLabel: String? = null,
+        onCustom: (() -> Unit)? = null,
         onRemove: () -> Unit,
         depthId: String? = null
     ) {
@@ -8161,6 +8283,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setPadding(dp(13), 0, dp(13), dp(7))
             }, LinearLayout.LayoutParams(dp(190), dp(26)))
             addView(widgetQuickMenuItem(styleLabel, accent), LinearLayout.LayoutParams(dp(190), dp(44)))
+            if (customLabel != null && onCustom != null) {
+                addView(widgetQuickMenuItem(customLabel, 0xFFC9A7FF.toInt()), LinearLayout.LayoutParams(dp(190), dp(44)))
+            }
             if (showDepthRow) {
                 depthRow = widgetQuickMenuItem(depthLabel, 0xFFC9A7FF.toInt())
                 addView(depthRow, LinearLayout.LayoutParams(dp(190), dp(44)))
@@ -8177,11 +8302,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             animationStyle = android.R.style.Animation_Dialog
         }
         val styleRow = menu.getChildAt(1)
+        val customRow = if (customLabel != null && onCustom != null) menu.getChildAt(2) else null
         val removeRow = menu.getChildAt(menu.childCount - 1)
         styleRow.setOnClickListener {
             popup.dismiss()
             haptic(anchor)
             onStyle()
+        }
+        customRow?.setOnClickListener {
+            popup.dismiss()
+            haptic(anchor)
+            onCustom?.invoke()
         }
         depthRow?.setOnClickListener {
             popup.dismiss()
@@ -8196,8 +8327,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         haptic(anchor)
         val loc = IntArray(2)
         anchor.getLocationOnScreen(loc)
+        val menuHeight = dp(26) + dp(44) * (1 + (if (customRow != null) 1 else 0) + (if (showDepthRow) 1 else 0) + 1) + dp(1) + dp(16)
         val spaceBelow = resources.displayMetrics.heightPixels - (loc[1] + anchor.height)
-        val yoff = if (spaceBelow > dp(144)) dp(8) else -anchor.height - dp(130)
+        val yoff = if (spaceBelow > menuHeight + dp(12)) dp(8) else -anchor.height - menuHeight - dp(8)
         popup.showAsDropDown(anchor, dp(8), yoff, Gravity.TOP or Gravity.START)
     }
 
@@ -8233,8 +8365,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun openClockStylePicker() {
         if (!::contentFrame.isInitialized || clockStylePickerView?.isAttachedToWindow == true) return
+        val host = (window.decorView as? ViewGroup) ?: contentFrame
         val overlay = FrameLayout(this).apply {
             isClickable = true
+            elevation = dp(96).toFloat()
             setBackgroundColor(adjustAlpha(Color.BLACK, if (activeNeuTokens.mode == NeuMode.DARK) 0.48f else 0.30f))
             setOnClickListener { closeClockStylePicker() }
         }
@@ -8288,23 +8422,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         addView(LinearLayout(context).apply {
                             orientation = LinearLayout.HORIZONTAL
                             rowThemes.forEach { theme ->
-                                addView(clockThemeCell(theme, selected == theme.id), LinearLayout.LayoutParams(0, dp(148), 1f).apply {
+                                addView(clockThemeCell(theme, selected == theme.id), LinearLayout.LayoutParams(0, dp(126), 1f).apply {
                                     marginEnd = if (theme != rowThemes.last()) dp(10) else 0
                                 })
                             }
-                            repeat(2 - rowThemes.size) { addView(View(context), LinearLayout.LayoutParams(0, dp(148), 1f)) }
-                        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(148)).apply { bottomMargin = dp(10) })
+                            repeat(2 - rowThemes.size) { addView(View(context), LinearLayout.LayoutParams(0, dp(126), 1f)) }
+                        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(126)).apply { bottomMargin = dp(10) })
                     }
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
         overlay.addView(panel, FrameLayout.LayoutParams(
             minOf(resources.displayMetrics.widthPixels - dp(20), dp(520)),
-            (resources.displayMetrics.heightPixels * 0.74f).toInt(),
+            (resources.displayMetrics.heightPixels - launcherStatusBarInset() - dp(30)).coerceAtMost((resources.displayMetrics.heightPixels * 0.82f).toInt()),
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
         ))
         clockStylePickerView = overlay
-        contentFrame.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        host.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        overlay.bringToFront()
         panel.translationY = dp(38).toFloat()
         panel.alpha = 0f
         overlay.alpha = 0f
@@ -8322,11 +8457,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 haptic(this)
                 applyClockWidgetStyle(theme.id)
             }
-            addView(ClockWidgetView(context).apply {
-                themeId = theme.id
-                accentColor = goKeyColor
-                isDarkMode = activeNeuTokens.mode == NeuMode.DARK
-                previewState = ClockState(1, 54, 0, true, false, "Tuesday", "Jul 21", 80, "Fort Myers")
+            addView(FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                addView(ClockWidgetView(context).apply {
+                    themeId = theme.id
+                    accentColor = goKeyColor
+                    isDarkMode = activeNeuTokens.mode == NeuMode.DARK
+                    fontScale = 0.82f
+                    fontWeightOffset = clockWeightOffset()
+                    textTone = ClockTextTone.AUTO
+                    backgroundIsLight = activeNeuTokens.mode == NeuMode.LIGHT
+                    contrastShadow = 0.45f
+                    glassStrength = 0.52f
+                    previewState = ClockState(1, 54, 0, true, false, "Tuesday", "Jul 21", 80, "Fort Myers")
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT).apply {
+                    leftMargin = dp(4); rightMargin = dp(4); topMargin = dp(1); bottomMargin = dp(1)
+                })
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -8366,6 +8513,269 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         overlay.animate().alpha(0f).setDuration(130)
             .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }
             .start()
+    }
+
+    private fun openClockCustomizePanel() {
+        if (clockStylePickerView?.isAttachedToWindow == true) return
+        val host = (window.decorView as? ViewGroup) ?: contentFrame
+        var font = clockFontScalePercent()
+        var weight = clockWeightOffset()
+        var width = clockWidthPercent()
+        var height = clockHeightPercent()
+        var glass = clockGlassEnabled()
+        var glassStrength = clockGlassStrength()
+        var tone = clockTextToneId()
+        var shadow = clockShadowStrength()
+
+        val overlay = FrameLayout(this).apply {
+            isClickable = true
+            elevation = dp(96).toFloat()
+            setBackgroundColor(adjustAlpha(Color.BLACK, if (activeNeuTokens.mode == NeuMode.DARK) 0.48f else 0.30f))
+            setOnClickListener { closeClockStylePicker() }
+        }
+        lateinit var preview: ClockWidgetView
+        lateinit var toneRow: LinearLayout
+        lateinit var glassButton: TextView
+
+        fun applyToPreview() {
+            val data = weatherDataFromPrefs()
+            preview.themeId = clockWidgetStyleId()
+            preview.accentColor = goKeyColor
+            preview.isDarkMode = activeNeuTokens.mode == NeuMode.DARK
+            preview.weatherTempF = data.temp
+            preview.city = data.place
+            preview.fontScale = font / 100f
+            preview.fontWeightOffset = weight
+            preview.glassEnabled = glass
+            preview.glassStrength = glassStrength / 100f
+            preview.textTone = when (tone) {
+                "light" -> ClockTextTone.LIGHT
+                "dark" -> ClockTextTone.DARK
+                "accent" -> ClockTextTone.ACCENT
+                else -> ClockTextTone.AUTO
+            }
+            preview.backgroundIsLight = clockBackgroundLooksLight()
+            preview.contrastShadow = shadow / 100f
+        }
+
+        fun persistAndApply() {
+            prefs().edit()
+                .putInt(homeScopedKey(CLOCK_WIDGET_FONT_SCALE_PREF), font)
+                .putInt(homeScopedKey(CLOCK_WIDGET_WEIGHT_OFFSET_PREF), weight)
+                .putInt(homeScopedKey(CLOCK_WIDGET_WIDTH_PREF), width)
+                .putInt(homeScopedKey(CLOCK_WIDGET_HEIGHT_PREF), height)
+                .putBoolean(homeScopedKey(CLOCK_WIDGET_GLASS_PREF), glass)
+                .putInt(homeScopedKey(CLOCK_WIDGET_GLASS_STRENGTH_PREF), glassStrength)
+                .putString(homeScopedKey(CLOCK_WIDGET_TEXT_TONE_PREF), tone)
+                .putInt(homeScopedKey(CLOCK_WIDGET_SHADOW_PREF), shadow)
+                .putBoolean(homeScopedKey(CLOCK_WIDGET_VISIBLE_PREF), true)
+                .apply()
+            applyToPreview()
+            refreshClockToneButtons(toneRow, tone) { next ->
+                tone = next
+                persistAndApply()
+            }
+            glassButton.text = if (glass) "GLASS ON" else "GLASS OFF"
+            glassButton.setTextColor(if (glass) goKeyColor else activeNeuTokens.inkDim)
+            refreshClockWidgetFrameSize()
+        }
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+            background = homeAddPanelBackground()
+            elevation = dp(22).toFloat()
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(context).apply {
+                        text = "Clock Customize"
+                        textSize = 21f
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                        includeFontPadding = false
+                        setTextColor(activeNeuTokens.ink)
+                    })
+                    addView(mono("SIZE · WEIGHT · GLASS · CONTRAST", 8.2f, activeNeuTokens.inkFaint).apply {
+                        letterSpacing = 0.15f
+                        setPadding(0, dp(5), 0, 0)
+                    })
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(TextView(context).apply {
+                    text = "×"
+                    gravity = Gravity.CENTER
+                    textSize = 18f
+                    includeFontPadding = false
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                    setTextColor(activeNeuTokens.inkDim)
+                    background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
+                    setOnClickListener {
+                        haptic(this)
+                        closeClockStylePicker()
+                    }
+                }, LinearLayout.LayoutParams(dp(36), dp(36)))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)).apply { bottomMargin = dp(10) })
+
+            addView(FrameLayout(context).apply {
+                background = Neu.drawable(activeNeuTokens, dp(18).toFloat(), NeuLevel.PRESSED_SM)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                preview = ClockWidgetView(context).apply {
+                    previewState = ClockState(1, 54, 0, true, false, "Tuesday", "Jul 21", 80, "Local")
+                }
+                addView(preview, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(132)).apply { bottomMargin = dp(12) })
+
+            addView(clockCustomizeSlider("FONT SIZE", 70, 155, font, "%") {
+                font = it
+                persistAndApply()
+            })
+            addView(clockCustomizeSlider("FONT WEIGHT", -300, 300, weight, "") {
+                weight = it
+                persistAndApply()
+            })
+            addView(clockCustomizeSlider("WIDTH", 70, 140, width, "%") {
+                width = it
+                persistAndApply()
+            })
+            addView(clockCustomizeSlider("HEIGHT", 70, 155, height, "%") {
+                height = it
+                persistAndApply()
+            })
+            addView(clockCustomizeSlider("GLASS", 0, 100, glassStrength, "%") {
+                glassStrength = it
+                if (it > 0) glass = true
+                persistAndApply()
+            })
+            addView(clockCustomizeSlider("SHADOW", 0, 100, shadow, "%") {
+                shadow = it
+                persistAndApply()
+            })
+
+            glassButton = mono(if (glass) "GLASS ON" else "GLASS OFF", 10f, if (glass) goKeyColor else activeNeuTokens.inkDim).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.13f
+                background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
+                setOnClickListener {
+                    haptic(this)
+                    glass = !glass
+                    persistAndApply()
+                }
+            }
+            addView(glassButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)).apply { topMargin = dp(6) })
+
+            addView(mono("TEXT COLOR", 8.5f, activeNeuTokens.inkFaint).apply {
+                letterSpacing = 0.15f
+                setPadding(dp(2), dp(12), 0, dp(6))
+            }, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            toneRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            addView(toneRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)))
+
+            addView(mono("RESET CLOCK CUSTOMIZATION", 9.4f, 0xFFFF8F8F.toInt()).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.12f
+                background = Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.PRESSED_SM)
+                setOnClickListener {
+                    haptic(this)
+                    resetClockCustomization()
+                    closeClockStylePicker()
+                    updateClockWidget()
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(38)).apply { topMargin = dp(12) })
+        }
+
+        overlay.addView(panel, FrameLayout.LayoutParams(
+            minOf(resources.displayMetrics.widthPixels - dp(20), dp(520)),
+            (resources.displayMetrics.heightPixels - launcherStatusBarInset() - dp(30)).coerceAtMost((resources.displayMetrics.heightPixels * 0.84f).toInt()),
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ))
+        clockStylePickerView = overlay
+        host.addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        overlay.bringToFront()
+        refreshClockToneButtons(toneRow, tone) { next ->
+            tone = next
+            persistAndApply()
+        }
+        applyToPreview()
+        panel.translationY = dp(38).toFloat()
+        panel.alpha = 0f
+        overlay.alpha = 0f
+        overlay.animate().alpha(1f).setDuration(140).start()
+        panel.animate().alpha(1f).translationY(0f).setDuration(245).setInterpolator(DecelerateInterpolator()).start()
+    }
+
+    private fun clockCustomizeSlider(
+        label: String,
+        min: Int,
+        max: Int,
+        initial: Int,
+        suffix: String,
+        onChange: (Int) -> Unit
+    ): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(4), 0, dp(4))
+        addView(mono(label, 8.6f, activeNeuTokens.inkDim).apply {
+            letterSpacing = 0.12f
+        }, LinearLayout.LayoutParams(dp(88), LinearLayout.LayoutParams.WRAP_CONTENT))
+        val value = mono("$initial$suffix", 8.6f, goKeyColor).apply { gravity = Gravity.RIGHT }
+        addView(SeekBar(context).apply {
+            this.max = max - min
+            progress = initial - min
+            thumbTintList = android.content.res.ColorStateList.valueOf(goKeyColor)
+            progressTintList = android.content.res.ColorStateList.valueOf(goKeyColor)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Line)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    val next = min + progress
+                    value.text = "$next$suffix"
+                    onChange(next)
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                    seekBar?.let { haptic(it) }
+                }
+            })
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = dp(8)
+            marginEnd = dp(8)
+        })
+        addView(value, LinearLayout.LayoutParams(dp(46), LinearLayout.LayoutParams.WRAP_CONTENT))
+    }
+
+    private fun refreshClockToneButtons(row: LinearLayout, selected: String, onPick: (String) -> Unit) {
+        row.removeAllViews()
+        listOf("auto" to "AUTO", "light" to "LIGHT", "dark" to "DARK", "accent" to "ACCENT").forEach { (id, label) ->
+            row.addView(mono(label, 8.2f, if (id == selected) goKeyColor else activeNeuTokens.inkDim).apply {
+                gravity = Gravity.CENTER
+                letterSpacing = 0.11f
+                background = Neu.drawable(activeNeuTokens, dp(14).toFloat(), if (id == selected) NeuLevel.RAISED else NeuLevel.PRESSED_SM)
+                setOnClickListener {
+                    haptic(this)
+                    onPick(id)
+                }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                marginEnd = if (id != "accent") dp(6) else 0
+            })
+        }
+    }
+
+    private fun resetClockCustomization() {
+        prefs().edit()
+            .remove(homeScopedKey(CLOCK_WIDGET_FONT_SCALE_PREF))
+            .remove(homeScopedKey(CLOCK_WIDGET_WEIGHT_OFFSET_PREF))
+            .remove(homeScopedKey(CLOCK_WIDGET_WIDTH_PREF))
+            .remove(homeScopedKey(CLOCK_WIDGET_HEIGHT_PREF))
+            .remove(homeScopedKey(CLOCK_WIDGET_GLASS_PREF))
+            .remove(homeScopedKey(CLOCK_WIDGET_GLASS_STRENGTH_PREF))
+            .remove(homeScopedKey(CLOCK_WIDGET_TEXT_TONE_PREF))
+            .remove(homeScopedKey(CLOCK_WIDGET_SHADOW_PREF))
+            .apply()
+        refreshClockWidgetFrameSize()
     }
 
     private fun weatherWidgetStyleId(): String =
@@ -28363,6 +28773,14 @@ Question: $prompt"""
         private const val CLOCK_WIDGET_VISIBLE_PREF = "clock_widget_visible"
         private const val CLOCK_WIDGET_POS_X_PREF = "clock_widget_x"
         private const val CLOCK_WIDGET_POS_Y_PREF = "clock_widget_y"
+        private const val CLOCK_WIDGET_FONT_SCALE_PREF = "clock_widget_font_scale"
+        private const val CLOCK_WIDGET_WEIGHT_OFFSET_PREF = "clock_widget_weight_offset"
+        private const val CLOCK_WIDGET_WIDTH_PREF = "clock_widget_width"
+        private const val CLOCK_WIDGET_HEIGHT_PREF = "clock_widget_height"
+        private const val CLOCK_WIDGET_GLASS_PREF = "clock_widget_glass"
+        private const val CLOCK_WIDGET_GLASS_STRENGTH_PREF = "clock_widget_glass_strength"
+        private const val CLOCK_WIDGET_TEXT_TONE_PREF = "clock_widget_text_tone"
+        private const val CLOCK_WIDGET_SHADOW_PREF = "clock_widget_shadow"
         private const val AGENDA_TARGET_ID = "agenda-timeline"
         private const val AGENDA_WIDGET_VISIBLE_PREF = "agenda_widget_visible"
         private const val AGENDA_POS_X_PREF = "agenda_widget_x"

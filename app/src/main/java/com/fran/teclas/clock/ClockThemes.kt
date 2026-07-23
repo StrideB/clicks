@@ -21,6 +21,7 @@ import kotlin.math.min
 import kotlin.math.sin
 
 enum class ClockContainer { GLASS_BOX, OPEN }
+enum class ClockTextTone { AUTO, LIGHT, DARK, ACCENT }
 
 sealed interface ClockTheme {
     val id: String
@@ -141,11 +142,54 @@ class ClockWidgetView(context: Context) : View(context) {
             invalidate()
         }
 
+    var fontScale: Float = 1f
+        set(value) {
+            field = value.coerceIn(0.70f, 1.55f)
+            invalidate()
+        }
+
+    var fontWeightOffset: Int = 0
+        set(value) {
+            field = value.coerceIn(-300, 300)
+            invalidate()
+        }
+
+    var glassEnabled: Boolean = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var glassStrength: Float = 0.58f
+        set(value) {
+            field = value.coerceIn(0f, 1f)
+            invalidate()
+        }
+
+    var textTone: ClockTextTone = ClockTextTone.AUTO
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var backgroundIsLight: Boolean = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var contrastShadow: Float = 0.55f
+        set(value) {
+            field = value.coerceIn(0f, 1f)
+            invalidate()
+        }
+
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG)
     private val path = Path()
     private val rect = RectF()
+    private var preserveCustomShadow = false
     private val ticker = object : Runnable {
         override fun run() {
             invalidate()
@@ -184,7 +228,7 @@ class ClockWidgetView(context: Context) : View(context) {
         if (width <= 0 || height <= 0) return
         val theme = ClockThemes.byId(themeId)
         val state = previewState ?: liveClockState()
-        if (theme.container == ClockContainer.GLASS_BOX) drawGlassContainer(canvas)
+        if (theme.container == ClockContainer.GLASS_BOX || glassEnabled) drawGlassContainer(canvas)
 
         when (theme.kind) {
             ClockKind.SERIF_GRAND -> drawSerifGrand(canvas, state)
@@ -230,22 +274,27 @@ class ClockWidgetView(context: Context) : View(context) {
 
     private fun drawGlassContainer(canvas: Canvas) {
         val radius = dp(24f)
+        val strength = glassStrength.coerceIn(0f, 1f)
         rect.set(dp(1f), dp(1f), width - dp(1f), height - dp(1f))
         fillPaint.shader = null
-        fillPaint.color = Color.argb(if (isDarkMode) 92 else 130, 255, 255, 255)
-        fillPaint.setShadowLayer(dp(14f), 0f, dp(6f), Color.argb(if (isDarkMode) 115 else 55, 0, 0, 0))
+        fillPaint.color = Color.argb(((if (isDarkMode) 92 else 130) * strength).toInt().coerceIn(0, 180), 255, 255, 255)
+        fillPaint.setShadowLayer(dp(14f), 0f, dp(6f), Color.argb(((if (isDarkMode) 115 else 55) * strength).toInt().coerceIn(0, 160), 0, 0, 0))
         canvas.drawRoundRect(rect, radius, radius, fillPaint)
         fillPaint.clearShadowLayer()
         fillPaint.shader = LinearGradient(
             0f, 0f, 0f, height.toFloat(),
-            intArrayOf(Color.argb(42, 255, 255, 255), Color.argb(if (isDarkMode) 16 else 28, 255, 255, 255), Color.argb(18, 0, 0, 0)),
+            intArrayOf(
+                Color.argb((42 * strength).toInt().coerceIn(0, 80), 255, 255, 255),
+                Color.argb(((if (isDarkMode) 16 else 28) * strength).toInt().coerceIn(0, 70), 255, 255, 255),
+                Color.argb((18 * strength).toInt().coerceIn(0, 60), 0, 0, 0)
+            ),
             null,
             Shader.TileMode.CLAMP
         )
         canvas.drawRoundRect(rect, radius, radius, fillPaint)
         fillPaint.shader = null
         strokePaint.strokeWidth = dp(1f)
-        strokePaint.color = Color.argb(if (isDarkMode) 46 else 76, 255, 255, 255)
+        strokePaint.color = Color.argb(((if (isDarkMode) 46 else 76) * strength).toInt().coerceIn(0, 120), 255, 255, 255)
         canvas.drawRoundRect(rect, radius, radius, strokePaint)
     }
 
@@ -301,7 +350,7 @@ class ClockWidgetView(context: Context) : View(context) {
     private fun drawOutline(canvas: Canvas, state: ClockState) {
         textPaint.style = Paint.Style.STROKE
         textPaint.strokeWidth = dp(1.5f)
-        centeredText(canvas, time(state), cx(), height * 0.62f, spScaled(50f), serif(Typeface.BOLD), Color.argb(225, 255, 255, 255), -0.05f)
+        centeredText(canvas, time(state), cx(), height * 0.62f, spScaled(50f), serif(Typeface.BOLD), ink(), -0.05f)
         textPaint.style = Paint.Style.FILL
     }
 
@@ -318,9 +367,11 @@ class ClockWidgetView(context: Context) : View(context) {
 
     private fun drawNeonGlow(canvas: Canvas, state: ClockState) {
         val pink = Color.rgb(255, 151, 203)
+        preserveCustomShadow = true
         textPaint.setShadowLayer(dp(14f), 0f, 0f, Color.argb(190, 255, 68, 170))
         centeredText(canvas, time(state), cx(), height * 0.62f, spScaled(44f), sans(Typeface.BOLD), pink, -0.035f)
         textPaint.clearShadowLayer()
+        preserveCustomShadow = false
     }
 
     private fun drawVerticalRail(canvas: Canvas, state: ClockState) {
@@ -444,7 +495,17 @@ class ClockWidgetView(context: Context) : View(context) {
         textPaint.color = color
         textPaint.textAlign = align
         textPaint.letterSpacingCompat(tracking)
+        if (!preserveCustomShadow && contrastShadow > 0f) {
+            val lightText = luminance(color) > 0.56f
+            val alpha = (if (lightText) 112 else 46) * contrastShadow
+            val shadow = if (lightText) Color.argb(alpha.toInt().coerceIn(0, 150), 0, 0, 0)
+                else Color.argb(alpha.toInt().coerceIn(0, 80), 255, 255, 255)
+            textPaint.setShadowLayer(dp(3f * contrastShadow), 0f, dp(1.1f), shadow)
+        } else if (!preserveCustomShadow) {
+            textPaint.clearShadowLayer()
+        }
         canvas.drawText(value, x, baseline, textPaint)
+        if (!preserveCustomShadow) textPaint.clearShadowLayer()
         textPaint.shader = null
         textPaint.maskFilter = null
         textPaint.letterSpacingCompat(0f)
@@ -486,16 +547,46 @@ class ClockWidgetView(context: Context) : View(context) {
     }
 
     private fun cx(): Float = width / 2f
-    private fun ink(): Int = if (isDarkMode) Color.rgb(244, 241, 235) else Color.rgb(24, 27, 33)
-    private fun muted(): Int = if (isDarkMode) Color.rgb(154, 155, 166) else Color.rgb(93, 99, 112)
+    private fun ink(): Int = when (textTone) {
+        ClockTextTone.LIGHT -> Color.rgb(244, 241, 235)
+        ClockTextTone.DARK -> Color.rgb(24, 27, 33)
+        ClockTextTone.ACCENT -> accentColor
+        ClockTextTone.AUTO -> if (backgroundIsLight) Color.rgb(24, 27, 33) else Color.rgb(244, 241, 235)
+    }
+    private fun muted(): Int = when (textTone) {
+        ClockTextTone.LIGHT -> Color.rgb(154, 155, 166)
+        ClockTextTone.DARK -> Color.rgb(93, 99, 112)
+        ClockTextTone.ACCENT -> adjustAlpha(accentColor, 0.72f)
+        ClockTextTone.AUTO -> if (backgroundIsLight) Color.rgb(93, 99, 112) else Color.rgb(154, 155, 166)
+    }
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
     private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
-    private fun spScaled(value: Float): Float = sp(value * (height / dp(126f)).coerceIn(0.62f, 1.22f))
-    private fun serif(style: Int): Typeface = Typeface.create(Typeface.SERIF, style)
-    private fun mono(style: Int): Typeface = Typeface.create(Typeface.MONOSPACE, style)
+    private fun spScaled(value: Float): Float = sp(value * fontScale * (height / dp(126f)).coerceIn(0.62f, 1.22f))
+    private fun serif(style: Int): Typeface = family(Typeface.SERIF, style)
+    private fun mono(style: Int): Typeface = family(Typeface.MONOSPACE, style)
     private fun sans(weightOrStyle: Int): Typeface = when (weightOrStyle) {
-        Typeface.BOLD, Typeface.ITALIC, Typeface.NORMAL -> Typeface.create(Typeface.SANS_SERIF, weightOrStyle)
-        else -> if (android.os.Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.SANS_SERIF, weightOrStyle, false)
+        Typeface.BOLD, Typeface.ITALIC, Typeface.NORMAL, Typeface.BOLD_ITALIC -> family(Typeface.SANS_SERIF, weightOrStyle)
+        else -> if (android.os.Build.VERSION.SDK_INT >= 28) Typeface.create(Typeface.SANS_SERIF, adjustedWeight(weightOrStyle), false)
             else Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+    }
+
+    private fun family(base: Typeface, style: Int): Typeface {
+        if (android.os.Build.VERSION.SDK_INT < 28) return Typeface.create(base, style)
+        val italic = style == Typeface.ITALIC || style == Typeface.BOLD_ITALIC
+        val baseWeight = if (style == Typeface.BOLD || style == Typeface.BOLD_ITALIC) 700 else 400
+        return Typeface.create(base, adjustedWeight(baseWeight), italic)
+    }
+
+    private fun adjustedWeight(weight: Int): Int = (weight + fontWeightOffset).coerceIn(100, 900)
+
+    private fun adjustAlpha(color: Int, alpha: Float): Int =
+        Color.argb((Color.alpha(color) * alpha).toInt().coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
+
+    private fun luminance(color: Int): Float {
+        fun channel(v: Int): Float {
+            val c = v / 255f
+            return if (c <= 0.03928f) c / 12.92f else Math.pow(((c + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
+        }
+        return 0.2126f * channel(Color.red(color)) + 0.7152f * channel(Color.green(color)) + 0.0722f * channel(Color.blue(color))
     }
 }
