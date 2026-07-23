@@ -691,6 +691,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     internal var homeWallpaperDrawable: Drawable? = null
     private var lastGoodHomeWallpaperDrawable: Drawable? = null
     private var homeWallpaperSourceSig: String? = null
+    // Which wallpaper signature the CURRENTLY DECODED drawable actually is (set only when a fresh
+    // decode lands, not when a change is merely requested). Depth segments only when this matches
+    // the live signature, so a mid-change stale bitmap can't be cut out and cached as the new one.
+    private var homeWallpaperDrawableSig: String? = null
     private var homeWallpaperUnavailableSig: String? = null
     private var fluidHoursRefreshRunnable: Runnable? = null
     private var deviceWallpaperFileDeniedSig: String? = null
@@ -3259,6 +3263,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     if (loaded != null) {
                         homeWallpaperDrawable = loaded
                         lastGoodHomeWallpaperDrawable = loaded.constantState?.newDrawable(resources)?.mutate() ?: loaded
+                        // The displayed bitmap is now genuinely this wallpaper. Record which
+                        // signature it corresponds to (so depth never segments a stale bitmap), and
+                        // drop any cached cutout from the previous wallpaper.
+                        if (homeWallpaperDrawableSig != sig) WallpaperDepth.clearMemory()
+                        homeWallpaperDrawableSig = sig
                     } else if (homeWallpaperDrawable == null && lastGoodHomeWallpaperDrawable != null) {
                         homeWallpaperDrawable = lastGoodHomeWallpaperDrawable?.constantState?.newDrawable(resources)?.mutate()
                             ?: lastGoodHomeWallpaperDrawable
@@ -3466,6 +3475,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun maybeKickDepthSegmentation(sig: String) {
         if (!wallpaperDepthActive() || wallpaperDepthLoading || WallpaperDepth.knownEmpty(sig)) return
+        // Only segment once the decoded wallpaper genuinely IS this signature. During a wallpaper
+        // change the drawable lags the signature by a frame or two; segmenting then would cut the
+        // OLD subject and cache it under the NEW key (the floating-old-wallpaper artifact).
+        if (homeWallpaperDrawableSig != sig) {
+            android.util.Log.i("TeclasWallpaperDepth", "kick skipped: drawable not yet this wallpaper (have=$homeWallpaperDrawableSig want=$sig)")
+            return
+        }
         val bmp = depthSourceBitmap()
         if (bmp == null) {
             android.util.Log.w("TeclasWallpaperDepth", "no wallpaper bitmap to segment (system wallpaper not decoded?)")
