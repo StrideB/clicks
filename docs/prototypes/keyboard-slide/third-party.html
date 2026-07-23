@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0E0F13">
+<title>Slide keyboard over third-party apps — mock</title>
+</head>
+<body>
+<style>
+  :root{
+    --ink:#EEF0F4; --dim:#8A909B; --dimmer:#5B616D;
+    --accent:#C9A7FF; --accent-ink:#E8DBFF; --live:#8FD694;
+    --line:#2A2C33;
+    --key-top:#262B34; --key-bot:#101319; --key-line:rgba(255,255,255,.10);
+    --field-top:#262B34; --field-mid:#181B21; --field-bot:#101319;
+    font-synthesis:none;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0}
+  html,body{height:100%}
+  body{
+    background:radial-gradient(120% 80% at 50% -10%, #191c22 0%, #0E0F13 55%, #060709 100%);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased; color:var(--ink);
+    display:flex; align-items:center; justify-content:center; overscroll-behavior:none;
+  }
+  .stage{position:relative; width:100%; height:100dvh; overflow:hidden; background:#000}
+  @media (min-width:520px){
+    body{padding:20px}
+    .stage{width:392px; height:min(844px, calc(100dvh - 40px));
+      border-radius:44px; box-shadow:0 0 0 10px #05060a,0 0 0 12px #23262e,0 40px 90px -30px #000; border:1px solid #000}
+  }
+
+  /* ---------- demo harness ---------- */
+  .demo{
+    position:absolute; top:0; left:0; right:0; z-index:60;
+    padding:8px 10px 9px; display:flex; flex-direction:column; gap:7px;
+    background:linear-gradient(180deg,rgba(8,9,12,.94),rgba(8,9,12,.72) 78%,transparent);
+    backdrop-filter:blur(6px);
+  }
+  .seg{display:flex; gap:4px; background:rgba(255,255,255,.05); border:1px solid var(--line); border-radius:11px; padding:3px}
+  .seg button{
+    flex:1 1 0; border:0; background:transparent; color:var(--dim); font-weight:650; font-size:12.5px;
+    padding:7px 4px; border-radius:8px; letter-spacing:.2px; cursor:pointer; transition:background .15s,color .15s;
+    font-family:inherit; display:flex; align-items:center; justify-content:center; gap:6px;
+  }
+  .seg button .d{width:9px;height:9px;border-radius:2px}
+  .seg button[aria-pressed="true"]{background:rgba(201,167,255,.16); color:var(--accent-ink); box-shadow:inset 0 0 0 1px rgba(201,167,255,.35)}
+  .demo .note{font-size:10px; color:var(--dimmer); text-align:center; letter-spacing:.2px}
+
+  /* ---------- shared status bar ---------- */
+  .sbar{position:absolute; top:0; left:0; right:0; height:0; z-index:5}
+
+  /* ---------- host apps ---------- */
+  .host{position:absolute; inset:0; z-index:2; display:none; flex-direction:column; overflow:hidden}
+  .host.on{display:flex}
+  .htop{flex:0 0 auto; padding-top:96px}      /* clears the demo bar */
+  .hscroll{flex:1 1 auto; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; scrollbar-width:none}
+  .hscroll::-webkit-scrollbar{display:none}
+
+  /* focus ring shared */
+  .tfield{position:relative; transition:box-shadow .18s, border-color .18s}
+  .tfield.focused{box-shadow:0 0 0 2px var(--accent), 0 0 0 5px rgba(201,167,255,.22)}
+  .caret{display:inline-block; width:2px; height:1em; background:var(--accent); vertical-align:-2px; margin-left:1px; animation:blink 1s steps(1) infinite}
+  .tfield.focused .caret{display:inline-block}
+  .caret{display:none}
+  @keyframes blink{50%{opacity:0}}
+  .ph{color:inherit; opacity:.55}
+
+  /* --- CHROME (light browser) --- */
+  .chrome{background:#dfe1e5}
+  .chrome .htop{background:#f1f3f4; padding:96px 10px 8px; border-bottom:1px solid #d9dbdf}
+  .chrome .obar{display:flex; align-items:center; gap:9px}
+  .chrome .tabs{width:22px;height:22px;border:2px solid #5f6368;border-radius:5px;color:#5f6368;font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .chrome .omni{
+    flex:1 1 auto; height:38px; background:#fff; border:1px solid #d2d4d8; border-radius:19px;
+    display:flex; align-items:center; gap:8px; padding:0 14px; color:#202124; font-size:14px; overflow:hidden; white-space:nowrap;
+  }
+  .chrome .omni .lock{width:12px;height:12px;border:1.6px solid #9aa0a6;border-radius:3px;flex:0 0 auto}
+  .chrome .menu{color:#5f6368;font-weight:800;letter-spacing:1px;flex:0 0 auto}
+  .chrome .page{background:#fff; color:#202124; min-height:140%}
+  .chrome .hero{height:150px;background:linear-gradient(135deg,#5b8def,#8f6ae0)}
+  .chrome .art{padding:18px 18px 24px}
+  .chrome .art h1{font-size:22px; letter-spacing:-.3px; color:#1b1b1d; text-wrap:balance}
+  .chrome .art .by{color:#70757a;font-size:12.5px;margin:8px 0 16px;font-weight:600}
+  .chrome .art p{color:#3c4043;font-size:14.5px;line-height:1.6;margin-bottom:13px}
+
+  /* --- SPOTIFY (dark, green) --- */
+  .spotify{background:#121212; color:#fff}
+  .spotify .htop{background:linear-gradient(180deg,#20402f,#121212); padding:100px 16px 10px}
+  .spotify h2{font-size:24px;font-weight:800;letter-spacing:-.4px;margin-bottom:12px}
+  .spotify .sfield{
+    height:46px; background:#fff; border-radius:8px; display:flex; align-items:center; gap:11px; padding:0 14px;
+    color:#121212; font-size:15px; font-weight:600; overflow:hidden; white-space:nowrap;
+  }
+  .spotify .sfield .mg{width:16px;height:16px;border:2.4px solid #121212;border-radius:50%;position:relative;flex:0 0 auto}
+  .spotify .sfield .mg::after{content:"";position:absolute;right:-4px;bottom:-3px;width:7px;height:2.4px;background:#121212;transform:rotate(45deg)}
+  .spotify .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px}
+  .spotify .tile{height:88px;border-radius:9px;padding:12px;font-weight:800;font-size:15px;position:relative;overflow:hidden}
+  .spotify .tile span{position:relative;z-index:2}
+  .spotify .lab{font-size:13px;font-weight:800;color:#b3b3b3;letter-spacing:.3px;padding:6px 16px 2px}
+
+  /* --- WHATSAPP (chat) --- */
+  .whatsapp{background:#0b141a}
+  .whatsapp .htop{background:#1f2c34; padding:92px 12px 10px; display:flex; align-items:center; gap:11px; border-bottom:1px solid #0c191f}
+  .whatsapp .av{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#128C7E,#25D366);flex:0 0 auto}
+  .whatsapp .who{font-size:16px;font-weight:700;color:#e9edef}
+  .whatsapp .st{font-size:12px;color:#8696a0;margin-top:1px}
+  .whatsapp .thread{flex:1 1 auto; overflow-y:auto; padding:14px 12px 8px; display:flex; flex-direction:column; gap:8px;
+    background:#0b141a; scrollbar-width:none}
+  .whatsapp .thread::-webkit-scrollbar{display:none}
+  .whatsapp .b{max-width:78%; padding:8px 11px; border-radius:9px; font-size:14.5px; line-height:1.35; color:#e9edef; position:relative}
+  .whatsapp .b.in{align-self:flex-start; background:#1f2c34; border-top-left-radius:2px}
+  .whatsapp .b.out{align-self:flex-end; background:#005c4b; border-top-right-radius:2px}
+  .whatsapp .b .tt{display:block; font-size:10.5px; color:rgba(233,237,239,.6); text-align:right; margin-top:3px}
+  .whatsapp .compose{
+    position:absolute; left:0; right:0; z-index:8; padding:7px 9px;
+    display:flex; align-items:flex-end; gap:8px; background:#0b141a;
+  }
+  .whatsapp .cbox{
+    flex:1 1 auto; min-height:44px; background:#1f2c34; border-radius:22px; padding:11px 16px;
+    color:#e9edef; font-size:15px; display:flex; align-items:center; overflow:hidden; white-space:nowrap;
+  }
+  .whatsapp .send{width:44px;height:44px;border-radius:50%;background:#00a884;flex:0 0 auto;display:flex;align-items:center;justify-content:center;color:#0b141a;font-size:19px;font-weight:800;transform:translateY(0)}
+
+  /* ---------- the slide keyboard ---------- */
+  .sheet{
+    position:absolute; left:0; right:0; bottom:0; z-index:30; will-change:transform; touch-action:none;
+    background:linear-gradient(180deg,#1a1d24 0%,#121419 42%,#0c0e12 100%);
+    border-top:1px solid rgba(255,255,255,.09);
+    box-shadow:0 -18px 40px -24px rgba(0,0,0,.9),0 -1px 0 rgba(255,255,255,.05) inset;
+    padding:0 10px 12px;
+  }
+  .sheet.widget{
+    left:9px; right:9px; bottom:11px; border-radius:24px; border:1px solid rgba(255,255,255,.09);
+    box-shadow:0 -10px 34px -18px rgba(0,0,0,.85),0 18px 40px -22px #000;
+  }
+  .sheet.docked{border-top-left-radius:16px; border-top-right-radius:16px}
+  .grabwrap{height:20px;display:flex;align-items:center;justify-content:center}
+  .grab{width:38px;height:5px;border-radius:3px;background:#3a3f49;transition:background .18s,width .18s}
+  .sheet.armed .grab,.sheet.dragging .grab{background:var(--accent);width:52px}
+
+  .field{
+    height:46px; margin:0 2px 8px; border-radius:15px;
+    background:linear-gradient(180deg,var(--field-top),var(--field-mid) 55%,var(--field-bot));
+    border:1px solid rgba(255,255,255,.14); box-shadow:0 0 0 1px rgba(201,167,255,.20) inset;
+    display:flex; align-items:center; gap:11px; padding:0 14px;
+  }
+  .field .mag{width:15px;height:15px;position:relative;flex:0 0 auto}
+  .field .mag::before{content:"";position:absolute;left:0;top:0;width:11px;height:11px;border:2px solid var(--accent);border-radius:50%}
+  .field .mag::after{content:"";position:absolute;right:0;bottom:0;width:6px;height:2px;background:var(--accent);transform:rotate(45deg);transform-origin:right}
+  .field .q{flex:1 1 auto;font-size:15px;color:var(--dim);font-weight:500;overflow:hidden;white-space:nowrap}
+  .field .tag{font-size:10.5px;font-weight:800;letter-spacing:.6px;color:var(--dimmer);text-transform:uppercase;flex:0 0 auto}
+
+  .suggest{display:flex;gap:8px;padding:0 2px 9px}
+  .suggest .s{flex:1 1 0;text-align:center;font-size:13.5px;font-weight:600;color:var(--ink);
+    padding:8px 6px;border-radius:10px;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.05);
+    overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .suggest .s.accent{color:var(--accent-ink)}
+
+  .keys{padding:0 1px}
+  .krow{display:flex;gap:6px;justify-content:center;margin-bottom:7px}
+  .krow.indent{padding:0 16px}
+  .key{flex:1 1 0;height:44px;border-radius:8px;background:linear-gradient(180deg,var(--key-top),var(--key-bot));
+    border:1px solid var(--key-line);box-shadow:0 1px 0 rgba(255,255,255,.05) inset,0 2px 4px -2px #000;
+    display:flex;align-items:center;justify-content:center;font-size:17px;color:var(--ink);user-select:none;
+    transition:transform .05s,filter .05s}
+  .key.wide{flex:1.5 1 0;font-size:12px;font-weight:600;color:var(--dim)}
+  .key.space{flex:4 1 0;font-size:13px;color:var(--dim)}
+  .key.act{color:#12131a;background:linear-gradient(180deg,#d8bcff,var(--accent));font-weight:700}
+  .key.press{transform:translateY(1px) scale(.97);filter:brightness(1.4)}
+
+  /* telemetry + toast */
+  .telem{position:absolute; right:12px; z-index:55; top:150px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10.5px; line-height:1.5;
+    background:rgba(9,10,14,.72); border:1px solid var(--line); border-radius:9px; padding:7px 9px; color:var(--dim);
+    backdrop-filter:blur(8px); min-width:112px; user-select:none}
+  .telem b{color:var(--accent)}
+  .telem .st{color:var(--live)}
+  .toast{position:absolute; left:50%; z-index:45; transform:translate(-50%,12px);
+    background:rgba(20,22,28,.94); border:1px solid var(--line); border-radius:999px;
+    padding:8px 14px; font-size:12px; font-weight:650; color:var(--live); opacity:0;
+    transition:opacity .26s,transform .26s; pointer-events:none; white-space:nowrap}
+  .toast.show{opacity:1; transform:translate(-50%,0)}
+  @media (prefers-reduced-motion:reduce){.grab,.tfield{transition:none}}
+</style>
+
+<div class="stage" id="stage">
+
+  <div class="demo">
+    <div class="seg" id="appSeg">
+      <button data-app="chrome"  aria-pressed="true"><span class="d" style="background:#4285F4"></span>Chrome</button>
+      <button data-app="spotify" aria-pressed="false"><span class="d" style="background:#1DB954"></span>Spotify</button>
+      <button data-app="whatsapp" aria-pressed="false"><span class="d" style="background:#25D366"></span>WhatsApp</button>
+    </div>
+    <div class="seg" id="modeSeg">
+      <button data-mode="widget" aria-pressed="true">Widget · floating</button>
+      <button data-mode="docked" aria-pressed="false">Docked · full-bleed</button>
+    </div>
+    <div class="note">UI mock for prototyping — your keyboard over generic app stand-ins. Not affiliated with these apps.</div>
+  </div>
+
+  <div class="telem" id="telem">
+    open <b><span id="tOpen">0</span>%</b> · v <b><span id="tVel">0.0</span></b><br>
+    <span class="st" id="tState">closed</span>
+  </div>
+
+  <!-- ===== CHROME ===== -->
+  <div class="host chrome on" data-app="chrome">
+    <div class="htop">
+      <div class="obar">
+        <div class="tabs">3</div>
+        <div class="omni tfield" data-target="chrome"><span class="lock"></span><span class="q"><span class="ph">Search or type URL</span></span></div>
+        <div class="menu">⋮</div>
+      </div>
+    </div>
+    <div class="hscroll">
+      <div class="page">
+        <div class="hero"></div>
+        <div class="art">
+          <h1>The tall-phone problem nobody fixed</h1>
+          <div class="by">Field notes · 4 min read</div>
+          <p>Phones kept getting taller, but the search bar stayed pinned to the top. Every lookup starts with a reach — thumb straining to the far corner just to raise the keyboard.</p>
+          <p>What if the keyboard came to the thumb instead? A handle at the bottom you pull up when you need it, that drops away the moment you scroll.</p>
+          <p>Scroll this page while the keyboard is up — watch it tuck itself away, then pull it back with one motion.</p>
+          <p>The address bar above focuses on its own as the keyboard rises, so you can start typing without ever touching it.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== SPOTIFY ===== -->
+  <div class="host spotify" data-app="spotify">
+    <div class="htop">
+      <h2>Search</h2>
+      <div class="sfield tfield" data-target="spotify"><span class="mg"></span><span class="q"><span class="ph">What do you want to play?</span></span></div>
+    </div>
+    <div class="hscroll">
+      <div class="lab">Browse all</div>
+      <div class="grid">
+        <div class="tile" style="background:#e8115b"><span>Pop</span></div>
+        <div class="tile" style="background:#1e3264"><span>Chill</span></div>
+        <div class="tile" style="background:#148a08"><span>Workout</span></div>
+        <div class="tile" style="background:#8d67ab"><span>Focus</span></div>
+        <div class="tile" style="background:#b02897"><span>Dance</span></div>
+        <div class="tile" style="background:#e91429"><span>Rock</span></div>
+        <div class="tile" style="background:#0d73ec"><span>Podcasts</span></div>
+        <div class="tile" style="background:#ba5d07"><span>Jazz</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== WHATSAPP ===== -->
+  <div class="host whatsapp" data-app="whatsapp">
+    <div class="htop">
+      <div class="av"></div>
+      <div><div class="who">Alex Rivera</div><div class="st">online</div></div>
+    </div>
+    <div class="thread" id="waThread">
+      <div class="b in">Landing at 6 — you still good to grab me?<span class="tt">5:58</span></div>
+      <div class="b out">Yep leaving now 🚗<span class="tt">5:59</span></div>
+      <div class="b in">Legend. Terminal B, door 4<span class="tt">6:01</span></div>
+      <div class="b in">Text me when you're close<span class="tt">6:01</span></div>
+    </div>
+    <div class="compose" id="waCompose">
+      <div class="cbox tfield" data-target="whatsapp"><span class="q"><span class="ph">Message</span></span></div>
+      <div class="send">➤</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <!-- ===== the keyboard ===== -->
+  <div class="sheet widget" id="sheet">
+    <div class="grabwrap"><div class="grab"></div></div>
+    <div class="field">
+      <div class="mag"></div>
+      <div class="q" id="kbHint">Pull up · then just type</div>
+      <div class="tag" id="kbTag">WIDGET</div>
+    </div>
+    <div class="suggest">
+      <div class="s accent" id="sug0">Alex Rivera</div>
+      <div class="s" id="sug1">Airport pickup</div>
+      <div class="s" id="sug2">Maps</div>
+    </div>
+    <div class="keys" id="keys"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $=function(id){return document.getElementById(id);};
+  var stage=$('stage'), sheet=$('sheet'), toast=$('toast');
+  var tOpen=$('tOpen'), tVel=$('tVel'), tState=$('tState');
+  var kbTag=$('kbTag'), kbHint=$('kbHint');
+  var reduce=window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+  /* per-app config */
+  var APPS={
+    chrome:  {focusMsg:'focused the address bar', ph:'Search or type URL',       sug:['news','maps','weather']},
+    spotify: {focusMsg:'focused Spotify search',   ph:'What do you want to play?', sug:['Playlists','Artists','Podcasts']},
+    whatsapp:{focusMsg:'focused the message box',   ph:'Message',                   sug:['On my way 🚗','5 min','👍']}
+  };
+  var state={app:'chrome', mode:'widget', typed:{chrome:'',spotify:'',whatsapp:''}};
+
+  /* build keyboard */
+  var rows=[['q','w','e','r','t','y','u','i','o','p'],['a','s','d','f','g','h','j','k','l'],['⇧','z','x','c','v','b','n','m','⌫'],['123','space','⏎']];
+  $('keys').innerHTML=rows.map(function(r,i){
+    return '<div class="krow'+(i===1?' indent':'')+'">'+r.map(function(k){
+      var cls='key',lab=k;
+      if(k==='space'){cls+=' space';lab='space';}
+      else if(k==='⏎'){cls+=' wide act';}
+      else if(k==='123'||k==='⇧'||k==='⌫'){cls+=' wide';}
+      return '<div class="'+cls+'" data-k="'+k+'">'+lab+'</div>';
+    }).join('')+'</div>';
+  }).join('');
+  var keysEl=$('keys');
+
+  /* geometry */
+  var peek=0, expanded=0, travel=0;
+  function gap(){return state.mode==='widget'?11:0;}
+  function measure(){
+    var field=sheet.querySelector('.field');
+    peek = field.offsetTop + field.offsetHeight + 8;
+    expanded = sheet.offsetHeight;
+    travel = Math.max(1, expanded - peek);
+    render();
+  }
+
+  /* engine state */
+  var open=0, vel=0, target=0, springing=false, dragging=false, focusArmed=false;
+
+  function clamp(v,a,b){return v<a?a:(v>b?b:v);}
+
+  function activeHost(){return stage.querySelector('.host.on');}
+  function targetField(){var h=activeHost(); return h?h.querySelector('.tfield'):null;}
+  function scrollArea(){var h=activeHost(); return h?h.querySelector('.hscroll, .thread'):null;}
+
+  function render(){
+    var vis=clamp(open,-.05,1.06);
+    var ty=(1-vis)*travel;
+    sheet.style.transform='translate3d(0,'+ty+'px,0)';
+
+    var kbFromBottom = gap() + peek + clamp(open,0,1)*travel;
+    // whatsapp compose bar rides just above the keyboard
+    var comp=document.getElementById('waCompose');
+    if(comp) comp.style.bottom = kbFromBottom+'px';
+    // scrollable hosts get bottom inset so content clears the keyboard
+    var sc=scrollArea();
+    if(sc && !sc.classList.contains('thread')) sc.style.paddingBottom = (kbFromBottom+14)+'px';
+    var thread=document.getElementById('waThread');
+    if(thread) thread.style.paddingBottom = (state.app==='whatsapp'? 14 : 14)+'px';
+
+    var kv=clamp((open-0.06)/0.5,0,1);
+    keysEl.style.opacity=kv;
+    keysEl.previousElementSibling.style.opacity=kv;
+
+    // auto-focus the host field as the keyboard rises
+    var tf=targetField();
+    if(tf){
+      if(open>0.08 && !tf.classList.contains('focused')){
+        tf.classList.add('focused');
+        if(!focusArmed){ flashToast('▸ '+APPS[state.app].focusMsg); focusArmed=true; }
+      } else if(open<0.04 && tf.classList.contains('focused')){
+        tf.classList.remove('focused'); focusArmed=false;
+      }
+    }
+
+    tOpen.textContent=Math.round(clamp(open,0,1)*100);
+    tVel.textContent=(vel>=0?'+':'')+vel.toFixed(1);
+    tState.textContent = dragging?'dragging ▸ 1:1':(springing?'settling':(open>0.5?'open · typing live':'closed'));
+  }
+
+  /* spring settle */
+  var last=0;
+  function tick(ts){
+    if(!springing)return;
+    if(!last)last=ts;
+    var dt=Math.min(0.032,(ts-last)/1000); last=ts;
+    var k=reduce?320:200, d=reduce?34:23;
+    vel += (-k*(open-target)-d*vel)*dt;
+    open += vel*dt;
+    if(Math.abs(open-target)<0.001 && Math.abs(vel)<0.02){open=target;vel=0;springing=false;last=0;render();return;}
+    render(); requestAnimationFrame(tick);
+  }
+  function settleTo(t,v0){target=t; if(typeof v0==='number')vel=v0; if(!springing){springing=true;last=0;requestAnimationFrame(tick);}}
+
+  /* drag */
+  var startY=0,startOpen=0,moved=0,downT=0,tracking=false,vy=0,vt=0,vLastY=0;
+  sheet.addEventListener('pointerdown',function(e){
+    if(e.target.closest('.key'))return;
+    dragging=true;tracking=true;springing=false;
+    startY=e.clientY;startOpen=open;moved=0;downT=performance.now();vLastY=e.clientY;vt=downT;vy=0;
+    sheet.classList.add('dragging','armed');
+    try{sheet.setPointerCapture(e.pointerId);}catch(_){}
+    render();
+  });
+  sheet.addEventListener('pointermove',function(e){
+    if(!tracking)return;
+    var dy=e.clientY-startY; moved=Math.max(moved,Math.abs(dy));
+    var o=startOpen - dy/travel;
+    open = o>1?1+(o-1)*0.35 : (o<0?o*0.4:o);
+    var now=performance.now(); if(now>vt){vy=(vLastY-e.clientY)/(now-vt);vLastY=e.clientY;vt=now;}
+    render(); e.preventDefault();
+  });
+  function up(){
+    if(!tracking)return;
+    tracking=false;dragging=false;sheet.classList.remove('dragging');
+    var dt=performance.now()-downT, velOpen=vy*1000/travel; vel=velOpen;
+    if(moved<8 && dt<300){ settleTo(open<0.5?1:1, open<0.5?2.4:0); sheet.classList.remove('armed'); render(); return; }
+    var t = velOpen>2.2?1 : (velOpen<-2.2?0 : (open>0.42?1:0));
+    settleTo(t,velOpen); if(t===0) sheet.classList.remove('armed'); render();
+  }
+  sheet.addEventListener('pointerup',up);
+  sheet.addEventListener('pointercancel',up);
+
+  /* keys -> type into the focused host field */
+  function fieldQ(){var tf=targetField();return tf?tf.querySelector('.q'):null;}
+  function renderTyped(){
+    var q=fieldQ(); if(!q)return;
+    var t=state.typed[state.app];
+    if(t.length){ q.innerHTML = escapeHtml(t)+'<span class="caret"></span>'; }
+    else { q.innerHTML = '<span class="ph">'+APPS[state.app].ph+'</span>'; }
+  }
+  function escapeHtml(s){return s.replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  keysEl.addEventListener('pointerdown',function(e){
+    var key=e.target.closest('.key'); if(!key)return; e.stopPropagation();
+    key.classList.add('press');
+    if(open<0.5) settleTo(1,1.5);           // typing lifts it fully
+    var k=key.getAttribute('data-k'), t=state.typed[state.app];
+    if(k==='⌫') t=t.slice(0,-1);
+    else if(k==='space') t+=' ';
+    else if(k==='⏎'){ if(state.app==='whatsapp'&&t.trim()) sendWa(t); t=''; }
+    else if(k==='⇧'||k==='123'){}
+    else t+=k;
+    state.typed[state.app]=t; renderTyped();
+    if(navigator.vibrate)try{navigator.vibrate(4);}catch(_){}
+  });
+  keysEl.addEventListener('pointerup',function(e){var key=e.target.closest('.key'); if(key)setTimeout(function(){key.classList.remove('press');},60);});
+
+  function sendWa(text){
+    var thread=document.getElementById('waThread'); if(!thread)return;
+    var b=document.createElement('div'); b.className='b out';
+    b.innerHTML=escapeHtml(text)+'<span class="tt">now ✓✓</span>';
+    thread.appendChild(b); thread.scrollTop=thread.scrollHeight;
+  }
+
+  /* auto-hide on scroll */
+  var lastScroll={}, toastT=0;
+  function wireScroll(){
+    stage.querySelectorAll('.hscroll, .thread').forEach(function(el){
+      if(el.__wired)return; el.__wired=true; lastScroll[el.className]=0;
+      el.addEventListener('scroll',function(){
+        var y=el.scrollTop, prev=el.__last||0; el.__last=y;
+        if(open>0.15 && y>prev+4){ flashToast('↓ tucked away on scroll'); settleTo(0,-3.2); sheet.classList.remove('armed'); }
+      },{passive:true});
+    });
+  }
+  function flashToast(msg){
+    toast.textContent=msg; toast.style.bottom=(gap()+peek+16)+'px';
+    toast.classList.add('show'); clearTimeout(toastT);
+    toastT=setTimeout(function(){toast.classList.remove('show');},1400);
+  }
+
+  /* switches */
+  $('appSeg').addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b)return;
+    state.app=b.dataset.app;
+    [].forEach.call(this.querySelectorAll('button'),function(x){x.setAttribute('aria-pressed', x===b);});
+    stage.querySelectorAll('.host').forEach(function(h){h.classList.toggle('on', h.dataset.app===state.app);});
+    // reset focus/open for the new app
+    open=0;vel=0;springing=false;focusArmed=false;
+    stage.querySelectorAll('.tfield').forEach(function(f){f.classList.remove('focused');});
+    var s=APPS[state.app].sug; $('sug0').textContent=s[0];$('sug1').textContent=s[1];$('sug2').textContent=s[2];
+    renderTyped(); wireScroll(); requestAnimationFrame(function(){requestAnimationFrame(measure);});
+  });
+  $('modeSeg').addEventListener('click',function(e){
+    var b=e.target.closest('button'); if(!b)return;
+    state.mode=b.dataset.mode;
+    [].forEach.call(this.querySelectorAll('button'),function(x){x.setAttribute('aria-pressed', x===b);});
+    sheet.classList.toggle('widget', state.mode==='widget');
+    sheet.classList.toggle('docked', state.mode==='docked');
+    kbTag.textContent = state.mode.toUpperCase();
+    requestAnimationFrame(function(){requestAnimationFrame(measure);});
+  });
+
+  /* boot */
+  window.addEventListener('resize',measure);
+  wireScroll(); renderTyped();
+  requestAnimationFrame(function(){requestAnimationFrame(measure);});
+})();
+</script>
+
+</body>
+</html>

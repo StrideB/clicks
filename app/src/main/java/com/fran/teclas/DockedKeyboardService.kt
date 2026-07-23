@@ -46,6 +46,23 @@ class DockedKeyboardService : Service() {
     private var themeDotsView: LinearLayout? = null
     private val hapticEngine by lazy { com.fran.teclas.keyboard.CustomHapticEngine(this) }
 
+    // ── Interactive slide-to-reveal for the docked overlay (flag-gated) ──
+    // Collapsed = a thin search-bar handle peeking at the screen bottom; drag it up to grow the
+    // overlay window into the full keyboard, drag the grab pill down to tuck it back. The window
+    // resizes in one piece so the gesture stays in a single window; the app above stays usable when
+    // collapsed. All paths gate on slideEnabled() so classic docked mode is untouched when off.
+    private var slideExpanded = false
+    private var slideHeightPx = 0
+    private var slideDragging = false
+    private var slideDownRawY = 0f
+    private var slideDragStartHeight = 0
+    private var slideLastRawY = 0f
+    private var slideLastT = 0L
+    private var slideVelPxPerMs = 0f
+    private var slideHandleView: View? = null
+    private var slideCollapseGrabView: View? = null
+    private var slideSettleAnim: android.animation.ValueAnimator? = null
+
     // ── Text intelligence for typing INTO third-party apps (this overlay was a raw key-sender). ──
     @Volatile private var predictor: com.fran.teclas.keyboard.PredictionEngine? = null
     private val fgDraft = StringBuilder()                 // mirrors what we've injected into the app's field
@@ -143,6 +160,26 @@ class DockedKeyboardService : Service() {
         windowManager?.addView(root, lp)
         overlayParams = lp
         deckView = root
+        // Slide handle (peek) + collapse grab live in the same window as the deck, so a drag never
+        // crosses a window boundary. Built regardless of the flag (cheap, hidden) so toggling the
+        // pref on takes effect without a rebuild; behaviour is gated by slideEnabled().
+        slideHandleView = buildSlideHandle().also { handle ->
+            root.addView(handle, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, slidePeekHeight(), Gravity.BOTTOM).apply {
+                leftMargin = dp(8); rightMargin = dp(8); bottomMargin = dp(6)
+            })
+        }
+        slideCollapseGrabView = buildSlideCollapseGrab().also { grab ->
+            root.addView(grab, FrameLayout.LayoutParams(dp(72), dp(18), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(6)
+            })
+        }
+        if (slideEnabled()) {
+            slideExpanded = false
+            driveDockedSlide(slidePeekHeight())
+        } else {
+            slideHandleView?.visibility = View.GONE
+            slideCollapseGrabView?.visibility = View.GONE
+        }
         updateSwapLayout(animate = false)
     }
 
@@ -399,6 +436,154 @@ class DockedKeyboardService : Service() {
             baseFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         }
         runCatching { windowManager?.updateViewLayout(view, params) }
+        if (visible && slideEnabled()) {
+            driveDockedSlide(if (slideExpanded) slideFullHeight() else slidePeekHeight())
+        }
+        // Auto-focus (opt-in): focus the foreground field (or open its search) via the accessibility
+        // service so you can just start typing without reaching up to tap it. In classic docked mode
+        // this fires when the deck appears; with slide on it fires on expand (see finishDockedSlide).
+        if (visible && slideAutoFocusEnabled() && !slideEnabled()) {
+            sendBroadcast(Intent(InputInjectionService.ACTION_PREPARE_FIELD).apply { setPackage(packageName) })
+        }
+    }
+
+    private fun slideAutoFocusEnabled(): Boolean =
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("slide_keyboard_autofocus", false)
+
+    private fun slideEnabled(): Boolean =
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean("slide_keyboard_interactive", false)
+
+    private fun slidePeekHeight(): Int = dp(56)
+    private fun slideFullHeight(): Int = overlayKeyboardHeight()
+
+    private fun buildSlideHandle(): View {
+        val dark = selectedNeuTokens().mode == NeuMode.DARK
+        return FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(if (dark) 0xFF181B21.toInt() else 0xFFE9ECF1.toInt())
+                setStroke(dp(1), if (dark) 0x22FFFFFF else 0x33000000)
+            }
+            addView(TextView(context).apply {
+                text = "Search  ·  slide up to type"
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setTextColor(if (dark) 0xFF9AA1AB.toInt() else 0xFF6F7884.toInt())
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(View(context).apply {
+                background = GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(goKeyColor()) }
+            }, FrameLayout.LayoutParams(dp(34), dp(4), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(5) })
+            isClickable = true
+            setOnTouchListener { _, e -> if (slideEnabled()) handleDockedSlideDrag(e) else false }
+        }
+    }
+
+    private fun buildSlideCollapseGrab(): View {
+        return View(this).apply {
+            background = GradientDrawable().apply { cornerRadius = dp(9).toFloat(); setColor(goKeyColor()) }
+            alpha = 0f
+            visibility = View.GONE
+            isClickable = true
+            setOnTouchListener { _, e -> if (slideEnabled()) handleDockedSlideDrag(e) else false }
+        }
+    }
+
+    private fun driveDockedSlide(h: Int) {
+        val peek = slidePeekHeight()
+        val full = slideFullHeight()
+        val clamped = h.coerceIn(peek, full)
+        slideHeightPx = clamped
+        val params = overlayParams ?: return
+        val root = deckView ?: return
+        if (params.height != clamped) {
+            params.height = clamped
+            runCatching { windowManager?.updateViewLayout(root, params) }
+        }
+        val p = (clamped - peek).toFloat() / (full - peek).coerceAtLeast(1)
+        slideHandleView?.apply {
+            val a = (1f - p * 2f).coerceIn(0f, 1f)
+            alpha = a
+            visibility = if (a <= 0.02f) View.GONE else View.VISIBLE
+        }
+        slideCollapseGrabView?.apply {
+            val a = ((p - 0.5f) * 2.4f).coerceIn(0f, 1f)
+            alpha = a
+            visibility = if (a <= 0.02f) View.GONE else View.VISIBLE
+        }
+    }
+
+    private fun handleDockedSlideDrag(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                slideSettleAnim?.cancel(); slideSettleAnim = null
+                slideDragging = true
+                slideDownRawY = event.rawY
+                slideDragStartHeight = slideHeightPx.coerceIn(slidePeekHeight(), slideFullHeight())
+                slideLastRawY = event.rawY
+                slideLastT = android.os.SystemClock.uptimeMillis()
+                slideVelPxPerMs = 0f
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!slideDragging) return true
+                val dy = event.rawY - slideDownRawY
+                driveDockedSlide((slideDragStartHeight - dy).toInt())   // drag up (dy<0) grows the window
+                val now = android.os.SystemClock.uptimeMillis()
+                val dt = (now - slideLastT).coerceAtLeast(1L)
+                slideVelPxPerMs = -(event.rawY - slideLastRawY) / dt
+                slideLastRawY = event.rawY
+                slideLastT = now
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (slideDragging) {
+                    slideDragging = false
+                    val mid = (slidePeekHeight() + slideFullHeight()) / 2
+                    val expand = when {
+                        slideVelPxPerMs > 0.6f -> true
+                        slideVelPxPerMs < -0.6f -> false
+                        else -> slideHeightPx > mid
+                    }
+                    settleDockedSlide(expand)
+                }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (slideDragging) {
+                    slideDragging = false
+                    settleDockedSlide(slideHeightPx > (slidePeekHeight() + slideFullHeight()) / 2)
+                }
+                return true
+            }
+        }
+        return true
+    }
+
+    private fun settleDockedSlide(expand: Boolean) {
+        slideSettleAnim?.cancel()
+        val from = slideHeightPx.coerceIn(slidePeekHeight(), slideFullHeight())
+        val to = if (expand) slideFullHeight() else slidePeekHeight()
+        if (from == to) { finishDockedSlide(expand); return }
+        slideSettleAnim = android.animation.ValueAnimator.ofInt(from, to).apply {
+            duration = 240L
+            interpolator = android.view.animation.DecelerateInterpolator(1.7f)
+            addUpdateListener { driveDockedSlide(it.animatedValue as Int) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) { finishDockedSlide(expand) }
+            })
+            start()
+        }
+    }
+
+    private fun finishDockedSlide(expand: Boolean) {
+        slideSettleAnim = null
+        slideExpanded = expand
+        driveDockedSlide(if (expand) slideFullHeight() else slidePeekHeight())
+        if (expand && slideAutoFocusEnabled()) {
+            sendBroadcast(Intent(InputInjectionService.ACTION_PREPARE_FIELD).apply { setPackage(packageName) })
+        }
+        runCatching { deckView?.performHapticFeedback(HapticFeedbackConstants.CONFIRM) }
     }
 
     private fun keyRow(labels: List<String>, rowIndex: Int): LinearLayout {
