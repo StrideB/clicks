@@ -567,6 +567,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetKeyboardDragLastRawY = 0f
     private var widgetKeyboardDragLastT = 0L
     private var widgetKeyboardDragVel = 0f
+    private var widgetKeyboardDragEngaged = false
     private var widgetKeyboardSettleAnimator: ValueAnimator? = null
     private var widgetKeyboardCollapseGrabView: View? = null
     private var pendingWidgetKeyboardPopIn = false
@@ -7706,6 +7707,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    // Claim the slide gesture WITHOUT dispatching a synthetic ACTION_CANCEL into the view tree.
+    // reserveKeyboardSlideGesture() does that cancel to abort launcher swipes, but here the touch
+    // starts on our own handle/grab view, so that cancel re-enters this handler and kills (or
+    // crashes) the drag before it starts. The gesture lock alone keeps launcher swipes off the moves.
+    private fun claimWidgetKeyboardSlideGesture() {
+        widgetKeyboardSlideGestureActive = true
+        gestureLockUntilMs = android.os.SystemClock.uptimeMillis() + 600L
+        cancelWallpaperLongPress()
+        librarySwipeTriggered = false
+        librarySwipeBlockedByWidget = false
+        libraryDragActive = false
+        spaceBoardDragActive = false
+        homeLeftDragActive = false
+        paneSwipeTriggered = false
+    }
+
     private fun handleWidgetKeyboardSlideDrag(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -7715,19 +7732,30 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 widgetKeyboardHostHeightAnimator?.cancel()
                 widgetKeyboardSliderAnimating = false
                 widgetKeyboardDragActive = true
+                widgetKeyboardDragEngaged = false
                 widgetKeyboardDragStartRawY = event.rawY
                 widgetKeyboardDragStartProgress = if (widgetKeyboardHidden) 0f else 1f
                 widgetKeyboardDragLastRawY = event.rawY
                 widgetKeyboardDragLastT = android.os.SystemClock.uptimeMillis()
                 widgetKeyboardDragVel = 0f
-                reserveKeyboardSlideGesture(event)
-                driveWidgetKeyboardSlide(widgetKeyboardDragStartProgress)
+                claimWidgetKeyboardSlideGesture()
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!widgetKeyboardDragActive) return true
-                val dy = event.rawY - widgetKeyboardDragStartRawY
-                driveWidgetKeyboardSlide(widgetKeyboardDragStartProgress - dy / widgetKeyboardTravelPx())
+                // Engagement threshold: a tap, or the tiny jitter of fast typing, must NOT move the
+                // sheet. Only start driving once the finger has clearly travelled vertically.
+                if (!widgetKeyboardDragEngaged) {
+                    if (abs(event.rawY - widgetKeyboardDragStartRawY) < dp(14).toFloat()) return true
+                    widgetKeyboardDragEngaged = true
+                    // Rebase to the engage point so the sheet doesn't jump by the threshold distance.
+                    widgetKeyboardDragStartRawY = event.rawY
+                    widgetKeyboardDragStartProgress = if (widgetKeyboardHidden) 0f else 1f
+                    widgetKeyboardDragLastRawY = event.rawY
+                    widgetKeyboardDragLastT = android.os.SystemClock.uptimeMillis()
+                    return true
+                }
+                driveWidgetKeyboardSlide(widgetKeyboardDragStartProgress - (event.rawY - widgetKeyboardDragStartRawY) / widgetKeyboardTravelPx())
                 val now = android.os.SystemClock.uptimeMillis()
                 val dt = (now - widgetKeyboardDragLastT).coerceAtLeast(1L)
                 widgetKeyboardDragVel = -(event.rawY - widgetKeyboardDragLastRawY) / dt / widgetKeyboardTravelPx()
@@ -7736,26 +7764,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (widgetKeyboardDragActive) {
-                    widgetKeyboardDragActive = false
-                    widgetKeyboardSlideGestureActive = false
-                    val moved = abs(event.rawY - widgetKeyboardDragStartRawY) > dp(6).toFloat()
-                    val shown = when {
-                        widgetKeyboardDragVel > 0.0016f -> true
-                        widgetKeyboardDragVel < -0.0016f -> false
-                        !moved -> true
-                        else -> widgetKeyboardSlideProgress > 0.4f
+                val wasActive = widgetKeyboardDragActive
+                val engaged = widgetKeyboardDragEngaged
+                widgetKeyboardDragActive = false
+                widgetKeyboardDragEngaged = false
+                widgetKeyboardSlideGestureActive = false
+                if (wasActive) {
+                    if (engaged) {
+                        val shown = when {
+                            widgetKeyboardDragVel > 0.0016f -> true
+                            widgetKeyboardDragVel < -0.0016f -> false
+                            else -> widgetKeyboardSlideProgress > 0.4f
+                        }
+                        settleWidgetKeyboardSlide(shown, widgetKeyboardDragVel)
+                    } else if (widgetKeyboardHidden) {
+                        // A clean tap on the collapsed search bar reveals the keyboard.
+                        settleWidgetKeyboardSlide(true, 0f)
                     }
-                    settleWidgetKeyboardSlide(shown, widgetKeyboardDragVel)
+                    // A tap while already shown does nothing — no geometry reset, no "ghost" jump.
                 }
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (widgetKeyboardDragActive) {
-                    widgetKeyboardDragActive = false
-                    widgetKeyboardSlideGestureActive = false
-                    settleWidgetKeyboardSlide(widgetKeyboardSlideProgress > 0.5f, 0f)
-                }
+                val engaged = widgetKeyboardDragEngaged
+                widgetKeyboardDragActive = false
+                widgetKeyboardDragEngaged = false
+                widgetKeyboardSlideGestureActive = false
+                if (engaged) settleWidgetKeyboardSlide(widgetKeyboardSlideProgress > 0.5f, 0f)
                 return true
             }
         }

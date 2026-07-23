@@ -54,6 +54,7 @@ class DockedKeyboardService : Service() {
     private var slideExpanded = false
     private var slideHeightPx = 0
     private var slideDragging = false
+    private var slideDragEngaged = false
     private var slideDownRawY = 0f
     private var slideDragStartHeight = 0
     private var slideLastRawY = 0f
@@ -527,8 +528,17 @@ class DockedKeyboardService : Service() {
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!slideDragging) return true
-                val dy = event.rawY - slideDownRawY
-                driveDockedSlide((slideDragStartHeight - dy).toInt())   // drag up (dy<0) grows the window
+                if (!slideDragEngaged) {
+                    // Threshold so a tap / stray touch while typing never resizes the overlay.
+                    if (kotlin.math.abs(event.rawY - slideDownRawY) < dp(14).toFloat()) return true
+                    slideDragEngaged = true
+                    slideDownRawY = event.rawY
+                    slideDragStartHeight = slideHeightPx.coerceIn(slidePeekHeight(), slideFullHeight())
+                    slideLastRawY = event.rawY
+                    slideLastT = android.os.SystemClock.uptimeMillis()
+                    return true
+                }
+                driveDockedSlide((slideDragStartHeight - (event.rawY - slideDownRawY)).toInt())   // drag up grows the window
                 val now = android.os.SystemClock.uptimeMillis()
                 val dt = (now - slideLastT).coerceAtLeast(1L)
                 slideVelPxPerMs = -(event.rawY - slideLastRawY) / dt
@@ -537,8 +547,10 @@ class DockedKeyboardService : Service() {
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (slideDragging) {
-                    slideDragging = false
+                val engaged = slideDragEngaged
+                slideDragging = false
+                slideDragEngaged = false
+                if (engaged) {
                     val mid = (slidePeekHeight() + slideFullHeight()) / 2
                     val expand = when {
                         slideVelPxPerMs > 0.6f -> true
@@ -546,14 +558,17 @@ class DockedKeyboardService : Service() {
                         else -> slideHeightPx > mid
                     }
                     settleDockedSlide(expand)
+                } else if (!slideExpanded) {
+                    // Tap the collapsed search handle → reveal the keyboard.
+                    settleDockedSlide(true)
                 }
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (slideDragging) {
-                    slideDragging = false
-                    settleDockedSlide(slideHeightPx > (slidePeekHeight() + slideFullHeight()) / 2)
-                }
+                val engaged = slideDragEngaged
+                slideDragging = false
+                slideDragEngaged = false
+                if (engaged) settleDockedSlide(slideHeightPx > (slidePeekHeight() + slideFullHeight()) / 2)
                 return true
             }
         }
