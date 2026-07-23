@@ -118,3 +118,48 @@ for a directly-installed APK like this one.
 `open ∈ [0,1]` + spring model drives the **`DockedKeyboardService` overlay** for
 the over-Chrome version, and the existing **`InputInjectionService`** is what lets
 you start typing without reaching up to tap the field.
+
+## `third-party.html` — the over-other-apps mock
+
+`third-party.html` is a second, self-contained mock that puts the slide keyboard
+**over generic stand-ins for Chrome, Spotify, and WhatsApp**, in both
+placements:
+
+- **App switcher** (Chrome / Spotify / WhatsApp) — swaps the host backdrop and
+  its focus target (address bar / search field / message box).
+- **Mode switcher** — **Widget** (floating rounded card, side margins, sits above
+  the nav bar) vs **Docked** (full-bleed, pinned to the bottom edge). Same slide,
+  different framing — mirroring `KEYBOARD_PLACEMENT_WIDGET` vs the docked overlay.
+- **Auto-focus** — as the keyboard rises past ~8%, the host app's field lights up
+  with a focus ring and a "▸ focused the address bar" toast, and the keys type
+  straight into it. That's the visual stand-in for the accessibility
+  `ACTION_FOCUS` → `ACTION_SET_TEXT` path, i.e. "just start typing without
+  tapping the field."
+- WhatsApp's compose bar **rides up with the keyboard**; Chrome/Spotify content
+  gets a bottom inset and **auto-hides on scroll**.
+
+> It's a UI mock of *our* keyboard over generic representations of those apps —
+> no real logos, no login/credential fields, not affiliated with them.
+
+## Shipping it for real, behind a flag
+
+Plan for the on/off flag so it can be tested against real third-party apps
+without disturbing existing behaviour:
+
+1. **Pref + gate.** Add a `SLIDE_KEYBOARD_OVERLAY_PREF` boolean (default off) next
+   to the existing keyboard prefs. A single `slideKeyboardEnabled()` gate guards
+   every new code path, so flipping it off restores today's behaviour exactly.
+2. **Widget surface first (lowest risk).** Turn the existing release-only
+   `showWidgetKeyboardSlider()` / `hideWidgetKeyboardSlider()` animation into the
+   interactive per-frame drive + `SpringAnimation`, gated by the flag. This
+   touches only the widget-mode slider already in `MainActivity`.
+3. **Docked-over-apps surface.** Apply the same `open ∈ [0,1]` driver to the
+   `DockedKeyboardService` overlay window (drag the overlay height/translation),
+   and add the auto-focus rule via `InputInjectionService.findForegroundAppEditable()`.
+   Gate it behind the same flag plus the existing accessibility/overlay permission
+   checks.
+4. **Auto-focus policy toggle.** A sub-option (also default off) for "focus the
+   foreground field automatically on reveal" vs "reveal only, focus on tap" — so
+   the ~90% auto-focus behaviour is opt-in while it's being tested across apps.
+
+Each step is independently shippable and reversible via the flag.
