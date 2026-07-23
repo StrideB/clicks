@@ -8,6 +8,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
 import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -18,33 +19,37 @@ import kotlin.coroutines.resume
  * On-device foreground-subject extraction for the depth wallpaper. Runs ML Kit Subject
  * Segmentation ONCE per wallpaper — when the image is set or first decoded — and caches the
  * transparent cutout PNG to disk keyed by the wallpaper signature. After that, showing depth is
- * just compositing two cached bitmaps: no model, no sensors, no per-frame work. This is the
- * deliberate opposite of the parallax motion we removed for battery.
+ * just compositing two cached bitmaps: no model, no sensors, no per-frame work.
  *
- * Everything is wrapped so a device without the segmentation module (it downloads on demand via
- * Play services) simply yields no cutout — the launcher falls back to the flat wallpaper.
+ * The segmentation model ships as an optional Play Services module that downloads on first use.
+ * Until it lands, process() fails — so a transient failure must RETRY, not mark the wallpaper
+ * permanently subject-less. "Known empty" is reserved for the case where the segmenter ran fine
+ * and genuinely found no foreground.
  */
 object WallpaperDepth {
     private const val TAG = "TeclasWallpaperDepth"
     private const val CACHE_DIR = "wallpaper_depth"
+    private const val MAX_ATTEMPTS = 6          // ~ up to 6 tries while the model downloads
+    private const val RETRY_DELAY_MS = 2500L
 
-    // In-process memo so repeated render passes for the same wallpaper never touch disk.
     @Volatile private var memoKey: String? = null
     @Volatile private var memoCutout: Bitmap? = null
-
-    /** True once a segmentation attempt for [signature] came back empty (no subject / no module),
-     *  so the render path stops re-kicking a job that will not produce a cutout. */
     @Volatile private var emptyKey: String? = null
 
+    private sealed interface SegOutcome {
+        data class Done(val bitmap: Bitmap?) : SegOutcome   // segmenter ran; bitmap may be null (no subject)
+        data object Retry : SegOutcome                       // transient (model downloading / error) — try again
+    }
+
     fun cachedCutout(signature: String): Bitmap? =
-        if (memoKey == signature) memoCutout else null
+        if (memoKey == signature) memoCutout?.takeUnless { it.isRecycled } else null
 
     fun knownEmpty(signature: String): Boolean = emptyKey == signature
 
     /**
-     * Returns the subject cutout for [bitmap], from memory → disk → a fresh segmentation pass.
-     * Null when there is no confident subject or the segmenter is unavailable. Safe to call off
-     * the main thread; the ML Kit call itself is async and awaited here.
+     * Returns the subject cutout for [bitmap], from memory → disk → fresh segmentation (retried
+     * while the model downloads). Null when there is genuinely no subject or the segmenter never
+     * became available. Safe to call off the main thread.
      */
     suspend fun cutoutFor(context: Context, bitmap: Bitmap, signature: String): Bitmap? {
         memoCutout?.let { if (memoKey == signature && !it.isRecycled) return it }
@@ -53,49 +58,73 @@ object WallpaperDepth {
         if (file.exists()) {
             val cached = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
             if (cached != null) {
+                Log.i(TAG, "cutout: disk cache hit ${cached.width}x${cached.height}")
                 memoKey = signature; memoCutout = cached
                 return cached
             }
         }
 
-        val cutout = runCatching { segment(bitmap) }
-            .onFailure { Log.w(TAG, "segmentation failed", it) }
-            .getOrNull()
-
-        if (cutout == null) {
-            emptyKey = signature
-            return null
+        Log.i(TAG, "cutout: segmenting ${bitmap.width}x${bitmap.height} …")
+        var attempt = 0
+        while (attempt < MAX_ATTEMPTS) {
+            attempt++
+            val outcome: SegOutcome = runCatching { segment(bitmap) }
+                .onFailure { Log.w(TAG, "segment attempt $attempt threw", it) }
+                .getOrElse { SegOutcome.Retry }
+            when (outcome) {
+                is SegOutcome.Done -> {
+                    val cutout = outcome.bitmap
+                    if (cutout == null) {
+                        Log.i(TAG, "segment ran, no subject found — marking empty")
+                        emptyKey = signature
+                        return null
+                    }
+                    Log.i(TAG, "segment ok: cutout ${cutout.width}x${cutout.height} (attempt $attempt)")
+                    runCatching {
+                        file.parentFile?.mkdirs()
+                        file.outputStream().use { cutout.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    }.onFailure { Log.w(TAG, "cutout cache write failed", it) }
+                    memoKey = signature; memoCutout = cutout; emptyKey = null
+                    return cutout
+                }
+                SegOutcome.Retry -> {
+                    Log.i(TAG, "segment attempt $attempt: model not ready, retrying in ${RETRY_DELAY_MS}ms")
+                    delay(RETRY_DELAY_MS)
+                }
+            }
         }
-        // Persist for next launch; a write failure is non-fatal (we still have it in memory).
-        runCatching {
-            file.parentFile?.mkdirs()
-            file.outputStream().use { cutout.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        }.onFailure { Log.w(TAG, "cutout cache write failed", it) }
-        memoKey = signature; memoCutout = cutout
-        emptyKey = null
-        return cutout
+        // Ran out of attempts (model still downloading). Do NOT mark empty — a later toggle/resume
+        // will re-kick and by then the model is usually present.
+        Log.w(TAG, "segment: model never became available after $MAX_ATTEMPTS attempts")
+        return null
     }
 
-    /** Drop cached cutouts (memory only) — called when depth is turned off so stale bitmaps free. */
     fun clearMemory() {
         memoKey = null
         memoCutout = null
         emptyKey = null
     }
 
-    private suspend fun segment(bitmap: Bitmap): Bitmap? = withContext(Dispatchers.Default) {
+    private suspend fun segment(bitmap: Bitmap): SegOutcome = withContext(Dispatchers.Default) {
         val options = SubjectSegmenterOptions.Builder()
             .enableForegroundBitmap()
             .build()
         val segmenter = SubjectSegmentation.getClient(options)
         try {
             val image = InputImage.fromBitmap(bitmap, 0)
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<SegOutcome> { cont ->
                 segmenter.process(image)
-                    .addOnSuccessListener { result -> cont.resume(result.foregroundBitmap) }
-                    .addOnFailureListener { e -> Log.w(TAG, "process failed", e); cont.resume(null) }
+                    .addOnSuccessListener { result -> cont.resume(SegOutcome.Done(result.foregroundBitmap)) }
+                    .addOnFailureListener { e ->
+                        // A missing/loading module or a Play-services hiccup is transient → retry.
+                        Log.w(TAG, "process failed (will retry): ${e.message}")
+                        cont.resume(SegOutcome.Retry)
+                    }
                 cont.invokeOnCancellation { runCatching { segmenter.close() } }
             }
+        } catch (t: Throwable) {
+            Log.w(TAG, "segment setup failed (will retry)", t)
+            SegOutcome.Retry
         } finally {
             runCatching { segmenter.close() }
         }
