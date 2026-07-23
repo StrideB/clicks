@@ -53,11 +53,32 @@ private fun goKeyColorOrDefault(ctx: Context, default: Int): Int =
     ctx.getSharedPreferences("teclas", Context.MODE_PRIVATE).getInt("go_key_color", default)
 
 object KbThemes {
+    const val THREE_D_DEPTH_ID = "3ddepth"
+    const val THREE_D_GLASS_ID = "3dglass"
+
     val SANS = KbTheme("sans", "Sans", boxed = true, radiusDp = 7, shadow = true,
         light = KbPalette(bg = 0xFFECEFF3.toInt(), key = 0xFFFFFFFF.toInt(),
             keyText = 0xFF20242B.toInt(), functionKey = 0xFFDFE3E8.toInt(), accent = 0xFF1A73E8.toInt()),
         dark = KbPalette(bg = 0xFF202124.toInt(), key = 0xFF3C4043.toInt(),
             keyText = 0xFFE8EAED.toInt(), functionKey = 0xFF2A2C2F.toInt(), accent = 0xFF8AB4F8.toInt()))
+
+    val THREE_D_DEPTH = KbTheme(THREE_D_DEPTH_ID, "3D Depth", boxed = true, radiusDp = 11, shadow = true,
+        accentIsGoKeyColor = true,
+        light = KbPalette(bg = 0xFFE5E9F0.toInt(), bgGradEnd = 0xFFC5CEDA.toInt(),
+            key = 0xFFFBFCFF.toInt(), keyGradEnd = 0xFFDCE4EE.toInt(),
+            keyText = 0xFF182230.toInt(), functionKey = 0xFFD0D8E4.toInt(), accent = 0xFF4D7DFF.toInt()),
+        dark = KbPalette(bg = 0xFF171A22.toInt(), bgGradEnd = 0xFF05070A.toInt(),
+            key = 0xFF343A45.toInt(), keyGradEnd = 0xFF141820.toInt(),
+            keyText = 0xFFF2F5FA.toInt(), functionKey = 0xFF1A1F29.toInt(), accent = 0xFF7EA2FF.toInt()))
+
+    val THREE_D_GLASS = KbTheme(THREE_D_GLASS_ID, "3D Glass", boxed = true, radiusDp = 12, shadow = true,
+        accentIsGoKeyColor = true,
+        light = KbPalette(bg = 0xFFE3E8EF.toInt(), bgGradEnd = 0xFFC7D0DC.toInt(),
+            key = 0xB8FFFFFF.toInt(), keyGradEnd = 0x66DDEFFF,
+            keyText = 0xFF162033.toInt(), functionKey = 0x88FFFFFF.toInt(), accent = 0xFF6F90FF.toInt()),
+        dark = KbPalette(bg = 0xFF151821.toInt(), bgGradEnd = 0xFF07090D.toInt(),
+            key = 0x55FFFFFF, keyGradEnd = 0x227AB7FF,
+            keyText = 0xFFF8FAFF.toInt(), functionKey = 0x2EFFFFFF, accent = 0xFFAFC8FF.toInt()))
 
     val UNI = KbTheme("uni", "Uni", boxed = true, radiusDp = 8,
         light = KbPalette(bg = 0xFFF0F2F5.toInt(), key = 0xFFFFFFFF.toInt(),
@@ -193,7 +214,7 @@ object KbThemes {
         dark = KbPalette(bg = 0xFF141412.toInt(), key = 0, keyText = 0xFFE8E6E1.toInt(), functionKey = 0, accent = 0xFFE8E6E1.toInt()))
 
     val ALL: List<KbTheme> = listOf(
-        SANS, UNI, CUPER, SAND, TECLAS_GLASS, SKEUO, NEON_ARCADE, MATCHA, BUBBLEGUM,
+        SANS, THREE_D_DEPTH, THREE_D_GLASS, UNI, CUPER, SAND, TECLAS_GLASS, SKEUO, NEON_ARCADE, MATCHA, BUBBLEGUM,
         CARBON, SOLARIS, VAPORWAVE, OCEANIC, OBSIDIAN, CITRUS, TERRACOTTA, RISO_POP,
         TERMINAL, BLUEPRINT, NOIR, AURORA, SAKURA, MARKER, COSMOS, E_INK,
     )

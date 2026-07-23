@@ -26,6 +26,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -27544,6 +27545,16 @@ Question: $prompt"""
     }
 
     private fun keyIdleBackground(label: String): Drawable {
+        if (KeyboardThemeDrawables.isThreeDTheme(keyboardTheme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                keyboardTheme,
+                label,
+                pressed = false,
+                darkMode = activeNeuTokens.mode == NeuMode.DARK,
+                goColor = goKeyColor
+            )
+        }
         if (label == "enter") return themedGoKeyBackground(goKeyColor, pressed = false, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
         if (label == "123" || label == "abc") return themed123KeyBackground(pressed = false)
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
@@ -27573,6 +27584,16 @@ Question: $prompt"""
     }
 
     private fun keyPressedBackground(label: String): Drawable {
+        if (KeyboardThemeDrawables.isThreeDTheme(keyboardTheme)) {
+            return KeyboardThemeDrawables.keyLayer(
+                this,
+                keyboardTheme,
+                label,
+                pressed = true,
+                darkMode = activeNeuTokens.mode == NeuMode.DARK,
+                goColor = brighten(goKeyColor)
+            )
+        }
         if (label == "enter") return themedGoKeyBackground(brighten(goKeyColor), pressed = true, skeuo = keyboardTheme == KEYBOARD_THEME_SKEUO)
         if (label == "123" || label == "abc") return themed123KeyBackground(pressed = true)
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
@@ -27728,7 +27749,187 @@ Question: $prompt"""
         ) 1 else 2)
     }
 
+    private inner class Launcher3dGlassKeyDrawable(
+        private val label: String,
+        private val pressed: Boolean,
+        private val hInset: Int,
+        private val vInset: Int
+    ) : Drawable() {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
+        private val clipPath = Path()
+        private val face = RectF()
+        private var cachedWallpaper: Bitmap? = null
+        private var cachedKey = ""
+
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            if (b.width() <= 0 || b.height() <= 0) return
+            val dark = activeNeuTokens.mode == NeuMode.DARK
+            val radius = dp(12).toFloat()
+            val pressOffset = if (pressed) dp(2) else 0
+            val drop = if (pressed) dp(1) else dp(3)
+            face.set(
+                (b.left + hInset).toFloat(),
+                (b.top + vInset + pressOffset).toFloat(),
+                (b.right - hInset).toFloat(),
+                (b.bottom - vInset - drop).toFloat()
+            )
+            if (face.width() <= 0f || face.height() <= 0f) return
+
+            paint.shader = null
+            paint.style = Paint.Style.FILL
+            paint.color = if (dark) 0x62000000 else 0x26000000
+            canvas.drawRoundRect(
+                RectF(face.left + dp(1), face.top + if (pressed) dp(2) else dp(5), face.right - dp(1), face.bottom + drop),
+                radius,
+                radius,
+                paint
+            )
+
+            val keyView = callback as? View
+            val sampled = keyView?.let { wallpaperSampleForKey(it, face) }
+            clipPath.reset()
+            clipPath.addRoundRect(face, radius, radius, Path.Direction.CW)
+            canvas.save()
+            canvas.clipPath(clipPath)
+            if (sampled != null && !sampled.isRecycled) {
+                canvas.drawBitmap(sampled, null, face, bitmapPaint)
+            } else {
+                draw3dGlassFallbackFill(canvas, face, dark)
+            }
+            draw3dGlassFrost(canvas, face, dark)
+            canvas.restore()
+
+            paint.shader = null
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = if (dark) 0x52FFFFFF else 0x9CFFFFFF.toInt()
+            canvas.drawRoundRect(face, radius, radius, paint)
+            paint.color = if (dark) 0x22000000 else 0x1A000000
+            canvas.drawRoundRect(
+                RectF(face.left + dp(1), face.top + dp(1), face.right - dp(1), face.bottom - dp(1)),
+                radius - dp(1),
+                radius - dp(1),
+                paint
+            )
+        }
+
+        private fun wallpaperSampleForKey(keyView: View, face: RectF): Bitmap? {
+            val wallpaperView = innerWallpaperImageView ?: return null
+            val wallpaperDrawable = wallpaperView.drawable ?: return null
+            if (wallpaperView.width <= 0 || wallpaperView.height <= 0) return null
+            val keyLoc = IntArray(2)
+            val wpLoc = IntArray(2)
+            keyView.getLocationInWindow(keyLoc)
+            wallpaperView.getLocationInWindow(wpLoc)
+            val cacheKey = listOf(
+                homeWallpaperDrawableSig ?: deviceWallpaperSignature(),
+                keyLoc[0], keyLoc[1],
+                face.left.toInt(), face.top.toInt(), face.width().toInt(), face.height().toInt(),
+                wallpaperView.imageMatrix.toShortString(),
+                pressed
+            ).joinToString("|")
+            cachedWallpaper?.let { cached ->
+                if (!cached.isRecycled && cachedKey == cacheKey) return cached
+            }
+            val sampleW = (face.width() / 8f).toInt().coerceIn(8, 96)
+            val sampleH = (face.height() / 8f).toInt().coerceIn(8, 96)
+            val sample = Bitmap.createBitmap(sampleW, sampleH, Bitmap.Config.ARGB_8888)
+            val c = Canvas(sample)
+            c.scale(sampleW / face.width(), sampleH / face.height())
+            c.translate(-face.left, -face.top)
+            c.translate((wpLoc[0] - keyLoc[0]).toFloat(), (wpLoc[1] - keyLoc[1]).toFloat())
+            c.concat(wallpaperView.imageMatrix)
+            val oldBounds = Rect(wallpaperDrawable.bounds)
+            val drawW = wallpaperDrawable.intrinsicWidth.takeIf { it > 0 } ?: wallpaperView.width
+            val drawH = wallpaperDrawable.intrinsicHeight.takeIf { it > 0 } ?: wallpaperView.height
+            wallpaperDrawable.setBounds(0, 0, drawW, drawH)
+            wallpaperDrawable.draw(c)
+            wallpaperDrawable.bounds = oldBounds
+            cachedWallpaper?.recycle()
+            cachedWallpaper = sample
+            cachedKey = cacheKey
+            return sample
+        }
+
+        private fun draw3dGlassFallbackFill(canvas: Canvas, rect: RectF, dark: Boolean) {
+            paint.style = Paint.Style.FILL
+            paint.shader = LinearGradient(
+                0f,
+                rect.top,
+                0f,
+                rect.bottom,
+                if (dark) intArrayOf(0x44FFFFFF, 0x2092B6FF, 0x10000000) else intArrayOf(0xCCFFFFFF.toInt(), 0x88EAF4FF.toInt(), 0x55BED2EA),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(rect, paint)
+            paint.shader = null
+        }
+
+        private fun draw3dGlassFrost(canvas: Canvas, rect: RectF, dark: Boolean) {
+            paint.style = Paint.Style.FILL
+            paint.shader = LinearGradient(
+                0f,
+                rect.top,
+                0f,
+                rect.bottom,
+                if (dark) {
+                    intArrayOf(
+                        if (pressed) 0x42FFFFFF else 0x2FFFFFFF,
+                        if (pressed) 0x26FFFFFF else 0x18FFFFFF,
+                        0x22000000
+                    )
+                } else {
+                    intArrayOf(
+                        if (pressed) 0xD8FFFFFF.toInt() else 0xB8FFFFFF.toInt(),
+                        0x70FFFFFF,
+                        0x24FFFFFF
+                    )
+                },
+                floatArrayOf(0f, 0.44f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(rect, paint)
+            paint.shader = LinearGradient(
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                intArrayOf(0x00FFFFFF, if (pressed) 0x48FFFFFF else 0x2EFFFFFF, 0x00FFFFFF),
+                floatArrayOf(0f, 0.48f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(rect, paint)
+            paint.shader = null
+            paint.color = if (dark) 0x16000000 else 0x12FFFFFF
+            canvas.drawRect(rect.left, rect.centerY(), rect.right, rect.bottom, paint)
+            if (label == "space" || label == "back" || label == "." || label == "period" || label == "teclas") {
+                paint.color = if (dark) 0x22000000 else 0x18FFFFFF
+                canvas.drawRect(rect, paint)
+            }
+        }
+
+        override fun setAlpha(alpha: Int) {
+            paint.alpha = alpha
+            bitmapPaint.alpha = alpha
+        }
+
+        @Deprecated("Deprecated by Android Drawable API")
+        override fun setColorFilter(colorFilter: android.graphics.ColorFilter?) {
+            paint.colorFilter = colorFilter
+            bitmapPaint.colorFilter = colorFilter
+        }
+
+        @Deprecated("Deprecated by Android Drawable API")
+        override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
+    }
+
     private fun keyVisualBackground(label: String, pressed: Boolean, hInset: Int, vInset: Int): Drawable {
+        if (keyboardTheme == KEYBOARD_THEME_3DGLASS && !isRoundKeyboardKey(label)) {
+            return Launcher3dGlassKeyDrawable(label, pressed, hInset, vInset.coerceAtLeast(dp(2)))
+        }
         val base = if (pressed) keyPressedBackground(label) else keyIdleBackground(label)
         if (isRoundKeyboardKey(label)) {
             val inset = dp(1)
@@ -29116,6 +29317,8 @@ Question: $prompt"""
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
         private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
+        private const val KEYBOARD_THEME_3DDEPTH = KeyboardThemeDrawables.THREE_D_DEPTH
+        private const val KEYBOARD_THEME_3DGLASS = KeyboardThemeDrawables.THREE_D_GLASS
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
         private const val KEYBOARD_THEME_GOOGLE = KeyboardThemeDrawables.GOOGLE

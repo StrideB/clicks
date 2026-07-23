@@ -14,6 +14,8 @@ object KeyboardThemeDrawables {
     const val IOS = "ios"
     const val PIXEL_SAND = "pixel_sand"
     const val TECLAS_GLASS = "teclas_glass"
+    const val THREE_D_DEPTH = KbThemes.THREE_D_DEPTH_ID
+    const val THREE_D_GLASS = KbThemes.THREE_D_GLASS_ID
     const val DEFAULT_ACCENT = 0xFFC9A7FF.toInt()
 
     val addedThemes = listOf(GOOGLE, IOS, PIXEL_SAND) + KbThemes.RENDERABLE.map { it.id }
@@ -84,6 +86,8 @@ object KeyboardThemeDrawables {
 
     fun keyLayer(context: Context, theme: String, label: String, pressed: Boolean, darkMode: Boolean, goColor: Int): LayerDrawable {
         KbThemes.renderableById(theme)?.let { t ->
+            if (t.id == THREE_D_DEPTH) return depthKeyLayer(context, t, label, pressed, darkMode, goColor)
+            if (t.id == THREE_D_GLASS) return glassKeyLayer(context, t, label, pressed, darkMode, goColor)
             val face = key(context, theme, label, pressed, darkMode, goColor)
             if (!t.boxed) return LayerDrawable(arrayOf(face))
             val shadow = GradientDrawable().apply {
@@ -175,6 +179,9 @@ object KeyboardThemeDrawables {
         else -> KbThemes.byId(theme)?.displayName ?: theme
     }
 
+    fun isThreeDTheme(theme: String): Boolean =
+        KbThemes.canonicalId(theme) == THREE_D_DEPTH || KbThemes.canonicalId(theme) == THREE_D_GLASS
+
     fun typeface(theme: String, label: String): android.graphics.Typeface? =
         KbThemes.renderableById(theme)?.typeface(label)
 
@@ -221,6 +228,133 @@ object KeyboardThemeDrawables {
     }
 
     private fun dp(context: Context, value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
+    private fun depthKeyLayer(
+        context: Context,
+        theme: KbTheme,
+        label: String,
+        pressed: Boolean,
+        darkMode: Boolean,
+        goColor: Int
+    ): LayerDrawable {
+        val p = theme.palette(darkMode)
+        val accent = theme.accent(goColor, p)
+        val isGo = label == "enter"
+        val isFn = label == "123" || label == "abc" || label == "shift" || label == "back" || label == "." || label == "period" || label == "teclas"
+        val base = when {
+            isGo -> accent
+            isFn -> p.functionKey
+            else -> p.key
+        }
+        val end = when {
+            isGo -> darken(accent)
+            isFn -> darken(p.functionKey)
+            p.keyGradEnd != 0 -> p.keyGradEnd
+            else -> darken(p.key)
+        }
+        val faceTop = if (pressed) darken(base) else brighten(base)
+        val faceBottom = if (pressed) darken(end) else end
+        val radius = dp(context, theme.radiusDp).toFloat()
+        val wallDrop = dp(context, if (pressed) 1 else 6)
+        val ambient = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(if (darkMode) 0x78000000 else 0x33000000)
+        }
+        val wall3 = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(if (darkMode) 0xFF020305.toInt() else 0xFF8792A1.toInt())
+        }
+        val wall2 = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(if (darkMode) 0xFF070A10.toInt() else 0xFFA0AAB8.toInt())
+        }
+        val wall1 = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(if (darkMode) 0xFF0D1118.toInt() else 0xFFB7C0CC.toInt())
+        }
+        val face = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(faceTop, base, faceBottom)).apply {
+            cornerRadius = radius
+            setStroke(dp(context, 1), if (darkMode) 0x66000000 else 0x55FFFFFF)
+        }
+        val rim = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            if (darkMode) 0x36FFFFFF else 0x99FFFFFF.toInt(),
+            0x00FFFFFF
+        )).apply { cornerRadius = radius }
+        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            if (darkMode) 0x16FFFFFF else 0x55FFFFFF,
+            0x00FFFFFF
+        )).apply { cornerRadius = radius }
+        return LayerDrawable(arrayOf(ambient, wall3, wall2, wall1, face, rim, sheen)).apply {
+            val ambientTop = if (pressed) dp(context, 3) else dp(context, 10)
+            setLayerInset(0, dp(context, 2), ambientTop, dp(context, 2), 0)
+            setLayerInset(1, dp(context, 1), if (pressed) dp(context, 2) else dp(context, 8), dp(context, 1), 0)
+            setLayerInset(2, dp(context, 1), if (pressed) dp(context, 1) else dp(context, 6), dp(context, 1), dp(context, 1))
+            setLayerInset(3, dp(context, 1), if (pressed) 0 else dp(context, 4), dp(context, 1), dp(context, 2))
+            setLayerInset(4, 0, if (pressed) dp(context, 4) else 0, 0, wallDrop)
+            setLayerInset(5, dp(context, 3), if (pressed) dp(context, 5) else dp(context, 1), dp(context, 3), dp(context, 26))
+            setLayerInset(6, dp(context, 6), if (pressed) dp(context, 8) else dp(context, 4), dp(context, 6), dp(context, 18))
+        }
+    }
+
+    private fun glassKeyLayer(
+        context: Context,
+        theme: KbTheme,
+        label: String,
+        pressed: Boolean,
+        darkMode: Boolean,
+        goColor: Int
+    ): LayerDrawable {
+        val p = theme.palette(darkMode)
+        val accent = theme.accent(goColor, p)
+        val isGo = label == "enter"
+        val isFn = label == "123" || label == "abc" || label == "shift" || label == "back" || label == "." || label == "period" || label == "teclas"
+        val base = when {
+            isGo -> withAlpha(accent, if (pressed) 0.88f else 0.72f)
+            isFn -> p.functionKey
+            else -> p.key
+        }
+        val end = when {
+            isGo -> withAlpha(darken(accent), if (pressed) 0.80f else 0.58f)
+            isFn -> withAlpha(p.keyGradEnd.takeIf { it != 0 } ?: p.key, if (darkMode) 0.22f else 0.38f)
+            else -> p.keyGradEnd.takeIf { it != 0 } ?: withAlpha(p.key, 0.40f)
+        }
+        val radius = dp(context, theme.radiusDp).toFloat()
+        val shadow = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(if (darkMode) 0x66000000 else 0x26000000)
+        }
+        val frost = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            if (pressed) brighten(base) else withAlpha(Color.WHITE, if (darkMode) 0.18f else 0.42f),
+            base,
+            end
+        )).apply {
+            cornerRadius = radius
+            setStroke(dp(context, 1), if (darkMode) 0x38FFFFFF else 0x8CFFFFFF.toInt())
+        }
+        val topRim = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            if (darkMode) 0x70FFFFFF else 0xCCFFFFFF.toInt(),
+            0x00FFFFFF
+        )).apply { cornerRadius = radius }
+        val diagonal = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(
+            0x00FFFFFF,
+            if (pressed) 0x44FFFFFF else 0x26FFFFFF,
+            0x00FFFFFF
+        )).apply { cornerRadius = radius }
+        return LayerDrawable(arrayOf(shadow, frost, topRim, diagonal)).apply {
+            val drop = if (pressed) dp(context, 1) else dp(context, 3)
+            setLayerInset(0, dp(context, 1), dp(context, if (pressed) 2 else 5), dp(context, 1), 0)
+            setLayerInset(1, 0, if (pressed) dp(context, 2) else 0, 0, drop)
+            setLayerInset(2, dp(context, 4), if (pressed) dp(context, 3) else dp(context, 1), dp(context, 4), dp(context, 24))
+            setLayerInset(3, dp(context, 5), if (pressed) dp(context, 5) else dp(context, 3), dp(context, 5), dp(context, 10))
+        }
+    }
+
+    private fun withAlpha(color: Int, alpha: Float): Int = Color.argb(
+        (255 * alpha).toInt().coerceIn(0, 255),
+        Color.red(color),
+        Color.green(color),
+        Color.blue(color)
+    )
+
     private fun brighten(color: Int): Int = adjust(color, 1.16f)
     private fun darken(color: Int): Int = adjust(color, 0.72f)
     private fun adjust(color: Int, factor: Float): Int = Color.argb(

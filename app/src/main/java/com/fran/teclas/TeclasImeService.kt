@@ -4754,7 +4754,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 label,
                 pressed = false,
                 darkMode = selectedNeuTokens().mode == NeuMode.DARK,
-                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) goKeyColor() else KeyboardThemeDrawables.DEFAULT_ACCENT
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS || KeyboardThemeDrawables.isThreeDTheme(theme)) goKeyColor() else KeyboardThemeDrawables.DEFAULT_ACCENT
             )
         }
         if (theme == KEYBOARD_THEME_SEEME) {
@@ -4784,7 +4784,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 label,
                 pressed = true,
                 darkMode = selectedNeuTokens().mode == NeuMode.DARK,
-                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) brighten(goKeyColor()) else KeyboardThemeDrawables.DEFAULT_ACCENT
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS || KeyboardThemeDrawables.isThreeDTheme(theme)) brighten(goKeyColor()) else KeyboardThemeDrawables.DEFAULT_ACCENT
             )
         }
         if (theme == KEYBOARD_THEME_SEEME) {
@@ -5172,6 +5172,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
         private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
+        private const val KEYBOARD_THEME_3DDEPTH = KeyboardThemeDrawables.THREE_D_DEPTH
+        private const val KEYBOARD_THEME_3DGLASS = KeyboardThemeDrawables.THREE_D_GLASS
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
         private const val KEYBOARD_THEME_GOOGLE = KeyboardThemeDrawables.GOOGLE

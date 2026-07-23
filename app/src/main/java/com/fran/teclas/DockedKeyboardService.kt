@@ -987,7 +987,7 @@ class DockedKeyboardService : Service() {
                 label,
                 pressed = pressed,
                 darkMode = selectedNeuTokens().mode == NeuMode.DARK,
-                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS) {
+                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS || KeyboardThemeDrawables.isThreeDTheme(theme)) {
                     if (pressed) brighten(goKeyColor()) else goKeyColor()
                 } else {
                     KeyboardThemeDrawables.DEFAULT_ACCENT
@@ -1513,6 +1513,8 @@ class DockedKeyboardService : Service() {
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"
         private const val KEYBOARD_THEME_HYPER3D_BLACK = "hyper3d_black"
         private const val KEYBOARD_THEME_HYPER3D_LIGHT = "hyper3d_light"
+        private const val KEYBOARD_THEME_3DDEPTH = KeyboardThemeDrawables.THREE_D_DEPTH
+        private const val KEYBOARD_THEME_3DGLASS = KeyboardThemeDrawables.THREE_D_GLASS
         private const val KEYBOARD_THEME_BRUSHED = "brushed"
         private const val KEYBOARD_THEME_SEEME = "seeme"
         private const val KEYBOARD_THEME_TECLAS_GLASS = KeyboardThemeDrawables.TECLAS_GLASS
