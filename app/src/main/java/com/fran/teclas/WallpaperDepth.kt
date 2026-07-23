@@ -28,10 +28,11 @@ import kotlin.coroutines.resume
  */
 object WallpaperDepth {
     private const val TAG = "TeclasWallpaperDepth"
-    // v2: earlier builds could cache a cutout segmented from a different-resolution source than the
-    // one the launcher displays (the WallpaperManager fallback), so the cutout composited at the
-    // wrong size. Bumping the dir discards those stale cutouts; they re-segment from the display bitmap.
-    private const val CACHE_DIR = "wallpaper_depth_v2"
+    // v3: earlier builds could cache the WRONG subject under a wallpaper's key — a mid-change stale
+    // bitmap segmented and stored as the new wallpaper's cutout (the floating-old-wallpaper artifact),
+    // or a different-resolution source. Bumping the dir discards those poisoned cutouts; they
+    // re-segment from the correct, current display bitmap.
+    private const val CACHE_DIR = "wallpaper_depth_v3"
     private const val MAX_ATTEMPTS = 6          // ~ up to 6 tries while the model downloads
     private const val RETRY_DELAY_MS = 2500L
 
