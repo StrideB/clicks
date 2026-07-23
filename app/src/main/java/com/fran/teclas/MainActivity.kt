@@ -3458,19 +3458,50 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun maybeKickDepthSegmentation(sig: String) {
         if (!wallpaperDepthActive() || wallpaperDepthLoading || WallpaperDepth.knownEmpty(sig)) return
-        val bmp = (homeWallpaperDrawable as? BitmapDrawable)?.bitmap
-            ?: (lastGoodHomeWallpaperDrawable as? BitmapDrawable)?.bitmap ?: return
+        val bmp = depthSourceBitmap()
+        if (bmp == null) {
+            android.util.Log.w("TeclasWallpaperDepth", "no wallpaper bitmap to segment (system wallpaper not decoded?)")
+            return
+        }
+        android.util.Log.i("TeclasWallpaperDepth", "kick: segmenting wallpaper ${bmp.width}x${bmp.height} sig=$sig")
         wallpaperDepthLoading = true
         mediaUiScope.launch(Dispatchers.IO) {
-            val cut = runCatching { WallpaperDepth.cutoutFor(this@MainActivity, bmp, sig) }.getOrNull()
+            val cut = runCatching { WallpaperDepth.cutoutFor(this@MainActivity, bmp, sig) }
+                .onFailure { android.util.Log.w("TeclasWallpaperDepth", "cutoutFor threw", it) }
+                .getOrNull()
             withContext(Dispatchers.Main) {
                 wallpaperDepthLoading = false
+                android.util.Log.i("TeclasWallpaperDepth", "kick done: cutout=${cut != null} libraryOpen=$libraryOpen pane=${openPane != null}")
                 if (cut != null && ::rootView.isInitialized && openPane == null && !libraryOpen && wallpaperDepthActive()) {
                     depthSettlePending = true
                     render()
                 }
             }
         }
+    }
+
+    /** The bitmap to segment. Prefers the launcher's own decoded wallpaper; falls back to reading
+     *  the live device wallpaper directly (system-wallpaper mode may never populate our drawable),
+     *  rasterizing any non-bitmap drawable so segmentation always has real pixels to work with. */
+    private fun depthSourceBitmap(): android.graphics.Bitmap? {
+        (homeWallpaperDrawable as? BitmapDrawable)?.bitmap?.takeUnless { it.isRecycled }?.let { return it }
+        (lastGoodHomeWallpaperDrawable as? BitmapDrawable)?.bitmap?.takeUnless { it.isRecycled }?.let { return it }
+        val drawable = homeWallpaperDrawable ?: lastGoodHomeWallpaperDrawable
+            ?: runCatching {
+                val wm = WallpaperManager.getInstance(this)
+                wm.peekDrawable() ?: wm.drawable ?: wm.fastDrawable
+            }.getOrNull()
+            ?: return null
+        (drawable as? BitmapDrawable)?.bitmap?.takeUnless { it.isRecycled }?.let { return it }
+        val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        return runCatching {
+            val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            val c = Canvas(bmp)
+            drawable.setBounds(0, 0, w, h)
+            drawable.draw(c)
+            bmp
+        }.onFailure { android.util.Log.w("TeclasWallpaperDepth", "rasterize wallpaper failed", it) }.getOrNull()
     }
 
     /** One-shot "Live Photo" settle: the wallpaper eases forward and the subject leads it to rest.
