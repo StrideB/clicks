@@ -21352,7 +21352,10 @@ Question: $prompt"""
             searchHintView.ellipsize = android.text.TextUtils.TruncateAt.END
             searchHintView.includeFontPadding = false
             searchHintView.gravity = Gravity.CENTER_VERTICAL or Gravity.CENTER_HORIZONTAL
-            searchHintView.setPadding(dp(10), dp(1), dp(6), dp(2))
+            // The mic sits to the LEFT of this weighted view (32dp + 10dp start + 2dp end = 44dp) with
+            // nothing balancing it on the right, so a plain CENTER_HORIZONTAL lands right-of-centre.
+            // Pad the right by the mic's footprint + the left pad so "> search" is centred on screen.
+            searchHintView.setPadding(dp(10), dp(1), dp(10) + dp(44), dp(2))
             searchHintView.setTextColor(keyboardIndicatorTextColor(dim = false))
             searchHintView.text = if (hint.startsWith("→")) hint else commandLine(hint)
         }
