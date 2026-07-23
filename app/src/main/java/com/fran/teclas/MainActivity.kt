@@ -2702,6 +2702,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return device.contains("honor")
     }
 
+    private fun isSamsungDevice(): Boolean {
+        val device = listOf(Build.MANUFACTURER, Build.BRAND)
+            .joinToString(" ")
+            .lowercase(Locale.US)
+        return device.contains("samsung")
+    }
+
     private inner class ZeissCameraButtonView(context: Context) : TextView(context) {
         private val shutterPaint = Paint(Paint.ANTI_ALIAS_FLAG)
         private var shutterProgress = 0f
@@ -2951,8 +2958,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun widgetModeNativeGlassActive(): Boolean =
         isUnfoldedInnerLayoutActive() || keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET
 
+    // Samsung/Honor (and widget mode) get the REAL glass — NativeFoldGlassPanel blurs a copy of the
+    // wallpaper via RenderEffect (available on every device here, minSdk 31). The DynamicGlassPlate
+    // fallback only paints translucent gradients with no blur, which reads as an opaque tinted panel
+    // — that was the "glass is opaque on Galaxy" report.
     internal fun nativeGlassSurfaceActive(): Boolean =
-        isHonorDevice() || widgetModeNativeGlassActive()
+        isHonorDevice() || isSamsungDevice() || widgetModeNativeGlassActive()
 
     private fun normalizeInnerWallpaperTransform() {
         val zoomPref = activeWallpaperZoomPref()
