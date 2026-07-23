@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0E0F13">
+<title>Slide-up keyboard — interactive prototype</title>
+<style>
+  :root{
+    --ground:#0E0F13; --panel:#16181D; --panel2:#1D2027; --line:#2A2C33;
+    --ink:#EEF0F4; --dim:#8A909B; --dimmer:#5B616D;
+    --accent:#C9A7FF; --accent-ink:#E8DBFF;
+    --live:#8FD694;
+    --key-top:#262B34; --key-bot:#101319; --key-line:rgba(255,255,255,.10);
+    --field-top:#262B34; --field-mid:#181B21; --field-bot:#101319;
+    --r:16px;
+    --peek:0px;   /* set by JS */
+    --travel:0px; /* set by JS */
+    font-synthesis:none;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0}
+  body{
+    background:
+      radial-gradient(120% 80% at 50% -10%, #191c22 0%, var(--ground) 55%, #090a0d 100%);
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    display:flex; align-items:center; justify-content:center;
+    overscroll-behavior:none;
+  }
+  .stage{
+    position:relative;
+    width:100%; height:100dvh;
+    max-width:none;
+    overflow:hidden;
+    background:var(--ground);
+  }
+  /* On a wide screen, frame it like a phone. On a phone it fills. */
+  @media (min-width:520px){
+    body{padding:22px}
+    .stage{
+      width:390px; height:min(844px, calc(100dvh - 44px));
+      border-radius:44px;
+      box-shadow:0 0 0 10px #05060a, 0 0 0 12px #23262e, 0 40px 90px -30px #000;
+      border:1px solid #000;
+    }
+  }
+
+  /* ---------- status bar ---------- */
+  .status{
+    position:absolute; inset:0 0 auto 0; height:52px; z-index:40;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 26px 0; font-size:14px; font-weight:600; letter-spacing:.2px;
+    pointer-events:none;
+  }
+  .status .dots{display:flex; gap:5px; align-items:center}
+  .status .bat{width:22px;height:11px;border:1.4px solid var(--ink);border-radius:3px;position:relative;opacity:.9}
+  .status .bat::after{content:"";position:absolute;left:1.5px;top:1.5px;bottom:1.5px;width:13px;background:var(--ink);border-radius:1px}
+  .status .bat::before{content:"";position:absolute;right:-3px;top:3px;height:5px;width:2px;background:var(--ink);border-radius:1px}
+
+  /* ---------- content feed (the "home / widget" surface) ---------- */
+  .feed{
+    position:absolute; inset:0;
+    padding:60px 18px calc(var(--peek) + 14px);
+    overflow-y:auto; overflow-x:hidden;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
+    scrollbar-width:none;
+  }
+  .feed::-webkit-scrollbar{display:none}
+
+  .hello{padding:8px 6px 18px}
+  .hello .date{font-size:13px;font-weight:600;color:var(--accent);letter-spacing:.5px;text-transform:uppercase}
+  .hello .greet{font-size:30px;font-weight:700;letter-spacing:-.5px;margin-top:4px}
+
+  .widgets{display:grid;grid-template-columns:1.15fr .85fr;gap:12px;margin-bottom:18px}
+  .card{
+    background:linear-gradient(180deg,var(--panel2),var(--panel));
+    border:1px solid var(--line); border-radius:20px; padding:16px;
+  }
+  .clockcard{display:flex;flex-direction:column;justify-content:space-between;min-height:118px}
+  .clockcard .t{font-size:40px;font-weight:700;letter-spacing:-1.5px;line-height:1}
+  .clockcard .t span{font-size:18px;color:var(--dim);font-weight:600;margin-left:4px}
+  .clockcard .sub{font-size:12.5px;color:var(--dim);font-weight:500}
+  .weathercard{display:flex;flex-direction:column;justify-content:space-between;min-height:118px}
+  .weathercard .temp{font-size:34px;font-weight:700;letter-spacing:-1px}
+  .weathercard .loc{font-size:12.5px;color:var(--dim);font-weight:600}
+  .weathercard .cond{font-size:12.5px;color:var(--accent-ink);font-weight:600}
+
+  .sectlabel{
+    font-size:12px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;
+    color:var(--dimmer);margin:22px 6px 10px;display:flex;justify-content:space-between;align-items:center;
+  }
+  .sectlabel .live{color:var(--live);display:flex;gap:6px;align-items:center;font-size:11px}
+  .sectlabel .live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--live);box-shadow:0 0 0 0 var(--live);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(143,214,148,.5)}70%{box-shadow:0 0 0 7px rgba(143,214,148,0)}100%{box-shadow:0 0 0 0 rgba(143,214,148,0)}}
+
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:0 4px 6px}
+  .chip{
+    background:var(--panel); border:1px solid var(--line); border-radius:999px;
+    padding:9px 14px; font-size:13.5px; font-weight:600; color:var(--ink); display:flex;gap:7px;align-items:center;
+  }
+  .chip .g{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+
+  .row{
+    display:flex; gap:14px; align-items:center; padding:14px 8px;
+    border-bottom:1px solid rgba(255,255,255,.05);
+  }
+  .row .glyph{
+    flex:0 0 auto;width:46px;height:46px;border-radius:14px;
+    background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;font-size:20px;
+  }
+  .row .body{flex:1 1 auto;min-width:0}
+  .row .title{font-size:15px;font-weight:650;letter-spacing:-.1px}
+  .row .meta{font-size:13px;color:var(--dim);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .stamp{flex:0 0 auto;font-size:12px;color:var(--dimmer);font-weight:600}
+
+  /* ---------- the slide keyboard sheet ---------- */
+  .sheet{
+    position:absolute; left:0; right:0; bottom:0; z-index:30;
+    will-change:transform;
+    touch-action:none;
+    background:linear-gradient(180deg,#1a1d24 0%, #121419 42%, #0c0e12 100%);
+    border-top:1px solid rgba(255,255,255,.08);
+    border-top-left-radius:26px; border-top-right-radius:26px;
+    box-shadow:0 -18px 40px -24px rgba(0,0,0,.9), 0 -1px 0 rgba(255,255,255,.05) inset;
+    padding:0 10px 14px;
+  }
+  .grabwrap{height:22px;display:flex;align-items:center;justify-content:center}
+  .grab{width:38px;height:5px;border-radius:3px;background:#3a3f49;transition:background .18s,width .18s}
+  .sheet.dragging .grab, .sheet.armed .grab{background:var(--accent);width:52px}
+
+  /* search field = the peek row (this is exactly the app's collapsed handle) */
+  .field{
+    height:48px; margin:0 2px 8px; border-radius:var(--r);
+    background:linear-gradient(180deg,var(--field-top),var(--field-mid) 55%,var(--field-bot));
+    border:1px solid rgba(255,255,255,.14);
+    box-shadow:0 0 0 1px rgba(201,167,255,.20) inset, 0 6px 16px -10px #000;
+    display:flex; align-items:center; gap:11px; padding:0 14px;
+    position:relative;
+  }
+  .field .mag{flex:0 0 auto;width:15px;height:15px;position:relative}
+  .field .mag::before{content:"";position:absolute;left:0;top:0;width:11px;height:11px;border:2px solid var(--accent);border-radius:50%}
+  .field .mag::after{content:"";position:absolute;right:0;bottom:0;width:6px;height:2px;background:var(--accent);border-radius:2px;transform:rotate(45deg);transform-origin:right}
+  .field .q{flex:1 1 auto;font-size:15px;color:var(--dim);font-weight:500;overflow:hidden;white-space:nowrap}
+  .field .q.typed{color:var(--ink)}
+  .field .caret{display:inline-block;width:1.5px;height:17px;background:var(--accent);margin-left:1px;vertical-align:-3px;animation:blink 1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .field .go{
+    flex:0 0 auto;font-size:12.5px;font-weight:700;color:#12131a;background:var(--accent);
+    padding:6px 12px;border-radius:11px;opacity:0;transform:scale(.9);transition:opacity .16s,transform .16s;
+  }
+  .field .go.show{opacity:1;transform:scale(1)}
+
+  /* everything below the field only matters once it opens */
+  .suggest{display:flex;gap:8px;padding:2px 2px 10px;overflow:hidden}
+  .suggest .s{
+    flex:1 1 0;text-align:center;font-size:14px;font-weight:600;color:var(--ink);
+    padding:8px 6px;border-radius:11px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.05);
+    overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  }
+  .suggest .s.accent{color:var(--accent-ink)}
+
+  .keys{padding:0 1px}
+  .krow{display:flex;gap:6px;justify-content:center;margin-bottom:8px}
+  .krow.indent{padding:0 18px}
+  .key{
+    flex:1 1 0; height:46px; border-radius:9px;
+    background:linear-gradient(180deg,var(--key-top),var(--key-bot));
+    border:1px solid var(--key-line);
+    box-shadow:0 1px 0 rgba(255,255,255,.05) inset, 0 2px 4px -2px #000;
+    display:flex;align-items:center;justify-content:center;
+    font-size:18px;font-weight:500;color:var(--ink);
+    user-select:none;
+    transition:transform .05s, background .05s, filter .05s;
+  }
+  .key.wide{flex:1.5 1 0;font-size:13px;font-weight:600;color:var(--dim)}
+  .key.space{flex:4 1 0}
+  .key.act{color:#12131a;background:linear-gradient(180deg,#d8bcff,var(--accent));font-weight:700}
+  .key:active,.key.press{transform:translateY(1px) scale(.97);filter:brightness(1.4)}
+
+  /* telemetry — makes the 1:1 tracking legible */
+  .telem{
+    position:absolute; top:58px; right:14px; z-index:50;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:11px; line-height:1.55; letter-spacing:.3px;
+    background:rgba(9,10,14,.66); border:1px solid var(--line); border-radius:10px;
+    padding:8px 10px; color:var(--dim); backdrop-filter:blur(8px);
+    min-width:104px; pointer-events:auto; user-select:none; cursor:pointer;
+  }
+  .telem b{color:var(--accent);font-weight:700}
+  .telem .bar{height:4px;border-radius:2px;background:var(--line);margin-top:5px;overflow:hidden}
+  .telem .bar i{display:block;height:100%;width:0;background:var(--accent);border-radius:2px}
+  .telem.mini{min-width:0;padding:7px 9px}
+  .telem.mini .rows,.telem.mini .bar{display:none}
+
+  /* auto-hide toast */
+  .toast{
+    position:absolute; left:50%; transform:translate(-50%,14px); z-index:45;
+    bottom:calc(var(--peek) + 20px);
+    background:rgba(20,22,28,.92); border:1px solid var(--line); border-radius:999px;
+    padding:9px 15px; font-size:12.5px; font-weight:600; color:var(--live);
+    display:flex; gap:8px; align-items:center; opacity:0; transition:opacity .28s, transform .28s;
+    pointer-events:none; white-space:nowrap;
+  }
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  .toast::before{content:"↓";font-weight:800}
+
+  .hint{
+    position:absolute; left:0; right:0; z-index:29;
+    bottom:calc(var(--peek) + 16px);
+    text-align:center; font-size:12.5px; color:var(--dimmer); font-weight:600;
+    pointer-events:none; transition:opacity .3s;
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    .grab{transition:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="stage" id="stage">
+  <div class="status">
+    <div>9:41</div>
+    <div class="dots"><span style="font-weight:700">5G</span><span class="bat"></span></div>
+  </div>
+
+  <div class="telem" id="telem" title="tap to minimise">
+    <div class="rows">
+      open <b><span id="tOpen">0</span>%</b><br>
+      vel&nbsp; <b><span id="tVel">0.0</span></b><br>
+      <span id="tState">closed</span>
+    </div>
+    <div class="bar"><i id="tBar"></i></div>
+  </div>
+
+  <div class="feed" id="feed">
+    <div class="hello">
+      <div class="date">Thursday · July 23</div>
+      <div class="greet">Good afternoon</div>
+    </div>
+
+    <div class="widgets">
+      <div class="card clockcard">
+        <div class="t">2:14<span>PM</span></div>
+        <div class="sub">Next: Standup in 46 min</div>
+      </div>
+      <div class="card weathercard">
+        <div>
+          <div class="temp">73°</div>
+          <div class="cond">Clear</div>
+        </div>
+        <div class="loc">Austin, TX</div>
+      </div>
+    </div>
+
+    <div class="sectlabel">Jump back in</div>
+    <div class="chips">
+      <div class="chip"><span class="g"></span>Messages</div>
+      <div class="chip"><span class="g"></span>Maps</div>
+      <div class="chip"><span class="g"></span>Wallet</div>
+      <div class="chip"><span class="g"></span>Notes</div>
+    </div>
+
+    <div class="sectlabel">For you <span class="live">Live</span></div>
+    <div id="rows"></div>
+  </div>
+
+  <div class="toast" id="toast">tucked away — pull up when you need it</div>
+  <div class="hint" id="hint">▲ pull the search bar up to type</div>
+
+  <div class="sheet" id="sheet">
+    <div class="grabwrap"><div class="grab"></div></div>
+
+    <div class="field" id="field">
+      <div class="mag"></div>
+      <div class="q" id="q">Search apps, people, rides…</div>
+      <div class="go" id="go">Go</div>
+    </div>
+
+    <div class="suggest">
+      <div class="s accent">Alex Rivera</div>
+      <div class="s">Airport ride</div>
+      <div class="s">apple.com</div>
+    </div>
+
+    <div class="keys" id="keys"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var stage = document.getElementById('stage');
+  var sheet = document.getElementById('sheet');
+  var feed  = document.getElementById('feed');
+  var field = document.getElementById('field');
+  var qEl   = document.getElementById('q');
+  var goEl  = document.getElementById('go');
+  var keysEl= document.getElementById('keys');
+  var toast = document.getElementById('toast');
+  var hint  = document.getElementById('hint');
+  var telem = document.getElementById('telem');
+  var tOpen = document.getElementById('tOpen');
+  var tVel  = document.getElementById('tVel');
+  var tState= document.getElementById('tState');
+  var tBar  = document.getElementById('tBar');
+
+  var reduce = window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+
+  /* ---- build the feed ---- */
+  var stories = [
+    ['🗞️','Markets edge higher as tech leads midday rally','Bloomberg · Business','2m'],
+    ['⚽','Late winner sends the derby to the visitors','The Athletic · Sports','11m'],
+    ['🚀','Launch window opens tonight after a clean review','Ars Technica · Space','24m'],
+    ['🎬','The festival lineup that everyone is arguing about','Variety · Film','38m'],
+    ['🧭','A quieter way to get across town by 5','Local · Transit','1h'],
+    ['🍜','Six new spots worth the wait this week','Eater · Food','1h'],
+    ['🎧','The mix that got you through Tuesday, extended','Sound · Music','2h'],
+    ['📷','How the shot on the front page was made','Feature · Photo','3h'],
+    ['🏔️','Trail report: the pass is finally clear','Outside · Travel','4h']
+  ];
+  var rowsHost = document.getElementById('rows');
+  rowsHost.innerHTML = stories.map(function(s){
+    return '<div class="row"><div class="glyph">'+s[0]+'</div>'+
+      '<div class="body"><div class="title">'+s[1]+'</div><div class="meta">'+s[2]+'</div></div>'+
+      '<div class="stamp">'+s[3]+'</div></div>';
+  }).join('');
+
+  /* ---- build the keyboard ---- */
+  var rows = [
+    ['q','w','e','r','t','y','u','i','o','p'],
+    ['a','s','d','f','g','h','j','k','l'],
+    ['⇧','z','x','c','v','b','n','m','⌫'],
+    ['123','space','⏎']
+  ];
+  var html='';
+  rows.forEach(function(r,i){
+    html += '<div class="krow'+(i===1?' indent':'')+'">';
+    r.forEach(function(k){
+      var cls='key', label=k;
+      if(k==='space'){cls+=' space';label='space';}
+      else if(k==='⏎'){cls+=' wide act';}
+      else if(k==='123'||k==='⇧'||k==='⌫'){cls+=' wide';}
+      html += '<div class="'+cls+'" data-k="'+k+'">'+label+'</div>';
+    });
+    html += '</div>';
+  });
+  keysEl.innerHTML = html;
+
+  /* ---- geometry ---- */
+  var peek=0, expanded=0, travel=0;
+  function measure(){
+    // peek = grab + field (+ its margins). expanded = whole sheet.
+    var fieldBottom = field.offsetTop + field.offsetHeight;
+    peek = fieldBottom + 8;               // show grab + search field when closed
+    expanded = sheet.offsetHeight;
+    travel = Math.max(1, expanded - peek);
+    stage.style.setProperty('--peek', peek+'px');
+    stage.style.setProperty('--travel', travel+'px');
+    render();
+  }
+
+  /* ---- state ---- */
+  var open = 0;          // 0 closed .. 1 open (source of truth)
+  var vel = 0;           // open-units / sec (spring velocity)
+  var target = 0;
+  var springing = false;
+  var dragging = false;
+
+  function clamp(v,a,b){return v<a?a:(v>b?b:v);}
+
+  // rubber-band excess beyond [0,1]
+  function rubber(v){
+    if(v>1) return 1 + (1-1/( (v-1)*3 + 1))*0.06;
+    if(v<0) return 0 - (1-1/((-v)*3 + 1))*0.05;
+    return v;
+  }
+
+  function render(){
+    var vis = rubber(open);
+    var tOpenN = clamp(open,0,1);
+    // transform: closed pushes sheet down by travel; open sits flush.
+    var ty = (1 - clamp(vis,-.05,1.06)) * travel;
+    sheet.style.transform = 'translate3d(0,'+ty+'px,0)';
+    // content inset so the feed goes almost full-screen when closed
+    stage.style.setProperty('--peek', (peek + tOpenN*travel)+'px');
+    // fade the keys/suggestions in as it rises (field stays solid)
+    var kv = clamp((open-0.06)/0.5,0,1);
+    keysEl.style.opacity = kv;
+    keysEl.previousElementSibling.style.opacity = kv; // suggest strip
+    hint.style.opacity = open>0.04 ? 0 : 1;
+    // telemetry
+    tOpen.textContent = Math.round(tOpenN*100);
+    tVel.textContent  = (vel>=0?'+':'') + vel.toFixed(1);
+    tBar.style.width  = (tOpenN*100)+'%';
+    tState.textContent = dragging ? 'dragging' : (springing ? 'settling' : (open>0.5?'open':'closed'));
+  }
+
+  /* ---- spring settle (semi-implicit Euler) ---- */
+  var last=0;
+  function tick(ts){
+    if(!springing){return;}
+    if(!last) last=ts;
+    var dt = Math.min(0.032,(ts-last)/1000); last=ts;
+    var k = reduce?320:200, d = reduce?34:23;
+    var a = -k*(open-target) - d*vel;
+    vel += a*dt; open += vel*dt;
+    if(Math.abs(open-target)<0.001 && Math.abs(vel)<0.02){
+      open=target; vel=0; springing=false; last=0;
+      render(); onSettled(); return;
+    }
+    render();
+    requestAnimationFrame(tick);
+  }
+  function settleTo(t, v0){
+    target=t; if(typeof v0==='number') vel=v0;
+    if(!springing){springing=true; last=0; requestAnimationFrame(tick);}
+  }
+  function onSettled(){
+    sheet.classList.remove('armed');
+    if(open<0.5 && armToast){ showToast(); armToast=false; }
+  }
+
+  /* ---- drag ---- */
+  var startY=0, startOpen=0, moved=0, downTime=0, tracking=false;
+  var vy=0, vt=0, vLastY=0; // velocity sampling
+
+  function onDown(e){
+    // only start a sheet-drag from the grab / field / suggest area (never on keys)
+    var t=e.target;
+    if(t.closest('.key')) return; // let keys handle taps
+    dragging=true; tracking=true; springing=false;
+    startY=e.clientY; startOpen=open; moved=0; downTime=performance.now();
+    vLastY=e.clientY; vt=downTime; vy=0;
+    sheet.classList.add('dragging','armed');
+    try{ sheet.setPointerCapture(e.pointerId); }catch(_){}
+    render();
+  }
+  function onMove(e){
+    if(!tracking) return;
+    var dy = e.clientY - startY;
+    moved = Math.max(moved, Math.abs(dy));
+    // up (negative dy) opens. 1:1 mapping over travel.
+    open = startOpen - dy/travel;
+    open = rubberInput(open);
+    // velocity sample (px/ms -> open/sec)
+    var now=performance.now();
+    if(now>vt){ vy = (vLastY - e.clientY)/(now-vt); vLastY=e.clientY; vt=now; }
+    render();
+    e.preventDefault();
+  }
+  function rubberInput(v){
+    if(v>1) return 1 + (v-1)*0.35;
+    if(v<0) return v*0.4;
+    return v;
+  }
+  function onUp(e){
+    if(!tracking) return;
+    tracking=false; dragging=false;
+    sheet.classList.remove('dragging');
+    var dt = performance.now()-downTime;
+    var velOpen = vy*1000/travel; // open-units per second
+    vel = velOpen;
+    // tap (no real movement) on the field while closed -> open
+    if(moved<8 && dt<300){
+      if(open<0.5){ settleTo(1, 2.4); }
+      else { /* tap on field while open: keep open (focus) */ settleTo(1,0); }
+      render(); return;
+    }
+    // decide by velocity first, then position
+    var t;
+    if(velOpen> 2.2) t=1;
+    else if(velOpen< -2.2) t=0;
+    else t = open>0.42 ? 1 : 0;
+    settleTo(t, velOpen);
+    render();
+  }
+
+  sheet.addEventListener('pointerdown', onDown);
+  sheet.addEventListener('pointermove', onMove);
+  sheet.addEventListener('pointerup', onUp);
+  sheet.addEventListener('pointercancel', onUp);
+
+  /* ---- keys type into the field ---- */
+  var typed='';
+  function setField(){
+    if(typed.length){
+      qEl.classList.add('typed');
+      qEl.innerHTML = escapeHtml(typed)+'<span class="caret"></span>';
+      goEl.classList.add('show');
+    } else {
+      qEl.classList.remove('typed');
+      qEl.textContent = 'Search apps, people, rides…';
+      goEl.classList.remove('show');
+    }
+  }
+  function escapeHtml(s){return s.replace(/[&<>"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c];});}
+  keysEl.addEventListener('pointerdown', function(e){
+    var key=e.target.closest('.key'); if(!key) return;
+    e.stopPropagation();
+    key.classList.add('press');
+    var k=key.getAttribute('data-k');
+    if(k==='⌫') typed=typed.slice(0,-1);
+    else if(k==='space') typed+=' ';
+    else if(k==='⏎'){ typed=''; }
+    else if(k==='⇧'||k==='123'){ /* visual only */ }
+    else typed += k;
+    setField();
+    if(navigator.vibrate) try{navigator.vibrate(4);}catch(_){}
+  });
+  keysEl.addEventListener('pointerup', function(e){
+    var key=e.target.closest('.key'); if(key) setTimeout(function(){key.classList.remove('press');},60);
+  });
+  keysEl.addEventListener('pointercancel', function(e){
+    var key=e.target.closest('.key'); if(key) key.classList.remove('press');
+  });
+
+  /* ---- auto-hide on scroll (the Apple-Stock behaviour) ---- */
+  var armToast=false, lastScroll=0, toastTimer=0;
+  feed.addEventListener('scroll', function(){
+    var y=feed.scrollTop;
+    if(open>0.15 && y>lastScroll+4){
+      armToast=true;
+      settleTo(0, -3.2);
+    }
+    lastScroll=y;
+  }, {passive:true});
+
+  function showToast(){
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer=setTimeout(function(){toast.classList.remove('show');},1500);
+  }
+
+  /* ---- telemetry toggle ---- */
+  telem.addEventListener('click', function(){ telem.classList.toggle('mini'); });
+
+  /* ---- boot ---- */
+  window.addEventListener('resize', measure);
+  // measure after layout settles
+  requestAnimationFrame(function(){ requestAnimationFrame(measure); });
+})();
+</script>
+</body>
+</html>
