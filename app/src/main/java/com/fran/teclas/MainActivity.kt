@@ -3418,6 +3418,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
      *  cutout isn't ready yet (a miss kicks the one-time segmentation and this pass draws flat). */
     private fun wallpaperSubjectCutoutLayer(): View? {
         if (!wallpaperDepthActive()) return null
+        // Depth aligns the cutout to the launcher's OWN wallpaper ImageView. With no such view
+        // (system-wallpaper mode draws the wallpaper in the window itself), there's nothing to align
+        // to, so depth stays off rather than composite a floating, mismatched cutout.
+        if (innerWallpaperImageView == null) return null
         val sig = deviceWallpaperSignature()
         val cutout = WallpaperDepth.cachedCutout(sig)
         if (cutout == null || cutout.isRecycled) {
@@ -3439,21 +3443,25 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    /** Same transform as the wallpaper (fill-scale × zoom + pan) so the cutout sits exactly over
-     *  its twin in the background image. Kept memo-free to avoid fighting the wallpaper's memo. */
+    /** Aligns the cutout exactly over the wallpaper by copying the wallpaper ImageView's ACTUAL
+     *  applied matrix and shifting by the on-screen offset between the two views. The cutout bitmap
+     *  is the same dimensions as the wallpaper's (both segmented from the displayed bitmap), so the
+     *  wallpaper's matrix maps it identically; the position delta corrects for the home area being
+     *  inset (status bar / keyboard) below the full-window wallpaper. Exact regardless of zoom, pan,
+     *  insets, or docked margins — no independent recomputation to drift out of sync. */
     private fun applyCutoutMatrix(image: ImageView) {
-        val drawable = image.drawable ?: return
-        val viewW = image.width.toFloat(); val viewH = image.height.toFloat()
-        val drawW = drawable.intrinsicWidth.takeIf { it > 0 }?.toFloat() ?: return
-        val drawH = drawable.intrinsicHeight.takeIf { it > 0 }?.toFloat() ?: return
-        if (viewW <= 0f || viewH <= 0f) return
-        val baseScale = maxOf(viewW / drawW, viewH / drawH) * innerWallpaperZoom()
-        val scaledW = drawW * baseScale; val scaledH = drawH * baseScale
-        val maxX = ((scaledW - viewW) / 2f).coerceAtLeast(0f)
-        val maxY = ((scaledH - viewH) / 2f).coerceAtLeast(0f)
-        val tx = (viewW - scaledW) / 2f + maxX * innerWallpaperOffsetX().coerceIn(-1f, 1f)
-        val ty = (viewH - scaledH) / 2f + maxY * innerWallpaperOffsetY().coerceIn(-1f, 1f)
-        image.imageMatrix = Matrix().apply { postScale(baseScale, baseScale); postTranslate(tx, ty) }
+        val wp = innerWallpaperImageView ?: return
+        if (wp.width <= 0 || wp.height <= 0 || image.width <= 0) {
+            // Wallpaper not laid out yet — try again next frame so we never leave an identity matrix.
+            image.post { applyCutoutMatrix(image) }
+            return
+        }
+        applyInnerWallpaperMatrix(wp)   // ensure the wallpaper's matrix is current before copying it
+        val wpLoc = IntArray(2); wp.getLocationInWindow(wpLoc)
+        val cutLoc = IntArray(2); image.getLocationInWindow(cutLoc)
+        image.imageMatrix = Matrix(wp.imageMatrix).apply {
+            postTranslate((wpLoc[0] - cutLoc[0]).toFloat(), (wpLoc[1] - cutLoc[1]).toFloat())
+        }
     }
 
     private fun maybeKickDepthSegmentation(sig: String) {
@@ -3480,28 +3488,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    /** The bitmap to segment. Prefers the launcher's own decoded wallpaper; falls back to reading
-     *  the live device wallpaper directly (system-wallpaper mode may never populate our drawable),
-     *  rasterizing any non-bitmap drawable so segmentation always has real pixels to work with. */
+    /** The bitmap to segment — it MUST be the exact bitmap the launcher draws as the wallpaper, so
+     *  the cutout (same dimensions as its input) lines up pixel-for-pixel under applyCutoutMatrix.
+     *  Reading a different source (e.g. the full-res system wallpaper) produced a cutout of a
+     *  different size/aspect that composited nowhere near the on-screen subject — that was the
+     *  "cutout 5464x3070 over a 3024x4032 wallpaper" mismatch. If the launcher hasn't decoded its
+     *  wallpaper yet, return null and wait for the decode; depth needs a launcher-drawn wallpaper. */
     private fun depthSourceBitmap(): android.graphics.Bitmap? {
         (homeWallpaperDrawable as? BitmapDrawable)?.bitmap?.takeUnless { it.isRecycled }?.let { return it }
         (lastGoodHomeWallpaperDrawable as? BitmapDrawable)?.bitmap?.takeUnless { it.isRecycled }?.let { return it }
-        val drawable = homeWallpaperDrawable ?: lastGoodHomeWallpaperDrawable
-            ?: runCatching {
-                val wm = WallpaperManager.getInstance(this)
-                wm.peekDrawable() ?: wm.drawable ?: wm.fastDrawable
-            }.getOrNull()
-            ?: return null
-        (drawable as? BitmapDrawable)?.bitmap?.takeUnless { it.isRecycled }?.let { return it }
-        val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        return runCatching {
-            val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-            val c = Canvas(bmp)
-            drawable.setBounds(0, 0, w, h)
-            drawable.draw(c)
-            bmp
-        }.onFailure { android.util.Log.w("TeclasWallpaperDepth", "rasterize wallpaper failed", it) }.getOrNull()
+        return null
     }
 
     /** One-shot "Live Photo" settle: the wallpaper eases forward and the subject leads it to rest.
