@@ -12346,10 +12346,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun showLibrary(animate: Boolean) {
-        libraryView?.let { contentFrame.removeView(it) }
+        libraryView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         categoryFolderView = null
         val overlay = appLibrary()
         libraryView = overlay
+        // appLibrary() can hand back a CACHED view still attached to the PREVIOUS contentFrame — e.g.
+        // when render() rebuilt contentFrame (a settings toggle, onResume) while the library was open.
+        // Adding it without detaching first threw "child already has a parent". Detach from whatever
+        // parent it actually has, not just the current contentFrame.
+        (overlay.parent as? ViewGroup)?.removeView(overlay)
         // Docked: the library rises up from behind the keyboard (vertical). Elsewhere it slides in
         // horizontally like before.
         if (animate) {
