@@ -15,7 +15,8 @@ import com.google.mlkit.vision.digitalink.DigitalInkRecognitionModel
 import com.google.mlkit.vision.digitalink.DigitalInkRecognitionModelIdentifier
 import com.google.mlkit.vision.digitalink.DigitalInkRecognizer
 import com.google.mlkit.vision.digitalink.DigitalInkRecognizerOptions
-import com.google.mlkit.vision.digitalink.Ink
+// Aliased: the codebase already has package-level `Ink` color tokens that would collide.
+import com.google.mlkit.vision.digitalink.Ink as MlInk
 
 /**
  * S Pen handwriting for launcher search. On-device via ML Kit Digital Ink Recognition — the model
@@ -67,7 +68,7 @@ class HandwritingRecognizer(private val tag: String = "TeclasHandwriting") {
     val isReady: Boolean get() = recognizer != null
 
     /** Recognizes [ink] into text; [cb] gets the top candidate, or null if unavailable. */
-    fun recognize(ink: Ink, cb: (String?) -> Unit) {
+    fun recognize(ink: MlInk, cb: (String?) -> Unit) {
         val r = recognizer
         if (r == null) { ensureReady(); cb(null); return }
         runCatching {
@@ -106,8 +107,8 @@ class HandwritingPadView(
 
     private val committedPaths = ArrayList<Path>()
     private var currentPath: Path? = null
-    private var inkBuilder = Ink.builder()
-    private var strokeBuilder: Ink.Stroke.Builder? = null
+    private var inkBuilder = MlInk.builder()
+    private var strokeBuilder: MlInk.Stroke.Builder? = null
     private var hasInk = false
 
     var engaged = false
@@ -143,7 +144,7 @@ class HandwritingPadView(
 
     private fun startStroke(event: MotionEvent) {
         currentPath = Path().apply { moveTo(event.x, event.y) }
-        strokeBuilder = Ink.Stroke.builder().apply { addPoint(Ink.Point.create(event.x, event.y, event.eventTime)) }
+        strokeBuilder = MlInk.Stroke.builder().apply { addPoint(MlInk.Point.create(event.x, event.y, event.eventTime)) }
         hasInk = true
         invalidate()
     }
@@ -153,10 +154,10 @@ class HandwritingPadView(
         val sb = strokeBuilder ?: return
         for (i in 0 until event.historySize) {
             path.lineTo(event.getHistoricalX(i), event.getHistoricalY(i))
-            sb.addPoint(Ink.Point.create(event.getHistoricalX(i), event.getHistoricalY(i), event.getHistoricalEventTime(i)))
+            sb.addPoint(MlInk.Point.create(event.getHistoricalX(i), event.getHistoricalY(i), event.getHistoricalEventTime(i)))
         }
         path.lineTo(event.x, event.y)
-        sb.addPoint(Ink.Point.create(event.x, event.y, event.eventTime))
+        sb.addPoint(MlInk.Point.create(event.x, event.y, event.eventTime))
         invalidate()
     }
 
@@ -183,7 +184,7 @@ class HandwritingPadView(
         removeCallbacks(commitRunnable)
         committedPaths.clear()
         currentPath = null
-        inkBuilder = Ink.builder()
+        inkBuilder = MlInk.builder()
         strokeBuilder = null
         hasInk = false
         setEngaged(false)
