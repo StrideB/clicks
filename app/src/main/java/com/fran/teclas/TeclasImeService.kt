@@ -1421,7 +1421,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             } else if (label == "enter") Typeface.DEFAULT_BOLD else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setTextColor(textColor(label))
             if (isLetter && this is com.fran.teclas.keyboard.DynamicFlickKeyView) {
-                setKeyFaceInsets(keyHorizontalInset(), keyVerticalInset(rowIndex))
+                setKeyFaceInsets(keyHorizontalInset(label, rowIndex), keyVerticalInset(rowIndex))
                 if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                     setLabelPlacement(
                         labelBias = 0.28f,
@@ -2541,6 +2541,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         stripMicView = TextView(this).apply {
             gravity = Gravity.CENTER
             includeFontPadding = false
+            translationY = dp(3).toFloat()
             background = imeMicBackground(false)
             foreground = imeMicGlyph(0xFFB8C0CC.toInt())
             isClickable = true
@@ -4050,7 +4051,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     val ink = textColor(raw)
                     if (key.currentTextColor != ink) key.setTextColor(ink)
                     if (key is com.fran.teclas.keyboard.DynamicFlickKeyView && raw.length == 1 && raw[0].isLetter() && !symbolsMode) {
-                        key.setKeyFaceInsets(keyHorizontalInset(), keyVerticalInset(keyRowIndexes[raw]))
+                        key.setKeyFaceInsets(keyHorizontalInset(raw, keyRowIndexes[raw]), keyVerticalInset(keyRowIndexes[raw]))
                         if (keyboardTheme() == KEYBOARD_THEME_BRUSHED) {
                             key.setLabelPlacement(
                                 labelBias = 0.28f,
@@ -4629,23 +4630,29 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 dp(10 + size * 5 / 100)
             else -> dp(7 + size * 4 / 100)
         }
-        // Touch cells already fill the whole row; this only grows the drawn cap inside the cell so
-        // the visible target better matches the actual hit zone. Row one tucks closer to the strip.
-        return if (rowIndex == 0) {
-            (base - dp(10)).coerceAtLeast(dp(2))
-        } else {
-            (base - dp(2)).coerceAtLeast(dp(4))
-        }
+        // Touch cells already fill the whole row; this only sizes the drawn cap inside the cell.
+        // Keep all IME rows visually equal-height so the top row does not look oversized.
+        return (base - dp(2)).coerceAtLeast(dp(4))
     }
 
-    private fun keyHorizontalInset(): Int {
+    private fun keyHorizontalInset(label: String? = null, rowIndex: Int? = null): Int {
         // Visible face gap only: touch cells stay edge-to-edge. Default/Teclas/Skeuo get a wider
         // drawn keycap while the rest of the theme set keeps the current spacing.
         val theme = keyboardVisualTheme()
-        return dp(if (theme == KEYBOARD_THEME_DEFAULT ||
+        val base = dp(if (theme == KEYBOARD_THEME_DEFAULT ||
             theme == KEYBOARD_THEME_TECLAS ||
             theme == KEYBOARD_THEME_SKEUO
         ) 1 else 2)
+        val isLetterRowKey = label?.let { it.length == 1 && it[0].isLetter() && !symbolsMode } == true
+        if (!isLetterRowKey) return base
+
+        // Touch cells keep the existing weighted layout; rows with fewer letters draw a slightly
+        // narrower face so their visible caps match the ten-key top row.
+        return base + when (rowIndex) {
+            1 -> dp(3)
+            2 -> dp(3)
+            else -> 0
+        }
     }
 
     private fun themedGoKeySize(): Int {
@@ -4714,12 +4721,14 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         if (theme == KEYBOARD_THEME_DEFAULT || theme == KEYBOARD_THEME_TECLAS) {
             if (isRoundKeyboardKey(label)) return base
             val vInset = keyVerticalInset(rowIndex)
-            return InsetDrawable(base, keyHorizontalInset(), vInset, keyHorizontalInset(), vInset)
+            val hInset = keyHorizontalInset(label, rowIndex)
+            return InsetDrawable(base, hInset, vInset, hInset, vInset)
         }
         val vInset = keyVerticalInset(rowIndex)
         val fixedInset = dp(2)
         val topBottom = if (isRoundKeyboardKey(label)) fixedInset else vInset
-        return InsetDrawable(base, keyHorizontalInset(), topBottom, keyHorizontalInset(), topBottom)
+        val hInset = keyHorizontalInset(label, rowIndex)
+        return InsetDrawable(base, hInset, topBottom, hInset, topBottom)
     }
 
     // Canvas-keyboard drawable cache. visualKeyBackground constructs multi-layer drawables from
