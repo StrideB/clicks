@@ -16015,21 +16015,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
 
-            addView(settingToggle("SLIDE KEYBOARD", slideKeyboardEnabled) {
-                slideKeyboardEnabled = !slideKeyboardEnabled
-                prefs().edit().putBoolean(SLIDE_KEYBOARD_PREF, slideKeyboardEnabled).apply()
-                haptic(this)
-                applyWidgetKeyboardHiddenState(animate = false)
-                render()
-            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
-
-            addView(settingToggle("AUTO-FOCUS FIELDS (DOCKED)", slideAutoFocusEnabled) {
-                slideAutoFocusEnabled = !slideAutoFocusEnabled
-                prefs().edit().putBoolean(SLIDE_AUTOFOCUS_PREF, slideAutoFocusEnabled).apply()
-                haptic(this)
-                render()
-            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
-
             addView(settingAction("AGENTIC SKILLS") {
                 keyboardSettingsOpen = false
                 startActivity(android.content.Intent(this@MainActivity, AgenticSkillsActivity::class.java))
@@ -21110,6 +21095,19 @@ Question: $prompt"""
             prefs().edit().putBoolean(USE_SYSTEM_KEYBOARD_PREF, useSystemKeyboard).apply()
             haptic(this)
             if (!useSystemKeyboard) hideSystemKeyboardIme()
+            renderPaneContent(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("SLIDE KEYBOARD", slideKeyboardEnabled) {
+            slideKeyboardEnabled = !slideKeyboardEnabled
+            prefs().edit().putBoolean(SLIDE_KEYBOARD_PREF, slideKeyboardEnabled).apply()
+            haptic(this)
+            applyWidgetKeyboardHiddenState(animate = false)
+            renderPaneContent(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingToggle("SLIDE: AUTO-FOCUS FIELD", slideAutoFocusEnabled) {
+            slideAutoFocusEnabled = !slideAutoFocusEnabled
+            prefs().edit().putBoolean(SLIDE_AUTOFOCUS_PREF, slideAutoFocusEnabled).apply()
+            haptic(this)
             renderPaneContent(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(LinearLayout(this).apply {
