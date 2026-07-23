@@ -1890,8 +1890,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             keyboardDockView = FrameLayout(this).apply {
                 clipChildren = false
                 clipToPadding = false
-                if (phoneDockedFullBleed) setBackgroundColor(activeNeuTokens.base)
+                if (phoneDockedFullBleed) background = keyboardDockFullBleedBackground()
                 val dockLift = launcherDockedKeyboardBottomLift()
+                if (phoneDockedFullBleed) {
+                    val topBleed = dp(5)
+                    addView(View(context).apply {
+                        background = keyboardDockFullBleedBackground()
+                    }, FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        topBleed,
+                        Gravity.TOP
+                    ).apply {
+                        topMargin = -topBleed
+                    })
+                }
                 addView(rootDockInputView(), FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
@@ -6463,7 +6475,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             widgetKeyboardHost = this
 
             widgetKeyboardSeatView = KeyboardSocketView(context).apply {
-                alpha = 0.32f
+                visibility = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) View.GONE else View.VISIBLE
+                alpha = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) 0f else 0.32f
             }
             addView(widgetKeyboardSeatView, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
 
@@ -7422,8 +7435,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             module.scaleY = 1f
             module.isEnabled = true
             widgetKeyboardSeatView?.apply {
-                visibility = View.VISIBLE
-                alpha = 0.32f
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive()) {
+                    visibility = View.GONE
+                    alpha = 0f
+                } else {
+                    visibility = View.VISIBLE
+                    alpha = 0.32f
+                }
             }
             widgetKeyboardSliderHandleView?.apply {
                 alpha = 0f
@@ -15194,7 +15212,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            background = ColorDrawable(Color.TRANSPARENT)
+            background = if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) {
+                keyboardDockFullBleedBackground()
+            } else {
+                ColorDrawable(Color.TRANSPARENT)
+            }
             widgetKeyboardHost = this
 
             widgetKeyboardSeatView = KeyboardSocketView(context).apply {
@@ -15212,6 +15234,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val keyboardPanel = FrameLayout(context).apply {
                 clipChildren = false
                 clipToPadding = false
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED) background = keyboardDockFullBleedBackground()
                 addView(dockedInputView(), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             }
             widgetKeyboardModule = keyboardPanel
@@ -15868,7 +15891,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             // their own opaque panel art — glass applies to the launcher's own neu deck.
             if (glassKeyboardDeckActive()) {
                 addView(
-                    foldAwareGlassPlate(this@MainActivity, radiusDp = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 22 else 16),
+                    foldAwareGlassPlate(this@MainActivity, radiusDp = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 22 else 0),
                     FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                 )
             }
@@ -27412,8 +27435,9 @@ Question: $prompt"""
             // Glass deck: translucent sheet over the native blur plate keyboard() puts behind it.
             return DefaultKeyboardGlass.deck(
                 activeNeuTokens,
-                if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(22).toFloat() else dp(16).toFloat(),
-                galaxy = isSamsungDevice()
+                if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(22).toFloat() else 0f,
+                galaxy = isSamsungDevice(),
+                fullBleed = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
             )
         }
         val light = keyboardLightMode()
@@ -27448,8 +27472,23 @@ Question: $prompt"""
     }
 
     private fun keyboardDeckBottomEdgeBackground(): Drawable {
+        return ColorDrawable(keyboardDeckBottomEdgeColor())
+    }
+
+    private fun keyboardDockFullBleedBackground(): Drawable {
+        val edge = keyboardDeckBottomEdgeColor()
+        return GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(brighten(edge), edge)
+        ).apply {
+            cornerRadius = 0f
+            setStroke(0, Color.TRANSPARENT)
+        }
+    }
+
+    private fun keyboardDeckBottomEdgeColor(): Int {
         val dark = !keyboardLightMode()
-        val color = when {
+        return when {
             keyboardTheme == KEYBOARD_THEME_BRUSHED -> if (dark) 0xFF101113.toInt() else 0xFFD4D8DF.toInt()
             keyboardTheme == KEYBOARD_THEME_SEEME -> 0xFF050608.toInt()
             keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK -> 0xFF050506.toInt()
@@ -27458,7 +27497,6 @@ Question: $prompt"""
             KeyboardThemeDrawables.isAddedTheme(keyboardTheme) -> if (dark) 0xFF111318.toInt() else 0xFFDDE2E9.toInt()
             else -> if (dark) 0xFF1B1D21.toInt() else 0xFFE3E7EE.toInt()
         }
-        return ColorDrawable(color)
     }
 
     private fun keyboardLightMode(): Boolean {
@@ -27838,13 +27876,21 @@ Question: $prompt"""
         } else {
             if (darkBars) Color.BLACK else activeNeuTokens.base
         }
-        window.navigationBarColor = if (darkBars) Color.BLACK else activeNeuTokens.base
+        val dockedKeyboardOwnsBottom =
+            keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
+                !isUnfoldedInnerLayoutActive() &&
+                !widgetPaneUsesRootDock()
+        window.navigationBarColor = when {
+            dockedKeyboardOwnsBottom -> keyboardDeckBottomEdgeColor()
+            darkBars -> Color.BLACK
+            else -> activeNeuTokens.base
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }
 
         val lightStatus = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock && !(innerWallpaperCanvas && activeNeuTokens.mode == NeuMode.DARK)
-        val lightNav = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock
+        val lightNav = activeNeuTokens.mode == NeuMode.LIGHT && !mediaDock && !dockedKeyboardOwnsBottom
         var flags = window.decorView.systemUiVisibility
         flags = if (lightStatus) flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
             else flags and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()

@@ -13,10 +13,14 @@ internal object DockedKeyboardMetrics {
         val density = context.resources.displayMetrics.density
         val size = KeyboardSettings.keyboardSize(context)
         val deckHeight = ((238 + (size * 54 / 100)) * density).toInt()
-        return deckHeight + overlayBottomLiftPx(context)
+        return deckHeight + launcherSearchShelfPx(context) + overlayBottomLiftPx(context)
     }
 
     fun freeformTargetNudgePx(context: Context): Int = context.dp(70)
+
+    // The docked launcher keyboard always owns a visible search/typing shelf above the key grid.
+    // Freeform app bounds reserve it too, otherwise OEM re-pin paths can cover the search field.
+    fun launcherSearchShelfPx(context: Context): Int = context.dp(45)
 
     private fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }

@@ -45,8 +45,9 @@ internal object DockedFreeform {
     @Volatile
     var externalAppInFront = false
 
-    // The launcher's measured top-region bottom (Y of the keyboard dock top, with margin). Set by
-    // MainActivity so the accessibility service can build Shizuku pin bounds without the launcher views.
+    // The launcher's measured raw top-region bottom. Set by MainActivity so the accessibility service
+    // can build Shizuku pin bounds without the launcher views; pinBounds reserves the keyboard search
+    // shelf from this raw value so apps never cover the docked search/chirp area.
     @Volatile
     var lastKeyboardTopPx: Int = 0
 
@@ -55,6 +56,7 @@ internal object DockedFreeform {
         val dm = context.resources.displayMetrics
         val minH = (360 * dm.density).toInt()
         val visualBottom = lastKeyboardTopPx.takeIf { it in minH..dm.heightPixels }
+            ?.let { reserveSearchShelf(context, it, minH) }
             ?: (dm.heightPixels - keyboardHeightPx(context)).coerceAtLeast(minH)
         val bottom = visualBottom.coerceIn(minH, dm.heightPixels)
         return Rect(0, 0, dm.widthPixels, bottom)
@@ -169,7 +171,7 @@ internal object DockedFreeform {
         val dm = context.resources.displayMetrics
         val minHeight = (360 * dm.density).toInt()
         val visualBottom = if (keyboardTopPx != null && keyboardTopPx in minHeight..dm.heightPixels) {
-            keyboardTopPx
+            reserveSearchShelf(context, keyboardTopPx, minHeight)
         } else {
             (dm.heightPixels - keyboardHeightPx(context)).coerceAtLeast(minHeight)
         }
@@ -198,7 +200,10 @@ internal object DockedFreeform {
         return DockedKeyboardMetrics.externalReservedBandHeightPx(context)
     }
 
-    private fun freeformGapPx(context: Context): Int = context.dp(43)
+    private fun freeformGapPx(context: Context): Int = 0
+
+    private fun reserveSearchShelf(context: Context, rawBottom: Int, minHeight: Int): Int =
+        (rawBottom - DockedKeyboardMetrics.launcherSearchShelfPx(context)).coerceAtLeast(minHeight)
 
     private fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 

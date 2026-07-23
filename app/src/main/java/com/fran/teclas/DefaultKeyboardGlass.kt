@@ -10,7 +10,12 @@ internal object DefaultKeyboardGlass {
         Build.MANUFACTURER.equals("samsung", ignoreCase = true) ||
             Build.BRAND.equals("samsung", ignoreCase = true)
 
-    fun deck(tokens: NeuTokens, radiusPx: Float, galaxy: Boolean = isGalaxyDevice()): Drawable {
+    fun deck(
+        tokens: NeuTokens,
+        radiusPx: Float,
+        galaxy: Boolean = isGalaxyDevice(),
+        fullBleed: Boolean = false,
+    ): Drawable {
         val light = tokens.mode == NeuMode.LIGHT
         val colors = when {
             galaxy && light -> intArrayOf(
@@ -35,20 +40,24 @@ internal object DefaultKeyboardGlass {
             )
         }
         return GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, colors).apply {
-            cornerRadius = radiusPx
+            cornerRadius = if (fullBleed) 0f else radiusPx
             val strokePx = (radiusPx / 18f).toInt().coerceIn(1, 3)
-            setStroke(
-                strokePx,
-                adjustAlpha(
-                    Color.WHITE,
-                    when {
-                        galaxy && light -> 0.46f
-                        galaxy -> 0.18f
-                        light -> 0.40f
-                        else -> 0.14f
-                    }
+            if (fullBleed) {
+                setStroke(0, Color.TRANSPARENT)
+            } else {
+                setStroke(
+                    strokePx,
+                    adjustAlpha(
+                        Color.WHITE,
+                        when {
+                            galaxy && light -> 0.46f
+                            galaxy -> 0.18f
+                            light -> 0.40f
+                            else -> 0.14f
+                        }
+                    )
                 )
-            )
+            }
         }
     }
 }
