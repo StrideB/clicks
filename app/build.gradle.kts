@@ -14,8 +14,8 @@ android {
         applicationId = "com.fran.teclas"
         minSdk = 31
         targetSdk = 37
-        versionCode = 18
-        versionName = "0.2.7"
+        versionCode = 19
+        versionName = "0.3.0"
 
         // Personal sideload app: every target device (Honor fold, Pixel, Apple-Silicon emulator)
         // is arm64-v8a. Shipping the other three ABIs tripled the APK's native-lib payload.
@@ -129,6 +129,9 @@ dependencies {
     // per wallpaper at set-time to produce a cached transparent cutout — no runtime cost after.
     // Module downloads on demand via Play services; absent devices fall back to the flat wallpaper.
     implementation(libs.mlkit.subject.segmentation)
+    // S Pen handwriting → text for launcher search. On-device ML Kit Digital Ink Recognition;
+    // the recognition model downloads on first use and runs offline. Only engaged by stylus input.
+    implementation(libs.mlkit.digital.ink)
     // Semantic search now runs on the app's own llama.cpp (nomic-embed GGUF, EmbedEngine) —
     // no AI Edge RAG SDK, no license-gated model, no tokenizer file.
     // Shizuku: adb/root-privileged binder access so the launcher can pin apps into the docked

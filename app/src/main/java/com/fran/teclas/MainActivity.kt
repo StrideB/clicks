@@ -15627,7 +15627,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(overlayLayer, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            // S Pen handwriting: a transparent overlay that captures ONLY stylus strokes (finger
+            // touches fall through to the keys, so typing is untouched) and drops recognized text
+            // into search. Skipped in number-pad / settings states where writing makes no sense.
+            if (penHandwritingEnabled() && !numberPadOpen && !keyboardSettingsOpen && !symbolsOpen) {
+                addView(
+                    HandwritingPadView(
+                        this@MainActivity,
+                        handwritingRecognizer,
+                        goKeyColor,
+                        onEngageChanged = {},
+                        onText = { txt -> appendHandwrittenText(txt) },
+                    ),
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                )
+            }
         }
+    }
+
+    /** One shared recognizer (built lazily; model downloads once on first stylus use). */
+    private val handwritingRecognizer by lazy { HandwritingRecognizer() }
+
+    private fun penHandwritingEnabled(): Boolean =
+        prefs().getBoolean(PEN_HANDWRITING_PREF, true)
+
+    /** A recognized handwriting phrase lands in the launcher search exactly like typed text. */
+    private fun appendHandwrittenText(text: String) {
+        if (openPane?.kind == PaneKind.CHAT) {
+            composeText += (if (composeText.isNotBlank() && !composeText.endsWith(" ")) " " else "") + text
+            openPane?.let { renderPaneContent(it) }
+            return
+        }
+        if (query.isNotBlank() && !query.endsWith(" ")) query += " "
+        query += text
+        if (hapticsEnabled) rootView.takeIf { ::rootView.isInitialized }?.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        updateAutoCapState(); updateKeyLabels(); render()
     }
 
     // The launcher's own (default) deck renders as glass; every named theme keeps its panel art.
@@ -23940,6 +23974,15 @@ Question: $prompt"""
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Pen handwriting",
+            if (penHandwritingEnabled()) "On · write with the S Pen on the keyboard" else "Off · tap to write with a pen",
+            listOf("pen", "s pen", "spen", "stylus", "handwriting", "write", "ink", "scribble")
+        ) {
+            prefs().edit().putBoolean(PEN_HANDWRITING_PREF, !penHandwritingEnabled()).apply()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Glass effects", toggleStateLabel(glassEffectsEnabled()),
             listOf("glass", "effects", "blur", "frosted")
         ) {
@@ -28668,6 +28711,7 @@ Question: $prompt"""
         // twin constant — keep them equal so both keyboards' glides feel identical).
         private const val GLIDE_TRAIL_WINDOW_MS = 320L
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
+        private const val PEN_HANDWRITING_PREF = "pen_handwriting"
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
         private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"
         private const val INNER_KEYBOARD_OFFSET_X_PREF = "inner_keyboard_offset_x"
