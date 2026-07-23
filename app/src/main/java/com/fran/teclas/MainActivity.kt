@@ -557,6 +557,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var gestureLockUntilMs = 0L
     private var widgetKeyboardDockHeightAnimator: ValueAnimator? = null
     private var widgetKeyboardHostHeightAnimator: ValueAnimator? = null
+    // Interactive slide-to-reveal (flag-gated). progress: 1f = keyboard fully shown, 0f = collapsed to the search bar.
+    private var slideKeyboardEnabled = false
+    private var widgetKeyboardSlideProgress = 1f
+    private var widgetKeyboardDragActive = false
+    private var widgetKeyboardDragStartRawY = 0f
+    private var widgetKeyboardDragStartProgress = 1f
+    private var widgetKeyboardDragLastRawY = 0f
+    private var widgetKeyboardDragLastT = 0L
+    private var widgetKeyboardDragVel = 0f
+    private var widgetKeyboardSettleAnimator: ValueAnimator? = null
+    private var widgetKeyboardCollapseGrabView: View? = null
     private var pendingWidgetKeyboardPopIn = false
     private var pendingWidgetKeyboardSwapAfterPopIn = false
     private var widgetSocketView: KeyboardSocketView? = null
@@ -894,6 +905,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         applyTheme()
         hapticsEnabled = prefs().getBoolean(HAPTICS_PREF, true)
         keyboardTiltLighting = prefs().getBoolean(KBD_TILT_LIGHT_PREF, true)
+        slideKeyboardEnabled = prefs().getBoolean(SLIDE_KEYBOARD_PREF, false)
+        widgetKeyboardSlideProgress = if (widgetKeyboardHidden) 0f else 1f
         useSystemKeyboard = prefs().getBoolean(USE_SYSTEM_KEYBOARD_PREF, false)
         libraryGridMode = prefs().getBoolean(LIBRARY_GRID_MODE_PREF, true)
         libraryOpen = appLibraryDefaultHome()
@@ -6454,6 +6467,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rightMargin = dp(10)
                 bottomMargin = dp(8)
             })
+            // Interactive-slide (flag-gated) grab pill — drag down to tuck the keyboard back to the search bar.
+            widgetKeyboardCollapseGrabView = View(context).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dp(9).toFloat()
+                    setColor(adjustAlpha(goKeyColor, 0.85f))
+                }
+                visibility = View.GONE
+                alpha = 0f
+                setOnTouchListener { _, event -> if (slideKeyboardInteractive()) handleWidgetKeyboardSlideDrag(event) else false }
+            }
+            addView(widgetKeyboardCollapseGrabView, FrameLayout.LayoutParams(dp(72), dp(18), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(6)
+            })
             setOnTouchListener { _, event ->
                 if (widgetKeyboardHidden) handleWidgetKeyboardSliderHostTouch(event) else false
             }
@@ -7354,6 +7381,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 translationY = 0f
                 isEnabled = true
             }
+            widgetKeyboardSlideProgress = 0f
+            widgetKeyboardCollapseGrabView?.apply { visibility = View.GONE; alpha = 0f }
             if (!animate) return
         } else {
             module.visibility = View.VISIBLE
@@ -7371,6 +7400,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 alpha = 0f
                 visibility = View.GONE
                 isEnabled = false
+            }
+            widgetKeyboardSlideProgress = 1f
+            widgetKeyboardCollapseGrabView?.apply {
+                val show = slideKeyboardEnabled
+                visibility = if (show) View.VISIBLE else View.GONE
+                alpha = if (show) 1f else 0f
             }
         }
     }
@@ -7522,7 +7557,166 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    // ── Interactive slide-to-reveal (flag-gated) ────────────────────────────────
+    // Turns the widget keyboard into a 1:1 draggable sheet: drag the search bar up to
+    // reveal the keys, drag the grab pill down to tuck it away to the search bar. On
+    // release a velocity-aware settle finishes the motion. Gated behind slideKeyboardEnabled
+    // so the default (two-finger swipe → canned animation) behaviour is untouched when off.
+    private fun slideKeyboardInteractive(): Boolean =
+        slideKeyboardEnabled && widgetKeyboardSliderAvailable() &&
+            widgetSwapState == WidgetKeyboardSwapState.SEATED
+
+    private fun widgetKeyboardTravelPx(): Float =
+        (expandedRootDockHeight() - widgetKeyboardCollapsedDockHeight()).coerceAtLeast(1).toFloat()
+
+    private fun setWidgetKeyboardSlotHeightImmediate(h: Int) {
+        val height = h.coerceAtLeast(1)
+        if (::keyboardDockView.isInitialized && keyboardDockView.parent != null) {
+            val lp = keyboardDockView.layoutParams ?: return
+            lp.height = height
+            keyboardDockView.layoutParams = lp
+        } else {
+            val host = widgetKeyboardHost ?: return
+            val lp = host.layoutParams ?: return
+            lp.height = height
+            host.layoutParams = lp
+        }
+    }
+
+    private fun driveWidgetKeyboardSlide(p0: Float) {
+        val p = p0.coerceIn(0f, 1f)
+        widgetKeyboardSlideProgress = p
+        val module = widgetKeyboardModule ?: return
+        val collapsed = widgetKeyboardCollapsedDockHeight()
+        val expanded = expandedRootDockHeight()
+        setWidgetKeyboardSlotHeightImmediate((collapsed + (expanded - collapsed) * p).toInt())
+        val hiddenTy = widgetKeyboardHiddenTranslationY(module)
+        val baseTy = widgetKeyboardBaseTranslationY()
+        module.visibility = View.VISIBLE
+        module.translationY = hiddenTy + (baseTy - hiddenTy) * p
+        module.alpha = (p * 1.6f).coerceIn(0f, 1f)
+        module.isEnabled = p >= 0.985f
+        widgetKeyboardSeatView?.apply {
+            visibility = View.VISIBLE
+            alpha = 0.32f * p
+        }
+        widgetKeyboardSliderHandleView?.apply {
+            val a = (1f - p * 2.4f).coerceIn(0f, 1f)
+            alpha = a
+            visibility = if (a <= 0.02f) View.GONE else View.VISIBLE
+            isEnabled = a > 0.5f
+        }
+        widgetKeyboardCollapseGrabView?.apply {
+            val a = ((p - 0.45f) * 2.6f).coerceIn(0f, 1f)
+            alpha = a
+            visibility = if (a <= 0.02f) View.GONE else View.VISIBLE
+        }
+    }
+
+    private fun settleWidgetKeyboardSlide(toShown: Boolean, velProgPerMs: Float) {
+        widgetKeyboardSettleAnimator?.cancel()
+        val from = widgetKeyboardSlideProgress.coerceIn(0f, 1f)
+        val to = if (toShown) 1f else 0f
+        if (from == to) {
+            finishWidgetKeyboardSlide(toShown)
+            return
+        }
+        widgetKeyboardSliderAnimating = true
+        widgetKeyboardSettleAnimator = ValueAnimator.ofFloat(from, to).apply {
+            duration = (170f + abs(to - from) * 220f).toLong().coerceIn(150L, 420L)
+            interpolator = DecelerateInterpolator(if (toShown) 1.6f else 1.9f)
+            addUpdateListener { driveWidgetKeyboardSlide(it.animatedValue as Float) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    driveWidgetKeyboardSlide(to)
+                    finishWidgetKeyboardSlide(toShown)
+                }
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    widgetKeyboardSettleAnimator = null
+                    widgetKeyboardSliderAnimating = false
+                }
+            })
+            start()
+        }
+    }
+
+    private fun finishWidgetKeyboardSlide(shown: Boolean) {
+        widgetKeyboardSettleAnimator = null
+        widgetKeyboardSliderAnimating = false
+        widgetKeyboardDragActive = false
+        widgetKeyboardHidden = !shown
+        saveWidgetKeyboardHiddenForCurrentPosture(!shown)
+        applyWidgetKeyboardHiddenState(animate = false)
+        if (shown) resetWidgetKeyboardTouchGeometry()
+        widgetKeyboardModule?.let { module ->
+            if (hapticsEnabled) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    module.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                } else {
+                    haptic(module)
+                }
+            }
+        }
+    }
+
+    private fun handleWidgetKeyboardSlideDrag(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                widgetKeyboardSettleAnimator?.cancel()
+                widgetKeyboardSettleAnimator = null
+                widgetKeyboardDockHeightAnimator?.cancel()
+                widgetKeyboardHostHeightAnimator?.cancel()
+                widgetKeyboardSliderAnimating = false
+                widgetKeyboardDragActive = true
+                widgetKeyboardDragStartRawY = event.rawY
+                widgetKeyboardDragStartProgress = if (widgetKeyboardHidden) 0f else 1f
+                widgetKeyboardDragLastRawY = event.rawY
+                widgetKeyboardDragLastT = android.os.SystemClock.uptimeMillis()
+                widgetKeyboardDragVel = 0f
+                reserveKeyboardSlideGesture(event)
+                driveWidgetKeyboardSlide(widgetKeyboardDragStartProgress)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!widgetKeyboardDragActive) return true
+                val dy = event.rawY - widgetKeyboardDragStartRawY
+                driveWidgetKeyboardSlide(widgetKeyboardDragStartProgress - dy / widgetKeyboardTravelPx())
+                val now = android.os.SystemClock.uptimeMillis()
+                val dt = (now - widgetKeyboardDragLastT).coerceAtLeast(1L)
+                widgetKeyboardDragVel = -(event.rawY - widgetKeyboardDragLastRawY) / dt / widgetKeyboardTravelPx()
+                widgetKeyboardDragLastRawY = event.rawY
+                widgetKeyboardDragLastT = now
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (widgetKeyboardDragActive) {
+                    widgetKeyboardDragActive = false
+                    widgetKeyboardSlideGestureActive = false
+                    val moved = abs(event.rawY - widgetKeyboardDragStartRawY) > dp(6).toFloat()
+                    val shown = when {
+                        widgetKeyboardDragVel > 0.0016f -> true
+                        widgetKeyboardDragVel < -0.0016f -> false
+                        !moved -> true
+                        else -> widgetKeyboardSlideProgress > 0.4f
+                    }
+                    settleWidgetKeyboardSlide(shown, widgetKeyboardDragVel)
+                }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (widgetKeyboardDragActive) {
+                    widgetKeyboardDragActive = false
+                    widgetKeyboardSlideGestureActive = false
+                    settleWidgetKeyboardSlide(widgetKeyboardSlideProgress > 0.5f, 0f)
+                }
+                return true
+            }
+        }
+        return true
+    }
+
     private fun handleWidgetKeyboardSliderHandleTouch(event: MotionEvent): Boolean {
+        if (slideKeyboardInteractive()) return handleWidgetKeyboardSlideDrag(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 widgetKeyboardHandleDownY = event.rawY
@@ -7586,6 +7780,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun handleVisibleWidgetKeyboardGlobalGesture(event: MotionEvent): Boolean {
+        // Interactive slide owns reveal/collapse via the handle + grab pill listeners; the
+        // two-finger global path steps aside so it doesn't double-fire.
+        if (slideKeyboardInteractive()) return false
         if (!widgetKeyboardSliderAvailable() ||
             widgetKeyboardHidden ||
             widgetKeyboardSliderAnimating ||
@@ -7629,6 +7826,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun handleHiddenWidgetKeyboardGlobalGesture(event: MotionEvent): Boolean {
+        // Interactive slide handles reveal through the search-bar handle's own touch listener.
+        if (slideKeyboardInteractive()) return false
         if (!widgetKeyboardHidden || !widgetKeyboardSliderAvailable() || widgetKeyboardSliderAnimating) {
             widgetKeyboardHostTwoFingerActive = false
             return false
@@ -15083,6 +15282,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rightMargin = dp(10)
                 bottomMargin = dp(8)
             })
+            // Interactive-slide (flag-gated) grab pill — drag down to tuck the keyboard back to the search bar.
+            widgetKeyboardCollapseGrabView = View(context).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dp(9).toFloat()
+                    setColor(adjustAlpha(goKeyColor, 0.85f))
+                }
+                visibility = View.GONE
+                alpha = 0f
+                setOnTouchListener { _, event -> if (slideKeyboardInteractive()) handleWidgetKeyboardSlideDrag(event) else false }
+            }
+            addView(widgetKeyboardCollapseGrabView, FrameLayout.LayoutParams(dp(72), dp(18), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(6)
+            })
             setOnTouchListener { _, event ->
                 if (widgetKeyboardHidden) handleWidgetKeyboardSliderHostTouch(event) else false
             }
@@ -15697,6 +15910,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 haptic(this)
                 keyboardSettingsOpen = false
                 if (!useSystemKeyboard) hideSystemKeyboardIme()
+                render()
+            }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
+
+            addView(settingToggle("SLIDE KEYBOARD", slideKeyboardEnabled) {
+                slideKeyboardEnabled = !slideKeyboardEnabled
+                prefs().edit().putBoolean(SLIDE_KEYBOARD_PREF, slideKeyboardEnabled).apply()
+                haptic(this)
+                applyWidgetKeyboardHiddenState(animate = false)
                 render()
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(30))
 
@@ -28712,6 +28933,7 @@ Question: $prompt"""
         private const val HAPTICS_PREF = "haptics"
         private const val USE_SYSTEM_KEYBOARD_PREF = "use_system_keyboard"
         private const val KBD_TILT_LIGHT_PREF = "kbd_tilt_light"
+        private const val SLIDE_KEYBOARD_PREF = "slide_keyboard_interactive"
         private const val LIBRARY_GRID_MODE_PREF = "library_grid_mode"
         private const val GRID_APP_TILE_TAG = "grid_app_tile"
         internal const val GO_KEY_COLOR_PREF = "go_key_color"
