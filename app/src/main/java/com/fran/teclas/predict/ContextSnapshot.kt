@@ -5,6 +5,13 @@ enum class CalendarProximity { IN_MEETING, MEETING_SOON, FREE }
 enum class LaunchSource { DOCK, DRAWER, SEARCH, COMMAND, OTHER }
 
 /**
+ * Graduated distance from the user's Home place. `awayFromHome` is a single 300km/timezone flip;
+ * these rings also catch regional and same-timezone trips it misses, and let Travel scale its
+ * confidence instead of switching on a hard edge.
+ */
+enum class DistanceBand { HOME, LOCAL, REGIONAL, FAR }
+
+/**
  * One reading of "where/when/how" the user is right now. Feeds both the bandit's feature
  * vector and Space detection. Cheap value object — build via [ContextSensors.snapshot].
  */
@@ -28,6 +35,10 @@ data class ContextSnapshot(
      * or the fix is 300+ km from the saved Home place. Drives Travel auto-detection.
      */
     val awayFromHome: Boolean = false,
+    /** Graduated distance-from-Home ring; catches regional/same-timezone travel awayFromHome misses. */
+    val distanceBand: DistanceBand = DistanceBand.HOME,
+    /** False when the current cluster is somewhere the user doesn't usually go (unknown dwell). */
+    val placeFamiliar: Boolean = true,
 ) {
 
     /**
@@ -47,6 +58,8 @@ data class ContextSnapshot(
         if (mediaPlaying) add("media")
         if (calendar != CalendarProximity.FREE) add("cal:${calendar.name}")
         if (awayFromHome) add("away")
+        if (distanceBand != DistanceBand.HOME) add("dband:${distanceBand.name}")
+        if (!placeFamiliar) add("unfamiliar")
         lastApp?.let { add("last:${it.hashCode()}") }
         if (lastApp != null && prevApp != null) add("bigram:${prevApp.hashCode()}>${lastApp.hashCode()}")
         add("bias")

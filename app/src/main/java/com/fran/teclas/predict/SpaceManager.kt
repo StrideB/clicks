@@ -171,14 +171,28 @@ object SpaceManager {
         var best: Space? = null
         var bestSpecificity = 0
         var bestStrong = false
-        for (space in all) {
-            if (!space.autoSwitch) continue
-            val (specificity, strong) = match(space.triggers, snapshot) ?: continue
+        fun consider(space: Space?, specificity: Int, strong: Boolean) {
+            if (space == null || !space.autoSwitch) return
             if (specificity > bestSpecificity ||
                 (specificity == bestSpecificity && space.priority > (best?.priority ?: -1))
             ) {
                 best = space; bestSpecificity = specificity; bestStrong = strong
             }
+        }
+        for (space in all) {
+            if (!space.autoSwitch) continue
+            val (specificity, strong) = match(space.triggers, snapshot) ?: continue
+            consider(space, specificity, strong)
+        }
+        // Meetings decide the work profile: an active meeting surfaces Work regardless of place or
+        // time-of-day (a 7pm call from a cafe still gets work apps). Driving/Travel still outrank it.
+        if (snapshot.calendar == CalendarProximity.IN_MEETING) consider(all.find { it.id == "work" }, 2, strong = true)
+        // Scored Travel: fixes the "dies at the hotel" gap and catches regional / same-timezone trips
+        // the binary awayFromHome misses. Hysteresis — a lower bar to STAY in Travel than to enter it
+        // — keeps it from flickering to Home as you move around a new city.
+        val travelEnter = if (previousId == "travel") 2 else 4
+        if (snapshot.distanceBand != DistanceBand.HOME && travelScore(snapshot) >= travelEnter) {
+            consider(all.find { it.id == "travel" }, 2, strong = true)
         }
         // No trigger matched. Being away from home is still a hard fact — falling back to
         // "Home" on a trip abroad is exactly wrong, so away prefers Travel.
@@ -190,6 +204,24 @@ object SpaceManager {
             ?: all.firstOrNull()
             ?: defaults().first { it.id == "home" }
         return SpaceDetection(fallback, strong = (best != null && bestStrong) || awayTravel != null, locked = false)
+    }
+
+    /**
+     * How strongly the context says "you're travelling", fusing the signals ContextSensors already
+     * collects. Enter Travel at >=4; a lower stay-bar is applied by the caller as hysteresis. HOME
+     * band short-circuits to 0 — near a saved place is never travel.
+     */
+    private fun travelScore(s: ContextSnapshot): Int {
+        var score = when (s.distanceBand) {
+            DistanceBand.FAR -> 3
+            DistanceBand.REGIONAL -> 2
+            DistanceBand.LOCAL -> 0
+            DistanceBand.HOME -> return 0
+        }
+        if (s.awayFromHome) score += 3                   // >300 km or a learned-timezone shift
+        if (!s.placeFamiliar) score += 2                 // somewhere the user doesn't usually go
+        if (s.placeKind == PlaceKind.AIRPORT) score += 2 // at / near an airport
+        return score
     }
 
     /** Null when a specified group fails; otherwise (matched group count, any strong group). */

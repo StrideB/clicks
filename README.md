@@ -126,6 +126,12 @@ Swiping right on the homescreen opens the Today page — a Compose live timeline
 
 The `predict/` package is an on-device bandit engine that rearranges the dock, drawer, and search suggestions around context (hour bucket, weekday, saved places, driving, headphones, charging). Spaces are user-editable in `SpacesSettingsActivity` (Compose): triggers, pinned/excluded apps, manual places (stored encrypted via `PlaceStore`), and per-Space learning resets. Place suggestions surface as actionable notifications (`PlaceSuggestionNotifier`). Everything is decided on-device; transition logs are Keystore-encrypted.
 
+Space detection (`SpaceManager.detectIn`) is rule-based (most matching trigger groups wins, `priority` breaks ties), with three refinements on top:
+
+- **Travel is scored, not a hard edge.** The old rule needed `AIRPORT` or `awayFromHome`, and `awayFromHome` only fires on a >300 km jump or a learned-timezone shift — so it missed regional and same-timezone trips and collapsed the moment you left the airport. `ContextSensors` now also emits a graduated `DistanceBand` (HOME/LOCAL/REGIONAL/FAR, thresholds 15/40/300 km) and `placeFamiliar` (false at an unknown dwell cluster). `travelScore()` fuses distance band + away + unfamiliarity + airport; Travel activates at ≥4 with **hysteresis** (stay-bar of 2 once active) so it persists across the whole trip — hotel, restaurants, sightseeing — without flickering to Home.
+- **Meetings drive the work profile.** `CalendarProximity.IN_MEETING` now surfaces Work regardless of place or time-of-day (a 7pm call from a cafe gets work apps); Driving/Travel still outrank it.
+- The distance band and unfamiliarity are also emitted as bandit features (`dband:*`, `unfamiliar`) so per-context learning can use them.
+
 ## Current Dimensions And Layout Constants
 
 These are the current code-level sizing rules:

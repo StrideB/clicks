@@ -28,7 +28,9 @@ object ContextSensors {
     private const val DRIVING_SPEED_MS = 6f          // ~13 mph sustained fix speed
     private const val FRESH_FIX_MS = 10 * 60 * 1000L
 
-    private const val AWAY_DISTANCE_M = 300_000f     // 300 km from the saved Home place
+    private const val AWAY_DISTANCE_M = 300_000f     // 300 km from Home → FAR (also the tz-flip band)
+    private const val REGIONAL_DISTANCE_M = 40_000f  // 40 km  → REGIONAL (day-trip range begins)
+    private const val LOCAL_DISTANCE_M = 15_000f     // 15 km  → LOCAL (still around town)
     private const val TZ_MIN_SAMPLES = 24            // ~a day of awake-hours before a "usual" timezone exists
 
     private var cachedAt = 0L
@@ -36,6 +38,8 @@ object ContextSensors {
     private var cachedSpeedDriving = false
     private var cachedCalendar = CalendarProximity.FREE
     private var cachedAway = false
+    private var cachedBand = DistanceBand.HOME
+    private var cachedFamiliar = true
 
     fun snapshot(
         context: Context,
@@ -68,6 +72,8 @@ object ContextSensors {
             prevApp = prevApp,
             timestamp = System.currentTimeMillis(),
             awayFromHome = cachedAway,
+            distanceBand = cachedBand,
+            placeFamiliar = cachedFamiliar,
         )
     }
 
@@ -91,6 +97,30 @@ object ContextSensors {
         }
         cachedCalendar = runCatching { calendarProximity(context) }.getOrDefault(CalendarProximity.FREE)
         cachedAway = runCatching { awayFromHome(context, freshFix) }.getOrDefault(false)
+        // Familiar = at a recognized cluster (a saved place or a spot the user dwells); "unknown"
+        // means somewhere new — a strong travel cue even under 300 km / same timezone.
+        cachedFamiliar = cachedPlace.first != "unknown"
+        cachedBand = runCatching { distanceBand(context, freshFix) }.getOrDefault(DistanceBand.HOME)
+    }
+
+    /**
+     * Graduated distance-from-Home ring. At a saved HOME/WORK place it's always HOME. Otherwise
+     * derived from the fresh fix's distance to Home; with no fix, a timezone flip still reports FAR.
+     */
+    private fun distanceBand(context: Context, freshFix: android.location.Location?): DistanceBand {
+        if (cachedPlace.second == PlaceKind.HOME || cachedPlace.second == PlaceKind.WORK) return DistanceBand.HOME
+        val home = PlaceStore.places(context).find { it.kind == PlaceKind.HOME }
+        if (home != null && freshFix != null) {
+            val d = PlaceStore.distanceM(home.lat, home.lng, freshFix.latitude, freshFix.longitude)
+            return when {
+                d > AWAY_DISTANCE_M -> DistanceBand.FAR
+                d > REGIONAL_DISTANCE_M -> DistanceBand.REGIONAL
+                d > LOCAL_DISTANCE_M -> DistanceBand.LOCAL
+                else -> DistanceBand.HOME
+            }
+        }
+        // No usable fix: a learned-timezone shift is the only away signal left, and it means FAR.
+        return if (cachedAway) DistanceBand.FAR else DistanceBand.HOME
     }
 
     /**
