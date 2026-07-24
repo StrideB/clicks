@@ -23,8 +23,11 @@ class TapResolver(private val spatial: SpatialScorer) {
         if (!smartEnabled) return label
         spatial.recordTap(rawX, rawY)
         keyBounds[label]?.let { rect ->
-            val marginX = rect.width() * 0.24f
-            val marginY = rect.height() * 0.24f
+            // Trust the pressed key unless the tap is close to an EDGE. A tighter margin = "you hit
+            // what you intended" more often (only the outer sliver of a key is eligible for spatial
+            // re-assignment); a wide margin re-resolves too many honest presses and feels loose.
+            val marginX = rect.width() * 0.16f
+            val marginY = rect.height() * 0.16f
             val nearEdge = rawX < rect.left + marginX || rawX > rect.right - marginX ||
                 rawY < rect.top + marginY || rawY > rect.bottom - marginY
             if (!nearEdge) return label   // confident center press — never override a clean tap

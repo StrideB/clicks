@@ -248,7 +248,10 @@ class SpatialScorer {
         // can't collapse onto a point or swallow neighbouring rows. DEV_RATE = slow EW adaptation.
         private const val SIGMA_FROM_DEV = 1.253
         private const val SIGMA_MIN = 0.65
-        private const val SIGMA_MAX = 1.50
+        // Cap how loose the adaptive hot-zone can grow. 1.50 let zones swell enough to swallow
+        // neighbouring keys for a scattered typist, which reads as "loose / I hit the wrong letter";
+        // 1.25 keeps the catch-radius tighter so honest presses commit the key under the finger.
+        private const val SIGMA_MAX = 1.25
         private const val DEV_RATE = 0.02
     }
 }
