@@ -22,6 +22,7 @@ object PlaceInference {
     private const val DISMISSED_KEY = "predict_place_dismissed"
     private const val LAST_RUN_KEY = "predict_inference_last_run"
     private const val LAST_FIX_KEY = "predict_last_fix"
+    private const val LAST_JUMP_KEY = "predict_last_airport_jump"   // ts of the last 100km+ hop (a flight)
 
     /** "teclas" pref: master switch for suggestions (settings toggle), default on. */
     const val ENABLED_PREF = "spaces_place_suggestions"
@@ -63,6 +64,9 @@ object PlaceInference {
         if (lastTs > 0 && !lastLat.isNaN() && now - lastTs < JUMP_WINDOW_MS) {
             val dist = PlaceStore.distanceM(lastLat, lastLng, location.latitude, location.longitude)
             if (dist > JUMP_DISTANCE_M) {
+                // Record the flight so Travel stays on while you land and head to the hotel; cleared
+                // by recency, so driving from your HOME airport (no prior hop) never reads as travel.
+                prefs.edit().putLong(LAST_JUMP_KEY, now).apply()
                 suggest(
                     context,
                     Suggestion(
@@ -78,6 +82,12 @@ object PlaceInference {
         prefs.edit().putString(LAST_FIX_KEY, JSONObject().apply {
             put("ts", now); put("lat", location.latitude); put("lng", location.longitude)
         }.toString()).apply()
+    }
+
+    /** True if a 100km+ hop (a flight) was seen within [windowMs]. Pure pref read — no sensing. */
+    fun flewRecently(context: Context, windowMs: Long = 18 * 60 * 60 * 1000L): Boolean {
+        val ts = runCatching { PredictCrypto.prefs(context).getLong(LAST_JUMP_KEY, 0L) }.getOrDefault(0L)
+        return ts > 0 && System.currentTimeMillis() - ts < windowMs
     }
 
     /** Throttled dwell-pattern pass — call from any background refresh. */
