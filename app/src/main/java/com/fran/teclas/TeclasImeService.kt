@@ -390,6 +390,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // Post-commit one-tap chips: revert the last autocorrect, or apply a sentence fix (doubled
     // word / a-an). Shown as the first suggestion chip(s) after a space; cleared on any other input.
     private var correctionRevertWord: String? = null
+    // Set when the user backspaces into the current word: they're deliberately editing it, so the next
+    // space keeps it AS TYPED instead of re-autocorrecting/replacing it (Gboard-style "manual edit
+    // wins" — stops the type→correct→backspace→correct-again loop). Cleared when the word commits.
+    private var currentWordEdited = false
     private var pendingSentenceFix: com.fran.teclas.keyboard.unified.SentenceChecks.Fix? = null
     private fun fixLabel(f: com.fran.teclas.keyboard.unified.SentenceChecks.Fix): String =
         if (f.replacement.isEmpty()) "✕ double" else f.replacement.trim()
@@ -1626,6 +1630,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             }
             "back" -> {
                 clearPostCommitChips()
+                currentWordEdited = true   // manual edit: keep this word as typed on the next space
                 // Undo autocorrect via the shared core (restore original + remember rejection).
                 if (input != null && autocorrect.undoOnBackspace()) { tapTraceClear(); onTextChanged(); return }
                 tapTracePop()
@@ -1659,7 +1664,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                         // Never auto-change the word mid-sentence; just learn it (so your slang/abbrev
                         // stops being flagged) and let it stand. Fixing happens only on send.
                         userDict.noteTyped(currentWord())
-                    } else if (autocorrectEnabled()) {
+                    } else if (autocorrectEnabled() && !currentWordEdited) {
                         // Fast path: the prediction thread already decided this word's correction
                         // while it was being typed — apply the cached answer with zero dictionary
                         // work inside the keystroke. Falls back to the synchronous search only when
@@ -1672,7 +1677,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                             autocorrect.correctBeforeCommit()
                         }
                         pendingCorrection = null
+                    } else if (currentWordEdited) {
+                        // You backspaced into this word — keep it exactly as typed; just learn it so it
+                        // stops being flagged, instead of re-correcting and re-replacing it.
+                        userDict.noteTyped(currentWord())
+                        pendingCorrection = null
                     }
+                    currentWordEdited = false   // word committed — the next one starts fresh
                     commitValue(" ")
                     tapTraceClear()
                     // Standalone "i" → "I" (English only): the one sentence fix safe to apply

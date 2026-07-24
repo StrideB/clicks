@@ -17958,8 +17958,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // Autocorrect now runs through the shared AutocorrectCore. `live` (mid-typing) rewriting stays
     // disabled — correct only on space/punctuation; the core commits the corrected word (no trailing
     // space) and the space handler adds the space, matching the previous behavior.
+    // Set when the user backspaces into the current word: keep it as typed on the next space instead
+    // of re-autocorrecting/replacing it (Gboard-style "manual edit wins"). Cleared when a word commits.
+    private var launcherWordEdited = false
+
     private fun tryAutocorrect(live: Boolean = false) {
         if (live) return
+        if (launcherWordEdited) { launcherWordEdited = false; pendingLauncherCorrection = null; return }
         // Fast path: the prediction thread already decided this word's correction while it was
         // being typed — apply the cached answer with zero dictionary work inside the keystroke.
         val word = autocorrectCore.currentWord()
@@ -19338,6 +19343,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
         when (label) {
             "back" -> {
+                launcherWordEdited = true   // manual edit: keep this word as typed on the next space
                 // Undo autocorrect via the shared core (restore original + remember rejection).
                 if (!libraryOpen && autocorrectCore.undoOnBackspace()) { renderRibbon(); return }
                 val pos = cursorPos
@@ -20410,6 +20416,7 @@ Question: $prompt"""
     private fun handleChatKey(label: String, pane: PaneTarget) {
         when (label) {
             "back" -> {
+                launcherWordEdited = true   // manual edit: keep this word as typed on the next space
                 if (autocorrectCore.undoOnBackspace()) { updateAutoCapState(); updateKeyLabels(); return }
                 val pos = cursorPos
                 if (pos != null && pos > 0) {
