@@ -27768,6 +27768,7 @@ Question: $prompt"""
         private val face = RectF()
         private var cachedWallpaper: Bitmap? = null
         private var cachedKey = ""
+        private var cachedLuma = 0.5f
 
         override fun draw(canvas: Canvas) {
             val b = bounds
@@ -27805,7 +27806,7 @@ Question: $prompt"""
             } else {
                 draw3dGlassFallbackFill(canvas, face, dark)
             }
-            draw3dGlassFrost(canvas, face, dark)
+            draw3dGlassFrost(canvas, face, dark, if (sampled != null && !sampled.isRecycled) cachedLuma else if (dark) 0.24f else 0.72f)
             canvas.restore()
 
             paint.shader = null
@@ -27840,8 +27841,8 @@ Question: $prompt"""
             cachedWallpaper?.let { cached ->
                 if (!cached.isRecycled && cachedKey == cacheKey) return cached
             }
-            val sampleW = (face.width() / 8f).toInt().coerceIn(8, 96)
-            val sampleH = (face.height() / 8f).toInt().coerceIn(8, 96)
+            val sampleW = (face.width() / 16f).toInt().coerceIn(5, 64)
+            val sampleH = (face.height() / 16f).toInt().coerceIn(5, 64)
             val sample = Bitmap.createBitmap(sampleW, sampleH, Bitmap.Config.ARGB_8888)
             val c = Canvas(sample)
             c.scale(sampleW / face.width(), sampleH / face.height())
@@ -27854,10 +27855,32 @@ Question: $prompt"""
             wallpaperDrawable.setBounds(0, 0, drawW, drawH)
             wallpaperDrawable.draw(c)
             wallpaperDrawable.bounds = oldBounds
+            cachedLuma = averageLuma(sample)
             cachedWallpaper?.recycle()
             cachedWallpaper = sample
             cachedKey = cacheKey
             return sample
+        }
+
+        private fun averageLuma(bitmap: Bitmap): Float {
+            var sum = 0f
+            var count = 0
+            val stepX = (bitmap.width / 4).coerceAtLeast(1)
+            val stepY = (bitmap.height / 4).coerceAtLeast(1)
+            var y = 0
+            while (y < bitmap.height) {
+                var x = 0
+                while (x < bitmap.width) {
+                    val color = bitmap.getPixel(x, y)
+                    val alpha = Color.alpha(color) / 255f
+                    val luma = (0.299f * Color.red(color) + 0.587f * Color.green(color) + 0.114f * Color.blue(color)) / 255f
+                    sum += luma * alpha
+                    count += 1
+                    x += stepX
+                }
+                y += stepY
+            }
+            return if (count == 0) 0.5f else (sum / count).coerceIn(0f, 1f)
         }
 
         private fun draw3dGlassFallbackFill(canvas: Canvas, rect: RectF, dark: Boolean) {
@@ -27867,7 +27890,7 @@ Question: $prompt"""
                 rect.top,
                 0f,
                 rect.bottom,
-                if (dark) intArrayOf(0x44FFFFFF, 0x2092B6FF, 0x10000000) else intArrayOf(0xCCFFFFFF.toInt(), 0x88EAF4FF.toInt(), 0x55BED2EA),
+                if (dark) intArrayOf(0x2AFFFFFF, 0xCC151B25.toInt(), 0xE0070B12.toInt()) else intArrayOf(0xE8FFFFFF.toInt(), 0xC8EAF4FF.toInt(), 0xB8D4E4F7.toInt()),
                 null,
                 Shader.TileMode.CLAMP
             )
@@ -27875,7 +27898,17 @@ Question: $prompt"""
             paint.shader = null
         }
 
-        private fun draw3dGlassFrost(canvas: Canvas, rect: RectF, dark: Boolean) {
+        private fun draw3dGlassFrost(canvas: Canvas, rect: RectF, dark: Boolean, luma: Float) {
+            val darkBodyAlpha = when {
+                luma > 0.62f -> 0xB8
+                luma < 0.28f -> 0x82
+                else -> 0x9E
+            }
+            val lightBodyAlpha = when {
+                luma < 0.34f -> 0xF0
+                luma > 0.78f -> 0xD8
+                else -> 0xE4
+            }
             paint.style = Paint.Style.FILL
             paint.shader = LinearGradient(
                 0f,
@@ -27884,15 +27917,15 @@ Question: $prompt"""
                 rect.bottom,
                 if (dark) {
                     intArrayOf(
-                        if (pressed) 0x42FFFFFF else 0x2FFFFFFF,
-                        if (pressed) 0x26FFFFFF else 0x18FFFFFF,
-                        0x22000000
+                        if (pressed) 0x48FFFFFF else 0x38FFFFFF,
+                        Color.argb(darkBodyAlpha, 16, 22, 32),
+                        Color.argb((darkBodyAlpha + 26).coerceAtMost(238), 1, 3, 7)
                     )
                 } else {
                     intArrayOf(
-                        if (pressed) 0xD8FFFFFF.toInt() else 0xB8FFFFFF.toInt(),
-                        0x70FFFFFF,
-                        0x24FFFFFF
+                        Color.argb(if (pressed) 246 else lightBodyAlpha, 255, 255, 255),
+                        Color.argb((lightBodyAlpha - 28).coerceAtLeast(182), 238, 246, 255),
+                        Color.argb((lightBodyAlpha - 54).coerceAtLeast(150), 214, 229, 247)
                     )
                 },
                 floatArrayOf(0f, 0.44f, 1f),
@@ -27910,10 +27943,10 @@ Question: $prompt"""
             )
             canvas.drawRect(rect, paint)
             paint.shader = null
-            paint.color = if (dark) 0x16000000 else 0x12FFFFFF
+            paint.color = if (dark) 0x32000000 else 0x22FFFFFF
             canvas.drawRect(rect.left, rect.centerY(), rect.right, rect.bottom, paint)
             if (label == "space" || label == "back" || label == "." || label == "period" || label == "teclas") {
-                paint.color = if (dark) 0x22000000 else 0x18FFFFFF
+                paint.color = if (dark) 0x36000000 else 0x24FFFFFF
                 canvas.drawRect(rect, paint)
             }
         }
@@ -28017,7 +28050,11 @@ Question: $prompt"""
         goLegendColor()
     } else if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
         when (label) {
-            "shift", "back" -> KeyboardThemeDrawables.accent(keyboardTheme, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            "shift", "back" -> if (keyboardTheme == KEYBOARD_THEME_3DGLASS || KeyboardThemeDrawables.isDepthVariant(keyboardTheme)) {
+                KeyboardThemeDrawables.textColor(keyboardTheme, label, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            } else {
+                KeyboardThemeDrawables.accent(keyboardTheme, activeNeuTokens.mode == NeuMode.DARK, goKeyColor)
+            }
             else -> KeyboardThemeDrawables.textColor(keyboardTheme, label, activeNeuTokens.mode == NeuMode.DARK)
         }
     } else if (keyboardTheme == KEYBOARD_THEME_BRUSHED) {

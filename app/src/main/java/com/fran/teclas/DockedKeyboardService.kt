@@ -1148,7 +1148,11 @@ class DockedKeyboardService : Service() {
         val theme = keyboardVisualTheme()
         if (KeyboardThemeDrawables.isAddedTheme(theme)) {
             return when (label) {
-                "shift", "back" -> KeyboardThemeDrawables.accent(theme, selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
+                "shift", "back" -> if (theme == KEYBOARD_THEME_3DGLASS || KeyboardThemeDrawables.isDepthVariant(theme)) {
+                    KeyboardThemeDrawables.textColor(theme, label, selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
+                } else {
+                    KeyboardThemeDrawables.accent(theme, selectedNeuTokens().mode == NeuMode.DARK, goKeyColor())
+                }
                 else -> KeyboardThemeDrawables.textColor(theme, label, selectedNeuTokens().mode == NeuMode.DARK)
             }
         }
