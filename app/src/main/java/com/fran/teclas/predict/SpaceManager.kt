@@ -221,6 +221,7 @@ object SpaceManager {
         if (s.awayFromHome) score += 3                   // >300 km or a learned-timezone shift
         if (!s.placeFamiliar) score += 2                 // somewhere the user doesn't usually go
         if (s.placeKind == PlaceKind.AIRPORT) score += 2 // at / near an airport
+        if (s.recentlyFlew) score += 3                   // just flew — landing + heading out stays travel
         return score
     }
 

@@ -39,6 +39,8 @@ data class ContextSnapshot(
     val distanceBand: DistanceBand = DistanceBand.HOME,
     /** False when the current cluster is somewhere the user doesn't usually go (unknown dwell). */
     val placeFamiliar: Boolean = true,
+    /** A 100km+ hop (a flight) was detected within the last ~18h — you're mid-trip, not commuting. */
+    val recentlyFlew: Boolean = false,
 ) {
 
     /**

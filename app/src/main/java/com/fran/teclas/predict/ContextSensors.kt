@@ -40,6 +40,7 @@ object ContextSensors {
     private var cachedAway = false
     private var cachedBand = DistanceBand.HOME
     private var cachedFamiliar = true
+    private var cachedFlew = false
 
     fun snapshot(
         context: Context,
@@ -74,6 +75,7 @@ object ContextSensors {
             awayFromHome = cachedAway,
             distanceBand = cachedBand,
             placeFamiliar = cachedFamiliar,
+            recentlyFlew = cachedFlew,
         )
     }
 
@@ -101,6 +103,7 @@ object ContextSensors {
         // means somewhere new — a strong travel cue even under 300 km / same timezone.
         cachedFamiliar = cachedPlace.first != "unknown"
         cachedBand = runCatching { distanceBand(context, freshFix) }.getOrDefault(DistanceBand.HOME)
+        cachedFlew = runCatching { PlaceInference.flewRecently(context) }.getOrDefault(false)
     }
 
     /**
