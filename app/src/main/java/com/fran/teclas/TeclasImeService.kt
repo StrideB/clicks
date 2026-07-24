@@ -490,6 +490,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private var liveCorrectDebounce: Runnable? = null
     private var geminiDebounce: Runnable? = null
     private var lastSpaceMs = 0L
+    // Bounce suppression: a same-letter re-fire within ~40ms is finger/hardware jitter, not a real
+    // double letter (deliberate doubles land 100ms+ apart) — dropping it kills phantom double letters.
+    private var lastLetterLabel = ""
+    private var lastLetterTapMs = 0L
     private var deleteRepeatRunnable: Runnable? = null
     private var deleteRepeatActive = false
     private var deleteRepeatFired = false
@@ -1705,6 +1709,11 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             "abc" -> setSymbolsMode(false)
             "." -> { tapTraceClear(); clearPostCommitChips(); commitValue(".") }
             else -> {
+                if (label.length == 1 && label[0].isLetter()) {
+                    val bnow = System.currentTimeMillis()
+                    if (label == lastLetterLabel && bnow - lastLetterTapMs < 40L) { lastLetterTapMs = bnow; return }
+                    lastLetterLabel = label; lastLetterTapMs = bnow
+                }
                 autocorrect.clearPending()
                 clearPostCommitChips()
                 plog("letter: commitValue ->")
