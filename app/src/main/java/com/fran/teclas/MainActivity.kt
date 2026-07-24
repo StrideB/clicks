@@ -17962,6 +17962,13 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     // of re-autocorrecting/replacing it (Gboard-style "manual edit wins"). Cleared when a word commits.
     private var launcherWordEdited = false
 
+    // Bounce suppression: a physical key sometimes reports two down events within a few ms (finger
+    // roll, digitizer jitter). The second, unintended repeat of the same letter is dropped so "hello"
+    // doesn't land as "helllo". Only same-letter, sub-40ms repeats are suppressed — real double
+    // letters are far slower than one digitizer frame.
+    private var launcherLastLetterLabel = ""
+    private var launcherLastLetterTapMs = 0L
+
     private fun tryAutocorrect(live: Boolean = false) {
         if (live) return
         if (launcherWordEdited) { launcherWordEdited = false; pendingLauncherCorrection = null; return }
@@ -19479,6 +19486,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // board covering; ignore keystrokes until it's dismissed (DONE / swipe back).
                 if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !libraryOpen &&
                     (spaceBoardOverlay != null || homeLeftOverlay != null || widgetBoardView != null)) return
+                // Bounce suppression: a same-letter re-fire within ~40ms is jitter, not a real double.
+                if (label.length == 1 && label[0].isLetter()) {
+                    val bnow = System.currentTimeMillis()
+                    if (label == launcherLastLetterLabel && bnow - launcherLastLetterTapMs < 40L) { launcherLastLetterTapMs = bnow; return }
+                    launcherLastLetterLabel = label; launcherLastLetterTapMs = bnow
+                }
                 val char = if (shiftState != ShiftState.OFF) label.uppercase(Locale.US) else label
                 val insertAt = cursorPos
                 if (insertAt != null) {
