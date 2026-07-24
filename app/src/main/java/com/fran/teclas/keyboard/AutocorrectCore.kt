@@ -65,6 +65,10 @@ class AutocorrectCore(
     fun computeCorrection(word: String, ctx: List<String>, prevWord: String = "", tapTrace: List<Pair<Float, Float>> = emptyList()): String? {
         if (word.length < 2) return null
         if (isProtectedWord(word)) return null                          // deliberate token, not a typo
+        // Never "fix" a token carrying internal or all-caps — acronyms, brand names, camelCase
+        // (NASA, iPhone, McFly). These are deliberate, and silently rewriting them was the classic
+        // "autocorrect ate my name". A leading capital alone (sentence start) is left correctable.
+        if (word.length > 1 && word.drop(1).any { it.isUpperCase() }) return null
         extendedEngine()?.let { if (it.isDictWord(word)) return null }   // valid in another language
         // The unified ranker replaces the engine's correction pick 1:1 when wired; its null means
         // "leave the word alone" (same contract), so we fall through to the loose fallback, never
