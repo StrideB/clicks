@@ -171,6 +171,15 @@ private fun Text(
 // ---------- Animated condition icon (Canvas, no external assets) ----------
 @Composable
 fun WeatherGlyph(condition: Condition, sizeDp: Int, tint: Color = glyphColor, accent: Color) {
+    // Respect the system "remove animations" setting like every other animated surface in the app.
+    // Without this gate the three infinite transitions below repaint the Canvas every vsync for as
+    // long as the home screen is visible — a continuous CPU/GPU draw even when the user asked for none.
+    if (rememberReduceMotion()) {
+        Canvas(Modifier.size(sizeDp.dp)) {
+            drawWeatherGlyph(condition, spin = 0f, bob = 0.5f, fall = 0f, tint = tint, accent = accent)
+        }
+        return
+    }
     val transition = rememberInfiniteTransition(label = "wx")
     val spin by transition.animateFloat(
         0f, 360f, infiniteRepeatable(tween(26000, easing = LinearEasing)), label = "spin"
@@ -183,29 +192,57 @@ fun WeatherGlyph(condition: Condition, sizeDp: Int, tint: Color = glyphColor, ac
     )
 
     Canvas(Modifier.size(sizeDp.dp)) {
-        val s = size.minDimension
-        val c = Offset(s / 2f, s / 2f)
-        when (condition) {
-            Condition.SUNNY -> {
-                rotate(spin, pivot = c) {
-                    for (i in 0 until 8) {
-                        val a = Math.toRadians((i * 45).toDouble())
-                        val r1 = s * 0.34f; val r2 = s * 0.46f
-                        drawLine(
-                            tint,
-                            Offset(c.x + r1 * Math.cos(a).toFloat(), c.y + r1 * Math.sin(a).toFloat()),
-                            Offset(c.x + r2 * Math.cos(a).toFloat(), c.y + r2 * Math.sin(a).toFloat()),
-                            strokeWidth = s * 0.03f, cap = StrokeCap.Round
-                        )
-                    }
+        drawWeatherGlyph(condition, spin, bob, fall, tint, accent)
+    }
+}
+
+// Static draw shared by the animated and reduce-motion paths; spin/bob/fall are frozen when reduced.
+private fun DrawScope.drawWeatherGlyph(
+    condition: Condition,
+    spin: Float,
+    bob: Float,
+    fall: Float,
+    tint: Color,
+    accent: Color
+) {
+    val s = size.minDimension
+    val c = Offset(s / 2f, s / 2f)
+    when (condition) {
+        Condition.SUNNY -> {
+            rotate(spin, pivot = c) {
+                for (i in 0 until 8) {
+                    val a = Math.toRadians((i * 45).toDouble())
+                    val r1 = s * 0.34f; val r2 = s * 0.46f
+                    drawLine(
+                        tint,
+                        Offset(c.x + r1 * Math.cos(a).toFloat(), c.y + r1 * Math.sin(a).toFloat()),
+                        Offset(c.x + r2 * Math.cos(a).toFloat(), c.y + r2 * Math.sin(a).toFloat()),
+                        strokeWidth = s * 0.03f, cap = StrokeCap.Round
+                    )
                 }
-                drawCircle(tint, radius = s * 0.18f, center = c)
             }
-            Condition.CLOUDY -> drawCloud(tint, s, bob)
-            Condition.RAIN -> { drawCloud(tint, s, bob); drawFall(tint, s, fall, drop = true) }
-            Condition.STORM -> { drawCloud(tint, s, bob); drawBolt(accent, s) }
-            Condition.SNOW -> { drawCloud(tint, s, bob); drawFall(tint, s, fall, drop = false) }
+            drawCircle(tint, radius = s * 0.18f, center = c)
         }
+        Condition.CLOUDY -> drawCloud(tint, s, bob)
+        Condition.RAIN -> { drawCloud(tint, s, bob); drawFall(tint, s, fall, drop = true) }
+        Condition.STORM -> { drawCloud(tint, s, bob); drawBolt(accent, s) }
+        Condition.SNOW -> { drawCloud(tint, s, bob); drawFall(tint, s, fall, drop = false) }
+    }
+}
+
+// True when the OS animator duration scale is 0 (Settings → Accessibility → Remove animations,
+// or Developer options → Animator duration scale off). Read once per composition; it doesn't change live.
+@Composable
+private fun rememberReduceMotion(): Boolean {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return androidx.compose.runtime.remember(context) {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                context.contentResolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        }.getOrDefault(false)
     }
 }
 
