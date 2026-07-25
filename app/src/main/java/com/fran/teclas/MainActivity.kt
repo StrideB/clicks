@@ -1019,7 +1019,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         rootView.post { maybeShowKeyboardPlacementIntro() }
         if (demoModeEnabled()) updateClock() else refreshWeather(force = false)
         maybeRequestSmsPermission()
-        mediaSessionSource.start()
+        // Media session listener is started in onResume and stopped in onPause (symmetric lifecycle),
+        // so a backgrounded launcher doesn't keep doing album-art work on every media state change.
         mediaUiScope.launch {
             briefRepository.brief.collect {
                 if (::rootView.isInitialized && openPane == null && !libraryOpen && !isWidgetUniversalSearchActive()) {
@@ -1230,7 +1231,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             musicPaneHost.spotifyCachedPlaylists.isEmpty() && musicPaneHost.spotifyCachedLikedSongs.isEmpty() && musicPaneHost.spotifyCachedRecent.isEmpty()) {
             musicPaneHost.preloadSpotifyLibrary()
         }
-        if (::mediaSessionSource.isInitialized) mediaSessionSource.refreshActiveSessions()
+        // start() registers the active-sessions listener (paired with stop() in onPause) and also
+        // refreshes the current session, so this covers the initial launch and every foreground return.
+        if (::mediaSessionSource.isInitialized) mediaSessionSource.start()
         refreshPredictContext()
         // Next-event Live Update (Samsung Now Bar / lock screen): re-sync from the cached
         // events even when the 10 s calendar-load guard skipped a fresh load.
@@ -1284,6 +1287,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
         // Living drift is the one continuous animation — never let it run while backgrounded.
         cancelWallpaperDrift()
+        // The fluid-hours wallpaper otherwise keeps reloading + rebuilding the whole view tree
+        // every phase boundary while backgrounded; re-armed in onResume. Also drop the media
+        // session listener so it isn't firing album-art work behind another app.
+        fluidHoursRefreshRunnable?.let { handler.removeCallbacks(it) }
+        if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         // Safety net: never leave the glass resync frozen if a slide animation was interrupted.
         glassSlideInProgress = false
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
@@ -3297,7 +3305,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         fluidHoursRefreshRunnable = runnable
-        handler.postDelayed(runnable, FluidHours.nextBoundaryDelayMillis().coerceAtMost(15 * 60_000L))
+        // Fire exactly at the next phase boundary (5/7/17/20h). The old 15-minute cap rebuilt the
+        // entire view tree up to 3 extra times an hour for no visual change — pure heat.
+        handler.postDelayed(runnable, FluidHours.nextBoundaryDelayMillis())
     }
 
     private fun loadHomeWallpaperDrawable(): Drawable? {

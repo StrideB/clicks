@@ -157,6 +157,7 @@ class ClockWidgetView(context: Context) : View(context) {
     var glassEnabled: Boolean = false
         set(value) {
             field = value
+            updateClockLayerType()
             invalidate()
         }
 
@@ -199,8 +200,19 @@ class ClockWidgetView(context: Context) : View(context) {
 
     init {
         setWillNotDraw(false)
-        setLayerType(LAYER_TYPE_SOFTWARE, null)
+        updateClockLayerType()
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    // A software layer forces every onDraw to rasterize the whole view into an offscreen CPU
+    // bitmap. That only ever helps when the bitmap is reused across frames — but the analog/ring
+    // themes invalidate() once a second, so the cache is thrown away every tick and the software
+    // layer becomes pure per-second CPU cost. The ONLY thing that actually needs software rendering
+    // here is the glass container's *shape* shadow (fillPaint.setShadowLayer in drawGlassContainer);
+    // text shadows render fine on a hardware canvas. So use the software layer only when glass is on.
+    private fun updateClockLayerType() {
+        val desired = if (glassEnabled) LAYER_TYPE_SOFTWARE else LAYER_TYPE_NONE
+        if (layerType != desired) setLayerType(desired, null)
     }
 
     override fun onAttachedToWindow() {
