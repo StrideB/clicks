@@ -646,6 +646,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     internal val themePaneHost = ThemePaneHost(this)
     private var todayAlertView: ComposeView? = null
     internal var todayOpen = false
+    // A swipe-left opens Space Today mid-gesture (it sets todayOpen), and the same gesture's UP would
+    // otherwise be re-read by the todayOpen swipe-to-close handler as a close (dx < -40dp) — opening
+    // and instantly closing it. Set when the current gesture is what opened Today; blocks that self-close.
+    private var todayOpenedDuringSwipe = false
     private var billingClient: com.android.billingclient.api.BillingClient? = null
     lateinit var spotifyAuth: SpotifyAuth
     lateinit var spotifyApi: SpotifyWebApi
@@ -4843,10 +4847,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private val blurLayer = FoldGlassWallpaperLayer(context, radiusDp, compactDockGlass, honorGlass, blurScale)
         private val washLayer = FoldGlassWashLayer(context, radiusDp, compactDockGlass, honorGlass)
         private val preDrawListener = android.view.ViewTreeObserver.OnPreDrawListener {
-            // During a board slide the blur render node is cached and merely translated — re-syncing
-            // here would invalidate it and force a full-screen RenderEffect recompute every frame (the
-            // slide-heat source). Freeze the live resync while sliding; it re-locks on the next draw.
-            if (!glassSlideInProgress) blurLayer.syncToPanel(invalidateEvenIfStill = false)
+            // syncToPanel self-gates on glassSlideInProgress (frozen while a board slides), so the
+            // full-screen blur is cached + translated rather than recomputed every frame.
+            blurLayer.syncToPanel(invalidateEvenIfStill = false)
             true
         }
 
@@ -4925,6 +4928,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         fun syncToPanel(invalidateEvenIfStill: Boolean = true) {
+            // While a board is sliding, freeze move-triggered resyncs: the blurred layer is cached and
+            // merely translated instead of re-running a full-screen RenderEffect every frame (the
+            // slide-heat source). Forced resyncs (attach / size change / settle) still run so the glass
+            // re-locks to the screen when it lands. This is the single authoritative gate — onDraw and
+            // the panel's OnPreDrawListener both route through here.
+            if (glassSlideInProgress && !invalidateEvenIfStill) return
             val loc = IntArray(2)
             getLocationOnScreen(loc)
             val moved = panelScreenX != loc[0] || panelScreenY != loc[1]
@@ -11021,14 +11030,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 MotionEvent.ACTION_DOWN -> {
                     librarySwipeStartX = event.rawX
                     librarySwipeStartY = event.rawY
+                    // Gesture that starts while Today is already open is a real close candidate.
+                    todayOpenedDuringSwipe = false
                 }
                 MotionEvent.ACTION_UP -> {
                     val dx = event.rawX - librarySwipeStartX
                     val dy = event.rawY - librarySwipeStartY
-                    if (dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) {
+                    // Don't let the very swipe that opened Today (which set todayOpen mid-gesture) be
+                    // re-read here as the swipe-left-to-close — that opened-then-closed instantly.
+                    if (!todayOpenedDuringSwipe && dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) {
                         if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) spaceTodayHost.close()
                         else todayPaneHost.closeToday()
                     }
+                    todayOpenedDuringSwipe = false
                 }
             }
             return false
@@ -11057,6 +11071,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 librarySwipeStartX = event.rawX
                 librarySwipeStartY = event.rawY
                 librarySwipeTriggered = false
+                todayOpenedDuringSwipe = false
                 libraryDragActive = false
                 spaceBoardDragActive = false
                 homeLeftDragActive = false
@@ -13883,6 +13898,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun beginSpaceBoardDrag(): Boolean {
         if (::spaceTodayHost.isInitialized && spaceTodayHost.shouldHandleActiveSpace()) {
+            // Opened mid-swipe: mark it so this gesture's UP isn't re-read as swipe-to-close.
+            todayOpenedDuringSwipe = true
             spaceTodayHost.openActive()
             return true
         }
