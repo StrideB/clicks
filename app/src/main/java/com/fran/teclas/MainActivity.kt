@@ -397,6 +397,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var spaceBoardController: com.fran.teclas.grid.SpaceBoardController
     internal var spaceBoardOverlay: View? = null
     private var spaceBoardDragActive = false
+    // True while a Space board is sliding in/out. The native-glass panel re-samples + re-blurs the
+    // full-screen wallpaper on every frame it detects movement; on a 1440x3120 Samsung/Honor panel a
+    // 64-116dp RenderEffect recomputed per frame pegs the GPU (heat) and can stall RenderThread. While
+    // this is set, the glass freezes its live resync so the already-blurred layer is merely translated,
+    // then re-locks to the screen once with the first post-settle draw.
+    @Volatile internal var glassSlideInProgress = false
     private var spaceBoardTitleView: TextView? = null
     // Apple-style left widget page: swipe right pulls it in from the left, blurring home behind it.
     private lateinit var homeLeftController: com.fran.teclas.grid.SpaceBoardController
@@ -1259,6 +1265,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
         // Living drift is the one continuous animation — never let it run while backgrounded.
         cancelWallpaperDrift()
+        // Safety net: never leave the glass resync frozen if a slide animation was interrupted.
+        glassSlideInProgress = false
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
@@ -4835,7 +4843,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         private val blurLayer = FoldGlassWallpaperLayer(context, radiusDp, compactDockGlass, honorGlass, blurScale)
         private val washLayer = FoldGlassWashLayer(context, radiusDp, compactDockGlass, honorGlass)
         private val preDrawListener = android.view.ViewTreeObserver.OnPreDrawListener {
-            blurLayer.syncToPanel(invalidateEvenIfStill = false)
+            // During a board slide the blur render node is cached and merely translated — re-syncing
+            // here would invalidate it and force a full-screen RenderEffect recompute every frame (the
+            // slide-heat source). Freeze the live resync while sliding; it re-locks on the next draw.
+            if (!glassSlideInProgress) blurLayer.syncToPanel(invalidateEvenIfStill = false)
             true
         }
 
@@ -13862,8 +13873,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             settleHomeCard(open = true, exitSign = -1) { }
             return
         }
+        glassSlideInProgress = true
         container.animate().translationX(0f).setDuration(260L)
-            .setInterpolator(DecelerateInterpolator()).start()
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction { glassSlideInProgress = false }.start()
     }
 
     // --- interactive drag: the board follows the finger in from the right, like the old library ---
@@ -13873,9 +13886,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             spaceTodayHost.openActive()
             return true
         }
-        // No hardware layer: the board's glass panel blur must keep updating live as it slides in.
+        // The glass blur is frozen (cached + translated) during the slide instead of re-blurred per
+        // frame — glassSlideInProgress gates the panel's live resync while the board is in motion.
         val board = mountSpaceBoard() ?: return false
         spaceBoardDragActive = true
+        glassSlideInProgress = true
         keyHaptic("space")
         if (cardsViewEnabled()) beginHomeCardTransition(board, -1)
         return true
@@ -13894,7 +13909,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun settleSpaceBoardDrag(delta: Float) {
-        val overlay = spaceBoardOverlay ?: run { spaceBoardDragActive = false; return }
+        val overlay = spaceBoardOverlay ?: run { spaceBoardDragActive = false; glassSlideInProgress = false; return }
         spaceBoardDragActive = false
         val width = resources.displayMetrics.widthPixels.toFloat()
         if (cardsViewEnabled() && homeCardView != null) {
@@ -13913,12 +13928,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         overlay.animate().cancel()
         if (shouldOpen) {
             overlay.animate().translationX(0f).setDuration(200L)
-                .setInterpolator(DecelerateInterpolator()).start()
+                .setInterpolator(DecelerateInterpolator())
+                .withEndAction { glassSlideInProgress = false }.start()
         } else {
             spaceBoardOverlay = null
             overlay.animate().translationX(width).setDuration(180L)
                 .setInterpolator(DecelerateInterpolator())
-                .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
+                .withEndAction { glassSlideInProgress = false; (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
         }
     }
 
@@ -13940,9 +13956,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         spaceBoardOverlay = null
         spaceBoardDragActive = false
+        glassSlideInProgress = true
         overlay.animate().translationX(width)
             .setDuration(200L).setInterpolator(DecelerateInterpolator())
-            .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
+            .withEndAction { glassSlideInProgress = false; (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
         return true
     }
 
