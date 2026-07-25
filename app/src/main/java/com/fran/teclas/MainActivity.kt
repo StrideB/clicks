@@ -891,8 +891,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             deviceWallpaperFileDeniedSig = null
             homeWallpaperSourceSig = null
             Toast.makeText(this, if (innerScope) "Inner wallpaper applied." else "Cover wallpaper applied.", Toast.LENGTH_SHORT).show()
+            // Single update path: refreshHomeWallpaperAsync decodes off-thread and swaps the wallpaper
+            // in when ready. A synchronous render() here rebuilds the whole tree immediately with a
+            // null drawable, producing a second full-screen blink back-to-back with the async one.
             refreshHomeWallpaperAsync()
-            if (::rootView.isInitialized) render()
         }
         // Semantic model is now an ungated auto-download (EmbedEngine) — no file import. The launcher
         // is kept registered but unused so the field stays valid across the refactor.
@@ -1492,7 +1494,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (musicPaneHost.spotifyCompactOverlay != null) { musicPaneHost.dismissCompactSpotifyLibrary(); return }
         if (libraryOpen) { closeLibrary(); return }
         if (openPane != null) { closePane(); return }
-        super.onBackPressed()
+        // Bare home screen: Back is a no-op on a real launcher. Calling super here finishes the HOME
+        // activity, which the system instantly relaunches — a full onCreate rebuild the user sees as
+        // the launcher "reloading". Consume and do nothing so Back behaves like every other launcher.
     }
 
     private fun dismissToHome() {
@@ -4226,11 +4230,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                         if (!fromUser) return
                         prefs().edit().putInt(pref, min + progress).apply()
-                        homeWallpaperDrawable = null
-                        if (this@MainActivity::rootView.isInitialized) render()
+                        // Zoom/offset are pure matrix transforms on the same bitmap — move the live
+                        // wallpaper view instead of nulling the drawable and rebuilding the whole tree
+                        // (a full-screen blink) on every drag tick.
+                        val iv = innerWallpaperImageView
+                        if (iv != null) applyInnerWallpaperMatrix(iv)
+                        else if (this@MainActivity::rootView.isInitialized) render()
                     }
                     override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-                    override fun onStopTrackingTouch(seekBar: SeekBar?) { seekBar?.let { haptic(it) } }
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                        seekBar?.let { haptic(it) }
+                        // Reconcile wallpaper-dependent layers (e.g. the glass samples the zoom) once
+                        // on release, not every tick.
+                        if (innerWallpaperImageView != null && this@MainActivity::rootView.isInitialized) render()
+                    }
                 })
             }, LinearLayout.LayoutParams.MATCH_PARENT, dp(34))
         }
