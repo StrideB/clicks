@@ -32,8 +32,11 @@ import androidx.compose.ui.unit.sp
 // folded into WEATHER_STYLES there. Style composables are file-private so the generic names
 // (Grid/Line/Center/…) don't leak into the package — the registry vals below are the surface.
 
-private val ink = Color.White
-private fun soft(a: Float = .6f) = Color.White.copy(alpha = a)
+private val ink: Color
+    @Composable get() = LocalWeatherTextTone.current.ink
+
+@Composable
+private fun soft(a: Float = .6f) = LocalWeatherTextTone.current.ink.copy(alpha = a)
 private val mono = FontFamily.Monospace
 
 // Same wallpaper-legibility shadow every weather family uses (defined in WeatherStyles.kt).

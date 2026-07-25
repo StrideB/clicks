@@ -35,9 +35,12 @@ object NowBarLiveUpdate {
 
     /** Default-on: the surface only exists on API 36+, and [sync] no-ops elsewhere. */
     const val ENABLED_PREF = "now_bar_live_updates"
+    const val ACTION_OPEN_SPACE_TODAY = "com.fran.teclas.action.OPEN_SPACE_TODAY"
 
     private const val CHANNEL_ID = "next_event_live"
+    private const val SPACE_CHANNEL_ID = "space_today_live"
     private const val NOTIFICATION_ID = 0x7EC1A5
+    private const val SPACE_NOTIFICATION_ID = 0x5ACE70
     /** How far ahead of the event start the Live Update appears. */
     private const val LEAD_MS = 90 * 60 * 1000L
 
@@ -79,6 +82,29 @@ object NowBarLiveUpdate {
         manager.cancel(NOTIFICATION_ID)
     }
 
+    fun syncSpaceWork(
+        context: Context,
+        prefs: SharedPreferences,
+        spaceName: String,
+        summary: String,
+        count: Int,
+        accentColor: Int = DEFAULT_ACCENT,
+    ) {
+        if (!GalaxyDevice.supportsLiveUpdates()) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (!enabled(prefs) || !canPost(context) || summary.isBlank() || count <= 0) {
+            manager.cancel(SPACE_NOTIFICATION_ID)
+            return
+        }
+        ensureSpaceChannel(manager)
+        manager.notify(SPACE_NOTIFICATION_ID, buildSpaceWork(context, spaceName, summary, count, accentColor))
+    }
+
+    fun clearSpaceWork(context: Context) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        manager.cancel(SPACE_NOTIFICATION_ID)
+    }
+
     private fun canPost(context: Context): Boolean =
         Build.VERSION.SDK_INT < 33 ||
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -93,6 +119,52 @@ object NowBarLiveUpdate {
             }
         )
     }
+
+    private fun ensureSpaceChannel(manager: NotificationManager) {
+        manager.createNotificationChannel(
+            NotificationChannel(SPACE_CHANNEL_ID, "Space updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "Actionable Space Today updates shown on the ${GalaxyDevice.liveUpdateSurfaceLabel()}"
+                setSound(null, null)
+                enableVibration(false)
+            }
+        )
+    }
+
+    private fun buildSpaceWork(
+        context: Context,
+        spaceName: String,
+        summary: String,
+        count: Int,
+        accentColor: Int,
+    ): android.app.Notification {
+        val title = if (spaceName.isBlank()) "Space Today" else "$spaceName needs you"
+        val builder = NotificationCompat.Builder(context, SPACE_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(title)
+            .setContentText(summary)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
+            .setSubText("$count update${if (count == 1) "" else "s"}")
+            .setColor(accentColor)
+            .setColorized(false)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setRequestPromotedOngoing(true)
+            .setContentIntent(spaceContentIntent(context))
+        builder.setShortCriticalText(count.coerceAtMost(9).toString())
+        return builder.build()
+    }
+
+    private fun spaceContentIntent(context: Context): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            SPACE_NOTIFICATION_ID,
+            Intent(context, com.fran.teclas.MainActivity::class.java)
+                .setAction(ACTION_OPEN_SPACE_TODAY)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 
     private fun build(context: Context, event: CalendarEvent, now: Long, accentColor: Int): android.app.Notification {
         val ongoing = now >= event.beginMs

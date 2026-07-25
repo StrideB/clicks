@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.staticCompositionLocalOf
 import org.json.JSONArray
 
 // ---------- Data model (mapped from the launcher's weather prefs — see MainActivity) ----------
@@ -98,11 +100,49 @@ fun parseHourlyJson(raw: String?): List<HourSlot> {
     }.getOrDefault(emptyList())
 }
 
-private val glyphColor = Color.White
+data class WeatherTextTone(
+    val ink: Color,
+    val dim: Color,
+    val rule: Color,
+    val shadow: Shadow
+)
+
+val LocalWeatherTextTone = staticCompositionLocalOf {
+    WeatherTextTone(
+        ink = Color.White,
+        dim = Color.White.copy(alpha = 0.68f),
+        rule = Color.White.copy(alpha = 0.42f),
+        shadow = Shadow(Color.Black.copy(alpha = 0.55f), Offset(0f, 3f), 7f)
+    )
+}
+
+@Composable
+fun ProvideWeatherTextTone(backgroundIsLight: Boolean, content: @Composable () -> Unit) {
+    val tone = if (backgroundIsLight) {
+        WeatherTextTone(
+            ink = Color(0xFF15181D),
+            dim = Color(0xAA15181D),
+            rule = Color(0x6615181D),
+            shadow = Shadow(Color.White.copy(alpha = 0.34f), Offset(0f, 1f), 5f)
+        )
+    } else {
+        WeatherTextTone(
+            ink = Color.White,
+            dim = Color.White.copy(alpha = 0.68f),
+            rule = Color.White.copy(alpha = 0.42f),
+            shadow = Shadow(Color.Black.copy(alpha = 0.55f), Offset(0f, 3f), 7f)
+        )
+    }
+    CompositionLocalProvider(LocalWeatherTextTone provides tone, content = content)
+}
+
+private val glyphColor: Color
+    @Composable get() = LocalWeatherTextTone.current.ink
 
 // Boxless styles float straight on the wallpaper — every glyph across all families carries
 // this shadow so it stays legible on any photo. Shared with the Simple/Dot Matrix file.
-internal val WeatherTextShadow = Shadow(Color.Black.copy(alpha = 0.55f), Offset(0f, 3f), 7f)
+internal val WeatherTextShadow: Shadow
+    @Composable get() = LocalWeatherTextTone.current.shadow
 
 // File-local Text that bakes the shadow in for all 20 animated styles below.
 @Composable
@@ -254,8 +294,9 @@ private val serif = FontFamily.Serif
 
 // 7 Orbit — temp inside a ring
 @Composable fun Orbit(d: WeatherData, accent: Color, m: Modifier) = Column(m, horizontalAlignment = Alignment.CenterHorizontally) {
+    val ring = glyphColor
     Box(contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(120.dp)) { drawCircle(glyphColor, radius = size.minDimension / 2 - 2.dp.toPx(), style = Stroke(width = 2.dp.toPx())) }
+        Canvas(Modifier.size(120.dp)) { drawCircle(ring, radius = size.minDimension / 2 - 2.dp.toPx(), style = Stroke(width = 2.dp.toPx())) }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("${d.temp}°", fontSize = 44.sp, fontWeight = FontWeight.Light, color = glyphColor)
             Text(d.conditionLabel, fontSize = 11.sp, letterSpacing = 1.sp, color = glyphColor.copy(alpha = .6f))

@@ -138,6 +138,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.unit.dp
 import com.fran.teclas.weather.WEATHER_STYLE_CLASSIC_ID
 import com.fran.teclas.weather.ALMANAC_STYLES
+import com.fran.teclas.weather.ProvideWeatherTextTone
 import com.fran.teclas.weather.WeatherData
 import com.fran.teclas.weather.WeatherStylePickerSheet
 import com.fran.teclas.weather.conditionForWmoCode
@@ -744,6 +745,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var weatherPlacementView: View? = null
     // Snapshot of the weather prefs the Compose-rendered widget styles observe.
     private val weatherWidgetComposeData = mutableStateOf<WeatherData?>(null)
+    private val weatherWidgetBackgroundIsLight = mutableStateOf(false)
     private lateinit var hubView: LinearLayout
     private lateinit var ribbonView: LinearLayout
     private lateinit var favoritesDockFrameView: FavoritesDockFlipFrame
@@ -958,6 +960,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             scope = mediaUiScope
         )
         spaceTodayHost = SpaceTodayHost(this)
+        if (intent?.action == NowBarLiveUpdate.ACTION_OPEN_SPACE_TODAY) {
+            handler.post {
+                NowBarLiveUpdate.clearSpaceWork(this)
+                spaceTodayHost.openActive()
+            }
+        }
         // Listener runs in-process; the callback can land on a binder thread, so hop to main where
         // refreshDebounced mutates its Job field.
         TeclasNotificationListener.onBriefChanged = {
@@ -1077,6 +1085,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncVivoDockedExperiment()
         if (handleDemoShowcaseIntent(intent)) return
         if (handleKeyboardActionIntent(intent)) return
+        if (intent.action == NowBarLiveUpdate.ACTION_OPEN_SPACE_TODAY) {
+            NowBarLiveUpdate.clearSpaceWork(this)
+            if (::spaceTodayHost.isInitialized) spaceTodayHost.openActive()
+            return
+        }
         if (intent.hasCategory(Intent.CATEGORY_HOME)) {
             dismissToHome()
             return
@@ -7517,20 +7530,29 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!widgetKeyboardSliderAvailable() || widgetKeyboardHidden || widgetKeyboardSliderAnimating || widgetSwapState != WidgetKeyboardSwapState.SEATED) return
         val module = widgetKeyboardModule ?: return
         val handle = widgetKeyboardSliderHandleView
+        val targetTranslationY = widgetKeyboardHiddenTranslationY(module)
         widgetKeyboardSliderAnimating = true
         module.animate().cancel()
+        widgetKeyboardSeatView?.animate()?.cancel()
+        widgetKeyboardSeatView?.animate()
+            ?.alpha(0f)
+            ?.setDuration(240L)
+            ?.setInterpolator(DecelerateInterpolator(1.5f))
+            ?.withEndAction { widgetKeyboardSeatView?.visibility = View.GONE }
+            ?.start()
         handle?.apply {
             visibility = View.VISIBLE
             alpha = 0f
             translationY = dp(16).toFloat()
         }
         if (hapticsEnabled) module.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        animateWidgetKeyboardSlotHeight(widgetKeyboardCollapsedDockHeight(), 430L)
         module.visibility = View.VISIBLE
         module.isEnabled = false
         module.pivotX = module.width / 2f
         module.pivotY = 0f
         module.animate()
-            .translationY(widgetKeyboardHiddenTranslationY(module))
+            .translationY(targetTranslationY)
             .rotationX(0f)
             .scaleX(1f)
             .scaleY(1f)
@@ -7544,7 +7566,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 keyBounds.clear()
                 module.visibility = View.INVISIBLE
                 module.isEnabled = false
-                animateWidgetKeyboardSlotHeight(widgetKeyboardCollapsedDockHeight(), 300L)
                 widgetKeyboardSeatView?.apply {
                     animate().cancel()
                     visibility = View.GONE
@@ -7572,6 +7593,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetKeyboardSliderAnimating = true
         animateWidgetKeyboardSlotHeight(expandedRootDockHeight(), 300L)
         widgetKeyboardSeatView?.apply {
+            animate().cancel()
             visibility = View.VISIBLE
             alpha = 0f
             animate().alpha(0.32f).setDuration(220L).setInterpolator(DecelerateInterpolator(1.6f)).start()
@@ -7700,8 +7722,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         module.alpha = (p * 1.6f).coerceIn(0f, 1f)
         module.isEnabled = p >= 0.985f
         widgetKeyboardSeatView?.apply {
-            visibility = View.VISIBLE
-            alpha = 0.32f * p
+            val seatAlpha = 0.32f * p
+            alpha = seatAlpha
+            visibility = if (seatAlpha <= 0.015f) View.GONE else View.VISIBLE
         }
         widgetKeyboardSliderHandleView?.apply {
             val a = (1f - p * 2.4f).coerceIn(0f, 1f)
@@ -8339,6 +8362,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         frame.addView(clock, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.elevation = dp(8).toFloat()
         updateClockWidget()
+        frame.post { updateClockWidget() }
         return frame
     }
 
@@ -8366,14 +8390,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun clockBackgroundLooksLight(): Boolean =
-        sampleClockWallpaperLightness() ?: (activeNeuTokens.mode == NeuMode.LIGHT)
+        widgetBackgroundLooksLight(clockWidgetFrameView)
 
-    private fun sampleClockWallpaperLightness(): Boolean? {
+    private fun widgetBackgroundLooksLight(frame: View?): Boolean =
+        sampleWidgetWallpaperLightness(frame) ?: (activeNeuTokens.mode == NeuMode.LIGHT)
+
+    private fun sampleWidgetWallpaperLightness(frame: View?): Boolean? {
         val bitmap = ((homeWallpaperDrawable ?: lastGoodHomeWallpaperDrawable) as? BitmapDrawable)
             ?.bitmap
             ?.takeUnless { it.isRecycled }
             ?: return null
-        val frame = clockWidgetFrameView ?: return null
+        frame ?: return null
         val host = (rootView.parent as? ViewGroup) ?: rootView
         if (host.width <= 0 || host.height <= 0 || frame.width <= 0 || frame.height <= 0) return null
         val hostLoc = IntArray(2)
@@ -8413,6 +8440,40 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             return if (c <= 0.03928f) c / 12.92f else Math.pow(((c + 0.055f) / 1.055f).toDouble(), 2.4).toFloat()
         }
         return 0.2126f * channel(Color.red(color)) + 0.7152f * channel(Color.green(color)) + 0.0722f * channel(Color.blue(color))
+    }
+
+    private fun adaptiveWidgetInk(backgroundIsLight: Boolean, alpha: Float = 1f): Int {
+        val base = if (backgroundIsLight) Color.rgb(20, 23, 29) else Color.rgb(246, 243, 236)
+        return adjustAlpha(base, alpha)
+    }
+
+    private fun applyAdaptiveWidgetTextContrast(root: View, accent: Int = goKeyColor) {
+        val backgroundLight = widgetBackgroundLooksLight(root)
+        fun closeToAccent(color: Int): Boolean {
+            val dr = Color.red(color) - Color.red(accent)
+            val dg = Color.green(color) - Color.green(accent)
+            val db = Color.blue(color) - Color.blue(accent)
+            return dr * dr + dg * dg + db * db < 48 * 48
+        }
+        fun visit(view: View) {
+            when (view) {
+                is TextView -> {
+                    val current = view.currentTextColor
+                    if (!closeToAccent(current)) {
+                        val alpha = (Color.alpha(current) / 255f).coerceIn(0.62f, 1f)
+                        view.setTextColor(adaptiveWidgetInk(backgroundLight, alpha))
+                        view.setShadowLayer(
+                            dp(if (backgroundLight) 1 else 3).toFloat(),
+                            0f,
+                            dp(1).toFloat(),
+                            if (backgroundLight) adjustAlpha(Color.WHITE, 0.34f) else adjustAlpha(Color.BLACK, 0.42f)
+                        )
+                    }
+                }
+                is ViewGroup -> for (i in 0 until view.childCount) visit(view.getChildAt(i))
+            }
+        }
+        visit(root)
     }
 
     private fun baseClockWidgetHeight(styleId: String = clockWidgetStyleId()): Int = when (styleId) {
@@ -8474,6 +8535,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.leftMargin = cx
         lp.topMargin = cy
         frame.layoutParams = lp
+        frame.post { updateClockWidget() }
     }
 
     private fun clampClockWidgetPos(ancestor: View, w: Int, h: Int, x: Int, y: Int): Pair<Int, Int> {
@@ -8490,7 +8552,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.leftMargin = x
         lp.topMargin = y
         frame.layoutParams = lp
-        if (clockTextToneId() == "auto") updateClockWidget()
+        if (clockTextToneId() == "auto") frame.post { updateClockWidget() }
     }
 
     private fun refreshClockWidgetFrameSize() {
@@ -8504,7 +8566,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.topMargin = y
         frame.layoutParams = lp
         saveClockWidgetPos(x, y)
-        updateClockWidget()
+        frame.post { updateClockWidget() }
     }
 
     private inner class ClockWidgetFrame(context: Context) : MovableWidgetFrame(context) {
@@ -9150,14 +9212,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setBackgroundColor(Color.TRANSPARENT)
                 setContent {
                     val data = weatherWidgetComposeData.value
+                    val backgroundLight = weatherWidgetBackgroundIsLight.value
                     if (data != null) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+                        ProvideWeatherTextTone(backgroundLight) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                weatherStyleById(styleId).render(data, ComposeColor(goKeyColor), Modifier)
+                            }
                         }
                     }
                 }
@@ -9171,6 +9236,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         frame.installWeatherPickerLongPress()
         frame.elevation = dp(8).toFloat()
+        frame.post { refreshWeatherWidgetContrast() }
         return frame
     }
 
@@ -9303,6 +9369,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.leftMargin = rx
         lp.topMargin = ry
         frame.layoutParams = lp
+        frame.post { refreshWeatherWidgetContrast() }
     }
 
     private fun viewTopIn(ancestor: View, v: View): Int {
@@ -9386,6 +9453,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.leftMargin = x
         lp.topMargin = y
         frame.layoutParams = lp
+        frame.post { refreshWeatherWidgetContrast() }
     }
 
     private fun settleWeatherWidget(frame: View, fallbackX: Int, fallbackY: Int) {
@@ -9397,6 +9465,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             lp.topMargin = cy
             frame.layoutParams = lp
             saveWeatherWidgetPos(cx, cy)
+            frame.post { refreshWeatherWidgetContrast() }
             haptic(frame)
             return
         }
@@ -9414,6 +9483,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         lp.topMargin = resolved.second
         frame.layoutParams = lp
         saveWeatherWidgetPos(resolved.first, resolved.second)
+        frame.post { refreshWeatherWidgetContrast() }
         haptic(frame)
     }
 
@@ -10257,6 +10327,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         content.installBriefManageLongPress(frame)
         frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         frame.elevation = if (briefTheme.isBoxed) dp(8).toFloat() else 0f
+        frame.post { applyAdaptiveWidgetTextContrast(frame, accent) }
         return frame
     }
 
@@ -10361,6 +10432,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lp.leftMargin = resolved.first; lp.topMargin = resolved.second
                 layoutParams = lp
                 saveBriefWidgetPos(resolved.first, resolved.second)
+                post { applyAdaptiveWidgetTextContrast(this) }
                 haptic(this)
             } else {
                 lp.leftMargin = fallbackLeft; lp.topMargin = fallbackTop
@@ -10399,7 +10471,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // The Daily Brief theme picker sheet (twin of openWeatherStylePicker) lives in ThemePaneHost.
 
     private fun refreshWeatherWidgetComposeData() {
+        refreshWeatherWidgetContrast()
         weatherWidgetComposeData.value = weatherDataFromPrefs()
+    }
+
+    private fun refreshWeatherWidgetContrast() {
+        weatherWidgetBackgroundIsLight.value = widgetBackgroundLooksLight(weatherWidgetFrameView)
     }
 
     private fun firstIntIn(s: String?): Int? = s?.let { Regex("-?\\d+").find(it)?.value?.toIntOrNull() }

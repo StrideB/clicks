@@ -228,7 +228,9 @@ class ClockWidgetView(context: Context) : View(context) {
         if (width <= 0 || height <= 0) return
         val theme = ClockThemes.byId(themeId)
         val state = previewState ?: liveClockState()
-        if (theme.container == ClockContainer.GLASS_BOX || glassEnabled) drawGlassContainer(canvas)
+        // Clock themes are now boxless by default: text and rules float directly on the
+        // wallpaper. The optional user "glass" customization remains explicit.
+        if (glassEnabled) drawGlassContainer(canvas)
 
         when (theme.kind) {
             ClockKind.SERIF_GRAND -> drawSerifGrand(canvas, state)
@@ -300,7 +302,7 @@ class ClockWidgetView(context: Context) : View(context) {
 
     private fun drawSerifGrand(canvas: Canvas, state: ClockState) {
         centeredText(canvas, time(state), cx(), height * 0.50f, spScaled(44f), serif(Typeface.BOLD), ink(), -0.035f)
-        centeredText(canvas, "${state.dayOfWeek} ${partOfDay(state)}", cx(), height * 0.76f, spScaled(14f), serif(Typeface.ITALIC), muted(), 0f)
+        centeredText(canvas, "${state.dayOfWeek} ${partOfDay(state)}", cx(), height * 0.76f, spScaled(14f), serif(Typeface.ITALIC), ink(), 0f)
     }
 
     private fun drawGlassSlab(canvas: Canvas, state: ClockState) {
@@ -560,7 +562,7 @@ class ClockWidgetView(context: Context) : View(context) {
         ClockTextTone.AUTO -> if (backgroundIsLight) Color.rgb(93, 99, 112) else Color.rgb(154, 155, 166)
     }
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
-    private fun sp(value: Float): Float = value * resources.displayMetrics.scaledDensity
+    private fun sp(value: Float): Float = value * resources.displayMetrics.density * resources.configuration.fontScale
     private fun spScaled(value: Float): Float = sp(value * fontScale * (height / dp(126f)).coerceIn(0.62f, 1.22f))
     private fun serif(style: Int): Typeface = family(Typeface.SERIF, style)
     private fun mono(style: Int): Typeface = family(Typeface.MONOSPACE, style)

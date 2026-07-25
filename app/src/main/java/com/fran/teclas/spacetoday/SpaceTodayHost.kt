@@ -1,11 +1,14 @@
 package com.fran.teclas.spacetoday
 
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -34,12 +37,14 @@ import androidx.compose.ui.unit.sp
 import com.fran.teclas.MainActivity
 import com.fran.teclas.brief.BriefAction
 import com.fran.teclas.brief.TodayKeyboardMode
+import com.fran.teclas.galaxy.NowBarLiveUpdate
 import com.fran.teclas.predict.SpaceManager
 import com.fran.teclas.spacetoday.data.PriorityFeedRepository
 import com.fran.teclas.spacetoday.data.WorkItemCache
 import com.fran.teclas.spacetoday.data.ZoneResolver
 import com.fran.teclas.spacetoday.model.WorkAction
 import com.fran.teclas.spacetoday.model.WorkItem
+import com.fran.teclas.spacetoday.model.SpaceWorkload
 import com.fran.teclas.spacetoday.rank.LearningStore
 import com.fran.teclas.spacetoday.rank.LlmRanker
 import com.fran.teclas.spacetoday.rank.PreScorer
@@ -47,6 +52,8 @@ import com.fran.teclas.spacetoday.theme.TodayThemeStore
 import com.fran.teclas.spacetoday.theme.TodayThemes
 import com.fran.teclas.spacetoday.ui.HomeEdgeHint
 import com.fran.teclas.spacetoday.ui.SpaceTodayScreen
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
@@ -68,14 +75,21 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         scope = activity.mediaUiScope,
         activeSpaceProvider = { activeSpaceId() }
     )
-    private val edgeHint = HomeEdgeHint(activity) { openActive() }
+    private val edgeHint = HomeEdgeHint(activity) { showSpaceFan() }
 
     private var overlay: FrameLayout? = null
     private var themeOverlay: View? = null
+    private var fanOverlay: View? = null
     private var viewedSpace by mutableStateOf(activeSpaceId())
     private var themeTick by mutableIntStateOf(0)
     private var downX = 0f
     private var downY = 0f
+
+    init {
+        activity.mediaUiScope.launch {
+            repository.workloads.collect { syncGalaxyNowBar(it) }
+        }
+    }
 
     fun shouldHandleActiveSpace(): Boolean = repository.hasWorkload(activeSpaceId())
 
@@ -85,6 +99,7 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         if (!activity.hasContentFrame() || activity.libraryOpen || activity.openPane != null) return
         viewedSpace = spaceId
         repository.refresh()
+        NowBarLiveUpdate.clearSpaceWork(activity)
         activity.cancelWallpaperLongPress()
         activity.todayOpen = true
         val existing = overlay
@@ -162,6 +177,7 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         overlay = null
         themeOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         themeOverlay = null
+        closeSpaceFan()
         activity.todayOpen = false
         val width = activity.contentFrame.width.takeIf { it > 0 } ?: activity.resources.displayMetrics.widthPixels
         host.animate().translationX(width.toFloat())
@@ -188,6 +204,127 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
     }
 
     fun homeEdgeHintView(): View = edgeHint.view()
+
+    private fun syncGalaxyNowBar(workloads: Map<String, SpaceWorkload>) {
+        val active = activeSpaceId()
+        val workload = workloads[active]
+            ?: workloads.values.firstOrNull { it.hasWorkload && it.items.isNotEmpty() }
+        val count = workload?.items?.size ?: 0
+        edgeHint.setHasNewActivity(count > 0)
+        if (workload == null || overlay != null) {
+            NowBarLiveUpdate.clearSpaceWork(activity)
+            return
+        }
+        val top = workload.items.firstOrNull()
+        if (top == null) {
+            NowBarLiveUpdate.clearSpaceWork(activity)
+            return
+        }
+        val theme = themeStore.themeFor(workload.spaceId)
+        edgeHint.setAccent(theme.accent.toArgb())
+        val summary = buildString {
+            append(top.summary)
+            if (top.who.isNotBlank()) append(" · ").append(top.who)
+        }.take(120)
+        NowBarLiveUpdate.syncSpaceWork(
+            context = activity,
+            prefs = prefs,
+            spaceName = workload.spaceName,
+            summary = summary,
+            count = count,
+            accentColor = theme.accent.toArgb()
+        )
+    }
+
+    private fun showSpaceFan() {
+        if (!activity.hasContentFrame()) return
+        closeSpaceFan()
+        repository.refreshDebounced()
+        val active = activeSpaceId()
+        val spaces = SpaceManager.spaces(activity).filter { it.enabled }
+        if (spaces.isEmpty()) {
+            openActive()
+            return
+        }
+        val dim = FrameLayout(activity).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = true
+            setOnClickListener { closeSpaceFan() }
+        }
+        val row = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER
+            setPadding(activity.dp(10), activity.dp(9), activity.dp(10), activity.dp(9))
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                0xF01A1D24.toInt(),
+                0xE0101217.toInt()
+            )).apply {
+                cornerRadius = activity.dp(24).toFloat()
+                setStroke(1, 0x33FFFFFF)
+            }
+            elevation = activity.dp(18).toFloat()
+        }
+        spaces.forEachIndexed { index, space ->
+            val selected = space.id == active
+            val chip = LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = android.view.Gravity.CENTER
+                isClickable = true
+                setPadding(activity.dp(10), activity.dp(6), activity.dp(10), activity.dp(6))
+                background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                    if (selected) 0x3345E7A4 else 0x16FFFFFF,
+                    if (selected) 0x1645E7A4 else 0x0A000000
+                )).apply {
+                    cornerRadius = activity.dp(18).toFloat()
+                    setStroke(1, if (selected) 0x6645E7A4 else 0x18FFFFFF)
+                }
+                addView(TextView(activity).apply {
+                    text = space.emoji
+                    textSize = 18f
+                    gravity = android.view.Gravity.CENTER
+                    includeFontPadding = false
+                    setTextColor(0xFFF4F1EB.toInt())
+                }, LinearLayout.LayoutParams(activity.dp(42), activity.dp(26)))
+                addView(TextView(activity).apply {
+                    text = space.name.uppercase()
+                    textSize = 8.2f
+                    gravity = android.view.Gravity.CENTER
+                    includeFontPadding = false
+                    letterSpacing = 0.12f
+                    typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+                    setTextColor(if (selected) 0xFFE8FFF4.toInt() else 0xFF9EA4AF.toInt())
+                }, LinearLayout.LayoutParams(activity.dp(58), activity.dp(15)))
+                setOnClickListener {
+                    activity.haptic(this)
+                    closeSpaceFan()
+                    open(space.id)
+                }
+            }
+            row.addView(chip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, activity.dp(54)).apply {
+                if (index != spaces.lastIndex) marginEnd = activity.dp(6)
+            })
+        }
+        dim.addView(row, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            android.view.Gravity.BOTTOM or android.view.Gravity.CENTER_HORIZONTAL
+        ).apply {
+            bottomMargin = activity.dp(if (activity.keyboardPlacement == MainActivity.KEYBOARD_PLACEMENT_WIDGET) 112 else 22)
+        })
+        fanOverlay = dim
+        activity.contentFrame.addView(dim, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        row.scaleX = 0.90f
+        row.scaleY = 0.90f
+        row.alpha = 0f
+        row.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180L).setInterpolator(DecelerateInterpolator()).start()
+        activity.haptic(activity.contentFrame)
+    }
+
+    private fun closeSpaceFan() {
+        val view = fanOverlay ?: return
+        fanOverlay = null
+        (view.parent as? ViewGroup)?.removeView(view)
+    }
 
     private fun activeSpaceId(): String =
         activity.activeSpaceForUi()?.id

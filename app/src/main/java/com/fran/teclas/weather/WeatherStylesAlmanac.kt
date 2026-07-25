@@ -31,9 +31,12 @@ import androidx.compose.ui.unit.sp
 // animated glyphs, or looping transitions. Structure comes from serif typography and hairlines.
 
 private const val ALMANAC = "Almanac"
-private val ink = Color.White
-private val dim = Color.White.copy(alpha = 0.68f)
-private val rule = Color.White.copy(alpha = 0.42f)
+private val ink: Color
+    @Composable get() = LocalWeatherTextTone.current.ink
+private val dim: Color
+    @Composable get() = LocalWeatherTextTone.current.dim
+private val rule: Color
+    @Composable get() = LocalWeatherTextTone.current.rule
 private val serif = FontFamily.Serif
 
 @Composable
@@ -66,8 +69,9 @@ private fun EText(
 
 @Composable
 private fun Rule(modifier: Modifier = Modifier.fillMaxWidth(), alpha: Float = 0.42f) {
+    val line = rule.copy(alpha = alpha)
     Canvas(modifier.height(1.dp)) {
-        drawLine(rule.copy(alpha = alpha), Offset.Zero, Offset(size.width, 0f), strokeWidth = 1.dp.toPx())
+        drawLine(line, Offset.Zero, Offset(size.width, 0f), strokeWidth = 1.dp.toPx())
     }
 }
 
@@ -141,8 +145,9 @@ private fun skyLine(d: WeatherData): String = when (d.condition) {
         Spacer(Modifier.height(7.dp))
         EText("${d.conditionLabel} over ${d.place}", fontSize = 22.sp, fontWeight = FontWeight.Bold, lineHeight = 23.sp, maxLines = 2)
     }
+    val divider = rule.copy(alpha = 0.36f)
     Canvas(Modifier.width(1.dp).height(74.dp)) {
-        drawLine(rule.copy(alpha = 0.36f), Offset.Zero, Offset(0f, size.height), strokeWidth = 1.dp.toPx())
+        drawLine(divider, Offset.Zero, Offset(0f, size.height), strokeWidth = 1.dp.toPx())
     }
     Column(
         Modifier.width(100.dp).padding(start = 14.dp),
@@ -172,11 +177,12 @@ private fun skyLine(d: WeatherData): String = when (d.condition) {
     verticalAlignment = Alignment.Bottom
 ) {
     EText(label, fontSize = 14.sp, color = dim)
+    val dots = rule.copy(alpha = 0.45f)
     Canvas(Modifier.weight(1f).padding(horizontal = 7.dp).height(1.dp)) {
         val step = 6.dp.toPx()
         var x = 0f
         while (x < size.width) {
-            drawCircle(rule.copy(alpha = 0.45f), radius = 0.75.dp.toPx(), center = Offset(x, 0f))
+            drawCircle(dots, radius = 0.75.dp.toPx(), center = Offset(x, 0f))
             x += step
         }
     }
@@ -197,8 +203,9 @@ private fun skyLine(d: WeatherData): String = when (d.condition) {
         EText("NOW", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, color = dim)
         EText("${d.temp}°", fontSize = 64.sp, lineHeight = 58.sp)
     }
+    val divider = rule
     Canvas(Modifier.width(1.dp).height(86.dp)) {
-        drawLine(rule, Offset.Zero, Offset(0f, size.height), strokeWidth = 1.dp.toPx())
+        drawLine(divider, Offset.Zero, Offset(0f, size.height), strokeWidth = 1.dp.toPx())
     }
     Column(Modifier.weight(1f).padding(start = 18.dp)) {
         EText("DETAILS", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp, color = dim)
