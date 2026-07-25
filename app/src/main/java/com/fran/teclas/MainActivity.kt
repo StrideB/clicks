@@ -163,6 +163,7 @@ import com.fran.teclas.brief.glassTintColorInt
 import com.fran.teclas.brief.mutedColorInt
 import com.fran.teclas.brief.textColorInt
 import com.fran.teclas.brief.typeface
+import com.fran.teclas.spacetoday.SpaceTodayHost
 import com.fran.teclas.clock.ClockContainer
 import com.fran.teclas.clock.ClockState
 import com.fran.teclas.clock.ClockTextTone
@@ -627,6 +628,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     internal val todayEnabled = false
     internal lateinit var briefRepository: BriefRepository
     internal val todayPaneHost = TodayPaneHost(this)
+    internal lateinit var spaceTodayHost: SpaceTodayHost
     // Spotify/Music library pane (compact + full library, click-wheel docks) lives in MusicPaneHost.
     internal val musicPaneHost = MusicPaneHost(this)
     internal val travelPaneHost = TravelPaneHost(this)
@@ -943,11 +945,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             generator = BriefGenerator(prefs()),
             scope = mediaUiScope
         )
+        spaceTodayHost = SpaceTodayHost(this)
         // Listener runs in-process; the callback can land on a binder thread, so hop to main where
         // refreshDebounced mutates its Job field.
         TeclasNotificationListener.onBriefChanged = {
             runOnUiThread {
                 if (todayEnabled) briefRepository.refreshDebounced()
+                if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
                 // Informational notifications feed the widget stack — refresh it too.
                 if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
             }
@@ -1184,6 +1188,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         if (now - lastContactsLoadMs > 5 * 60_000) { preloadContactsCache(); lastContactsLoadMs = now }
         scheduleBriefGeneration()
+        if (::spaceTodayHost.isInitialized) {
+            spaceTodayHost.onResume()
+        }
         if (todayEnabled && ::briefRepository.isInitialized) {
             briefRepository.startPeriodic()
             briefRepository.refreshDebounced(200)
@@ -1252,6 +1259,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
         // Living drift is the one continuous animation — never let it run while backgrounded.
         cancelWallpaperDrift()
+        if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
             prefs().edit().putString(TOUCH_MODEL_PREF, spatialScorer.exportState()).apply()
@@ -1272,6 +1280,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
         TeclasNotificationListener.onBriefChanged = null
+        if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         mediaUiScope.cancel()
         neuralGlideV2?.close()
@@ -1461,6 +1470,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (weatherStylePickerView?.isAttachedToWindow == true) { closeWeatherStylePicker(); return }
         if (themePaneHost.briefThemePickerShowing()) { themePaneHost.closeBriefThemePicker(); return }
         if (homeLeftOverlay != null) { closeHomeLeftPage(); return }
+        if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) { spaceTodayHost.close(); return }
         if (spaceBoardOverlay != null) { closeSpaceBoard(); return }
         if (todayOpen) { todayPaneHost.closeToday(); return }
         if (travelPaneHost.travelOverlay != null) { travelPaneHost.dismissTravelOverlay(); return }
@@ -1478,6 +1488,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
         imm?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
         // Dismiss overlays in order
+        if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) spaceTodayHost.close()
         if (todayOpen) todayPaneHost.closeToday()
         if (travelPaneHost.travelOverlay != null) travelPaneHost.dismissTravelOverlay()
         musicPaneHost.spotifyFullLibraryDismiss?.invoke()
@@ -1880,6 +1891,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
             post { applyLibraryEdgeGestureExclusion() }
+            if (::spaceTodayHost.isInitialized) {
+                val hint = spaceTodayHost.homeEdgeHintView()
+                (hint.parent as? ViewGroup)?.removeView(hint)
+                addView(hint, FrameLayout.LayoutParams(dp(5), dp(86), Gravity.END or Gravity.CENTER_VERTICAL))
+            }
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
@@ -10998,7 +11014,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 MotionEvent.ACTION_UP -> {
                     val dx = event.rawX - librarySwipeStartX
                     val dy = event.rawY - librarySwipeStartY
-                    if (dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) todayPaneHost.closeToday()
+                    if (dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) {
+                        if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) spaceTodayHost.close()
+                        else todayPaneHost.closeToday()
+                    }
                 }
             }
             return false
@@ -13834,6 +13853,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     /** Instant open with a slide-in animation (up-swipe / gesture-action paths). */
     private fun openSpaceBoard() {
+        if (::spaceTodayHost.isInitialized && spaceTodayHost.shouldHandleActiveSpace()) {
+            spaceTodayHost.openActive()
+            return
+        }
         val container = mountSpaceBoard() ?: return
         if (cardsViewEnabled() && beginHomeCardTransition(container, -1)) {
             settleHomeCard(open = true, exitSign = -1) { }
@@ -13846,6 +13869,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // --- interactive drag: the board follows the finger in from the right, like the old library ---
 
     private fun beginSpaceBoardDrag(): Boolean {
+        if (::spaceTodayHost.isInitialized && spaceTodayHost.shouldHandleActiveSpace()) {
+            spaceTodayHost.openActive()
+            return true
+        }
         // No hardware layer: the board's glass panel blur must keep updating live as it slides in.
         val board = mountSpaceBoard() ?: return false
         spaceBoardDragActive = true
