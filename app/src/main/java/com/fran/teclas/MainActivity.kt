@@ -1503,7 +1503,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Hide soft keyboard first so it doesn't flash during transition
         val imm = getSystemService(android.view.inputmethod.InputMethodManager::class.java)
         imm?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
-        // Dismiss overlays in order
+        // Dismiss overlays in order. The full-window board overlays MUST be closed here: the gesture
+        // dispatcher hard-gates on `homeLeftOverlay != null` / `spaceBoardOverlay != null`, so a HOME
+        // press that left either overlay set (it used to) stranded a detached board that ate every
+        // swipe — the "widget-add then can't swipe anywhere" lockup. onBackPressed already closes both.
+        if (homeLeftOverlay != null) closeHomeLeftPage()
+        if (spaceBoardOverlay != null) closeSpaceBoard()
         if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) spaceTodayHost.close()
         if (todayOpen) todayPaneHost.closeToday()
         if (travelPaneHost.travelOverlay != null) travelPaneHost.dismissTravelOverlay()
@@ -11028,8 +11033,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (innerWallpaperEditMode) return false
         if (keyboardGestureLockActive()) return false
         // Board / left page open (and not being dragged): let its own container handle scroll/tap/close.
-        if (spaceBoardOverlay != null && !spaceBoardDragActive) return false
-        if (homeLeftOverlay != null && !homeLeftDragActive) return false
+        // Require the overlay to be actually attached — a stranded/detached overlay reference must never
+        // silently eat every swipe (that was the widget-add gesture lockup).
+        if (spaceBoardOverlay?.isAttachedToWindow == true && !spaceBoardDragActive) return false
+        if (homeLeftOverlay?.isAttachedToWindow == true && !homeLeftDragActive) return false
         if (widgetKeyboardSwapActive()) {
             librarySwipeTriggered = false
             librarySwipeBlockedByWidget = false

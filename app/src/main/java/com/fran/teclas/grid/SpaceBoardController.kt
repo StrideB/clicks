@@ -85,6 +85,10 @@ class SpaceBoardController(
         val wDp = (widthPx / density).roundToInt()
         val hDp = (heightPx / density).roundToInt()
         widgetIdsOf(item).forEach { callbacks.updateWidgetSize(it, wDp, hDp) }
+        // Persist the new span here too. Layout persistence otherwise rides only on commitResize's
+        // itemsChanged, which its collision/no-change guard can skip — so a resize that reaches this
+        // hook without itemsChanged (e.g. on a crowded grid) silently lost its size across reload.
+        GridWorkspaceStore.saveSpace(activity, spaceId, view.currentItems())
     }
 
     override fun addRequested() {
