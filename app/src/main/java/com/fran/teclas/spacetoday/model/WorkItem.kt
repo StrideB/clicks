@@ -22,6 +22,8 @@ data class WorkItem(
     val primaryAction: WorkAction,
     val extraActions: List<WorkAction> = emptyList(),
     val source: BriefItem? = null,
-    val contentHash: String = ""
+    val contentHash: String = "",
+    /** True when this item was one of several from the same source in the batch (drives burst learning). */
+    val bursty: Boolean = false
 )
 

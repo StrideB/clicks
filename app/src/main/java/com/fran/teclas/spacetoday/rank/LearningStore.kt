@@ -33,27 +33,38 @@ class LearningStore(private val prefs: SharedPreferences) {
     fun tierCuts(space: String): Pair<Int, Int> = state(space).let { it.t1Cut to it.t2Cut }
     fun breakthroughThreshold(space: String): Int = state(space).breakthrough
 
-    fun onActed(space: String, tier: Tier, actionKind: String) {
+    fun onActed(space: String, tier: Tier, actionKind: String, wasBursty: Boolean = false) {
         val current = state(space)
         val reinforce = if (actionKind.contains("reply", true) || actionKind.contains("join", true)) 0.06 else 0.035
         save(space, current.copy(
             weights = current.weights.copy(
                 sender = (current.weights.sender + reinforce).coerceAtMost(1.65),
                 channel = (current.weights.channel + reinforce / 2).coerceAtMost(1.45),
-                keyword = (current.weights.keyword + reinforce / 2).coerceAtMost(1.45)
+                keyword = (current.weights.keyword + reinforce / 2).coerceAtMost(1.45),
+                // Acting reinforces that the source app/account's Zone was a correct signal here.
+                zone = (current.weights.zone + reinforce / 2).coerceAtMost(1.45),
+                // Acting on a bursty item means this space's bursts are worth surfacing — ease the
+                // burst penalty (lower weight). Untouched when the acted item wasn't part of a burst.
+                burst = if (wasBursty) (current.weights.burst * 0.94).coerceIn(0.20, 1.40) else current.weights.burst
             ),
             t1Cut = (current.t1Cut - if (tier == Tier.T1_CRITICAL) 1 else 0).coerceIn(48, 72),
             t2Cut = (current.t2Cut - if (tier == Tier.T2_IMPORTANT) 1 else 0).coerceIn(24, 48)
         ))
     }
 
-    fun onIgnored(space: String, tier: Tier) {
+    fun onIgnored(space: String, tier: Tier, wasBursty: Boolean = false) {
         val current = state(space)
         val raise = if (tier == Tier.T1_CRITICAL) 2 else 1
         save(space, current.copy(
             weights = current.weights.copy(
                 sender = (current.weights.sender * 0.985).coerceAtLeast(0.65),
-                keyword = (current.weights.keyword * 0.985).coerceAtLeast(0.65)
+                keyword = (current.weights.keyword * 0.985).coerceAtLeast(0.65),
+                // Symmetric with onActed: channel and zone must be able to fall back, not only ratchet
+                // up, or an early lucky reinforce pins them at the cap forever.
+                channel = (current.weights.channel * 0.985).coerceAtLeast(0.65),
+                zone = (current.weights.zone * 0.985).coerceAtLeast(0.65),
+                // Dismissing a bursty item deepens this space's burst penalty (higher weight).
+                burst = if (wasBursty) (current.weights.burst + 0.05).coerceIn(0.20, 1.40) else current.weights.burst
             ),
             t1Cut = (current.t1Cut + raise).coerceIn(48, 74),
             t2Cut = (current.t2Cut + 1).coerceIn(24, 54)

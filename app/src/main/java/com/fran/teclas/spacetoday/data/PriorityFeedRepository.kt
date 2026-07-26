@@ -89,7 +89,7 @@ class PriorityFeedRepository(
 
     fun onAction(signalRef: String, actionKind: String, space: String) {
         val item = _workloads.value[space]?.items?.firstOrNull { it.signalRef == signalRef }
-        if (item != null) learningStore.onActed(space, item.tier, actionKind)
+        if (item != null) learningStore.onActed(space, item.tier, actionKind, item.bursty)
         briefRepository.removeItem(signalRef)
         scope.launch {
             delay(RECONCILE_MS)
@@ -98,7 +98,7 @@ class PriorityFeedRepository(
     }
 
     fun onDismiss(item: WorkItem) {
-        learningStore.onIgnored(item.space, item.tier)
+        learningStore.onIgnored(item.space, item.tier, item.bursty)
         item.source?.let { briefRepository.dismissItem(it) } ?: briefRepository.removeItem(item.signalRef)
     }
 
@@ -133,11 +133,14 @@ class PriorityFeedRepository(
     private fun buildBaseWorkloads(spaces: List<Space>, activeSpace: String): Map<String, SpaceWorkload> {
         val now = System.currentTimeMillis()
         val briefItems = briefRepository.brief.value.items.filterNot { it.category == BriefCategory.WEATHER || it.category == BriefCategory.MUSIC }
+        // How many items in this batch share each source (package). Calendar/other non-notification
+        // items get their own unique key, so they are never counted as a burst.
+        val burstByKey = briefItems.groupingBy { burstKey(it) }.eachCount()
         return spaces.associate { space ->
             if (!hasWorkload(space.id)) {
                 space.id to SpaceWorkload.ambient(space.id, space.name)
             } else {
-                val raw = briefItems.mapNotNull { item -> toWorkItem(item, space, activeSpace, now) }
+                val raw = briefItems.mapNotNull { item -> toWorkItem(item, space, activeSpace, now, burstByKey[burstKey(item)] ?: 1) }
                     .sortedByDescending { it.score }
                     .take(MAX_ITEMS_PER_SPACE)
                 space.id to SpaceWorkload(
@@ -190,11 +193,14 @@ class PriorityFeedRepository(
         cache.save(map)
     }
 
-    private fun toWorkItem(item: BriefItem, space: Space, activeSpace: String, now: Long): WorkItem? {
-        val signal = item.signal ?: return cachedRebound(item, space, activeSpace, now)
+    private fun burstKey(item: BriefItem): String =
+        (item.signal as? NotificationSignal)?.packageName ?: item.signalRef
+
+    private fun toWorkItem(item: BriefItem, space: Space, activeSpace: String, now: Long, burstCount: Int = 1): WorkItem? {
+        val signal = item.signal ?: return cachedRebound(item, space, activeSpace, now, burstCount)
         val zone = zoneFor(signal)
         val startsIn = (signal as? CalendarSignal)?.let { ((it.beginMillis - now) / 60_000L).toInt() }
-        val score = preScorer.score(item, zone, activeSpace, space.id, now)
+        val score = preScorer.score(item, zone, activeSpace, space.id, now, burstCount)
         if (space.id != activeSpace && score < MIN_OTHER_SPACE_SCORE) return null
         val (t1, t2) = learningStore.tierCuts(space.id)
         return WorkItem(
@@ -214,13 +220,14 @@ class PriorityFeedRepository(
                 .filterNot { it.label.equals(item.primaryActionLabel, ignoreCase = true) }
                 .take(2),
             source = item,
-            contentHash = contentHash(signal)
+            contentHash = contentHash(signal),
+            bursty = burstCount > 2
         )
     }
 
-    private fun cachedRebound(item: BriefItem, space: Space, activeSpace: String, now: Long): WorkItem {
+    private fun cachedRebound(item: BriefItem, space: Space, activeSpace: String, now: Long, burstCount: Int = 1): WorkItem {
         val zone = Zone.SYSTEM
-        val score = preScorer.score(item, zone, activeSpace, space.id, now)
+        val score = preScorer.score(item, zone, activeSpace, space.id, now, burstCount)
         val (t1, t2) = learningStore.tierCuts(space.id)
         return WorkItem(
             signalRef = item.signalRef,
@@ -235,7 +242,8 @@ class PriorityFeedRepository(
             tier = LlmRanker.tierFromScore(score, t1, t2),
             primaryAction = WorkAction(item.primaryActionLabel.ifBlank { "Open" }, kindFrom(item.primaryActionLabel)),
             source = item,
-            contentHash = item.signalRef
+            contentHash = item.signalRef,
+            bursty = burstCount > 2
         )
     }
 

@@ -13,7 +13,14 @@ import kotlin.math.roundToInt
  * publish immediately before the LLM polish pass returns.
  */
 class PreScorer(private val learning: LearningStore) {
-    fun score(item: BriefItem, zone: Zone, activeSpace: String, targetSpace: String, now: Long = System.currentTimeMillis()): Int {
+    fun score(
+        item: BriefItem,
+        zone: Zone,
+        activeSpace: String,
+        targetSpace: String,
+        now: Long = System.currentTimeMillis(),
+        burstCount: Int = 1
+    ): Int {
         val weights = learning.weights(targetSpace)
         val signal = item.signal
         val text = listOf(item.title, item.subtitle, (signal as? NotificationSignal)?.text.orEmpty()).joinToString(" ").lowercase(Locale.US)
@@ -45,6 +52,13 @@ class PreScorer(private val learning: LearningStore) {
 
         score += zoneSpaceBoost(zone, targetSpace, activeSpace) * weights.zone
         if (activeSpace == targetSpace) score += 4.0
+
+        // Burst damping: a source firing many notifications at once is usually noise (group chat,
+        // news, promos), so past the 2nd sibling we subtract a penalty scaled by the learned
+        // `burst` weight. onActed/onIgnored move that weight per space — if the user keeps acting
+        // on this space's bursts the penalty eases; if they keep dismissing it deepens.
+        if (burstCount > 2) score -= (burstCount - 2).coerceAtMost(6) * 3.0 * weights.burst
+
         return score.roundToInt().coerceIn(0, 100)
     }
 
