@@ -55,7 +55,23 @@ class PriorityFeedRepository(
         }
     }
 
-    fun hasWorkload(spaceId: String): Boolean = spaceId in WORKLOAD_SPACES
+    /**
+     * Every Space gets its own board.
+     *
+     * This used to be `spaceId in WORKLOAD_SPACES` — a hardcoded set of work/travel/fitness/gym.
+     * Nothing about the pipeline required that: [buildBaseWorkloads] scores the whole device signal
+     * set *per Space* via toWorkItem(item, space, ...), so any Space could always have been ranked.
+     * The set only decided who was allowed to.
+     *
+     * The effect was that a normal evening or weekend at home resolved to Home, Home was not in the
+     * set, and the Today surface silently never opened — it read as "Spaces is broken". Work is also
+     * weekdaysOnly, so the four permitted Spaces were all weekday-or-away contexts. Things happen
+     * outside those, so the gate is gone.
+     *
+     * A Space with nothing to show now renders the designed EmptyWorkload state rather than being
+     * unreachable.
+     */
+    fun hasWorkload(spaceId: String): Boolean = true
 
     fun breakthroughsFor(activeSpace: String): List<Breakthrough> =
         _workloads.value.values
@@ -310,7 +326,6 @@ class PriorityFeedRepository(
         items.firstOrNull()?.let { "${it.who}: ${it.summary}".take(160) } ?: "Nothing needs you right now."
 
     private companion object {
-        val WORKLOAD_SPACES = setOf("work", "travel", "fitness", "gym")
         const val MAX_ITEMS_PER_SPACE = 8
         const val MIN_OTHER_SPACE_SCORE = 26
         const val DEBOUNCE_MS = 900L

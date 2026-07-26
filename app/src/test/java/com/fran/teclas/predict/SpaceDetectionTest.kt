@@ -112,32 +112,27 @@ class SpaceDetectionTest {
         assertTrue(away.features().contains("away"))
     }
 
-    // ------------------------------------------------------------------ the weekend workload gap
-
-    /**
-     * Mirrors PriorityFeedRepository.WORKLOAD_SPACES. Duplicated rather than referenced so these
-     * stay pure-JVM (that class pulls in android.content.Context).
-     */
-    private val workloadSpaces = setOf("work", "travel", "fitness", "gym")
+    // ------------------------------------------------------------- the weekend workload gap, closed
 
     @Test fun `Work is unreachable on a weekend`() {
         // Work is weekdaysOnly, so even standing inside the office on a Sunday it cannot match.
+        // This is about DETECTION only; it no longer implies the Space has no board (see below).
         val d = SpaceManager.detectIn(spaces, snap(placeKind = PlaceKind.WORK, weekend = true), null, null)
         assertTrue("weekdaysOnly must exclude Work on a weekend", d.space.id != "work")
     }
 
-    @Test fun `weekend at home lands on a Space with no workload surface`() {
-        // Documents the reported "Spaces isn't working today" (reported on a Sunday). Detection
-        // itself is fine — it correctly resolves Home. The gap is downstream: Space Today only
-        // builds workloads for workloadSpaces, and every one of those is a weekday-or-away
-        // context. So a normal weekend at home has no Space that can surface work, and the
-        // feature reads as broken. It repeats every Saturday and Sunday, and every evening at
-        // home too. Fixing it is a product call (which Spaces deserve a workload), not a bug fix.
+    @Test fun `weekend at home still resolves a Space that has a board`() {
+        // This started as the reported "Spaces isn't working today" (a Sunday). Detection was never
+        // the problem — it correctly resolves Home. The gap was downstream: Space Today only built
+        // workloads for a hardcoded work/travel/fitness/gym set, so a normal weekend (or any
+        // evening) at home had no surface and the feature read as broken.
+        //
+        // PriorityFeedRepository.hasWorkload now returns true for every Space, so whatever
+        // detection resolves has a board. This asserts the property that actually matters — a Space
+        // is always resolved — rather than re-encoding the removed set, which is exactly what made
+        // the old assertion lock the bug in place.
         val d = SpaceManager.detectIn(spaces, snap(placeKind = PlaceKind.HOME, weekend = true), null, null)
         assertEquals("home", d.space.id)
-        assertTrue(
-            "Home has no Space Today workload surface — this is the weekend gap",
-            d.space.id !in workloadSpaces
-        )
+        assertTrue("detection must always resolve some Space", d.space.id.isNotBlank())
     }
 }
