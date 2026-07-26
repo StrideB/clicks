@@ -21,6 +21,8 @@ data class SpaceTriggers(
     val btCar: Boolean = false,
     val headphones: Boolean = false,
     val calendarBusy: Boolean = false,           // in a meeting or one starting soon
+    /** Hashed SSIDs (ContextSnapshot.wifiId) this Space belongs to — OR-alternative in the place group. */
+    val wifiIds: Set<String> = emptySet(),
 )
 
 /** A named context the drawer/dock arrange themselves around. */
@@ -237,9 +239,10 @@ object SpaceManager {
             if (s.isWeekend == it) return null
             groups++
         }
-        if (t.placeKinds.isNotEmpty() || t.placeIds.isNotEmpty() || t.awayFromHome) {
+        if (t.placeKinds.isNotEmpty() || t.placeIds.isNotEmpty() || t.awayFromHome || t.wifiIds.isNotEmpty()) {
             val hit = s.placeKind in t.placeKinds || s.placeId in t.placeIds ||
-                (t.awayFromHome && s.awayFromHome)
+                (t.awayFromHome && s.awayFromHome) ||
+                (s.wifiId != null && s.wifiId in t.wifiIds)
             if (!hit) return null
             groups++; strong = true
         }
@@ -282,6 +285,7 @@ object SpaceManager {
                     put("awayFromHome", s.triggers.awayFromHome)
                     put("driving", s.triggers.driving); put("btCar", s.triggers.btCar)
                     put("headphones", s.triggers.headphones); put("calendarBusy", s.triggers.calendarBusy)
+                    put("wifiIds", JSONArray(s.triggers.wifiIds.toList()))
                 })
             })
         }
@@ -323,6 +327,7 @@ object SpaceManager {
                     btCar = t.optBoolean("btCar"),
                     headphones = t.optBoolean("headphones"),
                     calendarBusy = t.optBoolean("calendarBusy"),
+                    wifiIds = strings(t.optJSONArray("wifiIds")).toSet(),
                 ),
             )
         }

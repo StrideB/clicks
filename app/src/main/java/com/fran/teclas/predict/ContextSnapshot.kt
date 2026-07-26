@@ -41,6 +41,13 @@ data class ContextSnapshot(
     val placeFamiliar: Boolean = true,
     /** A 100km+ hop (a flight) was detected within the last ~18h — you're mid-trip, not commuting. */
     val recentlyFlew: Boolean = false,
+    /**
+     * Stable hash of the connected Wi-Fi network's SSID, or null when not on Wi-Fi / unreadable.
+     * Hashed, never the raw name: it only ever needs to answer "same network as before?", and the
+     * launcher shouldn't hold a list of the places you've been in plain text. This is the sharpest
+     * home-vs-work signal available and costs no GPS fix.
+     */
+    val wifiId: String? = null,
 ) {
 
     /**
@@ -62,6 +69,7 @@ data class ContextSnapshot(
         if (awayFromHome) add("away")
         if (distanceBand != DistanceBand.HOME) add("dband:${distanceBand.name}")
         if (!placeFamiliar) add("unfamiliar")
+        wifiId?.let { add("wifi:$it") }
         lastApp?.let { add("last:${it.hashCode()}") }
         if (lastApp != null && prevApp != null) add("bigram:${prevApp.hashCode()}>${lastApp.hashCode()}")
         add("bias")
@@ -73,6 +81,10 @@ data class ContextSnapshot(
         val motion = if (driving) "drv" else "still"
         // "|away" is appended only when true so every context key learned at home keeps matching.
         val away = if (awayFromHome) "|away" else ""
-        return "h$hourBucket|$day|$placeId|$motion|bt${btDevice.name}$away"
+        // Wi-Fi stands in for the place only when there is no place — indoors with a stale/absent
+        // fix, "unknown" otherwise collapses every distinct room into one bucket. Appending it only
+        // in that case keeps cardinality flat and leaves existing learned keys matching.
+        val place = if (placeId == "unknown" && wifiId != null) "w:$wifiId" else placeId
+        return "h$hourBucket|$day|$place|$motion|bt${btDevice.name}$away"
     }
 }

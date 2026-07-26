@@ -32,6 +32,7 @@ object ContextSensors {
     private const val REGIONAL_DISTANCE_M = 40_000f  // 40 km  → REGIONAL (day-trip range begins)
     private const val LOCAL_DISTANCE_M = 15_000f     // 15 km  → LOCAL (still around town)
     private const val TZ_MIN_SAMPLES = 24            // ~a day of awake-hours before a "usual" timezone exists
+    private const val UNKNOWN_SSID = "<unknown ssid>"
 
     private var cachedAt = 0L
     private var cachedPlace: Pair<String, PlaceKind> = "unknown" to PlaceKind.UNKNOWN
@@ -41,6 +42,7 @@ object ContextSensors {
     private var cachedBand = DistanceBand.HOME
     private var cachedFamiliar = true
     private var cachedFlew = false
+    private var cachedWifi: String? = null
 
     fun snapshot(
         context: Context,
@@ -76,6 +78,7 @@ object ContextSensors {
             distanceBand = cachedBand,
             placeFamiliar = cachedFamiliar,
             recentlyFlew = cachedFlew,
+            wifiId = cachedWifi,
         )
     }
 
@@ -104,6 +107,37 @@ object ContextSensors {
         cachedFamiliar = cachedPlace.first != "unknown"
         cachedBand = runCatching { distanceBand(context, freshFix) }.getOrDefault(DistanceBand.HOME)
         cachedFlew = runCatching { PlaceInference.flewRecently(context) }.getOrDefault(false)
+        cachedWifi = runCatching { wifiId(context) }.getOrNull()
+        // A known network pins the place even when the fix is stale or absent — indoors, Wi-Fi is a
+        // far better "which building am I in" answer than a 10-minute-old GPS reading.
+        cachedWifi?.let { id ->
+            WifiPlaces.observe(context, id, cachedPlace.second)
+            if (cachedPlace.first == "unknown") {
+                WifiPlaces.kindFor(context, id)?.let { known ->
+                    cachedPlace = "wifi:$id" to known
+                    cachedFamiliar = true
+                }
+            }
+        }
+    }
+
+    /**
+     * Stable hash of the current Wi-Fi SSID, or null when not connected / unreadable. Android 8.1+
+     * gates the SSID behind location permission *and* location services being on; when that's not
+     * satisfied the platform returns "<unknown ssid>", which we treat as no signal.
+     */
+    private fun wifiId(context: Context): String? {
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) return null
+        val wifi = context.applicationContext
+            .getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager ?: return null
+        if (!wifi.isWifiEnabled) return null
+        @Suppress("DEPRECATION")
+        val ssid = wifi.connectionInfo?.ssid?.trim('"').orEmpty()
+        if (ssid.isBlank() || ssid.equals(UNKNOWN_SSID, ignoreCase = true) || ssid == "0x") return null
+        // Hash, never store the name itself.
+        return Integer.toHexString(ssid.hashCode())
     }
 
     /**
