@@ -84,6 +84,17 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
     private var themeTick by mutableIntStateOf(0)
     private var downX = 0f
     private var downY = 0f
+    /**
+     * True once THIS overlay has seen the ACTION_DOWN of the gesture currently in flight.
+     *
+     * The panel is opened BY a swipe, so that gesture's ACTION_DOWN lands on the launcher — the
+     * overlay does not exist yet. The overlay is then added mid-gesture and receives the ACTION_UP
+     * with no DOWN of its own, leaving downX at its default 0f. The dismiss test then computed
+     * dx = ev.x - 0f — the finger's absolute X, always far beyond the dp(72) threshold — so the
+     * panel closed itself the instant it opened. Only evaluate the swipe-to-dismiss when the
+     * gesture actually began on this view.
+     */
+    private var gestureStartedHere = false
 
     init {
         activity.mediaUiScope.launch {
@@ -98,6 +109,7 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
     fun open(spaceId: String) {
         if (!activity.hasContentFrame() || activity.libraryOpen || activity.openPane != null) return
         viewedSpace = spaceId
+        gestureStartedHere = false   // the opening swipe is not a dismiss gesture for this overlay
         repository.refresh()
         NowBarLiveUpdate.clearSpaceWork(activity)
         activity.cancelWallpaperLongPress()
@@ -113,13 +125,21 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
                     MotionEvent.ACTION_DOWN -> {
                         downX = ev.x
                         downY = ev.y
+                        gestureStartedHere = true
                     }
+                    MotionEvent.ACTION_CANCEL -> gestureStartedHere = false
                     MotionEvent.ACTION_UP -> {
-                        val dx = ev.x - downX
-                        val dy = ev.y - downY
-                        if (dx > activity.dp(72) && abs(dx) > abs(dy) * 1.25f) {
-                            close()
-                            return true
+                        val startedHere = gestureStartedHere
+                        gestureStartedHere = false
+                        // An UP with no matching DOWN belongs to the gesture that opened this
+                        // panel; treating it as a dismiss closed the panel immediately.
+                        if (startedHere) {
+                            val dx = ev.x - downX
+                            val dy = ev.y - downY
+                            if (dx > activity.dp(72) && abs(dx) > abs(dy) * 1.25f) {
+                                close()
+                                return true
+                            }
                         }
                     }
                 }
@@ -175,6 +195,7 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
     fun close(): Boolean {
         val host = overlay ?: return false
         overlay = null
+        gestureStartedHere = false
         themeOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
         themeOverlay = null
         closeSpaceFan()
