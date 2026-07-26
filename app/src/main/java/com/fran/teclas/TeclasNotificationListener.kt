@@ -161,14 +161,24 @@ class TeclasNotificationListener : NotificationListenerService() {
             avatar = notificationAvatars[sbn.key]
         )
 
-        synchronized(briefRecords) {
-            briefRecords.remove(sbn.key)
+        val unchanged = synchronized(briefRecords) {
+            val previous = briefRecords.remove(sbn.key)
             if (briefRecords.size >= MAX_BRIEF) {
                 briefRecords.keys.firstOrNull()?.let { briefRecords.remove(it) }
             }
             briefRecords[sbn.key] = record
+            previous != null && previous.contentHash == record.contentHash
         }
-        onBriefChanged?.invoke()
+        // Apps repost byte-identical notifications constantly — sync ticks, message-list redraws,
+        // a chat rewriting the same summary line. Every invoke below drives a full brief refresh
+        // that ends in an *uncached* ~700-token LLM generation (BriefGenerator.geminiRank), so a
+        // phone doing nothing but receiving chatter sat in a near-permanent inference loop. That
+        // is the "something pings it and it gets warm" path.
+        //
+        // The record itself is still replaced above — its PendingIntents are fresh handles and the
+        // old ones die with the notification. Only the downstream refresh is skipped, and only when
+        // the content hash says nothing a ranker could see has changed.
+        if (!unchanged) onBriefChanged?.invoke()
     }
 
     private fun briefCategory(sbn: StatusBarNotification): String {
@@ -269,7 +279,13 @@ class TeclasNotificationListener : NotificationListenerService() {
     }
 
     private fun Drawable.toBitmap(width: Int, height: Int): Bitmap {
-        if (this is android.graphics.drawable.BitmapDrawable && bitmap != null) return bitmap
+        // Deliberately no BitmapDrawable shortcut. Returning the drawable's own bitmap handed back
+        // memory owned by the notification's Icon, which is still live in the system UI — and both
+        // eviction paths here call recycle() on whatever they stored, so we were recycling someone
+        // else's bitmap ("trying to use a recycled bitmap" later, far from this code). It also
+        // ignored the requested size, so a sender's full-resolution avatar was cached at whatever
+        // dimensions it arrived with, up to MAX_AVATARS of them. Drawing into our own 96x96 costs
+        // ~36 KB and makes ownership unambiguous.
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         setBounds(0, 0, canvas.width, canvas.height)
