@@ -55,6 +55,17 @@ jobs:
             app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
 
+      # The release build is R8-minified, so a crash from it reports obfuscated frames
+      # ("at ns0.<init>", "at MainActivity.B4") that cannot be read without the mapping produced by
+      # THAT exact build. Keeping it means a release stack trace stays decodable via
+      # `retrace mapping.txt trace.txt` instead of guessed at.
+      - name: Upload R8 mapping
+        uses: actions/upload-artifact@v4
+        with:
+          name: teclas-release-mapping
+          path: app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: warn
+
       # On main, also publish the APK to a rolling "debug-latest" Release so there's a stable,
       # direct app-debug.apk download link (no zip) — friendlier to grab from a phone.
       - name: Publish APK to a Release (main only)
@@ -69,3 +80,4 @@ jobs:
           files: |
             app/build/outputs/apk/debug/app-debug.apk
             app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/mapping/release/mapping.txt
