@@ -36,12 +36,17 @@ object WifiPlaces {
         if (kind == PlaceKind.UNKNOWN) return
         val all = load(context)
         val counts = all.getOrPut(wifiId) { mutableMapOf() }
-        val next = (counts[kind.name] ?: 0) + 1
+        val current = counts[kind.name] ?: 0
+        // Saturated at a confident binding: stop rewriting prefs. This is called from the 2-minute
+        // context refresh, so an unconditional write meant a JSON load+serialize+commit every two
+        // minutes forever, long after the answer stopped changing.
+        if (current >= MAX_COUNT) return
+        val next = current + 1
         counts[kind.name] = next
         // Decay the others when one saturates, so a moved network can be re-learned instead of
         // being outvoted forever by history.
         if (next >= MAX_COUNT) {
-            counts.keys.forEach { k -> counts[k] = (counts[k] ?: 0) / 2 }
+            counts.keys.forEach { k -> if (k != kind.name) counts[k] = (counts[k] ?: 0) / 2 }
         }
         save(context, all)
     }

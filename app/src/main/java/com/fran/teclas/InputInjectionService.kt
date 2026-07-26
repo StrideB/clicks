@@ -19,6 +19,13 @@ import android.view.accessibility.AccessibilityWindowInfo
 class InputInjectionService : AccessibilityService() {
     private var focusedEditable: AccessibilityNodeInfo? = null
 
+    /** Which event scope is currently applied (null = not yet applied). See [applyEventScope]. */
+    private var eventScopeDocked: Boolean? = null
+    private val placementListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == KeyboardSettings.KEY_PLACEMENT) handler.post { applyEventScope() }
+        }
+
     // Auto-open-search: when the docked keyboard types and no field is on screen, buffer the
     // characters and tap the app's search affordance once, then flush the buffer into the field
     // that appears. Lets "just start typing" reach search-gated apps (YouTube/Spotify fake bars).
@@ -64,17 +71,67 @@ class InputInjectionService : AccessibilityService() {
         androidx.core.content.ContextCompat.registerReceiver(
             this, keystrokeReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        // Re-scope event delivery the moment docked mode is toggled, so we aren't subscribed to
+        // system-wide scroll events while the docked keyboard is off.
+        KeyboardSettings.prefs(this).registerOnSharedPreferenceChangeListener(placementListener)
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        applyEventScope()
+    }
+
+    /**
+     * Narrow what the *framework* delivers to us based on docked mode.
+     *
+     * The manifest declares the full hungry set — `typeViewScrolled` + `flagRetrieveInteractiveWindows`
+     * + `canRetrieveWindowContent` at `notificationTimeout=50` — which the docked keyboard genuinely
+     * needs. But that set is a system-wide cost: while it's declared, the platform builds and
+     * dispatches an event for every scroll in every app, ~20x/second, even if our handler returns
+     * immediately. Returning early was never enough — the work happens before we're called.
+     *
+     * So when the docked keyboard is off (the common case), we drop to window-state changes only.
+     * That's the minimum needed to notice the user turning docked mode back on mid-session, and it
+     * stops the scroll firehose at the source.
+     */
+    private fun applyEventScope() {
+        val docked = KeyboardSettings.isDocked(this)
+        if (docked == eventScopeDocked) return
+        val info = serviceInfo ?: return
+        info.eventTypes = if (docked) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED or
+                AccessibilityEvent.TYPE_VIEW_FOCUSED or
+                AccessibilityEvent.TYPE_VIEW_CLICKED or
+                AccessibilityEvent.TYPE_VIEW_SCROLLED
+        } else {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+        }
+        // The expensive flag and the 50ms cadence are only worth paying for while docked.
+        info.notificationTimeout = if (docked) 50L else 500L
+        info.flags = if (docked) {
+            info.flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        } else {
+            info.flags and android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS.inv()
+        }
+        runCatching { serviceInfo = info }.onSuccess { eventScopeDocked = docked }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!KeyboardSettings.isDocked(this)) {
-            focusedEditable = null
-            focusedFieldKey = null
-            endSearchSession()
-            DockedFreeform.externalAppInFront = false
-            setDockedOverlayVisible(false)
+            // Idempotent: tear down once on the transition out of docked mode, then do nothing.
+            // Without this guard the teardown re-ran on every delivered event.
+            if (eventScopeDocked != false) {
+                focusedEditable = null
+                focusedFieldKey = null
+                endSearchSession()
+                DockedFreeform.externalAppInFront = false
+                setDockedOverlayVisible(false)
+                applyEventScope()
+            }
             return
         }
+        if (eventScopeDocked != true) applyEventScope()
         updateFreeformState()
         val hideForScroll = event?.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED &&
             event.packageName?.toString() != packageName &&
@@ -536,6 +593,7 @@ class InputInjectionService : AccessibilityService() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(keystrokeReceiver) }
+        runCatching { KeyboardSettings.prefs(this).unregisterOnSharedPreferenceChangeListener(placementListener) }
         handler.removeCallbacks(flushRunnable)
         handler.removeCallbacks(prepareRetryRunnable)
         endSearchSession()

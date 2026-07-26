@@ -4,11 +4,14 @@ import android.content.Context
 
 internal object KeyboardSettings {
     private const val PREFS_NAME = "teclas"
-    private const val KEY_PLACEMENT = "keyboard_placement"
+    /** Public so InputInjectionService can watch it and re-scope its accessibility event delivery. */
+    const val KEY_PLACEMENT = "keyboard_placement"
     private const val KEY_SIZE = "keyboard_size"
 
     const val MODE_DOCKED = "docked"
     const val MODE_WIDGET = "widget"
+
+    fun prefs(context: Context) = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     fun getPlacementMode(context: Context): String {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
