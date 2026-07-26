@@ -13997,6 +13997,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     /** Instant open with a slide-in animation (up-swipe / gesture-action paths). */
     private fun openSpaceBoard() {
         if (::spaceTodayHost.isInitialized && spaceTodayHost.shouldHandleActiveSpace()) {
+            // Same guard beginSpaceBoardDrag already applies. Every gesture caller of this function
+            // opens Today mid-swipe, and one of them (the side-swipe) opens on dx < 0 — the very
+            // direction the ACTION_UP handler reads as swipe-left-to-close. Without arming this,
+            // the gesture that opened Today immediately closed it again. Harmless on the
+            // non-gesture callers (long-press, gesture-action): the flag is cleared on the next
+            // ACTION_DOWN/UP regardless.
+            todayOpenedDuringSwipe = true
             spaceTodayHost.openActive()
             return
         }
