@@ -21,12 +21,13 @@ class SpaceDetectionTest {
         headphones: Boolean = false,
         away: Boolean = false,
         weekend: Boolean = false,
+        wifiId: String? = null,
     ) = ContextSnapshot(
         hourBucket = hourBucket, dayOfWeek = if (weekend) 6 else 2, isWeekend = weekend,
         placeId = placeId, placeKind = placeKind, driving = driving, btDevice = BtDevice.NONE,
         headphones = headphones, charging = false, mediaPlaying = false,
         calendar = CalendarProximity.FREE, lastApp = null, prevApp = null,
-        timestamp = 0L, awayFromHome = away,
+        timestamp = 0L, awayFromHome = away, wifiId = wifiId,
     )
 
     @Test fun `at home resolves to Home`() {
@@ -56,6 +57,44 @@ class SpaceDetectionTest {
     @Test fun `driving beats a weaker match by specificity and priority`() {
         val d = SpaceManager.detectIn(spaces, snap(driving = true, headphones = true), null, null)
         assertEquals("driving", d.space.id)
+    }
+
+    @Test fun `a wifi trigger resolves the space and counts as strong`() {
+        // The office network identifies Work with no location fix at all.
+        val work = spaces.first { it.id == "work" }
+        val withWifi = spaces.map {
+            if (it.id == "work") it.copy(triggers = it.triggers.copy(wifiIds = setOf("abc123"))) else it
+        }
+        val d = SpaceManager.detectIn(withWifi, snap(wifiId = "abc123"), null, null)
+        assertEquals("work", d.space.id)
+        assertTrue("a known network is a strong place signal", d.strong)
+        assertTrue(work.triggers.wifiIds.isEmpty()) // defaults ship empty; user/learning fills them
+    }
+
+    @Test fun `an unknown network does not match a wifi trigger`() {
+        val withWifi = spaces.map {
+            if (it.id == "work") it.copy(triggers = it.triggers.copy(wifiIds = setOf("abc123"))) else it
+        }
+        val d = SpaceManager.detectIn(withWifi, snap(wifiId = "zzz999"), null, previousId = null)
+        assertTrue("a foreign network must not force Work", d.space.id != "work")
+    }
+
+    @Test fun `wifi only enters the context key when there is no place`() {
+        // Backward compatibility: everything already learned at a known place must keep matching.
+        val atHome = snap(placeKind = PlaceKind.HOME, placeId = "home-1")
+        assertEquals(atHome.contextKey(), atHome.copy(wifiId = "abc123").contextKey())
+        // With no place, wifi stands in so distinct buildings stop collapsing into one "unknown".
+        val unknown = snap()
+        assertTrue(unknown.copy(wifiId = "abc123").contextKey() != unknown.contextKey())
+        assertTrue(unknown.copy(wifiId = "abc123").contextKey() != unknown.copy(wifiId = "zzz999").contextKey())
+    }
+
+    @Test fun `wifi adds a feature without dropping the base features`() {
+        val base = snap()
+        val onWifi = base.copy(wifiId = "abc123")
+        assertTrue(base.features().all { it in onWifi.features() })
+        assertTrue("wifi:abc123" in onWifi.features())
+        assertTrue(base.features().none { it.startsWith("wifi:") })
     }
 
     @Test fun `home context is unaffected by the away feature key`() {
