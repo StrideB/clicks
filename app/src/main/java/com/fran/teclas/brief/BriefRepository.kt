@@ -34,6 +34,11 @@ class BriefRepository(
     private var debounceJob: Job? = null
     private var periodicJob: Job? = null
 
+    // Identity of the signal set that produced [lastGeminiItems]. Phase 2 is a full generation over
+    // every signal, so re-running it for an unchanged set is pure heat with no visible difference.
+    private var lastGeminiKey: String? = null
+    private var lastGeminiItems: List<BriefItem>? = null
+
     /** Fire a refresh immediately (used when Today opens so live signals bind at once). */
     fun refresh() {
         debounceJob?.cancel()
@@ -59,6 +64,8 @@ class BriefRepository(
             val empty = Brief(emptyList(), now, Brief.Source.EMPTY)
             _brief.value = empty
             saveCache(empty)
+            lastGeminiKey = null
+            lastGeminiItems = null
             return
         }
         // Phase 1: instant, deterministic, fully actionable (live signals bound). No network.
@@ -66,9 +73,40 @@ class BriefRepository(
         publish(Brief(rules, now, Brief.Source.RULES))
         // Phase 2: upgrade phrasing with Gemini if configured. Still binds the same live signals.
         if (generator.canUseGemini()) {
+            // Phase 2 is a ~700-token generation over the whole signal set, and it runs on-device
+            // (Gemma/Nano) whenever a local model is installed. Re-phrasing an identical set burns
+            // that for nothing, so reuse the previous output until the content — or the time bucket
+            // the wording depends on ("in 10 min") — actually moves.
+            val key = geminiKey(signals, now)
+            val reusable = lastGeminiItems?.takeIf { key == lastGeminiKey && it.isNotEmpty() }
+            if (reusable != null) {
+                publish(Brief(reusable, now, Brief.Source.GEMINI))
+                return
+            }
             val gem = withContext(Dispatchers.Default) { generator.geminiOnly(signals, now) }
-            if (!gem.isNullOrEmpty()) publish(Brief(gem, now, Brief.Source.GEMINI))
+            if (!gem.isNullOrEmpty()) {
+                lastGeminiKey = key
+                lastGeminiItems = gem
+                publish(Brief(gem, now, Brief.Source.GEMINI))
+            }
         }
+    }
+
+    /**
+     * Content identity of the signal set, plus a coarse time bucket. The bucket is what keeps
+     * relative phrasing honest: an unchanged set is still re-phrased once a bucket rolls over,
+     * instead of once per notification post.
+     */
+    private fun geminiKey(signals: List<Signal>, now: Long): String {
+        val body = signals.sortedBy { it.id }.joinToString("|") { signal ->
+            when (signal) {
+                is NotificationSignal -> "n:${signal.id}:${signal.contentHash}"
+                is CalendarSignal -> "c:${signal.id}:${signal.beginMillis}"
+                is WeatherSignal -> "w:${signal.id}:${signal.summary}"
+                is MediaSignal -> "m:${signal.id}:${signal.title}:${signal.artist}"
+            }
+        }
+        return "${now / GEMINI_BUCKET_MS}|${body.hashCode().toString(16)}"
     }
 
     private fun publish(brief: Brief) {
@@ -162,6 +200,9 @@ class BriefRepository(
         const val DEBOUNCE_MS = 900L
         const val RECONCILE_MS = 400L
         const val PERIODIC_MS = 45 * 60_000L
+
+        /** How long an unchanged signal set may reuse its previous Gemini phrasing. */
+        const val GEMINI_BUCKET_MS = 10 * 60_000L
         const val MAX_DISMISSED = 120
     }
 
