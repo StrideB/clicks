@@ -18162,6 +18162,20 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         pendingLauncherCorrection = null
     }
 
+    /**
+     * Multi-word / real-word fixes on the launcher query, at parity with the IME's space handler:
+     * "should of"→"should have", "alot"→"a lot", "dont"→"don't". This is the error class per-word
+     * autocorrect can't see (every word is individually a valid dictionary word). The table holds
+     * only unambiguous entries, so it applies silently — the same contract as in Emi.
+     *
+     * English-only, mirroring the IME's englishActive() gate, since these are English rules.
+     */
+    private fun applyLauncherPhraseFix() {
+        if (!predictionEnginePrimary.isDictWord("the") || !predictionEnginePrimary.isDictWord("and")) return
+        val f = com.fran.teclas.keyboard.unified.SentenceChecks.phraseFix(query.takeLast(48)) ?: return
+        query = query.dropLast(f.replaceLastChars) + f.replacement
+    }
+
     // ── Background prediction pipeline (parity with the IME) ────────────────
     // Suggestions and the space-bar correction decision compute here, never on the UI thread.
     private val launcherPredictExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -18375,6 +18389,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // Adaptive dictionary (parity with the IME): primary language active by default, with
                 // the phone's secondary bundled languages as a latent extended set — so multi-language
                 // typing works but a secondary language never silently rewrites the primary one.
+                // Bulk misspelling lexicon rides along with the dictionary load (same background
+                // thread, once per process). No-op when the asset isn't bundled.
+                com.fran.teclas.keyboard.TypoLexiconLoader.ensureLoaded(this@MainActivity)
                 val adaptive = com.fran.teclas.keyboard.DictionaryLoader.loadAdaptive(this@MainActivity)
                 // Fold accepted-glide personal frequencies in so both decoders learn what you swipe (L3).
                 val personal = glideLearning.personalFrequencyBoost()
@@ -19568,6 +19585,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                         words.lastOrNull()?.let { personalFreq.noteCommitted(it) }
                         tryAutocorrect()  // autocorrect current word before adding space
                         if (!query.endsWith(" ")) query += " "  // tryAutocorrect may have already appended the space
+                        applyLauncherPhraseFix()   // then the multi-word layer, same as the IME
                         // Surface personalized next-word predictions for the word just committed
                         // (warmed during typing, so the strip fills instead of going blank).
                         val committed = query.trimEnd().substringAfterLast(' ')

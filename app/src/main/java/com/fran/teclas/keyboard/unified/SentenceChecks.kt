@@ -1,5 +1,7 @@
 package com.fran.teclas.keyboard.unified
 
+import java.util.Locale
+
 /**
  * Tier-2 foundation: pure, rule-based sentence checks that run at word boundaries (space/period),
  * never per keystroke. Each check returns a concrete fix or null — no scoring, no ambiguity —
@@ -78,4 +80,37 @@ object SentenceChecks {
 
     private val SILENT_H = listOf("hour", "honest", "honor", "honour", "heir")
     private val CONSONANT_SOUND_PREFIXES = listOf("uni", "use", "user", "usu", "eu", "one", "once", "ubiq")
+
+    /**
+     * Multi-word / real-word fix from [PhrasePatterns], checked once the trailing space lands:
+     * "should of " → "should have ", "alot " → "a lot ", "dont " → "don't ".
+     *
+     * This is the layer word-level autocorrect can't reach — every word in "should of" is a valid
+     * dictionary word, so the per-word corrector never even looks at it. Matches the LONGEST phrase
+     * first so "should of been" wins over "should of". English-only; the caller must gate on the
+     * active language.
+     */
+    fun phraseFix(beforeCursor: String): Fix? {
+        if (!beforeCursor.endsWith(" ")) return null
+        val body = beforeCursor.dropLast(1)
+        if (body.isEmpty()) return null
+        val tokens = body.split(' ')
+        val maxN = minOf(PhrasePatterns.maxWords, tokens.size)
+        for (n in maxN downTo 1) {
+            val window = tokens.takeLast(n)
+            // Every token must be a plain word (letters/apostrophe) — that keeps the match from
+            // straddling punctuation, e.g. "ok. dont" must still match only "dont".
+            if (window.any { t -> t.isEmpty() || !t.all { it.isLetter() || it == '\'' } }) continue
+            val original = window.joinToString(" ")
+            val replacement = PhrasePatterns.fix(original.lowercase(Locale.US)) ?: continue
+            val cased = PhrasePatterns.preserveCase(original, replacement)
+            if (cased == original) return null
+            return Fix(
+                replaceLastChars = original.length + 1,   // + the trailing space
+                replacement = "$cased ",
+                reason = "phrase"
+            )
+        }
+        return null
+    }
 }

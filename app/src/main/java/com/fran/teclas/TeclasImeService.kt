@@ -1708,6 +1708,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                             deleteBeforeCursor(f.replaceLastChars)
                             commitValue(f.replacement)
                         }
+                        // Multi-word / real-word fixes ("should of"→"should have", "alot"→"a lot",
+                        // "dont"→"don't"): the class per-word autocorrect can't see, because every
+                        // word is individually a valid dictionary word. Table is unambiguous-only.
+                        com.fran.teclas.keyboard.unified.SentenceChecks.phraseFix(shadowBeforeCursor(48))?.let { f ->
+                            deleteBeforeCursor(f.replaceLastChars)
+                            commitValue(f.replacement)
+                        }
                     }
                 } finally {
                     input?.endBatchEdit()
@@ -1994,6 +2001,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     /** (glideWords, glideFreqs, primaryFreqs, extendedFreqs, hasLatent). Uses the adaptive loader,
      *  falling back to the plain union dictionary if it throws — the IME must always get a dictionary. */
     private fun loadGlideDictionary(): Quintuple {
+        // Bulk misspelling lexicon rides along with the dictionary load (same background thread,
+        // once per process). No-op when the asset isn't bundled.
+        com.fran.teclas.keyboard.TypoLexiconLoader.ensureLoaded(this)
         return try {
             val a = com.fran.teclas.keyboard.DictionaryLoader.loadAdaptive(this)
             Quintuple(a.extendedWords, a.extendedFreqs, a.primaryFreqs, a.extendedFreqs, a.latentLangs.isNotEmpty())
