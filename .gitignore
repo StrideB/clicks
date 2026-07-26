@@ -20,3 +20,6 @@ tools/neural_swipe/model_candidate/
 tools/neural_swipe/runs/
 tools/neural_swipe/futo_data/
 tools/neural_swipe/venv/
+
+# Device diagnostic captures (tools/diagnose_device.sh) — local only, may contain device details
+diagnostics/
