@@ -42,7 +42,10 @@ if [ "$code" != "200" ]; then
 fi
 
 # Keep only the `typo->correction` payload lines; drop wiki markup, comments and blanks.
-grep -E '^[A-Za-z]+->' "$raw" > "$parsed" || true
+# The page indents every entry by one space (" abandonned->abandoned"), so the pattern must allow
+# leading whitespace — anchoring straight to a letter silently matched nothing. Strip the indent on
+# the way out so the asset is clean.
+grep -E '^[[:space:]]*[A-Za-z]+->' "$raw" | sed 's/^[[:space:]]*//' > "$parsed" || true
 
 if [ ! -s "$parsed" ]; then
   echo "ERROR: fetched $(wc -c < "$raw" | tr -d ' ') bytes but parsed 0 entries — asset NOT modified." >&2
