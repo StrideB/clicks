@@ -25,6 +25,9 @@ import java.util.Calendar
 object ContextSensors {
 
     private const val CACHE_MS = 2 * 60 * 1000L
+    /** Bluetooth state TTL — short enough that plugging in headphones still flips a Space quickly,
+     *  long enough that a burst of ranking passes doesn't re-query the BT stack for each one. */
+    private const val BT_CACHE_MS = 10 * 1000L
     private const val DRIVING_SPEED_MS = 6f          // ~13 mph sustained fix speed
     private const val FRESH_FIX_MS = 10 * 60 * 1000L
 
@@ -43,6 +46,8 @@ object ContextSensors {
     private var cachedFamiliar = true
     private var cachedFlew = false
     private var cachedWifi: String? = null
+    @Volatile private var cachedBt: BtDevice? = null
+    @Volatile private var cachedBtAt = 0L
 
     fun snapshot(
         context: Context,
@@ -209,8 +214,25 @@ object ContextSensors {
         return total >= TZ_MIN_SAMPLES && usual != null && usual != zone
     }
 
-    /** Connected classic-BT audio device, classified as car kit vs headphones. */
+    /**
+     * Connected classic-BT audio device, classified as car kit vs headphones.
+     *
+     * Short-TTL cached because [snapshot] is the default argument of `currentSpace` and every `rank`
+     * overload, so a single render can call this several times — and each call is multiple binder
+     * round-trips into the Bluetooth service (two profile-state queries, the bonded-device set, then
+     * a class lookup per bonded device). The TTL is deliberately much shorter than [CACHE_MS]:
+     * plugging in headphones should still flip a Space promptly, it just shouldn't re-query the
+     * stack once per ranking pass.
+     */
     private fun bluetoothDevice(context: Context): BtDevice {
+        val now = SystemClock.elapsedRealtime()
+        cachedBt?.let { if (now - cachedBtAt < BT_CACHE_MS) return it }
+        val fresh = readBluetoothDevice(context)
+        cachedBt = fresh; cachedBtAt = now
+        return fresh
+    }
+
+    private fun readBluetoothDevice(context: Context): BtDevice {
         if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             return BtDevice.NONE
         }
