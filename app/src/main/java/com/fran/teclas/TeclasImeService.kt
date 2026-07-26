@@ -334,6 +334,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private val nanoRewrite by lazy { com.fran.teclas.keyboard.NanoRewriteEngine(this) }
     @Volatile private var nanoSupported = false
     private var pendingProofread: String? = null
+    // Auto grammar-fix: when a sentence completes we proofread it with Gemini Nano in the background.
+    // A small, word-count-preserving edit (spelling/punctuation/casing) is applied silently and armed
+    // for one-backspace undo via [autoProofreadUndo] = (original, corrected) text-before-cursor; a
+    // larger rewrite falls back to the tap-to-apply [pendingProofread] chip so the model can never
+    // silently reword the sentence. lastAutoProofreadText/Ms debounce and de-dupe repeat checks.
+    private var autoProofreadUndo: Pair<String, String>? = null
+    private var lastAutoProofreadText: String = ""
+    private var lastAutoProofreadMs = 0L
+    private var autoProofreadRunnable: Runnable? = null
     // Last committed glide (path + bounds + word), kept so that if you correct it we can re-label the
     // swipe with the RIGHT word — the highest-signal training data (see GlideLearningStore.recordCorrection).
     private var lastGlidePath: List<TimedPoint> = emptyList()
@@ -1635,6 +1644,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             "back" -> {
                 clearPostCommitChips()
                 currentWordEdited = true   // manual edit: keep this word as typed on the next space
+                // First backspace after a silent grammar-fix restores the original sentence.
+                if (input != null && undoAutoProofread()) { tapTraceClear(); onTextChanged(); return }
                 // Undo autocorrect via the shared core (restore original + remember rejection).
                 if (input != null && autocorrect.undoOnBackspace()) { tapTraceClear(); onTextChanged(); return }
                 tapTracePop()
@@ -1703,11 +1714,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 learnAndPredictAfterSpace()
                 updateAutoCap()
+                scheduleAutoProofread()   // ". "/"? "/"! " completes a sentence → background grammar check
             }
             "teclas" -> openImeSettings()
             "123" -> setSymbolsMode(true)
             "abc" -> setSymbolsMode(false)
-            "." -> { tapTraceClear(); clearPostCommitChips(); commitValue(".") }
+            "." -> { tapTraceClear(); clearPostCommitChips(); commitValue("."); scheduleAutoProofread() }
             else -> {
                 if (label.length == 1 && label[0].isLetter()) {
                     val bnow = System.currentTimeMillis()
@@ -1726,6 +1738,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 }
                 onTextChanged()
                 plog("letter: onTextChanged done")
+                if (label == "?" || label == "!") scheduleAutoProofread()   // sentence completed
             }
         }
     }
@@ -2253,6 +2266,71 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun flashStatus(msg: String, delay: Long = 1200) {
         agenticStatus = msg; updateStrip()
         handler.postDelayed({ if (agenticStatus == msg && pendingProofread == null) { agenticStatus = null; updateStrip() } }, delay)
+    }
+
+    // ── Auto grammar-fix on sentence completion (silent for safe edits, offered for rewrites) ──
+    private fun autoProofreadEnabled() = imePrefs().getBoolean(IME_AUTO_PROOFREAD_PREF, true)
+    private val whitespaceRe = Regex("\\s+")
+
+    /** Debounced trigger fired when a sentence completes; all the real guards live in [runAutoProofread]. */
+    private fun scheduleAutoProofread() {
+        if (!autoProofreadEnabled() || !nanoSupported || proofreadEnabled()) return
+        autoProofreadRunnable?.let { handler.removeCallbacks(it) }
+        val r = Runnable { runAutoProofread() }
+        autoProofreadRunnable = r
+        handler.postDelayed(r, 650)
+    }
+
+    /** Proofread the finished sentence in the background; apply silently only when the edit is safe. */
+    private fun runAutoProofread() {
+        if (!autoProofreadEnabled() || !nanoSupported) return
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(600, 0)?.toString() ?: return
+        val trimmed = before.trimEnd()
+        if (trimmed.isEmpty() || trimmed.last() !in ".!?") return          // only a completed sentence
+        val words = trimmed.split(whitespaceRe).count { it.isNotBlank() }
+        if (words < 3 || trimmed.length < 12) return                       // not worth an LLM run
+        if (before == lastAutoProofreadText) return                        // already checked this text
+        val now = System.currentTimeMillis()
+        if (now - lastAutoProofreadMs < 3500L) return                      // rate-limit LLM runs
+        lastAutoProofreadText = before; lastAutoProofreadMs = now
+        val snapshot = before
+        glideScope.launch {
+            val res = nanoProofread.proofread(snapshot)
+            handler.post {
+                if (res !is com.fran.teclas.keyboard.NanoProofreadEngine.Result.Corrected) return@post
+                val corrected = res.text
+                val ic2 = currentInputConnection ?: return@post
+                val cur = ic2.getTextBeforeCursor(snapshot.length + 4, 0)?.toString() ?: return@post
+                // The user may have kept typing while Nano ran — only act if our sentence is still
+                // exactly what sits before the cursor (never rewrite text that has since moved).
+                if (!cur.endsWith(snapshot)) return@post
+                if (corrected.trim() == snapshot.trim()) return@post
+                if (com.fran.teclas.keyboard.ProofreadSafety.isSafeEdit(snapshot, corrected)) {
+                    ic2.beginBatchEdit()
+                    ic2.deleteSurroundingText(snapshot.length, 0)
+                    ic2.commitText(corrected, 1)
+                    ic2.endBatchEdit()
+                    autoProofreadUndo = snapshot to corrected
+                    onTextChanged()
+                    flashStatus("Grammar fixed · ⌫ to undo", 2600)
+                } else {
+                    pendingProofread = corrected; updateStrip()             // offer, never force
+                }
+            }
+        }
+    }
+
+    /** One-backspace undo of the last silent grammar-fix. Consumes the backspace only if it fired. */
+    private fun undoAutoProofread(): Boolean {
+        val (orig, corr) = autoProofreadUndo ?: return false
+        autoProofreadUndo = null
+        val ic = currentInputConnection ?: return false
+        val before = ic.getTextBeforeCursor(corr.length + 2, 0)?.toString() ?: return false
+        if (!before.endsWith(corr)) return false                           // text moved on — normal delete
+        ic.beginBatchEdit(); ic.deleteSurroundingText(corr.length, 0); ic.commitText(orig, 1); ic.endBatchEdit()
+        lastAutoProofreadText = ""                                          // allow a later re-check
+        return true
     }
 
     private fun scheduleLiveCorrect() {
