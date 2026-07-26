@@ -36,6 +36,11 @@ internal object SemanticSearchEngine {
     @Volatile private var vectors: Map<String, Pair<Int, FloatArray>> = emptyMap()
     private var indexLoaded = false
 
+    /** Bumped whenever [vectors] changes, so derived caches (e.g. SemanticPriors) can invalidate. */
+    @Volatile private var generation: Int = 0
+
+    fun indexGeneration(): Int = generation
+
     private fun dir(context: Context): File = File(context.filesDir, DIR).apply { mkdirs() }
     private fun indexFile(context: Context) = File(dir(context), INDEX_FILE)
 
@@ -62,6 +67,7 @@ internal object SemanticSearchEngine {
                 }
             }
             vectors = updated
+            generation++
             saveIndexLocked(context)
         }
     }

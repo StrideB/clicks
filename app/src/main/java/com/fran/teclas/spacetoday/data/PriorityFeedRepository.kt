@@ -189,6 +189,10 @@ class PriorityFeedRepository(
     }
 
     private fun publish(map: Map<String, SpaceWorkload>) {
+        // Every brief emission (i.e. every notification change) runs a rebuild, and a polished
+        // rebuild publishes twice — so an unguarded save meant two JSON serializations + two disk
+        // writes per notification, often for an identical result. Skip when nothing actually moved.
+        if (_workloads.value == map) return
         _workloads.value = map
         cache.save(map)
     }
