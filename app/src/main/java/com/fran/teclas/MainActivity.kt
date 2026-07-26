@@ -13846,9 +13846,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     /**
-     * The top pinned-apps strip for a fresh board — the apps the user pinned to this Space
-     * (in Spaces settings), not a guess. Empty until they pin some; the board hint tells
-     * them how. Everything below is theirs to fill with widgets.
+     * The top app strip for a fresh board. The user's pinned apps for this Space lead — those are an
+     * explicit choice, never overridden. If they haven't pinned any, we no longer leave the board
+     * blank: [SpaceAffinityEngine] fills it with the apps that most *belong* to this Space (learned
+     * launches + semantic + category affinity), so a new Space arrives already useful. Everything is
+     * still theirs to rearrange, replace, or fill with widgets.
      */
     private fun spaceBoardSeedApps(space: Space): List<com.fran.teclas.grid.SpaceBoardSeed.SeedApp> {
         if (demoModeEnabled()) {
@@ -13858,9 +13860,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }
         val byPkg = apps.associateBy { it.packageName }
-        return space.pinned.mapNotNull { byPkg[it] }.take(com.fran.teclas.grid.GRID_COLS).map {
-            com.fran.teclas.grid.SpaceBoardSeed.SeedApp(it.packageName, it.componentName.className, it.shortName)
-        }
+        fun seed(entry: AppEntry) =
+            com.fran.teclas.grid.SpaceBoardSeed.SeedApp(entry.packageName, entry.componentName.className, entry.shortName)
+
+        val pinned = space.pinned.mapNotNull { byPkg[it] }.take(com.fran.teclas.grid.GRID_COLS)
+        if (pinned.isNotEmpty()) return pinned.map(::seed)
+
+        // No manual pins yet — auto-suggest what belongs here so the board isn't empty.
+        return com.fran.teclas.predict.SpaceAffinityEngine
+            .suggestedApps(this, space, apps.map { it.packageName }, com.fran.teclas.grid.GRID_COLS)
+            .mapNotNull { byPkg[it] }
+            .map(::seed)
     }
 
     /** Build the board overlay, mount it off-screen to the right, and return it (or null). */
