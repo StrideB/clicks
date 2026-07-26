@@ -237,6 +237,21 @@ data class ScoreWeights(
  * introduce a word the current language doesn't have.
  */
 object PhoneticPatterns {
+    /**
+     * Optional bulk lexicon loaded from a bundled asset at startup (see TypoLexiconLoader). Kept
+     * separate from the built-in table so this object stays pure Kotlin — no Android types — and
+     * so a data refresh never means touching code. A large table also CANNOT live as a map literal:
+     * Kotlin builds `mapOf(...)` in a static initializer, and thousands of pairs risk blowing the
+     * JVM's 64 KB per-method bytecode limit. Data belongs in a file; only the seed set stays here.
+     */
+    @Volatile private var bulk: Map<String, String> = emptyMap()
+
+    /** Installs the asset-loaded lexicon. Entries here lose to the curated built-ins below. */
+    fun installBulk(entries: Map<String, String>) { bulk = entries }
+
+    /** How many bulk entries are active — for diagnostics/tests. */
+    fun bulkSize(): Int = bulk.size
+
     private val fixes = mapOf(
         "teh" to "the", "hte" to "the", "taht" to "that", "thsi" to "this", "tihs" to "this",
         "adn" to "and", "nad" to "and", "waht" to "what", "wich" to "which", "whcih" to "which",
@@ -308,7 +323,8 @@ object PhoneticPatterns {
         "writting" to "writing", "yatch" to "yacht", "yeild" to "yield"
     )
 
-    fun fix(typed: String): String? = fixes[typed]
+    /** Curated built-ins win over the bulk asset; the asset only fills in what we don't cover. */
+    fun fix(typed: String): String? = fixes[typed] ?: bulk[typed]
 }
 
 /**
