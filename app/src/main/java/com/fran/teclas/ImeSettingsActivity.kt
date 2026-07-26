@@ -67,6 +67,11 @@ const val IME_SMART_TOUCH_PREF = "smart_touch_enabled"
  *  learn the user's own words so slang/abbreviations are protected. Default off. */
 const val IME_PROOFREAD_PREF = "proofread_mode"
 
+/** Auto grammar-fix: when a sentence completes, quietly proofread it with on-device Gemini Nano.
+ *  Small spelling/punctuation fixes apply silently (undo with backspace); larger rewrites are only
+ *  offered as a tap-to-apply chip. Only runs on Nano-capable devices. Default on. */
+const val IME_AUTO_PROOFREAD_PREF = "auto_proofread_grammar"
+
 /**
  * The IME's own settings screen — launched from Android's system keyboard settings (wired via
  * android:settingsActivity in teclas_input_method.xml). Compose UI in the Neu design language to
@@ -139,6 +144,10 @@ class ImeSettingsActivity : ComponentActivity() {
                 ToggleRow(t, "Proofread mode (beta)",
                     "Don't change words as you type. Learn your slang, and fix only clear misspellings when you send.",
                     IME_PROOFREAD_PREF, false)
+                Div(t)
+                ToggleRow(t, "Auto grammar-fix",
+                    "Quietly proofread each sentence with on-device AI. Small fixes apply automatically (backspace to undo); bigger rewrites are offered, not forced. Needs a Nano-capable phone.",
+                    IME_AUTO_PROOFREAD_PREF, true)
             }
 
             Section(t, "LANGUAGES") {
