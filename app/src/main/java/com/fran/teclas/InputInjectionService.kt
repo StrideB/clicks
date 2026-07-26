@@ -19,8 +19,15 @@ import android.view.accessibility.AccessibilityWindowInfo
 class InputInjectionService : AccessibilityService() {
     private var focusedEditable: AccessibilityNodeInfo? = null
 
-    /** Which event scope is currently applied (null = not yet applied). See [applyEventScope]. */
-    private var eventScopeDocked: Boolean? = null
+    /**
+     * Which docked state we last ATTEMPTED to scope for, latched *before* the attempt so a failed
+     * or no-op attempt is never retried on the next event. Retrying per-event turned a
+     * once-per-transition binder write into a write on every accessibility event (~20/sec
+     * system-wide) — the exact firehose this scoping exists to stop, and in the launcher's process.
+     */
+    private var eventScopeAttemptedFor: Boolean? = null
+    /** True once the leaving-docked teardown has run for the current transition. */
+    private var undockedTornDown = false
     private val placementListener =
         android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == null || key == KeyboardSettings.KEY_PLACEMENT) handler.post { applyEventScope() }
@@ -78,6 +85,9 @@ class InputInjectionService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        // serviceInfo only becomes non-null once connected, so clear the latch and make a real
+        // attempt now — an earlier attempt from onCreate/the pref listener may have no-opped.
+        eventScopeAttemptedFor = null
         applyEventScope()
     }
 
@@ -96,7 +106,12 @@ class InputInjectionService : AccessibilityService() {
      */
     private fun applyEventScope() {
         val docked = KeyboardSettings.isDocked(this)
-        if (docked == eventScopeDocked) return
+        if (docked == eventScopeAttemptedFor) return
+        // Latch the attempt BEFORE the call that can fail. If the framework rejects the update (or
+        // serviceInfo isn't available yet) the worst case is that scoping stays wide — a mild,
+        // silent regression. Retrying instead would put a binder write on every event, which is far
+        // worse than the problem being solved.
+        eventScopeAttemptedFor = docked
         val info = serviceInfo ?: return
         info.eventTypes = if (docked) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
@@ -114,14 +129,18 @@ class InputInjectionService : AccessibilityService() {
         } else {
             info.flags and android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS.inv()
         }
-        runCatching { serviceInfo = info }.onSuccess { eventScopeDocked = docked }
+        runCatching { serviceInfo = info }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!KeyboardSettings.isDocked(this)) {
-            // Idempotent: tear down once on the transition out of docked mode, then do nothing.
-            // Without this guard the teardown re-ran on every delivered event.
-            if (eventScopeDocked != false) {
+            // Tear down exactly once per transition out of docked mode, then do nothing. This is
+            // gated on its OWN flag rather than on the event-scope state: tying it to the scope
+            // meant that whenever the scope update didn't take, every subsequent event re-ran
+            // endSearchSession() and setDockedOverlayVisible() — main-thread WindowManager work at
+            // system event rate, in the launcher's process.
+            if (!undockedTornDown) {
+                undockedTornDown = true
                 focusedEditable = null
                 focusedFieldKey = null
                 endSearchSession()
@@ -131,7 +150,8 @@ class InputInjectionService : AccessibilityService() {
             }
             return
         }
-        if (eventScopeDocked != true) applyEventScope()
+        undockedTornDown = false   // docked again — re-arm the one-shot teardown
+        applyEventScope()          // self-guarded; a no-op once attempted for this state
         updateFreeformState()
         val hideForScroll = event?.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED &&
             event.packageName?.toString() != packageName &&
