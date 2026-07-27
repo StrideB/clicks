@@ -987,7 +987,7 @@ class DockedKeyboardService : Service() {
                 label,
                 pressed = pressed,
                 darkMode = selectedNeuTokens().mode == NeuMode.DARK,
-                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS || KeyboardThemeDrawables.isThreeDTheme(theme)) {
+                goColor = if (KeyboardThemeDrawables.usesDynamicAccent(theme)) {
                     if (pressed) brighten(goKeyColor()) else goKeyColor()
                 } else {
                     KeyboardThemeDrawables.DEFAULT_ACCENT

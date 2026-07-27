@@ -17,6 +17,7 @@ object KeyboardThemeDrawables {
     const val TECLAS_GLASS = "teclas_glass"
     const val THREE_D_DEPTH = KbThemes.THREE_D_DEPTH_ID
     const val THREE_D_GLASS = KbThemes.THREE_D_GLASS_ID
+    const val RCAPS = KbThemes.RCAPS_ID
     const val DEFAULT_ACCENT = 0xFFC9A7FF.toInt()
 
     val addedThemes = listOf(GOOGLE, IOS, PIXEL_SAND) + KbThemes.RENDERABLE.map { it.id }
@@ -105,6 +106,7 @@ object KeyboardThemeDrawables {
 
     fun keyLayer(context: Context, theme: String, label: String, pressed: Boolean, darkMode: Boolean, goColor: Int): LayerDrawable {
         KbThemes.renderableById(theme)?.let { t ->
+            if (t.id == RCAPS) return rcapsKeyLayer(context, t, label, pressed, darkMode, goColor)
             if (t.id == THREE_D_DEPTH) return depthKeyLayer(context, t, label, pressed, darkMode, goColor)
             if (t.id == THREE_D_GLASS) return glassKeyLayer(context, t, label, pressed, darkMode, goColor)
             t.depthStyle?.let { return depthVariantKeyLayer(context, t, label, pressed, darkMode, goColor) }
@@ -167,6 +169,10 @@ object KeyboardThemeDrawables {
             val accent = t.accent(goColor, p)
             val isGo = label == "enter"
             val isFn = label == "123" || label == "abc" || label == "shift" || label == "back" || label == "." || label == "period" || label == "teclas"
+            if (t.id == RCAPS) return when {
+                isGo -> if (luminance(accent) > 0.55f) 0xFF141821.toInt() else 0xFFFFFFFF.toInt()
+                else -> p.keyText
+            }
             t.depthStyle?.let { depth ->
                 return when {
                     isGo -> depth.enterText.takeIf { it != 0 }
@@ -216,6 +222,11 @@ object KeyboardThemeDrawables {
 
     fun isThreeDTheme(theme: String): Boolean =
         KbThemes.canonicalId(theme) == THREE_D_DEPTH || KbThemes.canonicalId(theme) == THREE_D_GLASS
+
+    // Themes whose accent (Enter cap, glow) tracks the user's chosen go-key color rather than a fixed
+    // palette accent — the callers pass goKeyColor() for these, DEFAULT_ACCENT otherwise.
+    fun usesDynamicAccent(theme: String): Boolean =
+        KbThemes.renderableById(theme)?.accentIsGoKeyColor == true
 
     fun isDepthVariant(theme: String): Boolean =
         KbThemes.renderableById(theme)?.depthStyle != null
@@ -374,6 +385,44 @@ object KeyboardThemeDrawables {
             setLayerInset(0, x, y, 0, 0)
             setLayerInset(1, 0, press, x, y)
         }
+    }
+
+    // Rcaps routes here: build the size-agnostic baked-bitmap keycap (RcapsKeycaps bakes to match the
+    // key's bounds at draw time and caches per size — one bitmap blit per frame, no GradientDrawable
+    // stack). Wrapped in a LayerDrawable only to satisfy the shared keyLayer() return type.
+    private fun rcapsKeyLayer(
+        context: Context,
+        theme: KbTheme,
+        label: String,
+        pressed: Boolean,
+        darkMode: Boolean,
+        goColor: Int
+    ): LayerDrawable {
+        val p = theme.palette(darkMode)
+        val accent = theme.accent(goColor, p)
+        val isGo = label == "enter"
+        val isFn = label == "123" || label == "abc" || label == "shift" || label == "back" || label == "." || label == "period" || label == "teclas"
+        val kind = when {
+            isGo -> RcapsKeycaps.Kind.ACCENT
+            isFn -> RcapsKeycaps.Kind.FN
+            else -> RcapsKeycaps.Kind.LETTER
+        }
+        val base = when {
+            isGo -> accent
+            isFn -> p.functionKey
+            else -> p.key
+        }
+        val end = when {
+            isGo -> darken(accent)
+            isFn -> p.keyGradEnd.takeIf { it != 0 } ?: darken(p.functionKey)
+            p.keyGradEnd != 0 -> p.keyGradEnd
+            else -> darken(p.key)
+        }
+        val spec = RcapsKeycaps.Spec(
+            dark = darkMode, pressed = pressed, kind = kind,
+            baseColor = base, baseEnd = end, accent = accent, radiusDp = theme.radiusDp
+        )
+        return LayerDrawable(arrayOf(RcapsKeycaps.drawable(context.resources.displayMetrics.density, spec)))
     }
 
     private fun depthKeyLayer(
