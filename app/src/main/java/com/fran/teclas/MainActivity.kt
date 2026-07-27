@@ -29730,9 +29730,13 @@ Question: $prompt"""
         private const val WEATHER_LO_PREF = "weather_lo"
         private const val WEATHER_HOURLY_PREF = "weather_hourly"
         private const val WEATHER_PLACE_PREF = "weather_place"
-        private const val WEATHER_ANIMATION_BURST_MS = 6500L
-        private const val WEATHER_AMBIENT_BURST_MS = 6500L
-        private const val WEATHER_DRIP_BURST_MS = 6500L
+        // Every weather animation plays for 5s and then coasts to a stop. livePhotoFade holds full
+        // motion for the first 68% (~3.4s) and then smoothsteps to zero over the last 32% (~1.6s),
+        // so the burst ends by settling rather than cutting out — and once it does, the loops
+        // self-terminate and the widget costs nothing until the weather changes again.
+        private const val WEATHER_ANIMATION_BURST_MS = 5000L
+        private const val WEATHER_AMBIENT_BURST_MS = 5000L
+        private const val WEATHER_DRIP_BURST_MS = 5000L
         private const val DOCK_NOTES_BURST_MS = 8_000L
         private const val DOCK_NOTES_FRAME_MS = 33L // ~30 fps is plenty for bobbing glyphs
         private const val WIDGET_HOST_ID = 1407
