@@ -96,6 +96,9 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
      */
     private var gestureStartedHere = false
 
+    /** Uptime of the last open, for the [close] grace window. */
+    private var openedAtMs = 0L
+
     init {
         activity.mediaUiScope.launch {
             repository.workloads.collect { syncGalaxyNowBar(it) }
@@ -118,8 +121,10 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         repository.refresh()
         NowBarLiveUpdate.clearSpaceWork(activity)
         activity.cancelWallpaperLongPress()
+        openedAtMs = android.os.SystemClock.uptimeMillis()
         val existing = overlay
         if (existing != null) {
+            android.util.Log.d(TAG, "open(): already open, bringing to front")
             existing.bringToFront()
             return
         }
@@ -183,7 +188,7 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
                             viewedSpace = fromSpace
                         },
                         onGrantPermission = { activity.openNotificationAccessSettings() },
-                        onClose = { close() }
+                        onClose = { close(force = true) }
                     )
                 }
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -197,8 +202,25 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         activity.haptic(activity.contentFrame)
     }
 
-    fun close(): Boolean {
+    /**
+     * [force] = an unambiguous user close (Back, the X button, HOME). Those always win.
+     *
+     * Everything else — swipe handlers in particular — is refused for [OPEN_GRACE_MS] after the
+     * panel opens. The panel is opened BY a swipe, so the tail of that same gesture keeps reaching
+     * close paths and killing it; three separate guards were added for three separate variants of
+     * that race and it still happened. A human cannot open and then deliberately swipe-close inside
+     * a fifth of a second, so refusing those is safe and closes the whole class of bug at once,
+     * rather than one gesture path at a time.
+     */
+    @JvmOverloads
+    fun close(force: Boolean = false): Boolean {
         val host = overlay ?: return false
+        val sinceOpen = android.os.SystemClock.uptimeMillis() - openedAtMs
+        if (!force && sinceOpen < OPEN_GRACE_MS) {
+            android.util.Log.d(TAG, "close() REFUSED ${sinceOpen}ms after open", Throwable("close trace"))
+            return false
+        }
+        android.util.Log.d(TAG, "close(force=$force) ${sinceOpen}ms after open", Throwable("close trace"))
         overlay = null
         gestureStartedHere = false
         themeOverlay?.let { (it.parent as? ViewGroup)?.removeView(it) }
@@ -450,5 +472,8 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
     companion object {
         /** `adb logcat -s SpaceToday:D TeclasRender:D` to watch open/close vs view-tree rebuilds. */
         const val TAG = "SpaceToday"
+
+        /** How long after opening a non-forced close is refused. See [close]. */
+        private const val OPEN_GRACE_MS = 220L
     }
 }

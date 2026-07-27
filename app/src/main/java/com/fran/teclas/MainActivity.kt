@@ -1512,7 +1512,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (weatherStylePickerView?.isAttachedToWindow == true) { closeWeatherStylePicker(); return }
         if (themePaneHost.briefThemePickerShowing()) { themePaneHost.closeBriefThemePicker(); return }
         if (homeLeftOverlay != null) { closeHomeLeftPage(); return }
-        if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) { spaceTodayHost.close(); return }
+        if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) { spaceTodayHost.close(force = true); return }
         if (spaceBoardOverlay != null) { closeSpaceBoard(); return }
         if (todayOpen) { todayPaneHost.closeToday(); return }
         if (travelPaneHost.travelOverlay != null) { travelPaneHost.dismissTravelOverlay(); return }
@@ -1537,7 +1537,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // swipe — the "widget-add then can't swipe anywhere" lockup. onBackPressed already closes both.
         if (homeLeftOverlay != null) closeHomeLeftPage()
         if (spaceBoardOverlay != null) closeSpaceBoard()
-        if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) spaceTodayHost.close()
+        if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) spaceTodayHost.close(force = true)
         if (todayOpen) todayPaneHost.closeToday()
         if (travelPaneHost.travelOverlay != null) travelPaneHost.dismissTravelOverlay()
         musicPaneHost.spotifyFullLibraryDismiss?.invoke()
@@ -11164,6 +11164,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     // Don't let the very swipe that opened Today (which set todayOpen mid-gesture) be
                     // re-read here as the swipe-left-to-close — that opened-then-closed instantly.
                     if (!todayOpenedDuringSwipe && dx < -dp(40) && abs(dx) > abs(dy) * 1.2f) {
+                        android.util.Log.d("SpaceToday", "swipe-close fired dx=$dx dy=$dy openedDuringSwipe=$todayOpenedDuringSwipe")
+                        // Deliberately NOT forced: if this is really the tail of the opening
+                        // gesture, the grace window in SpaceTodayHost.close() refuses it.
                         if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) spaceTodayHost.close()
                         else todayPaneHost.closeToday()
                     }
