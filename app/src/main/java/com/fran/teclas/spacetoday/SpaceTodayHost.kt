@@ -110,10 +110,14 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         if (!activity.hasContentFrame() || activity.libraryOpen || activity.openPane != null) return
         viewedSpace = spaceId
         gestureStartedHere = false   // the opening swipe is not a dismiss gesture for this overlay
+        // Claim "open" BEFORE refreshing. refresh() emits a new brief, and MainActivity's brief
+        // collector calls render(), which rebuilds contentFrame and would destroy this panel. The
+        // flag is what tells that collector to stand down, so it has to be set first.
+        activity.todayOpen = true
+        android.util.Log.d(TAG, "open($spaceId) todayOpen=true, refreshing")
         repository.refresh()
         NowBarLiveUpdate.clearSpaceWork(activity)
         activity.cancelWallpaperLongPress()
-        activity.todayOpen = true
         val existing = overlay
         if (existing != null) {
             existing.bringToFront()
@@ -186,6 +190,7 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         }
         overlay = host
         activity.contentFrame.addView(host, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        android.util.Log.d(TAG, "overlay attached to contentFrame@${System.identityHashCode(activity.contentFrame)}")
         val width = activity.contentFrame.width.takeIf { it > 0 } ?: activity.resources.displayMetrics.widthPixels
         host.translationX = width.toFloat()
         host.animate().translationX(0f).setDuration(250L).setInterpolator(DecelerateInterpolator()).start()
@@ -440,5 +445,10 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         val view = themeOverlay ?: return
         themeOverlay = null
         (view.parent as? ViewGroup)?.removeView(view)
+    }
+
+    companion object {
+        /** `adb logcat -s SpaceToday:D TeclasRender:D` to watch open/close vs view-tree rebuilds. */
+        const val TAG = "SpaceToday"
     }
 }

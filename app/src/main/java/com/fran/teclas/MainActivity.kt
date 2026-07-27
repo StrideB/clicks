@@ -1023,7 +1023,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // so a backgrounded launcher doesn't keep doing album-art work on every media state change.
         mediaUiScope.launch {
             briefRepository.brief.collect {
-                if (::rootView.isInitialized && openPane == null && !libraryOpen && !isWidgetUniversalSearchActive()) {
+                // render() builds a NEW contentFrame and calls setContentView, so it destroys every
+                // overlay parented to the old frame — including the Space Today panel. Opening that
+                // panel calls repository.refresh(), which emits a brief here, so an unguarded render
+                // tore the panel out mid-open-animation: it flickered and never opened. Never rebuild
+                // the tree while a full-window overlay is up.
+                if (::rootView.isInitialized && openPane == null && !libraryOpen &&
+                    !isWidgetUniversalSearchActive() && !isFullWindowOverlayOpen()
+                ) {
                     val shouldShowAgenda = agendaWidgetVisible() && agendaEntries().isNotEmpty()
                     if (agendaWidgetFrameView?.isAttachedToWindow == true || shouldShowAgenda) render()
                 }
@@ -1887,7 +1894,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    /**
+     * True while a full-window overlay owns the screen. [render] recreates contentFrame, which
+     * silently destroys anything parented to it, so background-signal renders must stand down.
+     */
+    internal fun isFullWindowOverlayOpen(): Boolean =
+        todayOpen ||
+            homeLeftOverlay?.isAttachedToWindow == true ||
+            spaceBoardOverlay?.isAttachedToWindow == true ||
+            (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen())
+
     internal fun render() {
+        android.util.Log.d("TeclasRender", "render() overlayOpen=${isFullWindowOverlayOpen()}", Throwable("render trace"))
         stopDeleteRepeat(clearFired = true)
         weatherWidgetDragging = false   // the widget is rebuilt below; never carry a stuck drag lock
         clearTransientHomeOverlaysForRender()
