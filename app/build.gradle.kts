@@ -14,8 +14,8 @@ android {
         applicationId = "com.fran.teclas"
         minSdk = 31
         targetSdk = 37
-        versionCode = 27
-        versionName = "0.3.8"
+        versionCode = 28
+        versionName = "0.3.9"
 
         // Personal sideload app: every target device (Honor fold, Pixel, Apple-Silicon emulator)
         // is arm64-v8a. Shipping the other three ABIs tripled the APK's native-lib payload.
