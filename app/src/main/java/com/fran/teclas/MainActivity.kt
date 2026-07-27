@@ -1904,8 +1904,33 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             spaceBoardOverlay?.isAttachedToWindow == true ||
             (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen())
 
+    /** Set when a render was suppressed because an overlay owned the screen; replayed on close. */
+    private var pendingRenderAfterOverlay = false
+
+    /**
+     * Run a render that was deferred while a full-window overlay was up. Called when one closes.
+     */
+    internal fun flushPendingRender() {
+        if (!pendingRenderAfterOverlay) return
+        pendingRenderAfterOverlay = false
+        if (isFullWindowOverlayOpen()) return   // another overlay is still up; stay deferred
+        android.util.Log.d("TeclasRender", "flushing deferred render")
+        render()
+    }
+
     internal fun render() {
-        android.util.Log.d("TeclasRender", "render() overlayOpen=${isFullWindowOverlayOpen()}", Throwable("render trace"))
+        // render() recreates contentFrame + setContentView, which detaches every overlay parented to
+        // it. There are ~95 render() call sites, and guarding them one at a time did not converge —
+        // device logs still showed "render() overlayOpen=true" from an unguarded collector, which is
+        // exactly the Space Today panel vanishing after it opened. So guard the destination: while a
+        // full-window overlay owns the screen, never rebuild the tree underneath it — remember that a
+        // render was wanted and replay it once the overlay goes away.
+        if (isFullWindowOverlayOpen()) {
+            pendingRenderAfterOverlay = true
+            android.util.Log.d("TeclasRender", "render() DEFERRED (overlay open)", Throwable("render trace"))
+            return
+        }
+        android.util.Log.d("TeclasRender", "render()")
         stopDeleteRepeat(clearFired = true)
         weatherWidgetDragging = false   // the widget is rebuilt below; never carry a stuck drag lock
         clearTransientHomeOverlaysForRender()
@@ -14078,7 +14103,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val shouldOpen = boardCardProgress > 0.30f || delta < -dp(80)
             if (shouldOpen) settleHomeCard(open = true, exitSign = -1) { }
             else settleHomeCard(open = false, exitSign = -1) {
-                spaceBoardOverlay = null
+                spaceBoardOverlay = null; flushPendingRender()
                 (overlay.parent as? ViewGroup)?.removeView(overlay)
             }
             return
@@ -14093,7 +14118,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 .setInterpolator(DecelerateInterpolator())
                 .withEndAction { glassSlideInProgress = false }.start()
         } else {
-            spaceBoardOverlay = null
+            spaceBoardOverlay = null; flushPendingRender()
             overlay.animate().translationX(width).setDuration(180L)
                 .setInterpolator(DecelerateInterpolator())
                 .withEndAction { glassSlideInProgress = false; (overlay.parent as? ViewGroup)?.removeView(overlay) }.start()
@@ -14111,12 +14136,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 updateHomeCardTransition(1f, -1)
             }
             settleHomeCard(open = false, exitSign = -1) {
-                spaceBoardOverlay = null
+                spaceBoardOverlay = null; flushPendingRender()
                 (overlay.parent as? ViewGroup)?.removeView(overlay)
             }
             return true
         }
-        spaceBoardOverlay = null
+        spaceBoardOverlay = null; flushPendingRender()
         spaceBoardDragActive = false
         glassSlideInProgress = true
         overlay.animate().translationX(width)
@@ -14237,7 +14262,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val shouldOpen = boardCardProgress > 0.30f || delta > dp(80)
             if (shouldOpen) settleHomeCard(open = true, exitSign = +1) { }
             else settleHomeCard(open = false, exitSign = +1) {
-                homeLeftOverlay = null
+                homeLeftOverlay = null; flushPendingRender()
                 (overlay.parent as? ViewGroup)?.removeView(overlay)
             }
             return
@@ -14249,7 +14274,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             overlay.animate().translationX(0f).setDuration(200L).setInterpolator(DecelerateInterpolator())
                 .setUpdateListener { setLauncherBlurProgress(1f + overlay.translationX / width) }.start()
         } else {
-            homeLeftOverlay = null
+            homeLeftOverlay = null; flushPendingRender()
             overlay.animate().translationX(-width).setDuration(180L).setInterpolator(DecelerateInterpolator())
                 .setUpdateListener { setLauncherBlurProgress(1f + overlay.translationX / width) }
                 .withEndAction { (overlay.parent as? ViewGroup)?.removeView(overlay); setLauncherBlurProgress(0f) }.start()
@@ -14267,13 +14292,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 updateHomeCardTransition(1f, +1)
             }
             settleHomeCard(open = false, exitSign = +1) {
-                homeLeftOverlay = null
+                homeLeftOverlay = null; flushPendingRender()
                 (overlay.parent as? ViewGroup)?.removeView(overlay)
                 setLauncherBlurProgress(0f)
             }
             return true
         }
-        homeLeftOverlay = null
+        homeLeftOverlay = null; flushPendingRender()
         homeLeftDragActive = false
         overlay.animate().translationX(-width).setDuration(200L).setInterpolator(DecelerateInterpolator())
             .setUpdateListener { setLauncherBlurProgress(1f + overlay.translationX / width) }

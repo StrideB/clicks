@@ -231,7 +231,11 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
         host.animate().translationX(width.toFloat())
             .setDuration(210L)
             .setInterpolator(DecelerateInterpolator())
-            .withEndAction { (host.parent as? ViewGroup)?.removeView(host) }
+            .withEndAction {
+                (host.parent as? ViewGroup)?.removeView(host)
+                // Any render suppressed while this panel was up runs now.
+                activity.flushPendingRender()
+            }
             .start()
         return true
     }
