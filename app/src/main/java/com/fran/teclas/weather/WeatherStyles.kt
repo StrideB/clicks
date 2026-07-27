@@ -1,11 +1,9 @@
 package com.fran.teclas.weather
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -21,7 +19,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -169,6 +166,23 @@ private fun Text(
 )
 
 // ---------- Animated condition icon (Canvas, no external assets) ----------
+
+/** How long a weather glyph animates before coming to rest. */
+private const val GLYPH_PLAY_MS = 5000
+
+// Cycle counts chosen so each motion comes to rest in its NEUTRAL pose, matching the static
+// reduce-motion frame exactly: triangle(3.25) == 0.5 (drawCloud's neutral dy), and 4 % 1 == 0
+// (a fall cycle's start). Without that the glyph would freeze mid-stride.
+private const val BOB_CYCLES = 3.25f
+private const val FALL_CYCLES = 4f
+
+/**
+ * Ease-out for the wind-down: quick off the mark, then a long decelerating tail so the motion
+ * *settles* instead of stopping abruptly. Roughly a cubic ease-out — most of the travel happens in
+ * the first second, the last stretch is a slow coast to zero velocity.
+ */
+private val GlyphWindDown = CubicBezierEasing(0.17f, 0.84f, 0.24f, 1f)
+
 @Composable
 fun WeatherGlyph(condition: Condition, sizeDp: Int, tint: Color = glyphColor, accent: Color) {
     // Respect the system "remove animations" setting like every other animated surface in the app.
@@ -180,20 +194,43 @@ fun WeatherGlyph(condition: Condition, sizeDp: Int, tint: Color = glyphColor, ac
         }
         return
     }
-    val transition = rememberInfiniteTransition(label = "wx")
-    val spin by transition.animateFloat(
-        0f, 360f, infiniteRepeatable(tween(26000, easing = LinearEasing)), label = "spin"
-    )
-    val bob by transition.animateFloat(
-        0f, 1f, infiniteRepeatable(tween(3000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "bob"
-    )
-    val fall by transition.animateFloat(
-        0f, 1f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "fall"
-    )
-
-    Canvas(Modifier.size(sizeDp.dp)) {
-        drawWeatherGlyph(condition, spin, bob, fall, tint, accent)
+    // One finite wind-down clock instead of three infinite transitions.
+    //
+    // These used to be `infiniteRepeatable`, which repainted the Canvas every vsync for as long as
+    // the widget was composed — a permanent CPU/GPU draw on the idle home screen, and the single
+    // biggest battery cost in the weather widget. Now a single animation runs 0..1 over
+    // [GLYPH_PLAY_MS] on a decelerating curve and then STOPS: Compose has nothing left to animate,
+    // recomposition ceases, and the glyph costs exactly nothing until something changes.
+    //
+    // Because every motion below is derived from this one clock, the ease-out makes them all coast
+    // to a halt together rather than freezing mid-stride.
+    val clock = remember(condition) { Animatable(0f) }
+    LaunchedEffect(condition) {
+        clock.snapTo(0f)
+        clock.animateTo(1f, animationSpec = tween(GLYPH_PLAY_MS, easing = GlyphWindDown))
     }
+    Canvas(Modifier.size(sizeDp.dp)) {
+        // Read the clock HERE, inside the draw lambda: that scopes each frame's invalidation to the
+        // draw phase only. Reading it in the composable body instead would recompose every frame.
+        val t = clock.value
+        drawWeatherGlyph(
+            condition = condition,
+            // A multiple of the 8-fold ray symmetry (45°), so the sun rests visually aligned.
+            spin = t * 315f,
+            // Triangle wave: the cloud bobs a few times, slowing with the clock, and lands settled.
+            bob = triangle(t * BOB_CYCLES),
+            // Sawtooth: drops/flakes keep falling, each pass slower, easing to rest.
+            fall = (t * FALL_CYCLES) % 1f,
+            tint = tint,
+            accent = accent
+        )
+    }
+}
+
+/** 0..1 -> 0..1..0 triangle, so a derived motion returns to its resting pose. */
+private fun triangle(x: Float): Float {
+    val f = x % 1f
+    return if (f <= 0.5f) f * 2f else (1f - f) * 2f
 }
 
 // Static draw shared by the animated and reduce-motion paths; spin/bob/fall are frozen when reduced.
