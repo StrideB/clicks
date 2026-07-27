@@ -23,3 +23,6 @@ tools/neural_swipe/venv/
 
 # Device diagnostic captures (tools/diagnose_device.sh) — local only, may contain device details
 diagnostics/
+
+__pycache__/
+*.pyc
