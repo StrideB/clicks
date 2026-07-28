@@ -9767,8 +9767,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!recall) return emptyList()
 
         val out = mutableListOf<SearchResult>()
-        val commits = if (general) com.fran.teclas.brief.CommitmentStore.all(prefs()).take(3)
-            else com.fran.teclas.brief.CommitmentStore.search(prefs(), q)
+        // One path for both: a general question ("what to do today") has no content terms, and
+        // search now answers that with the most recent commitments rather than nothing — so the
+        // general case no longer needs its own unranked, unsorted branch.
+        val commits = com.fran.teclas.brief.CommitmentStore.search(prefs(), q).take(3)
         commits.forEach { c ->
             out.add(SearchResult(
                 if (c.person.isBlank()) c.text else "${c.person} · ${c.text}",
