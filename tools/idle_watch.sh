@@ -66,20 +66,33 @@ snap() {  # snap <label>
 }
 
 # delta <before> <after> -> "cost name", biggest first. Jiffies are typically 10ms.
+# The probe's own shell is filtered out: reading /proc for every process costs real CPU, and the
+# first run of this script ranked the measurement above most of the apps it was measuring.
 delta() {
   awk 'NR==FNR { was[$1]=$2; next }
        { d = $2 - (($1 in was) ? was[$1] : 0)
-         if (d > 0) { name=""; for (i=3;i<=NF;i++) name = name (i>3?" ":"") $i; print d, name } }' \
+         if (d <= 0) next
+         name=""; for (i=3;i<=NF;i++) name = name (i>3?" ":"") $i
+         if (name ~ /^\/system\/bin\/sh/) next
+         print d, name }' \
       "$1" "$2" | sort -rn | head -15
 }
+
+# Screen state decides what this measurement even means: with the display on, the panel is the
+# biggest draw on the phone and is attributed to no app at all, so a "screen on" run cannot settle
+# an idle-drain question. Worth saying up front rather than discovering it in the numbers.
+screen_state() { adb shell dumpsys power 2>/dev/null | grep -m1 -o 'mWakefulness=[A-Za-z]*'; }
 
 echo "Resetting counters…"
 adb shell dumpsys batterystats --reset >/dev/null 2>&1
 adb logcat -c >/dev/null 2>&1
 
 snap before
+SCREEN_BEFORE="$(screen_state)"
 echo
 echo "  >>> Lock the phone and put it down. Do not touch it for $MINUTES minutes. <<<"
+echo "      Press the side key to turn the screen OFF — with it on, the display is the"
+echo "      biggest draw on the phone and belongs to no app, which buries everything else."
 echo
 for i in $(seq "$MINUTES" -1 1); do printf "\r  %2d min remaining…  " "$i"; sleep 60; done
 printf "\r  capturing…            \n"
@@ -101,6 +114,10 @@ adb shell "dumpsys package $PKG | grep -E 'versionName|versionCode'" > "$OUT/ver
   echo "==============================================================="
   echo
   sed 's/^/  /' "$OUT/version.txt" 2>/dev/null
+  echo
+  echo "SCREEN  (an 'Awake' run cannot settle an idle question — the panel dominates and"
+  echo "         is attributed to no app)"
+  echo "  at start: ${SCREEN_BEFORE:-unknown}    at end: $(screen_state)"
   echo
   echo "CPU USED WHILE IDLE, BY PROCESS   <-- the decisive number"
   echo "  (jiffies, usually 10ms each. A truly idle phone shows almost nothing here."
