@@ -74,6 +74,7 @@ private fun goKeyColorOrDefault(ctx: Context, default: Int): Int =
 object KbThemes {
     const val THREE_D_DEPTH_ID = "3ddepth"
     const val THREE_D_GLASS_ID = "3dglass"
+    const val RCAPS_ID = "rcaps"
     const val THREE_D_DEPTH_CLASSIC_ID = "3ddepth_classic"
     const val THREE_D_DEPTH_SLATE_ID = "3ddepth_slate"
     const val THREE_D_DEPTH_CHICLET_ID = "3ddepth_chiclet"
@@ -108,6 +109,18 @@ object KbThemes {
         dark = KbPalette(bg = 0xD10B1018.toInt(), bgGradEnd = 0xE005070B.toInt(),
             key = 0xCC151B25.toInt(), keyGradEnd = 0xE0070B12.toInt(),
             keyText = 0xFFFBFDFF.toInt(), functionKey = 0xB91C2430.toInt(), accent = 0xFFAFC8FF.toInt()))
+
+    // Rcaps — baked-bitmap keycaps. Rendered by RcapsKeycaps (Canvas → cached Bitmap), NOT the
+    // GradientDrawable stack, so it can carry a radial "dish", soft contact shadow, and chamfer rim
+    // that the layer-list themes can't. accentIsGoKeyColor => the Enter cap tracks the user's accent.
+    val RCAPS = KbTheme(RCAPS_ID, "Rcaps", boxed = true, radiusDp = 13, shadow = true,
+        accentIsGoKeyColor = true,
+        light = KbPalette(bg = 0xFFE7EBF2.toInt(), bgGradEnd = 0xFFCED6E2.toInt(),
+            key = 0xFFFCFDFF.toInt(), keyGradEnd = 0xFFDDE5F0.toInt(),
+            keyText = 0xFF17202C.toInt(), functionKey = 0xFFD4DCE8.toInt(), accent = KbTheme.CURSOR_VIOLET),
+        dark = KbPalette(bg = 0xFF171B23.toInt(), bgGradEnd = 0xFF090B10.toInt(),
+            key = 0xFF3B424F.toInt(), keyGradEnd = 0xFF171B23.toInt(),
+            keyText = 0xFFF1F5FB.toInt(), functionKey = 0xFF20252F.toInt(), accent = KbTheme.CURSOR_VIOLET))
 
     val THREE_D_DEPTH_CLASSIC = KbTheme(THREE_D_DEPTH_CLASSIC_ID, "Classic Raised", boxed = true, radiusDp = 9, shadow = true,
         light = KbPalette(bg = 0xFFE6E9EF.toInt(), bgGradEnd = 0xFFD5DAE2.toInt(),
@@ -375,7 +388,7 @@ object KbThemes {
         dark = KbPalette(bg = 0xFF141412.toInt(), key = 0, keyText = 0xFFE8E6E1.toInt(), functionKey = 0, accent = 0xFFE8E6E1.toInt()))
 
     val ALL: List<KbTheme> = listOf(
-        SANS, THREE_D_DEPTH, THREE_D_GLASS,
+        SANS, RCAPS, THREE_D_DEPTH, THREE_D_GLASS,
         THREE_D_DEPTH_CLASSIC, THREE_D_DEPTH_SLATE, THREE_D_DEPTH_CHICLET, THREE_D_DEPTH_PILL, THREE_D_DEPTH_NEON,
         THREE_D_DEPTH_WOOD, THREE_D_DEPTH_CANDY, THREE_D_DEPTH_MECH, THREE_D_DEPTH_MINT, THREE_D_DEPTH_MONO,
         UNI, CUPER, SAND, TECLAS_GLASS, SKEUO, NEON_ARCADE, MATCHA, BUBBLEGUM,

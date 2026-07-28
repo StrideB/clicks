@@ -4866,7 +4866,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 label,
                 pressed = false,
                 darkMode = selectedNeuTokens().mode == NeuMode.DARK,
-                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS || KeyboardThemeDrawables.isThreeDTheme(theme)) goKeyColor() else KeyboardThemeDrawables.DEFAULT_ACCENT
+                goColor = if (KeyboardThemeDrawables.usesDynamicAccent(theme)) goKeyColor() else KeyboardThemeDrawables.DEFAULT_ACCENT
             )
         }
         if (theme == KEYBOARD_THEME_SEEME) {
@@ -4896,7 +4896,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 label,
                 pressed = true,
                 darkMode = selectedNeuTokens().mode == NeuMode.DARK,
-                goColor = if (theme == KEYBOARD_THEME_TECLAS_GLASS || KeyboardThemeDrawables.isThreeDTheme(theme)) brighten(goKeyColor()) else KeyboardThemeDrawables.DEFAULT_ACCENT
+                goColor = if (KeyboardThemeDrawables.usesDynamicAccent(theme)) brighten(goKeyColor()) else KeyboardThemeDrawables.DEFAULT_ACCENT
             )
         }
         if (theme == KEYBOARD_THEME_SEEME) {

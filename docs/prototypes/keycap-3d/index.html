@@ -1,0 +1,590 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teclas · Realistic 3D Keycaps</title>
+<style>
+  :root{
+    --ground:#0E1116; --panel:#161A22; --panel2:#1E2430; --line:#28303C;
+    --ink:#EAF0FA; --ink-dim:#8B93A3; --ink-faint:#59616F;
+    --accent:#7EA2FF; --accent2:#C9A7FF; --warm:#FFCE73;
+    --good:#57D9A3; --warn:#FFC24B; --bad:#FF7A7A;
+    --shadow:0 18px 48px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --ground:#E4E9F1; --panel:#F3F6FB; --panel2:#FFFFFF; --line:#D3DAE6;
+      --ink:#182230; --ink-dim:#55607A; --ink-faint:#8A94A8;
+      --accent:#3A63E8; --accent2:#7C5CFF; --warm:#D9821E;
+      --good:#1E9E6A; --warn:#B8791A; --bad:#D8483F;
+      --shadow:0 16px 40px rgba(40,55,90,.16), 0 2px 6px rgba(40,55,90,.10);
+    }
+  }
+  :root[data-theme="light"]{
+    --ground:#E4E9F1; --panel:#F3F6FB; --panel2:#FFFFFF; --line:#D3DAE6;
+    --ink:#182230; --ink-dim:#55607A; --ink-faint:#8A94A8;
+    --accent:#3A63E8; --accent2:#7C5CFF; --warm:#D9821E;
+    --good:#1E9E6A; --warn:#B8791A; --bad:#D8483F;
+    --shadow:0 16px 40px rgba(40,55,90,.16), 0 2px 6px rgba(40,55,90,.10);
+  }
+  :root[data-theme="dark"]{
+    --ground:#0E1116; --panel:#161A22; --panel2:#1E2430; --line:#28303C;
+    --ink:#EAF0FA; --ink-dim:#8B93A3; --ink-faint:#59616F;
+    --accent:#7EA2FF; --accent2:#C9A7FF; --warm:#FFCE73;
+    --good:#57D9A3; --warn:#FFC24B; --bad:#FF7A7A;
+    --shadow:0 18px 48px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--ground);color:var(--ink);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;line-height:1.5;overflow-x:hidden}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 22px}
+  a{color:inherit}
+
+  /* ---- top bar ---- */
+  header.bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--ground) 82%, transparent);
+    backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+  .bar .wrap{display:flex;align-items:center;gap:14px;height:58px}
+  .brand{font-weight:800;letter-spacing:-.02em;font-size:15px;display:flex;align-items:center;gap:9px}
+  .brand .dot{width:11px;height:11px;border-radius:3px;
+    background:linear-gradient(150deg,var(--accent),var(--accent2));box-shadow:0 0 14px color-mix(in srgb,var(--accent) 60%,transparent)}
+  .brand small{font:600 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint)}
+  .bar .spacer{flex:1}
+  .toggle{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-dim);
+    background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 13px;cursor:pointer;transition:.15s}
+  .toggle:hover{color:var(--ink);border-color:var(--accent)}
+  .toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  /* ---- hero ---- */
+  .hero{padding:52px 0 30px}
+  .eyebrow{font:600 11px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:clamp(30px,5.2vw,52px);font-weight:800;letter-spacing:-.03em;line-height:1.02;
+    text-wrap:balance;margin:16px 0 0;max-width:16ch}
+  h1 em{font-style:normal;background:linear-gradient(110deg,var(--accent),var(--accent2));
+    -webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{margin-top:18px;max-width:60ch;font-size:17px;color:var(--ink-dim)}
+  .lede b{color:var(--ink);font-weight:600}
+
+  .stage{margin:30px 0 8px;border-radius:22px;padding:26px 20px 22px;position:relative;overflow:hidden;
+    background:radial-gradient(120% 120% at 50% -10%, color-mix(in srgb,var(--panel2) 70%,transparent), var(--panel));
+    border:1px solid var(--line);box-shadow:var(--shadow)}
+  .stage .hint{position:absolute;top:14px;left:18px;font:600 10px/1 var(--mono);letter-spacing:.13em;
+    text-transform:uppercase;color:var(--ink-faint);pointer-events:none}
+  #board{width:100%;display:block;touch-action:none}
+  .stagefoot{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:16px;font:500 12.5px/1.3 var(--mono);color:var(--ink-dim)}
+  .stagefoot span{display:inline-flex;align-items:center;gap:7px}
+  .stagefoot i{width:8px;height:8px;border-radius:50%;background:var(--warm);box-shadow:0 0 8px var(--warm)}
+
+  /* ---- section chrome ---- */
+  section{padding:44px 0}
+  .kicker{font:600 11px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--accent2)}
+  h2{font-size:clamp(22px,3.4vw,30px);font-weight:800;letter-spacing:-.02em;margin:12px 0 0;text-wrap:balance}
+  .sub{margin-top:10px;max-width:64ch;color:var(--ink-dim);font-size:15.5px}
+
+  /* ---- gallery ---- */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(214px,1fr));gap:16px;margin-top:26px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px 14px 15px;
+    display:flex;flex-direction:column;gap:2px;transition:border-color .16s, transform .16s}
+  .card:hover{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));transform:translateY(-2px)}
+  .card canvas{width:100%;height:118px;display:block;touch-action:none;cursor:pointer}
+  .card .name{font-weight:700;font-size:14.5px;letter-spacing:-.01em;margin-top:8px}
+  .card .desc{font-size:12.5px;color:var(--ink-dim);min-height:32px}
+  .chip{align-self:flex-start;margin-top:9px;font:600 10px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;
+    padding:5px 8px;border-radius:7px;border:1px solid transparent}
+  .chip.c1{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);border-color:color-mix(in srgb,var(--good) 34%,transparent)}
+  .chip.c2{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 34%,transparent)}
+
+  /* ---- compare ---- */
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}
+  .compare .pane{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px}
+  .compare canvas{width:100%;height:150px;display:block}
+  .compare .tag{font:600 10px/1 var(--mono);letter-spacing:.13em;text-transform:uppercase;margin-bottom:10px}
+  .compare .now{color:var(--ink-faint)} .compare .new{color:var(--accent)}
+  .compare .cap{font-size:13px;color:var(--ink-dim);margin-top:12px}
+  .compare .cap b{color:var(--ink)}
+
+  /* ---- manifesto ---- */
+  .rules{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}
+  .rule{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 18px 16px}
+  .rule h3{font-size:14px;font-weight:700;display:flex;align-items:center;gap:9px;letter-spacing:-.01em}
+  .rule h3 .b{font:700 10px/1 var(--mono);padding:4px 7px;border-radius:6px;letter-spacing:.05em;text-transform:uppercase}
+  .rule.ok h3 .b{color:var(--good);background:color-mix(in srgb,var(--good) 16%,transparent)}
+  .rule.no h3 .b{color:var(--bad);background:color-mix(in srgb,var(--bad) 16%,transparent)}
+  .rule ul{list-style:none;margin:13px 0 0;display:flex;flex-direction:column;gap:10px}
+  .rule li{font-size:13.5px;color:var(--ink-dim);padding-left:18px;position:relative}
+  .rule li::before{content:"";position:absolute;left:0;top:8px;width:6px;height:6px;border-radius:50%}
+  .rule.ok li::before{background:var(--good)} .rule.no li::before{background:var(--bad)}
+  .rule li b{color:var(--ink);font-weight:600}
+  code{font:600 12.5px/1 var(--mono);color:var(--accent2);
+    background:color-mix(in srgb,var(--accent2) 12%,transparent);padding:2px 5px;border-radius:5px;white-space:nowrap}
+
+  /* ---- map ---- */
+  .map{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:8px 4px;margin-top:26px;overflow-x:auto}
+  table{border-collapse:collapse;width:100%;min-width:560px}
+  th,td{text-align:left;padding:14px 18px;font-size:13.5px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font:600 10px/1.3 var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint)}
+  tr:last-child td{border-bottom:none}
+  td.what{color:var(--ink);font-weight:600;white-space:nowrap}
+  td .m{color:var(--ink-dim)}
+
+  footer{padding:40px 0 64px;color:var(--ink-faint);font-size:13px;border-top:1px solid var(--line);margin-top:24px}
+  footer b{color:var(--ink-dim)}
+
+  @media (max-width:720px){
+    .compare,.rules{grid-template-columns:1fr}
+  }
+  @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+
+<header class="bar"><div class="wrap">
+  <div class="brand"><span class="dot"></span>Teclas <small>Keycap Lab</small></div>
+  <div class="spacer"></div>
+  <button class="toggle" id="themeBtn" aria-label="Toggle light and dark theme">◐ Theme</button>
+</div></header>
+
+<main class="wrap">
+  <div class="hero">
+    <div class="eyebrow">Depth without the frame budget</div>
+    <h1>Make every key look <em>machined</em>, not drawn.</h1>
+    <p class="lede">The illusion of a physical keycap is <b>baked once</b> into a bitmap and blitted every
+      frame — so realism costs the same as a flat rectangle. Move your pointer over the board: the light
+      travels, the caps catch a specular, and the whole tray tilts. Tap a key to feel the travel.</p>
+
+    <div class="stage">
+      <div class="hint">Live · pointer = light source · tap to press</div>
+      <canvas id="board" aria-label="Interactive keyboard preview"></canvas>
+      <div class="stagefoot">
+        <span><i></i> baked dish face + tray occlusion</span>
+        <span><i></i> specular tracks the light</span>
+        <span><i></i> press = swap cached bitmap + travel</span>
+      </div>
+    </div>
+  </div>
+
+  <section id="gallery">
+    <div class="kicker">The menu</div>
+    <h2>Eight ways to fake depth — priced per frame</h2>
+    <p class="sub">Each cap below is generated by a single <code>bakeCap()</code> call into an off-screen
+      canvas, cached, and redrawn with one <code>drawImage</code>. Hover to wake the light; tap to press.
+      The cost chip is what the GPU pays <em>every</em> frame after baking.</p>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <section id="compare">
+    <div class="kicker">Where Teclas is today</div>
+    <h2>What one baked layer buys you</h2>
+    <p class="sub">Left is the shipping look — stacked <code>GradientDrawable</code> layers, limited to linear
+      gradients on rectangles. Right adds a radial <em>dish</em> and baked ambient occlusion. Same one-blit
+      cost per frame; the curvature is what your eye reads as "real."</p>
+    <div class="compare">
+      <div class="pane"><div class="tag now">Now · linear bevel</div><canvas id="cmpA"></canvas>
+        <div class="cap"><b>depthKeyLayer()</b> — ambient + 3 walls + face + rim + sheen, all flat gradients.</div></div>
+      <div class="pane"><div class="tag new">Proposed · baked dish</div><canvas id="cmpB"></canvas>
+        <div class="cap"><b>bakeCap()</b> — adds a <code>RadialGradient</code> crown, contact shadow, chamfer.</div></div>
+    </div>
+  </section>
+
+  <section id="perf">
+    <div class="kicker">The one rule</div>
+    <h2>Bake once. Blit many. Never light in the loop.</h2>
+    <p class="sub">Everything realistic and expensive happens a single time — at theme/size change — and lands
+      in the <code>keyBgCache</code>. The typing hot path only ever copies finished pixels.</p>
+    <div class="rules">
+      <div class="rule ok"><h3><span class="b">Cheap</span> Safe on the hot path</h3>
+        <ul>
+          <li><b>Blit a cached bitmap</b> per key — one <code>drawImage</code>, zero allocation.</li>
+          <li><b>Swap rest ⇄ pressed</b> tiles — both pre-baked, keyed by <code>label|pressed</code>.</li>
+          <li><b>Translate a pre-baked specular sprite</b> for the moving-light highlight.</li>
+          <li><b>Offset two cached layers</b> (face + wall) by tilt for real parallax.</li>
+        </ul></div>
+      <div class="rule no"><h3><span class="b">Costly</span> Bake-time only — never per frame</h3>
+        <ul>
+          <li><b>RadialGradient / BlurMaskFilter</b> for the dish and soft AO — run once, cache the result.</li>
+          <li><b>Rebuilding <code>GradientDrawable</code> stacks</b> on every draw instead of caching.</li>
+          <li><b>RenderEffect blur or elevation shadows</b> on live views — forces a relayout storm.</li>
+          <li><b>Per-key overdraw</b> from many translucent layers — flatten into the baked tile.</li>
+        </ul></div>
+    </div>
+  </section>
+
+  <section id="map">
+    <div class="kicker">How it lands in the app</div>
+    <h2>Each trick maps to code that already exists</h2>
+    <div class="map"><table>
+      <thead><tr><th>Technique</th><th>Where it lives in Teclas today</th></tr></thead>
+      <tbody>
+        <tr><td class="what">Bake &amp; cache</td><td class="m"><code>keyBgCache</code> in <code>TeclasImeService</code> — already keyed by <code>label|pressed|row</code>. Swap the value from a <code>LayerDrawable</code> to a baked <code>BitmapDrawable</code>.</td></tr>
+        <tr><td class="what">One-blit draw</td><td class="m"><code>TeclasCanvasKeyboardView</code> already blits a cached drawable per cell. No change to the hot path.</td></tr>
+        <tr><td class="what">Dish / dome face</td><td class="m">New: render a <code>RadialGradient</code> onto an off-screen <code>Bitmap</code> inside <code>bakeCap()</code>, once per theme+size.</td></tr>
+        <tr><td class="what">Press travel</td><td class="m"><code>depthKeyLayer()</code> already insets the face down &amp; collapses the wall for <code>pressed=true</code>. Keep it; bake both states.</td></tr>
+        <tr><td class="what">Moving specular</td><td class="m">New: one pre-baked radial sprite, drawn with <code>PorterDuff.SCREEN</code> at a light-derived offset.</td></tr>
+        <tr><td class="what">Tilt parallax</td><td class="m">New: a <code>SensorManager</code> tilt feeds a 2–3px offset between the cached face and wall layers.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <footer>
+    <b>Teclas Keycap Lab</b> — a working prototype. Every keycap here is drawn the same way the Android app
+    can: composited once into an off-screen raster, cached by state, and blitted. The realism lives in the
+    bake; the frame budget never sees it.
+  </footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const reduced = matchMedia("(prefers-reduced-motion:reduce)").matches;
+  const root = document.documentElement;
+
+  // ---- theme ----
+  function currentTheme(){
+    const set = root.getAttribute("data-theme");
+    if (set) return set;
+    return matchMedia("(prefers-color-scheme:light)").matches ? "light" : "dark";
+  }
+  function pal(){
+    const dark = currentTheme() === "dark";
+    return dark ? {
+      dark:true,
+      face:["#454C5A","#363D49","#1C222C"], wall:"#141922", wallDark:"#05070A",
+      rim:"rgba(255,255,255,.26)", chamfer:"rgba(0,0,0,.55)", text:"#F2F5FA", textShadow:"rgba(0,0,0,.6)",
+      accentFace:["#8AA6FF","#6E8BFF","#3F5BD6"], accentText:"#0B1020",
+      fnFace:["#242A35","#1B212B","#10141C"], fnText:"#C7D0DE",
+      tray:"rgba(0,0,0,.55)", boardBg:["#1B2230","#0C0F16"], contact:"rgba(0,0,0,.62)"
+    } : {
+      dark:false,
+      face:["#FFFFFF","#F4F7FC","#DCE4EE"], wall:"#C4CEDB", wallDark:"#98A6B8",
+      rim:"rgba(255,255,255,.95)", chamfer:"rgba(90,105,125,.35)", text:"#18222F", textShadow:"rgba(255,255,255,.85)",
+      accentFace:["#6E92FF","#4D7DFF","#2E5AE0"], accentText:"#FFFFFF",
+      fnFace:["#DDE4EE","#CDD6E2","#B7C2D2"], fnText:"#2A3646",
+      tray:"rgba(70,90,120,.30)", boardBg:["#DCE3EE","#C6CFDD"], contact:"rgba(60,80,110,.32)"
+    };
+  }
+
+  // ---- helpers ----
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  function rr(c,x,y,w,h,r){
+    r = Math.min(r, w/2, h/2);
+    c.beginPath();
+    c.moveTo(x+r,y); c.arcTo(x+w,y,x+w,y+h,r); c.arcTo(x+w,y+h,x,y+h,r);
+    c.arcTo(x,y+h,x,y,r); c.arcTo(x,y,x+w,y,r); c.closePath();
+  }
+  function lin(c,x,y0,y1,stops){ const g=c.createLinearGradient(0,y0,0,y1); stops.forEach(s=>g.addColorStop(s[0],s[1])); return g; }
+
+  // ---- specular sprite: baked once per radius, then reused ----
+  let specSprite=null, specR=0;
+  const specCache=new Map();
+  function buildSpec(r){
+    r=Math.round(r); specR=r;
+    let cv=specCache.get(r);
+    if(!cv){
+      const s=Math.max(2,r*2);
+      cv=document.createElement("canvas"); cv.width=s; cv.height=s;
+      const c=cv.getContext("2d");
+      const g=c.createRadialGradient(r,r,0,r,r,r);
+      g.addColorStop(0,"rgba(255,255,255,.9)"); g.addColorStop(.35,"rgba(255,255,255,.35)");
+      g.addColorStop(1,"rgba(255,255,255,0)");
+      c.fillStyle=g; c.fillRect(0,0,s,s);
+      specCache.set(r,cv);
+    }
+    specSprite=cv;
+  }
+
+  // ---- the bake: one keycap into an off-screen canvas ----
+  // style: flat | bevel | dish | dome | tray | glass
+  // returns {cv, M} where M = padding margin around the cap for shadow bleed
+  function bakeCap(label, style, state, w, h, kind){
+    const p = pal();
+    const M = Math.round(14), D = 7, dPress = 2;              // margin, wall depth, pressed depth
+    const rad = Math.max(8, Math.round(Math.min(w,h)*0.18));
+    const sunk = state==="press" ? (D - dPress) : 0;          // how far the whole cap has sunk
+    const wallH = state==="press" ? dPress : D;
+    const faceH = h - D;
+    const fx = M, fy = M + sunk, fw = w;
+
+    const cv=document.createElement("canvas");
+    cv.width=(w+M*2)*dpr; cv.height=(h+M*2)*dpr;
+    const c=cv.getContext("2d"); c.scale(dpr,dpr);
+
+    const faceCols = kind==="accent" ? p.accentFace : kind==="fn" ? p.fnFace : p.face;
+
+    // A) WALL / extrusion body — also casts the contact shadow into the tray
+    if(style!=="flat"){
+      c.save();
+      c.shadowColor = p.contact;
+      c.shadowBlur = (state==="press"?4:13);
+      c.shadowOffsetY = (state==="press"?2:7);
+      rr(c, fx, fy, fw, faceH+wallH, rad);
+      c.fillStyle = lin(c, fy, fy, fy+faceH+wallH, [[0,p.wall],[1,p.wallDark]]);
+      c.fill();
+      c.restore();
+    } else {
+      c.save(); c.shadowColor=p.contact; c.shadowBlur=6; c.shadowOffsetY=3;
+      rr(c,fx,fy,fw,faceH,rad); c.fillStyle=p.wallDark; c.fill(); c.restore();
+    }
+
+    // B) FACE base gradient
+    rr(c, fx, fy, fw, faceH, rad);
+    c.fillStyle = lin(c, fy, fy, fy+faceH,
+      style==="flat" ? [[0,faceCols[1]],[1,faceCols[1]]]
+      : [[0,faceCols[0]],[0.5,faceCols[1]],[1,faceCols[2]]]);
+    c.fill();
+
+    // C) curvature — clip to face, paint the crown
+    c.save(); rr(c, fx, fy, fw, faceH, rad); c.clip();
+    const cx = fx+fw/2;
+    if(style==="dome"){
+      const g=c.createRadialGradient(cx, fy+faceH*0.34, 1, cx, fy+faceH*0.40, faceH*0.95);
+      g.addColorStop(0,"rgba(255,255,255,"+(p.dark?.30:.55)+")");
+      g.addColorStop(.55,"rgba(255,255,255,0)");
+      g.addColorStop(1,"rgba(0,0,0,"+(p.dark?.28:.10)+")");
+      c.fillStyle=g; c.fillRect(fx,fy,fw,faceH);
+    } else if(style==="dish"||style==="tray"){
+      // concave scoop: soft shade band upper-middle, light pools low + bright top rim
+      const g=c.createRadialGradient(cx, fy+faceH*0.30, faceH*0.12, cx, fy+faceH*0.30, faceH*1.15);
+      g.addColorStop(0,"rgba(0,0,0,"+(p.dark?.30:.14)+")");
+      g.addColorStop(.62,"rgba(0,0,0,0)");
+      c.fillStyle=g; c.fillRect(fx,fy,fw,faceH);
+      const glow=c.createLinearGradient(0, fy+faceH*0.55, 0, fy+faceH);
+      glow.addColorStop(0,"rgba(255,255,255,0)");
+      glow.addColorStop(1,"rgba(255,255,255,"+(p.dark?.10:.4)+")");
+      c.fillStyle=glow; c.fillRect(fx,fy,fw,faceH);
+    } else if(style==="glass"){
+      const g=c.createLinearGradient(fx,fy,fx+fw,fy+faceH);
+      g.addColorStop(0,"rgba(255,255,255,0)");
+      g.addColorStop(.5,"rgba(255,255,255,"+(p.dark?.16:.5)+")");
+      g.addColorStop(1,"rgba(255,255,255,0)");
+      c.fillStyle=g; c.fillRect(fx,fy,fw,faceH);
+    }
+    c.restore();
+
+    // D) top rim highlight (chamfer catch)
+    if(style!=="flat"){
+      c.save(); rr(c, fx+1, fy+0.5, fw-2, faceH-1, rad-1);
+      c.strokeStyle = lin(c, fy, fy, fy+faceH*0.5, [[0,p.rim],[1,"rgba(255,255,255,0)"]]);
+      c.lineWidth=1.4; c.stroke();
+      // bottom inner chamfer
+      rr(c, fx+1, fy+1, fw-2, faceH-1.5, rad-1);
+      c.strokeStyle = lin(c, fy+faceH*0.6, fy+faceH*0.6, fy+faceH, [[0,"rgba(0,0,0,0)"],[1,p.chamfer]]);
+      c.lineWidth=1; c.stroke();
+      c.restore();
+    }
+
+    // E) baked-in specular for STATIC cards (hero adds a live one instead)
+    // (left out here; compositor overlays the moving sprite)
+
+    // F) legend — embossed
+    if(label){
+      const fs = Math.round(Math.min(faceH*0.42, fw*0.42, 30));
+      c.font = `700 ${fs}px -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif`;
+      c.textAlign="center"; c.textBaseline="middle";
+      const tx=cx, ty=fy+faceH*0.5+0.5;
+      c.fillStyle=p.textShadow; c.fillText(label, tx, ty+1);
+      c.fillStyle = kind==="accent"? p.accentText : kind==="fn"? p.fnText : p.text;
+      c.fillText(label, tx, ty);
+    }
+    return {cv, M, fx, fy, fw, faceH, rad};
+  }
+
+  // ---- cache (mirrors keyBgCache) ----
+  const cache = new Map();
+  let cacheSig = "";
+  function ck(...a){ return a.join("|"); }
+  function getCap(label, style, state, w, h, kind){
+    const sig = currentTheme();
+    if(sig!==cacheSig){ cache.clear(); cacheSig=sig; }
+    const key = ck(label,style,state,w,h,kind);
+    let v = cache.get(key);
+    if(!v){ v = bakeCap(label,style,state,w,h,kind); cache.set(key,v); }
+    return v;
+  }
+
+  // ---- composite one cap at (x,y) with optional live specular ----
+  function place(ctx, cap, x, y, light){
+    ctx.drawImage(cap.cv, x-cap.M, y-cap.M, cap.cv.width/dpr, cap.cv.height/dpr);
+    if(light && specSprite){
+      const {fx,fy,fw,faceH,rad}=cap;
+      ctx.save();
+      rr(ctx, x-cap.M+fx, y-cap.M+fy, fw, faceH, rad); ctx.clip();
+      ctx.globalCompositeOperation="lighter";
+      ctx.globalAlpha=light.a;
+      const hx = x-cap.M+fx + fw*(0.5 + light.x*0.34);
+      const hy = y-cap.M+fy + faceH*(0.30 + light.y*0.24);
+      const R=specR;
+      ctx.drawImage(specSprite, hx-R, hy-R, R*2, R*2);
+      ctx.restore();
+    }
+  }
+
+  /* =================== HERO BOARD =================== */
+  const board = document.getElementById("board");
+  const bctx = board.getContext("2d");
+  const ROWS = [
+    "QWERTYUIOP".split("").map(l=>({l,k:"letter",w:1})),
+    "ASDFGHJKL".split("").map(l=>({l,k:"letter",w:1})),
+    [{l:"⇧",k:"fn",w:1.5},...("ZXCVBNM".split("").map(l=>({l,k:"letter",w:1}))),{l:"⌫",k:"fn",w:1.5}],
+    [{l:"?123",k:"fn",w:1.6},{l:",",k:"letter",w:1},{l:"space",k:"letter",w:5},{l:".",k:"letter",w:1},{l:"↵",k:"accent",w:1.6}]
+  ];
+  let cells=[], light={x:0,y:-.5,a:.5,tx:0,ty:-.5}, pressed=new Set(), tilt={x:0,y:0};
+
+  function layoutBoard(){
+    const cssW = board.clientWidth || board.parentElement.clientWidth-40;
+    const pad=8, gap=6;
+    const rowH = Math.max(46, Math.min(66, cssW/8.4));
+    const cssH = rowH*4 + gap*3 + pad*2;
+    board.width=cssW*dpr; board.height=cssH*dpr;
+    board.style.height=cssH+"px";
+    bctx.setTransform(dpr,0,0,dpr,0,0);
+    cells=[];
+    ROWS.forEach((row,ri)=>{
+      const totW = row.reduce((s,k)=>s+k.w,0);
+      const avail = cssW - pad*2 - gap*(row.length-1);
+      let x=pad; const y=pad+ri*(rowH+gap);
+      row.forEach(k=>{
+        const w = avail*(k.w/totW);
+        cells.push({...k, x, y, w:Math.round(w), h:rowH});
+        x += w+gap;
+      });
+    });
+    buildSpec(Math.round(rowH*0.62));
+  }
+
+  function drawBoard(){
+    const p=pal();
+    bctx.clearRect(0,0,board.width,board.height);
+    // approach light toward target (tilt/light easing)
+    light.x += (light.tx-light.x)*0.12;
+    light.y += (light.ty-light.y)*0.12;
+    tilt.x = light.x*2.2; tilt.y = light.y*1.6;    // board tilt parallax
+    cells.forEach(c=>{
+      const st = pressed.has(c) ? "press":"rest";
+      const style = c.k==="accent" ? "dish" : c.k==="fn" ? "dish" : "tray";
+      const cap = getCap(c.l==="space"?"":c.l, style, st, Math.round(c.w), c.h, c.k);
+      const px = c.x + (st==="press"?0:tilt.x*0.4);
+      const py = c.y + (st==="press"?0:tilt.y*0.4);
+      place(bctx, cap, px, py, {x:light.x, y:light.y, a: st==="press"?0.25:0.55});
+    });
+  }
+
+  function boardXY(e){
+    const r=board.getBoundingClientRect();
+    return {x:(e.clientX-r.left), y:(e.clientY-r.top), w:r.width, h:r.height};
+  }
+  function hitCell(x,y){ return cells.find(c=> x>=c.x&&x<=c.x+c.w&&y>=c.y&&y<=c.y+c.h ); }
+
+  board.addEventListener("pointermove", e=>{
+    const {x,y,w,h}=boardXY(e);
+    light.tx = (x/w*2-1); light.ty = (y/h*2-1);
+    if(reduced){ light.x=light.tx; light.y=light.ty; }
+  });
+  board.addEventListener("pointerleave", ()=>{ light.tx=0; light.ty=-.5; });
+  board.addEventListener("pointerdown", e=>{
+    board.setPointerCapture(e.pointerId);
+    const {x,y}=boardXY(e); const c=hitCell(x,y);
+    if(c){ pressed.add(c); if(reduced) drawBoard(); }
+  });
+  const release=e=>{ pressed.clear(); if(reduced) drawBoard(); };
+  board.addEventListener("pointerup", release);
+  board.addEventListener("pointercancel", release);
+
+  /* =================== GALLERY =================== */
+  const CARDS=[
+    {label:"A", style:"flat",  kind:"letter", name:"Flat",           desc:"No depth — the control. A tinted rectangle.", chip:"1 blit", c:1},
+    {label:"A", style:"bevel", kind:"letter", name:"Linear bevel",   desc:"Top-light / bottom-dark gradient + rim. What ships today.", chip:"1 blit", c:1},
+    {label:"A", style:"dish",  kind:"letter", name:"Dished cap",     desc:"Radial scoop reads as a concave chiclet top.", chip:"1 blit ·baked", c:1},
+    {label:"A", style:"dome",  kind:"letter", name:"Domed cap",      desc:"Convex crown — the vintage gum-key look.", chip:"1 blit ·baked", c:1},
+    {label:"A", style:"tray",  kind:"letter", name:"Tray occlusion", desc:"Dish + baked shadow so the key sits in a well.", chip:"1 blit ·baked", c:1},
+    {label:"A", style:"glass", kind:"letter", name:"Frosted glass",  desc:"Translucent plate, diagonal sheen, bright rim.", chip:"1 blit ·baked", c:1},
+    {label:"A", style:"dish",  kind:"letter", name:"Specular track", desc:"Dish + a light sprite that follows the source.", chip:"+1 sprite", c:2, spec:true},
+    {label:"↵", style:"dish",  kind:"accent", name:"Accent · travel",desc:"Enter key — tap to feel the swap-and-sink.", chip:"2 states", c:1, press:true},
+  ];
+  const galleryCanvases=[];
+  function buildGallery(){
+    const grid=document.getElementById("grid"); grid.innerHTML="";
+    galleryCanvases.length=0;
+    CARDS.forEach((cd,i)=>{
+      const el=document.createElement("div"); el.className="card";
+      const cv=document.createElement("canvas");
+      el.appendChild(cv);
+      const nm=document.createElement("div"); nm.className="name"; nm.textContent=cd.name; el.appendChild(nm);
+      const ds=document.createElement("div"); ds.className="desc"; ds.textContent=cd.desc; el.appendChild(ds);
+      const ch=document.createElement("div"); ch.className="chip c"+cd.c; ch.textContent=cd.chip; el.appendChild(ch);
+      grid.appendChild(el);
+      const state={cd,cv,ctx:cv.getContext("2d"),light:{x:-.3,y:-.5,tx:-.3,ty:-.5},pressed:false,w:0,h:0};
+      cv.addEventListener("pointermove",e=>{
+        const r=cv.getBoundingClientRect();
+        state.light.tx=((e.clientX-r.left)/r.width*2-1);
+        state.light.ty=((e.clientY-r.top)/r.height*2-1);
+      });
+      cv.addEventListener("pointerleave",()=>{state.light.tx=-.3;state.light.ty=-.5;});
+      cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);state.pressed=true;});
+      const up=()=>{state.pressed=false;};
+      cv.addEventListener("pointerup",up); cv.addEventListener("pointercancel",up);
+      galleryCanvases.push(state);
+    });
+    sizeGallery();
+  }
+  function sizeGallery(){
+    galleryCanvases.forEach(s=>{
+      const cssW=s.cv.clientWidth, cssH=s.cv.clientHeight||118;
+      s.cv.width=cssW*dpr; s.cv.height=cssH*dpr; s.w=cssW; s.h=cssH;
+      s.ctx.setTransform(dpr,0,0,dpr,0,0);
+    });
+  }
+  function drawGallery(){
+    galleryCanvases.forEach(s=>{
+      s.light.x += (s.light.tx-s.light.x)*0.12;
+      s.light.y += (s.light.ty-s.light.y)*0.12;
+      const ctx=s.ctx; ctx.clearRect(0,0,s.cv.width,s.cv.height);
+      const kw=Math.min(s.w*0.62, 86), kh=Math.min(s.h*0.72, 74);
+      const kx=(s.w-kw)/2, ky=(s.h-kh)/2;
+      // shared spec radius per card
+      buildSpec(Math.round(kh*0.7));
+      const st=s.cd.press&&s.pressed?"press":"rest";
+      const cap=getCap(s.cd.label, s.cd.style, st, Math.round(kw), Math.round(kh), s.cd.kind);
+      place(ctx, cap, kx, ky, s.cd.spec||s.cd.style!=="flat" ? {x:s.light.x,y:s.light.y,a:s.cd.spec?0.85:0.4} : null);
+    });
+  }
+
+  /* =================== COMPARE =================== */
+  const cmpA=document.getElementById("cmpA"), cmpB=document.getElementById("cmpB");
+  const cmp=[{cv:cmpA,style:"bevel"},{cv:cmpB,style:"tray"}].map(o=>({...o,ctx:o.cv.getContext("2d"),light:{x:.2,y:-.4}}));
+  function sizeCompare(){ cmp.forEach(o=>{const w=o.cv.clientWidth,h=o.cv.clientHeight||150;o.cv.width=w*dpr;o.cv.height=h*dpr;o.w=w;o.h=h;o.ctx.setTransform(dpr,0,0,dpr,0,0);}); }
+  function drawCompare(){
+    cmp.forEach(o=>{
+      const ctx=o.ctx; ctx.clearRect(0,0,o.cv.width,o.cv.height);
+      // a little cluster of 3 keys
+      const kw=Math.min(o.w*0.24,66), kh=Math.min(o.h*0.5,68), gap=10;
+      const total=kw*3+gap*2, sx=(o.w-total)/2, sy=(o.h-kh)/2;
+      buildSpec(Math.round(kh*0.7));
+      ["Q","W","E"].forEach((L,i)=>{
+        const cap=getCap(L,o.style,"rest",Math.round(kw),Math.round(kh),"letter");
+        place(ctx,cap, sx+i*(kw+gap), sy, o.style!=="flat"?{x:o.light.x,y:o.light.y,a:.5}:null);
+      });
+    });
+  }
+
+  /* =================== LOOP =================== */
+  function frame(){
+    drawBoard(); drawGallery(); drawCompare();
+    requestAnimationFrame(frame);
+  }
+
+  function resizeAll(){ layoutBoard(); sizeGallery(); sizeCompare(); if(reduced){drawBoard();drawGallery();drawCompare();} }
+
+  // ---- theme toggle ----
+  document.getElementById("themeBtn").addEventListener("click",()=>{
+    root.setAttribute("data-theme", currentTheme()==="dark"?"light":"dark");
+    cache.clear(); cacheSig="";
+    if(reduced){drawBoard();drawGallery();drawCompare();}
+  });
+  matchMedia("(prefers-color-scheme:dark)").addEventListener?.("change",()=>{cache.clear();cacheSig="";});
+
+  // ---- init ----
+  buildGallery();
+  layoutBoard(); sizeCompare();
+  let rt; window.addEventListener("resize",()=>{clearTimeout(rt);rt=setTimeout(resizeAll,120);});
+  if(reduced){ drawBoard(); drawGallery(); drawCompare(); }
+  else requestAnimationFrame(frame);
+})();
+</script>
