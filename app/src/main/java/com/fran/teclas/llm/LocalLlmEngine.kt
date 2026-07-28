@@ -52,9 +52,13 @@ object LocalLlmEngine {
 
     private fun installed(context: Context, spec: ModelSpec) = fileFor(context, spec).length() == spec.bytes
 
-    /** Prefer the quality model when downloaded, else the fast one, else none. */
+    /** Prefer the quality model when downloaded AND runnable here, else the fast one, else none.
+     *  Checking RAM here keeps [ready] and [modelInstalled] honest: a 4B file sitting on a phone
+     *  that will never load it is not a model the app has. */
     private fun activeSpec(context: Context): ModelSpec? =
-        if (installed(context, GEMMA)) GEMMA else if (installed(context, BONSAI)) BONSAI else null
+        if (installed(context, GEMMA) && deviceSupportsQuality(context)) GEMMA
+        else if (installed(context, BONSAI)) BONSAI
+        else null
 
     private fun computeActiveSpec(context: Context): ModelSpec? =
         activeSpec(context).also { installedCache = it }
@@ -87,6 +91,101 @@ object LocalLlmEngine {
     fun qualityInstalled(context: Context): Boolean = installed(context, GEMMA)
     val totalBytes: Long get() = BONSAI.bytes
     val qualityBytes: Long get() = GEMMA.bytes
+
+    // ---------------------------------------------------------------- hardware safety
+
+    /**
+     * Below this much total RAM, the quality model is refused and Bonsai serves instead.
+     *
+     * Gemma 3 4B Q4_K_M is ~2.5GB of weights plus a KV cache and llama.cpp's own working set. The
+     * weights are mmapped, so a device that cannot hold them does not cleanly OOM — it thrashes,
+     * faulting pages back in on every token. That is the worst outcome available: slow *and* hot,
+     * with no error to point at. 6GB total leaves roughly 2-3GB actually available on a modern
+     * Android build, which is the floor where this stops paging constantly.
+     */
+    const val QUALITY_MIN_RAM_BYTES = 6L * 1024 * 1024 * 1024
+
+    /** Pure policy half of [deviceSupportsQuality], so the threshold can be tested without a device. */
+    fun qualityAllowed(totalRamBytes: Long, lowRamDevice: Boolean): Boolean =
+        !lowRamDevice && totalRamBytes >= QUALITY_MIN_RAM_BYTES
+
+    // Installed RAM does not change while the app runs, so this is worth exactly one lookup.
+    @Volatile private var qualityFits: Boolean? = null
+
+    /** Whether this phone has the headroom to run the 4B model at all. */
+    fun deviceSupportsQuality(context: Context): Boolean {
+        qualityFits?.let { return it }
+        val fits = runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val info = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            qualityAllowed(info.totalMem, am.isLowRamDevice)
+        }.getOrDefault(false)
+        qualityFits = fits
+        return fits
+    }
+
+    // ---------------------------------------------------------------- idle release
+
+    /**
+     * How long a loaded model may sit unused before its memory goes back to the system.
+     *
+     * [unload] existed but nothing ever called it, so the first generation of the day pinned the
+     * weights for the lifetime of the process — and because the IME shares this process with the
+     * launcher, that process effectively never dies. A phone that ran one brief was still holding
+     * a multi-gigabyte mapping hours later.
+     */
+    private const val IDLE_RELEASE_MS = 5 * 60_000L
+
+    @Volatile private var lastUseMs = 0L
+    @Volatile private var releaseScheduled = false
+
+    /** Pure decision half of [releaseIfIdle]. */
+    fun shouldRelease(loaded: Boolean, busy: Boolean, lastUseMs: Long, nowMs: Long,
+                      idleMs: Long = IDLE_RELEASE_MS): Boolean =
+        loaded && !busy && nowMs - lastUseMs >= idleMs
+
+    /** Free the model if it has been idle long enough. Returns true when it actually unloaded. */
+    fun releaseIfIdle(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (!shouldRelease(handle != 0L, generating, lastUseMs, nowMs)) return false
+        unload()
+        return true
+    }
+
+    /**
+     * One sleeping thread per idle window, not a poll loop: generation is rare and bursty, so the
+     * cheapest correct thing is to wait out the window once and re-check. If another generation
+     * lands meanwhile, [lastUseMs] moves and the check re-arms instead of freeing a hot model.
+     */
+    private fun scheduleIdleRelease() {
+        if (releaseScheduled) return
+        synchronized(this) {
+            if (releaseScheduled) return
+            releaseScheduled = true
+        }
+        Thread({
+            try {
+                while (true) {
+                    val waitMs = IDLE_RELEASE_MS - (System.currentTimeMillis() - lastUseMs)
+                    if (waitMs <= 0) break
+                    try { Thread.sleep(waitMs) } catch (_: InterruptedException) { return@Thread }
+                }
+                releaseIfIdle()
+            } finally {
+                releaseScheduled = false
+            }
+        }, "teclas-llm-idle-release").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Memory pressure from the system. Deliberately NOT tied to activity onPause/onResume: this
+     * engine exists to serve the keyboard while it types into *other* apps, so the launcher being
+     * paused is the normal case, not an idle one. Releasing there would unload the model out from
+     * under an active IME session — the process is shared.
+     */
+    fun onTrimMemory(level: Int) {
+        val urgent = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        if (urgent && !generating) unload()
+    }
 
     fun ready(context: Context): Boolean = handle != 0L || modelInstalled(context)
 
@@ -162,11 +261,15 @@ object LocalLlmEngine {
     /** Which model to serve: [quality] prefers Gemma (better, slower), else Bonsai (fast). Falls
      *  back to whichever is actually installed. */
     private fun specFor(context: Context, quality: Boolean): ModelSpec? {
-        val preferred = if (quality) GEMMA else BONSAI
-        val other = if (quality) BONSAI else GEMMA
+        // A phone without the RAM for the 4B model never gets handed it, even if the file is on
+        // disk — an mmapped model it cannot hold thrashes rather than fails, so the guard has to
+        // sit here at load time and not only in the download UI.
+        val wantQuality = quality && deviceSupportsQuality(context)
+        val preferred = if (wantQuality) GEMMA else BONSAI
+        val other = if (wantQuality) BONSAI else GEMMA
         return when {
             installed(context, preferred) -> preferred
-            installed(context, other) -> other
+            installed(context, other) && (other != GEMMA || deviceSupportsQuality(context)) -> other
             else -> null
         }
     }
@@ -200,6 +303,8 @@ object LocalLlmEngine {
             }
         } finally {
             generating = false
+            lastUseMs = System.currentTimeMillis()
+            scheduleIdleRelease()
         }
     }
 
@@ -231,6 +336,8 @@ object LocalLlmEngine {
     fun unload() {
         synchronized(this) {
             if (handle != 0L) { runCatching { nativeFree(handle) }; handle = 0 }
+            // Clear the tier too, or a later load can match a spec whose handle is already gone.
+            loadedSpec = null
         }
     }
 

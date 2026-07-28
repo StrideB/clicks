@@ -791,6 +791,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         runCatching { hideWindow() }
     }
 
+    // Same shared process as the launcher, so whichever component hears the pressure first should
+    // release the model. The engine ignores the call while a generation is in flight.
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.fran.teclas.llm.LocalLlmEngine.onTrimMemory(level)
+    }
+
     override fun onDestroy() {
         if (instance === this) instance = null
         deckBuffer.clear()

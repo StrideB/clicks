@@ -1314,6 +1314,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshSystemThemeIfNeeded(animated = true, forceRender = true)
     }
 
+    // The local LLM holds gigabytes once loaded, and this process is shared with the IME so it
+    // effectively never dies on its own. Hand the memory back when the system says it needs it.
+    // Deliberately not onPause: the keyboard's whole job happens while the launcher is paused.
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.fran.teclas.llm.LocalLlmEngine.onTrimMemory(level)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         prefs().unregisterOnSharedPreferenceChangeListener(prefsListener)
@@ -21740,9 +21748,15 @@ Question: $prompt"""
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setPadding(0, dp(20), 0, 0)
         })
+        // Phones without the RAM for a 4B model don't get offered a 2.5 GB download they can only
+        // thrash on — an mmapped model too big for the device doesn't fail, it just runs hot.
+        val gemmaFits = com.fran.teclas.llm.LocalLlmEngine.deviceSupportsQuality(this)
         val gemmaStatus = label(
-            if (com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this)) "Installed · a much smarter local model for the brief, chat and rewrites"
-            else "Optional · 2.5 GB · far better writing and reasoning than Bonsai (slower, Wi-Fi + storage)",
+            when {
+                !gemmaFits -> "Not available on this phone · needs about 6 GB of RAM. Bonsai runs the AI instead."
+                com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this) -> "Installed · a much smarter local model for the brief, chat and rewrites"
+                else -> "Optional · 2.5 GB · far better writing and reasoning than Bonsai (slower, Wi-Fi + storage)"
+            },
             12.5f, InkDim
         ).apply { setPadding(0, dp(3), 0, dp(8)) }
         root.addView(gemmaStatus)
@@ -21750,10 +21764,17 @@ Question: $prompt"""
             textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0xFFC9A7FF.toInt()) }
-            text = if (com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity)) "Re-download" else "Download (2.5 GB)"
-            isClickable = true
+            text = when {
+                !gemmaFits -> "Not supported"
+                com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity) -> "Re-download"
+                else -> "Download (2.5 GB)"
+            }
+            isClickable = gemmaFits
+            isEnabled = gemmaFits
+            alpha = if (gemmaFits) 1f else 0.45f
             setOnClickListener {
                 haptic(this)
+                if (!gemmaFits) return@setOnClickListener
                 if (!ProManager.isUnlocked(this@MainActivity)) { requirePro(ProFeature.AI_CHAT); return@setOnClickListener }
                 text = "Starting…"; isEnabled = false
                 mediaUiScope.launch {
@@ -24924,7 +24945,9 @@ Question: $prompt"""
         entries.add(SettingSearchEntry(
             "Keyboard AI model",
             when {
-                com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this) -> "On-device · ready"
+                // fastInstalled, not modelInstalled: the latter is true when *either* tier is on
+                // disk, so having only Gemma made this row claim Bonsai was ready when it wasn't.
+                com.fran.teclas.llm.LocalLlmEngine.fastInstalled(this) -> "On-device · ready"
                 com.fran.teclas.llm.LocalLlmEngine.downloading ->
                     "Downloading… ${com.fran.teclas.llm.LocalLlmEngine.downloadedBytes / 1_048_576}MB of 237MB"
                 else -> "237MB download · tap to fetch"
@@ -24932,7 +24955,7 @@ Question: $prompt"""
             listOf("keyboard ai", "bonsai", "local model", "offline ai", "llm", "download model")
         ) {
             when {
-                com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this) ->
+                com.fran.teclas.llm.LocalLlmEngine.fastInstalled(this) ->
                     Toast.makeText(this, "Keyboard AI model is installed.", Toast.LENGTH_SHORT).show()
                 com.fran.teclas.llm.LocalLlmEngine.downloading ->
                     Toast.makeText(this, "Still downloading — check back in a bit.", Toast.LENGTH_SHORT).show()
@@ -24949,6 +24972,24 @@ Question: $prompt"""
                     }
                 }
             }
+        })
+        // The quality tier had a full download pane but no way to reach it by typing — "gemma" or
+        // "smart model" found nothing. On a phone that can't hold it, the row says so rather than
+        // going silently missing, so the answer to "why don't I have this" is on screen.
+        entries.add(SettingSearchEntry(
+            "Quality AI · Gemma 3 4B",
+            when {
+                !com.fran.teclas.llm.LocalLlmEngine.deviceSupportsQuality(this) ->
+                    "Needs ~6 GB RAM · not available on this phone"
+                com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this) -> "Installed · used for the brief, chat and rewrites"
+                com.fran.teclas.llm.LocalLlmEngine.downloading ->
+                    "Downloading… ${com.fran.teclas.llm.LocalLlmEngine.downloadedBytes / 1_048_576}MB of 2489MB"
+                else -> "2.5 GB download · far better writing than Bonsai"
+            },
+            listOf("gemma", "gemma 3", "quality ai", "smart model", "quality model", "big model",
+                   "better ai", "local llm", "4b", "ai models")
+        ) {
+            showAiModelsDialog()
         })
         entries.add(SettingSearchEntry(
             "Semantic search",
