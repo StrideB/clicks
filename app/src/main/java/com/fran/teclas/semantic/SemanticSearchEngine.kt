@@ -123,7 +123,13 @@ internal object SemanticSearchEngine {
         if (!file.exists()) return
         runCatching {
             DataInputStream(file.inputStream().buffered()).use { input ->
-                if (input.readInt() != INDEX_MAGIC || input.readInt() != INDEX_VERSION) return
+                if (input.readInt() != INDEX_MAGIC || input.readInt() != INDEX_VERSION) {
+                    // A file from an older embedding space can never be read again. Returning
+                    // without deleting left it on disk for good: dead bytes that get opened and
+                    // discarded on every cold start, and never reclaimed.
+                    file.delete()
+                    return
+                }
                 val count = input.readInt()
                 val loaded = HashMap<String, Pair<Int, FloatArray>>(count)
                 repeat(count) {
@@ -153,7 +159,10 @@ internal object SemanticSearchEngine {
                     entry.second.forEach { out.writeFloat(it) }
                 }
             }
-            tmp.renameTo(indexFile(context))
+            // renameTo reports failure by RETURNING FALSE, not by throwing, so runCatching never
+            // saw it. A failed rename silently left the old index in place and a .tmp beside it —
+            // every embedding computed this round thrown away, and no sign anything went wrong.
+            if (!tmp.renameTo(indexFile(context))) error("could not replace index")
         }.onFailure { tmp.delete() }
     }
 }
