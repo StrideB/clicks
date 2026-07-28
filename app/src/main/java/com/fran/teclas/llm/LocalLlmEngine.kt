@@ -288,8 +288,36 @@ object LocalLlmEngine {
             return null
         }
         val effectiveQuality = quality && !ThermalPolicy.downgradeQuality(tier)
-        val spec = specFor(context, effectiveQuality) ?: return null
-        val h = loadedHandle(context, spec) ?: return null
+
+        // Yield to the keyboard. Nothing set a thread priority before this, so llama.cpp ran its
+        // worker pool at default foreground priority against the thing the user is actually
+        // touching. THREAD_PRIORITY_BACKGROUND does more than lower the nice value — it moves the
+        // thread into Android's background cgroup, which caps its share of the CPU, and that cap
+        // is the part that matters for heat.
+        //
+        // Set before the model loads, not just around generation: ggml builds its worker pool on
+        // this thread, and the workers inherit from whoever created them.
+        //
+        // The background tier is for the twice-daily brief, which nobody is waiting on. An
+        // interactive call still steps down, but only one notch — throttling something the user
+        // is watching trades one complaint for another.
+        val prevPriority = runCatching { android.os.Process.getThreadPriority(android.os.Process.myTid()) }
+            .getOrDefault(android.os.Process.THREAD_PRIORITY_DEFAULT)
+        runCatching {
+            android.os.Process.setThreadPriority(
+                if (effectiveQuality) android.os.Process.THREAD_PRIORITY_BACKGROUND
+                else android.os.Process.THREAD_PRIORITY_DEFAULT + android.os.Process.THREAD_PRIORITY_LESS_FAVORABLE
+            )
+        }
+
+        val spec = specFor(context, effectiveQuality) ?: run {
+            runCatching { android.os.Process.setThreadPriority(prevPriority) }
+            return null
+        }
+        val h = loadedHandle(context, spec) ?: run {
+            runCatching { android.os.Process.setThreadPriority(prevPriority) }
+            return null
+        }
         generating = true
         val t0 = System.currentTimeMillis()
         return try {
@@ -305,6 +333,9 @@ object LocalLlmEngine {
                 null
             }
         } finally {
+            // This thread belongs to a shared IO pool — leaving it demoted would quietly throttle
+            // whatever runs on it next.
+            runCatching { android.os.Process.setThreadPriority(prevPriority) }
             generating = false
             lastUseMs = System.currentTimeMillis()
             scheduleIdleRelease()
