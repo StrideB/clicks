@@ -96,6 +96,21 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
      */
     private var gestureStartedHere = false
 
+    /**
+     * True when this gesture began in the panel's left edge strip, the only place a swipe means
+     * "dismiss".
+     *
+     * dispatchTouchEvent runs BEFORE the Compose child, so the dismiss test saw every horizontal
+     * drag in the panel — including scrolling the Space switcher, which is a horizontally scrolling
+     * Row. Dragging it sideways to reach another Space produced a large dx on ACTION_UP and closed
+     * the board, which made every Space except the active one unreachable. Compose consuming the
+     * scroll does not help: the check happens on the same event either way.
+     *
+     * Requiring an edge origin is the conventional swipe-to-dismiss contract and cannot collide
+     * with anything scrollable inside the panel.
+     */
+    private var gestureFromEdge = false
+
     /** Uptime of the last open, for the [close] grace window. */
     private var openedAtMs = 0L
 
@@ -135,14 +150,25 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
                         downX = ev.x
                         downY = ev.y
                         gestureStartedHere = true
+                        // Left edge strip only — proportional so it scales with the panel, clamped
+                        // so it is neither a hairline nor half the screen on a tablet/fold.
+                        val edge = (width * 0.12f).coerceIn(activity.dp(20).toFloat(), activity.dp(56).toFloat())
+                        gestureFromEdge = ev.x <= edge
                     }
-                    MotionEvent.ACTION_CANCEL -> gestureStartedHere = false
+                    MotionEvent.ACTION_CANCEL -> {
+                        gestureStartedHere = false
+                        gestureFromEdge = false
+                    }
                     MotionEvent.ACTION_UP -> {
                         val startedHere = gestureStartedHere
+                        val fromEdge = gestureFromEdge
                         gestureStartedHere = false
+                        gestureFromEdge = false
                         // An UP with no matching DOWN belongs to the gesture that opened this
                         // panel; treating it as a dismiss closed the panel immediately.
-                        if (startedHere) {
+                        // And a drag that began mid-panel belongs to whatever is scrolling there —
+                        // the Space switcher above all — never to dismiss.
+                        if (startedHere && fromEdge) {
                             val dx = ev.x - downX
                             val dy = ev.y - downY
                             if (dx > activity.dp(72) && abs(dx) > abs(dy) * 1.25f) {
