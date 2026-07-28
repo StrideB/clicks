@@ -151,6 +151,26 @@ object LocalLlmEngine {
         }, "teclas-llm-idle-release").apply { isDaemon = true }.start()
     }
 
+    // ---------------------------------------------------------------- heat and battery
+
+    /**
+     * Read the live signals and ask [ThermalPolicy] what this phone can afford.
+     *
+     * Not cached: thermal status and charge are exactly the things that change while the phone is
+     * in trouble, and a stale "it was fine a minute ago" is how a hot phone keeps generating. The
+     * reads are cheap system-service calls next to a multi-second decode.
+     */
+    private fun currentTier(context: Context): ThermalPolicy.Tier = runCatching {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val thermal =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) pm.currentThermalStatus
+            else ThermalPolicy.THERMAL_NONE
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+        val pct = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            .let { if (it in 0..100) it else -1 }
+        ThermalPolicy.tier(thermal, pct, pm.isPowerSaveMode, bm.isCharging)
+    }.getOrDefault(ThermalPolicy.Tier.FULL)   // unreadable signals must not disable the feature
+
     /**
      * Memory pressure from the system. Deliberately NOT tied to activity onPause/onResume: this
      * engine exists to serve the keyboard while it types into *other* apps, so the launcher being
@@ -260,7 +280,15 @@ object LocalLlmEngine {
         // one instead of queueing on the native mutex. Piling requests up is what pinned every core
         // and heated the phone — one at a time, and callers get null (their own fallback) when busy.
         if (generating) { diag(context, "local generate SKIP (busy)"); return null }
-        val spec = specFor(context, quality) ?: return null
+        // Heat and battery gate. Every local generation in the app funnels through here, so this is
+        // the one place that has to know the phone is in trouble.
+        val tier = currentTier(context)
+        if (ThermalPolicy.blocked(tier)) {
+            diag(context, "local generate SKIP (tier=$tier)")
+            return null
+        }
+        val effectiveQuality = quality && !ThermalPolicy.downgradeQuality(tier)
+        val spec = specFor(context, effectiveQuality) ?: return null
         val h = loadedHandle(context, spec) ?: return null
         generating = true
         val t0 = System.currentTimeMillis()
