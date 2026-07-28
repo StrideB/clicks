@@ -78,31 +78,71 @@ object CommitmentStore {
      * — while still finding old commitments when nothing recent matches. Keyword-based (works with no
      * model loaded); a semantic index could layer on later. Nothing is deleted; recency only orders.
      */
-    fun search(prefs: SharedPreferences, query: String): List<Commitment> {
+    fun search(prefs: SharedPreferences, query: String): List<Commitment> =
+        rank(all(prefs), query, System.currentTimeMillis())
+
+    /**
+     * The pure half of [search] — no SharedPreferences, so it is unit-testable.
+     *
+     * Two recall failures used to make this feel broken:
+     *
+     *  1. "what do I need to do today" is ENTIRELY stopwords, so `terms` came out empty and the
+     *     function returned nothing — the single most natural question anyone would ask got the
+     *     one answer that reads as "the feature is broken". A query with no content terms is not a
+     *     failed query; it is a request for everything current, so it now returns recent items.
+     *  2. Zero literal overlap was a hard filter. Ask "what does Kelly want from me" about a
+     *     commitment stored as "send the Q1 draft" and every content word misses, so a real,
+     *     recorded commitment was unreachable by paraphrase. Matching now also accepts a prefix
+     *     relationship in either direction ("draft"/"drafts", "meet"/"meeting"), and a person hit
+     *     alone is enough to qualify.
+     *
+     * Still keyword-based on purpose: it must work with no model loaded and no embedding index.
+     * Semantic retrieval can layer on top, but it should never be the reason recall works at all.
+     */
+    fun rank(all: List<Commitment>, query: String, now: Long, limit: Int = 5): List<Commitment> {
         val lower = query.lowercase()
         val wantsRecent = listOf("today", "tonight", "now", "this week", "latest", "recent", "currently")
             .any { lower.contains(it) }
         val terms = lower.split(Regex("[^a-z0-9]+")).filter { it.length >= 3 && it !in STOP }
-        if (terms.isEmpty()) return emptyList()
-        val now = System.currentTimeMillis()
-        return all(prefs)
-            .mapNotNull { c ->
-                val hay = "${c.person} ${c.text}".lowercase()
-                val overlap = terms.count { hay.contains(it) }
-                if (overlap == 0) return@mapNotNull null
-                val ageHours = (now - c.whenMs) / 3_600_000f
-                // Recency ranks recent matches above stale ones with the same content overlap. A
-                // "today"/"now" query strongly favours the last ~2 days; older still shows if it's
-                // the only match ("unless specified").
-                val recency = when {
-                    ageHours < 24f -> 2f
-                    ageHours < 24f * 7 -> 1f
-                    else -> 0f
-                } + if (wantsRecent && ageHours < 48f) 3f else 0f
-                c to (overlap * 2f + recency)
+
+        fun recencyScore(c: Commitment): Float {
+            val ageHours = (now - c.whenMs) / 3_600_000f
+            return when {
+                ageHours < 24f -> 2f
+                ageHours < 24f * 7 -> 1f
+                else -> 0f
+            } + if (wantsRecent && ageHours < 48f) 3f else 0f
+        }
+
+        // No content terms at all ("what do I need to do today?", "any todos?") — the honest answer
+        // is the most recent commitments, not silence.
+        if (terms.isEmpty()) {
+            return all.sortedByDescending { it.whenMs }.take(limit)
+        }
+
+        val scored = all.mapNotNull { c ->
+            val person = c.person.lowercase()
+            val words = "$person ${c.text}".lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+            var overlap = 0
+            var personHit = false
+            for (t in terms) {
+                val hit = words.any { w -> w == t || (w.length >= 4 && t.length >= 4 && (w.startsWith(t) || t.startsWith(w))) }
+                if (hit) {
+                    overlap++
+                    if (person.split(Regex("[^a-z0-9]+")).any { it == t || (it.length >= 4 && t.length >= 4 && (it.startsWith(t) || t.startsWith(it))) }) {
+                        personHit = true
+                    }
+                }
             }
+            if (overlap == 0) return@mapNotNull null
+            // Naming a person is a strong signal of intent — "what did Kelly need" should surface
+            // everything from Kelly, even when no task word matches.
+            c to (overlap * 2f + (if (personHit) 2f else 0f) + recencyScore(c))
+        }
+
+        return scored
             .sortedWith(compareByDescending<Pair<Commitment, Float>> { it.second }.thenByDescending { it.first.whenMs })
             .map { it.first }
-            .take(5)
+            .take(limit)
     }
 }
