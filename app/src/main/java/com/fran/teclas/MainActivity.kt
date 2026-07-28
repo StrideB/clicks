@@ -14562,6 +14562,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 haptic(this)
                 openLibraryResult(target)
             }
+            // Search results had no long-press at all, so the gesture fell through to the home
+            // screen and offered a widget picker — the wrong menu entirely, and the reason
+            // long-pressing an app appeared to do nothing useful anywhere but the dock.
+            setOnLongClickListener { haptic(this); showIconMenu(this, app); true }
         }
     }
 
@@ -23338,6 +23342,20 @@ Question: $prompt"""
             topMargin = dp(8)
             bottomMargin = dp(4)
         })
+        // The app's own shortcuts, at the top, for the same reason as in showIconMenu: they are the
+        // only entries that do something rather than rearrange the launcher. These are the menus
+        // the DOCK uses, which is where people actually long-press — adding shortcuts only to the
+        // drawer's menu made the whole feature look absent.
+        target.packageName?.let { shortcutPkg ->
+            AppShortcuts.forPackage(this, shortcutPkg).forEach { shortcut ->
+                menu.addView(menuItem(shortcut.label, true) {
+                    popup.dismiss()
+                    if (!AppShortcuts.launch(this@MainActivity, shortcutPkg, shortcut.id)) {
+                        Toast.makeText(this@MainActivity, "Couldn't open that shortcut", Toast.LENGTH_SHORT).show()
+                    }
+                })
+            }
+        }
         val canOpenHere = target.kind != PaneKind.LIST || target.packageName == null
         menu.addView(menuItem("Open here", canOpenHere) { popup.dismiss(); openHere(target) })
         menu.addView(menuItem("Open app", target.packageName != null) { popup.dismiss(); openExternal(target) })
@@ -23378,6 +23396,20 @@ Question: $prompt"""
         val popup = PopupWindow(menu, popupWidth, ViewGroup.LayoutParams.WRAP_CONTENT, true).apply {
             isOutsideTouchable = true
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
+        // The app's own shortcuts, at the top, for the same reason as in showIconMenu: they are the
+        // only entries that do something rather than rearrange the launcher. These are the menus
+        // the DOCK uses, which is where people actually long-press — adding shortcuts only to the
+        // drawer's menu made the whole feature look absent.
+        target.packageName?.let { shortcutPkg ->
+            AppShortcuts.forPackage(this, shortcutPkg).forEach { shortcut ->
+                menu.addView(menuItem(shortcut.label, true) {
+                    popup.dismiss()
+                    if (!AppShortcuts.launch(this@MainActivity, shortcutPkg, shortcut.id)) {
+                        Toast.makeText(this@MainActivity, "Couldn't open that shortcut", Toast.LENGTH_SHORT).show()
+                    }
+                })
+            }
         }
         val canOpenHere = target.kind != PaneKind.LIST || target.packageName == null
         menu.addView(menuItem("Open here", canOpenHere) { popup.dismiss(); openHere(target) })
