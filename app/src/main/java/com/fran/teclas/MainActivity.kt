@@ -26946,13 +26946,16 @@ Question: $prompt"""
         if (iconlessMode()) return fallbackLetterIcon(app)
         val override = prefs().getString(iconOverrideKey(app), null)
         val activePack = prefs().getString(ACTIVE_ICON_PACK_PREF, null)
-        val cacheKey = listOf(
-            app.componentName?.flattenToShortString().orEmpty(),
-            app.target.id,
-            app.target.packageName.orEmpty(),
-            override.orEmpty(),
-            activePack.orEmpty()
-        ).joinToString("|")
+        // Built by hand rather than listOf(...).joinToString: this runs for every icon on every
+        // bind, including cache hits, so the throwaway list and its iterator were pure garbage on
+        // the main thread while a drawer scrolls. Same key, same semantics, one allocation.
+        val cacheKey = buildString {
+            append(app.componentName?.flattenToShortString().orEmpty()).append('|')
+            append(app.target.id).append('|')
+            append(app.target.packageName.orEmpty()).append('|')
+            append(override.orEmpty()).append('|')
+            append(activePack.orEmpty())
+        }
         appIconStateCache.get(cacheKey)?.newDrawable(resources)?.mutate()?.let { return it }
         val resolved = override?.let { iconFromOverride(it) }
             ?: app.componentName?.let { component ->
