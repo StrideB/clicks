@@ -83,6 +83,38 @@ delta() {
       "$1" "$2" | sort -rn | head -15
 }
 
+# Same delta, but summed by NAME instead of listed per pid/tid.
+# A coroutine pool is N threads all called "DefaultDispatcher-worker-K", truncated to the same 15
+# characters in comm. Listed individually they each look modest and the top-15 cut hides the rest;
+# summed, the pool's real cost appears. delta_by_name <before> <after> [limit]
+delta_by_name() {
+  awk 'NR==FNR { was[$1]=$2; next }
+       { d = $2 - (($1 in was) ? was[$1] : 0)
+         if (d <= 0) next
+         name=""; for (i=3;i<=NF;i++) name = name (i>3?" ":"") $i
+         if (name ~ /^\/system\/bin\/sh/) next
+         tot[name] += d }
+       END { for (n in tot) print tot[n], n }' "$1" "$2" | sort -rn | head -"${3:-15}"
+}
+
+# Total delta across every row — used to show how much of the process is NOT accounted for by the
+# threads we sampled. Threads created and destroyed inside the window appear in neither snapshot,
+# so a large remainder means the work is in short-lived threads and the per-thread list is
+# misleading on its own. Saying so beats quietly under-reporting.
+delta_sum() {
+  awk 'NR==FNR { was[$1]=$2; next }
+       { d = $2 - (($1 in was) ? was[$1] : 0); if (d > 0) s += d } END { print s+0 }' "$1" "$2"
+}
+
+# Delta for the rows whose name is exactly $3.
+delta_for() {
+  awk -v want="$3" 'NR==FNR { was[$1]=$2; next }
+       { d = $2 - (($1 in was) ? was[$1] : 0)
+         if (d <= 0) next
+         name=""; for (i=3;i<=NF;i++) name = name (i>3?" ":"") $i
+         if (name == want) s += d } END { print s+0 }' "$1" "$2"
+}
+
 # Screen state decides what this measurement even means: with the display on, the panel is the
 # biggest draw on the phone and is attributed to no app at all, so a "screen on" run cannot settle
 # an idle-drain question. Worth saying up front rather than discovering it in the numbers.
@@ -135,10 +167,18 @@ adb shell "dumpsys package $PKG | grep -E 'versionName|versionCode'" > "$OUT/ver
   echo "   If $PKG is not near the top, the launcher is not what is heating the phone.)"
   delta "$OUT/proc-before.txt" "$OUT/proc-after.txt" | sed 's/^/  /'
   echo
-  echo "CPU USED, BY THREAD INSIDE $PKG"
-  echo "  (thread names say WHICH part: a ggml worker means the model was generating;"
-  echo "   teclas-llm-idle-release should appear once and cost nothing)"
-  delta "$OUT/thread-before.txt" "$OUT/thread-after.txt" | sed 's/^/  /'
+  echo "CPU USED, BY THREAD INSIDE $PKG   (summed per thread NAME)"
+  echo "  (a ggml worker means the model was generating; DefaultDispatch is the Kotlin"
+  echo "   coroutine pool, so it is CPU-bound background work, not rendering)"
+  delta_by_name "$OUT/thread-before.txt" "$OUT/thread-after.txt" 20 | sed 's/^/  /'
+  PKG_TOTAL=$(delta_for "$OUT/proc-before.txt" "$OUT/proc-after.txt" "$PKG")
+  THREAD_SUM=$(delta_sum "$OUT/thread-before.txt" "$OUT/thread-after.txt")
+  echo
+  echo "  process total: $PKG_TOTAL    accounted by sampled threads: $THREAD_SUM"
+  echo "  unaccounted:   $((PKG_TOTAL - THREAD_SUM))"
+  echo "  (A large remainder means the work happened in SHORT-LIVED threads — created and"
+  echo "   destroyed inside the window, so present in neither snapshot. That is a finding in"
+  echo "   itself: it points at churn, not at any thread named above.)"
   echo
   echo "TEMPERATURE CHANGE  (milli-degrees C: 45000 = 45C)"
   join "$OUT/thermal-before.txt" "$OUT/thermal-after.txt" 2>/dev/null \
