@@ -18225,6 +18225,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
      */
     private fun applyLauncherPhraseFix() {
         if (!predictionEnginePrimary.isDictWord("the") || !predictionEnginePrimary.isDictWord("and")) return
+        // Standalone "i" → "I" first: the IME has always done this and the launcher never did, so
+        // "i think" stayed lowercase here and was fixed in Emi. Same shared check, same English
+        // gate — "i" is a real word in Italian and Spanish, so it must not fire for them.
+        com.fran.teclas.keyboard.unified.SentenceChecks.standaloneI(query.takeLast(8))?.let { f ->
+            query = query.dropLast(f.replaceLastChars) + f.replacement
+        }
         val f = com.fran.teclas.keyboard.unified.SentenceChecks.phraseFix(query.takeLast(48)) ?: return
         query = query.dropLast(f.replaceLastChars) + f.replacement
     }
