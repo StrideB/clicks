@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-# Why is the phone warm while nobody is touching it?
+# What is actually burning CPU on this phone?
 #
-#   bash tools/idle_watch.sh [minutes]      # default 10
+#   bash tools/idle_watch.sh [minutes]            # idle: leave the phone alone
+#   bash tools/idle_watch.sh --use [minutes]      # load: use the phone normally
 #
-# Takes a CPU snapshot, waits while you leave the phone alone, snapshots again, and reports the
-# DELTA. That is the whole point: a single `top` tells you what is running, which on an idle phone
-# is everything and nothing. Only the change over a quiet window shows what is actually burning
-# cycles, and it names the exact thread inside Teclas doing it.
+# Takes a CPU snapshot, waits out a window, snapshots again, and reports the DELTA. That is the
+# whole point: a single `top` tells you what is running, which is everything and nothing. Only the
+# change over a window shows what actually spent cycles, and it names the exact thread doing it.
+#
+# Idle mode answers "why is it warm in my pocket". Load mode answers "why does it get warm while I
+# use it" -- same measurement, so the two runs are directly comparable.
 #
 # Nothing here modifies the phone except clearing batterystats and the log buffer at the start.
 set -uo pipefail   # deliberately NOT -e: a probe that fails must not abort the rest
 
 PKG="com.fran.teclas"
+MODE="idle"
+if [ "${1:-}" = "--use" ] || [ "${1:-}" = "--load" ]; then MODE="use"; shift; fi
 MINUTES="${1:-10}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="$ROOT/diagnostics/idle-$STAMP"
+OUT="$ROOT/diagnostics/$MODE-$STAMP"
 
 command -v adb >/dev/null 2>&1 || { echo "adb not found. Install platform-tools first." >&2; exit 1; }
 if [ -z "$(adb devices | sed -n '2p' | awk '{print $1}')" ]; then
@@ -90,9 +95,16 @@ adb logcat -c >/dev/null 2>&1
 snap before
 SCREEN_BEFORE="$(screen_state)"
 echo
-echo "  >>> Lock the phone and put it down. Do not touch it for $MINUTES minutes. <<<"
-echo "      Press the side key to turn the screen OFF — with it on, the display is the"
-echo "      biggest draw on the phone and belongs to no app, which buries everything else."
+if [ "$MODE" = "use" ]; then
+  echo "  >>> Use the phone NORMALLY for $MINUTES minutes. <<<"
+  echo "      Type a lot — that is the part under suspicion. Open the launcher, search,"
+  echo "      swipe between Spaces, send messages. The screen being on is expected here;"
+  echo "      we are attributing load, not settling an idle question."
+else
+  echo "  >>> Lock the phone and put it down. Do not touch it for $MINUTES minutes. <<<"
+  echo "      Press the side key to turn the screen OFF — with it on, the display is the"
+  echo "      biggest draw on the phone and belongs to no app, which buries everything else."
+fi
 echo
 for i in $(seq "$MINUTES" -1 1); do printf "\r  %2d min remaining…  " "$i"; sleep 60; done
 printf "\r  capturing…            \n"
@@ -110,21 +122,20 @@ adb logcat -d -b crash > "$OUT/crash.txt" 2>&1
 adb shell "dumpsys package $PKG | grep -E 'versionName|versionCode'" > "$OUT/version.txt" 2>&1
 
 {
-  echo "Teclas IDLE diagnostic — $MINUTES minutes untouched — $STAMP"
+  if [ "$MODE" = "use" ]; then echo "Teclas LOAD diagnostic — $MINUTES minutes of normal use — $STAMP"; else echo "Teclas IDLE diagnostic — $MINUTES minutes untouched — $STAMP"; fi
   echo "==============================================================="
   echo
   sed 's/^/  /' "$OUT/version.txt" 2>/dev/null
   echo
-  echo "SCREEN  (an 'Awake' run cannot settle an idle question — the panel dominates and"
-  echo "         is attributed to no app)"
+  if [ "$MODE" = "use" ]; then echo "SCREEN  (Awake is expected for a load run)"; else echo "SCREEN  (an 'Awake' run cannot settle an idle question — the panel dominates and"; echo "         is attributed to no app)"; fi
   echo "  at start: ${SCREEN_BEFORE:-unknown}    at end: $(screen_state)"
   echo
-  echo "CPU USED WHILE IDLE, BY PROCESS   <-- the decisive number"
+  echo "CPU USED, BY PROCESS   <-- the decisive number"
   echo "  (jiffies, usually 10ms each. A truly idle phone shows almost nothing here."
   echo "   If $PKG is not near the top, the launcher is not what is heating the phone.)"
   delta "$OUT/proc-before.txt" "$OUT/proc-after.txt" | sed 's/^/  /'
   echo
-  echo "CPU USED WHILE IDLE, BY THREAD INSIDE $PKG"
+  echo "CPU USED, BY THREAD INSIDE $PKG"
   echo "  (thread names say WHICH part: a ggml worker means the model was generating;"
   echo "   teclas-llm-idle-release should appear once and cost nothing)"
   delta "$OUT/thread-before.txt" "$OUT/thread-after.txt" | sed 's/^/  /'
@@ -149,4 +160,4 @@ adb shell "dumpsys package $PKG | grep -E 'versionName|versionCode'" > "$OUT/ver
 cat "$OUT/SUMMARY.txt"
 echo
 echo "Share the whole folder if you want it read:"
-echo "  cd $ROOT && zip -r idle-$STAMP.zip diagnostics/idle-$STAMP"
+echo "  cd $ROOT && zip -r $MODE-$STAMP.zip diagnostics/$MODE-$STAMP"
