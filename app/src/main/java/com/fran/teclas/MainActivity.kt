@@ -27029,6 +27029,20 @@ Question: $prompt"""
             background = GradientDrawable().apply { setColor(Panel2); cornerRadius = dp(8).toFloat(); setStroke(dp(1), Line) }
         }
         val popup = PopupWindow(menu, dp(224), ViewGroup.LayoutParams.WRAP_CONTENT, true).apply { isOutsideTouchable = true }
+        // The app's own shortcuts first — "New message", "Reorder", "Scan a code". These are
+        // published by the app itself and kept by the OS, so they are free to read and keep
+        // working across the app's redesigns. They go at the top because they are the only items
+        // here that DO something, rather than configure the launcher.
+        app.target.packageName?.let { packageName ->
+            AppShortcuts.forPackage(this, packageName).forEach { shortcut ->
+                menu.addView(menuItem(shortcut.label, true) {
+                    popup.dismiss()
+                    if (!AppShortcuts.launch(this@MainActivity, packageName, shortcut.id)) {
+                        Toast.makeText(this@MainActivity, "Couldn't open that shortcut", Toast.LENGTH_SHORT).show()
+                    }
+                })
+            }
+        }
         app.target.packageName?.let { packageName ->
             val onHome = isOnHome(packageName)
             menu.addView(menuItem(if (onHome) "Remove from dock" else "Add to dock", true) {
