@@ -35,8 +35,11 @@ object LocalLlmEngine {
         2_489_894_016L)
 
     init {
+        // The failure handler is guarded too: android.util.Log is a throwing stub off-device, so
+        // an unguarded log here turns "no native library" into a failed object initializer, and
+        // every later reference to this object dies with NoClassDefFoundError instead.
         runCatching { System.loadLibrary("teclasllm") }
-            .onFailure { Log.w(TAG, "native lib missing: ${it.message}") }
+            .onFailure { e -> runCatching { Log.w(TAG, "native lib missing: ${e.message}") } }
     }
 
     @Volatile private var handle: Long = 0
@@ -52,9 +55,13 @@ object LocalLlmEngine {
 
     private fun installed(context: Context, spec: ModelSpec) = fileFor(context, spec).length() == spec.bytes
 
-    /** Prefer the quality model when downloaded, else the fast one, else none. */
+    /** Prefer the quality model when downloaded AND runnable here, else the fast one, else none.
+     *  Checking RAM here keeps [ready] and [modelInstalled] honest: a 4B file sitting on a phone
+     *  that will never load it is not a model the app has. */
     private fun activeSpec(context: Context): ModelSpec? =
-        if (installed(context, GEMMA)) GEMMA else if (installed(context, BONSAI)) BONSAI else null
+        if (installed(context, GEMMA) && deviceSupportsQuality(context)) GEMMA
+        else if (installed(context, BONSAI)) BONSAI
+        else null
 
     private fun computeActiveSpec(context: Context): ModelSpec? =
         activeSpec(context).also { installedCache = it }
@@ -87,6 +94,93 @@ object LocalLlmEngine {
     fun qualityInstalled(context: Context): Boolean = installed(context, GEMMA)
     val totalBytes: Long get() = BONSAI.bytes
     val qualityBytes: Long get() = GEMMA.bytes
+
+    // ---------------------------------------------------------------- hardware safety
+
+    // Installed RAM does not change while the app runs, so this is worth exactly one lookup.
+    @Volatile private var qualityFits: Boolean? = null
+
+    /** Whether this phone has the headroom to run the 4B model at all. */
+    fun deviceSupportsQuality(context: Context): Boolean {
+        qualityFits?.let { return it }
+        val fits = runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val info = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            LlmPolicy.qualityAllowed(info.totalMem, am.isLowRamDevice)
+        }.getOrDefault(false)
+        qualityFits = fits
+        return fits
+    }
+
+    // ---------------------------------------------------------------- idle release
+
+    private const val IDLE_RELEASE_MS = LlmPolicy.IDLE_RELEASE_MS
+
+    @Volatile private var lastUseMs = 0L
+    @Volatile private var releaseScheduled = false
+
+    /** Free the model if it has been idle long enough. Returns true when it actually unloaded. */
+    fun releaseIfIdle(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (!LlmPolicy.shouldRelease(handle != 0L, generating, lastUseMs, nowMs, IDLE_RELEASE_MS)) return false
+        unload()
+        return true
+    }
+
+    /**
+     * One sleeping thread per idle window, not a poll loop: generation is rare and bursty, so the
+     * cheapest correct thing is to wait out the window once and re-check. If another generation
+     * lands meanwhile, [lastUseMs] moves and the check re-arms instead of freeing a hot model.
+     */
+    private fun scheduleIdleRelease() {
+        if (releaseScheduled) return
+        synchronized(this) {
+            if (releaseScheduled) return
+            releaseScheduled = true
+        }
+        Thread({
+            try {
+                while (true) {
+                    val waitMs = IDLE_RELEASE_MS - (System.currentTimeMillis() - lastUseMs)
+                    if (waitMs <= 0) break
+                    try { Thread.sleep(waitMs) } catch (_: InterruptedException) { return@Thread }
+                }
+                releaseIfIdle()
+            } finally {
+                releaseScheduled = false
+            }
+        }, "teclas-llm-idle-release").apply { isDaemon = true }.start()
+    }
+
+    // ---------------------------------------------------------------- heat and battery
+
+    /**
+     * Read the live signals and ask [ThermalPolicy] what this phone can afford.
+     *
+     * Not cached: thermal status and charge are exactly the things that change while the phone is
+     * in trouble, and a stale "it was fine a minute ago" is how a hot phone keeps generating. The
+     * reads are cheap system-service calls next to a multi-second decode.
+     */
+    private fun currentTier(context: Context): ThermalPolicy.Tier = runCatching {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val thermal =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) pm.currentThermalStatus
+            else ThermalPolicy.THERMAL_NONE
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+        val pct = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            .let { if (it in 0..100) it else -1 }
+        ThermalPolicy.tier(thermal, pct, pm.isPowerSaveMode, bm.isCharging)
+    }.getOrDefault(ThermalPolicy.Tier.FULL)   // unreadable signals must not disable the feature
+
+    /**
+     * Memory pressure from the system. Deliberately NOT tied to activity onPause/onResume: this
+     * engine exists to serve the keyboard while it types into *other* apps, so the launcher being
+     * paused is the normal case, not an idle one. Releasing there would unload the model out from
+     * under an active IME session — the process is shared.
+     */
+    fun onTrimMemory(level: Int) {
+        val urgent = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        if (urgent && !generating) unload()
+    }
 
     fun ready(context: Context): Boolean = handle != 0L || modelInstalled(context)
 
@@ -162,11 +256,15 @@ object LocalLlmEngine {
     /** Which model to serve: [quality] prefers Gemma (better, slower), else Bonsai (fast). Falls
      *  back to whichever is actually installed. */
     private fun specFor(context: Context, quality: Boolean): ModelSpec? {
-        val preferred = if (quality) GEMMA else BONSAI
-        val other = if (quality) BONSAI else GEMMA
+        // A phone without the RAM for the 4B model never gets handed it, even if the file is on
+        // disk — an mmapped model it cannot hold thrashes rather than fails, so the guard has to
+        // sit here at load time and not only in the download UI.
+        val wantQuality = quality && deviceSupportsQuality(context)
+        val preferred = if (wantQuality) GEMMA else BONSAI
+        val other = if (wantQuality) BONSAI else GEMMA
         return when {
             installed(context, preferred) -> preferred
-            installed(context, other) -> other
+            installed(context, other) && (other != GEMMA || deviceSupportsQuality(context)) -> other
             else -> null
         }
     }
@@ -182,7 +280,15 @@ object LocalLlmEngine {
         // one instead of queueing on the native mutex. Piling requests up is what pinned every core
         // and heated the phone — one at a time, and callers get null (their own fallback) when busy.
         if (generating) { diag(context, "local generate SKIP (busy)"); return null }
-        val spec = specFor(context, quality) ?: return null
+        // Heat and battery gate. Every local generation in the app funnels through here, so this is
+        // the one place that has to know the phone is in trouble.
+        val tier = currentTier(context)
+        if (ThermalPolicy.blocked(tier)) {
+            diag(context, "local generate SKIP (tier=$tier)")
+            return null
+        }
+        val effectiveQuality = quality && !ThermalPolicy.downgradeQuality(tier)
+        val spec = specFor(context, effectiveQuality) ?: return null
         val h = loadedHandle(context, spec) ?: return null
         generating = true
         val t0 = System.currentTimeMillis()
@@ -200,6 +306,8 @@ object LocalLlmEngine {
             }
         } finally {
             generating = false
+            lastUseMs = System.currentTimeMillis()
+            scheduleIdleRelease()
         }
     }
 
@@ -231,6 +339,8 @@ object LocalLlmEngine {
     fun unload() {
         synchronized(this) {
             if (handle != 0L) { runCatching { nativeFree(handle) }; handle = 0 }
+            // Clear the tier too, or a later load can match a spec whose handle is already gone.
+            loadedSpec = null
         }
     }
 

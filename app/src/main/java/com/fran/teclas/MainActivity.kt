@@ -1314,6 +1314,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         refreshSystemThemeIfNeeded(animated = true, forceRender = true)
     }
 
+    // The local LLM holds gigabytes once loaded, and this process is shared with the IME so it
+    // effectively never dies on its own. Hand the memory back when the system says it needs it.
+    // Deliberately not onPause: the keyboard's whole job happens while the launcher is paused.
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.fran.teclas.llm.LocalLlmEngine.onTrimMemory(level)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         prefs().unregisterOnSharedPreferenceChangeListener(prefsListener)
@@ -21376,6 +21384,13 @@ Question: $prompt"""
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        // Typography mode. Sits with the other look settings because that is what it is — a look,
+        // not a feature: every app becomes its own lettering and no logo appears anywhere.
+        parent.addView(settingToggle("TYPOGRAPHY MODE   NO ICONS", iconlessMode()) {
+            setIconlessMode(!iconlessMode())
+            haptic(this)
+            openHere(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(themePaneHost.themeColorSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
         parent.addView(keyboardThemeGallerySetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(132))
         parent.addView(settingAction("DAILY BRIEF THEMES   ${com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId()).name.uppercase(Locale.US)} →") {
@@ -21740,9 +21755,15 @@ Question: $prompt"""
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setPadding(0, dp(20), 0, 0)
         })
+        // Phones without the RAM for a 4B model don't get offered a 2.5 GB download they can only
+        // thrash on — an mmapped model too big for the device doesn't fail, it just runs hot.
+        val gemmaFits = com.fran.teclas.llm.LocalLlmEngine.deviceSupportsQuality(this)
         val gemmaStatus = label(
-            if (com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this)) "Installed · a much smarter local model for the brief, chat and rewrites"
-            else "Optional · 2.5 GB · far better writing and reasoning than Bonsai (slower, Wi-Fi + storage)",
+            when {
+                !gemmaFits -> "Not available on this phone · needs about 6 GB of RAM. Bonsai runs the AI instead."
+                com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this) -> "Installed · a much smarter local model for the brief, chat and rewrites"
+                else -> "Optional · 2.5 GB · far better writing and reasoning than Bonsai (slower, Wi-Fi + storage)"
+            },
             12.5f, InkDim
         ).apply { setPadding(0, dp(3), 0, dp(8)) }
         root.addView(gemmaStatus)
@@ -21750,10 +21771,17 @@ Question: $prompt"""
             textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             setPadding(dp(14), dp(10), dp(14), dp(10))
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0xFFC9A7FF.toInt()) }
-            text = if (com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity)) "Re-download" else "Download (2.5 GB)"
-            isClickable = true
+            text = when {
+                !gemmaFits -> "Not supported"
+                com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity) -> "Re-download"
+                else -> "Download (2.5 GB)"
+            }
+            isClickable = gemmaFits
+            isEnabled = gemmaFits
+            alpha = if (gemmaFits) 1f else 0.45f
             setOnClickListener {
                 haptic(this)
+                if (!gemmaFits) return@setOnClickListener
                 if (!ProManager.isUnlocked(this@MainActivity)) { requirePro(ProFeature.AI_CHAT); return@setOnClickListener }
                 text = "Starting…"; isEnabled = false
                 mediaUiScope.launch {
@@ -23674,10 +23702,38 @@ Question: $prompt"""
         if (trace.size < 2 || trace.size != typed.length) return null
         val cands = dec.decode(trace.toList(), prev.lowercase(Locale.US), topK = 3,
             nextCharWeights = { prefix -> predictionEngine.nextCharWeights(prefix) })   // Stage 3: predictive targeting
-        val top = cands.firstOrNull() ?: return null
+        val top = cands.firstOrNull()
+        if (top == null) return decodeOffPositionWord(dec, trace, prev)
         if (cands.size >= 2 && top.score - cands[1].score < 0.6) return null   // ambiguous — don't override
         if (top.word.equals(typed, ignoreCase = true)) return null
         return top.word
+    }
+
+    /**
+     * Last resort for "I typed a whole word without looking and my hand was one key off": nothing in
+     * the dictionary explains these taps, so try the same decode with the trail shifted by one key
+     * in each direction and see whether one of those hand positions reads as real words.
+     *
+     * Only reachable when the normal decode found nothing at all — a word that decoded is never
+     * reconsidered, so this cannot rewrite correct typing. [ShiftRecovery] holds the accept rules.
+     */
+    private fun decodeOffPositionWord(
+        dec: com.fran.teclas.keyboard.TapLatticeDecoder,
+        trace: List<Pair<Float, Float>>,
+        prev: String,
+    ): String? {
+        if (!com.fran.teclas.keyboard.ShiftRecovery.worthTrying(normalDecodeFound = false, tapCount = trace.size)) return null
+        val sample = keyBounds.values.firstOrNull() ?: return null
+        val shifts = com.fran.teclas.keyboard.ShiftRecovery.candidateShifts(
+            sample.width().toFloat(), sample.height().toFloat())
+        if (shifts.isEmpty()) return null
+        val prevLower = prev.lowercase(Locale.US)
+        val reads = shifts.mapNotNull { s ->
+            val moved = com.fran.teclas.keyboard.ShiftRecovery.shiftTaps(trace, s)
+            dec.decode(moved, prevLower, topK = 1).firstOrNull()
+                ?.let { com.fran.teclas.keyboard.ShiftRecovery.Read(s, it.word, it.score) }
+        }
+        return com.fran.teclas.keyboard.ShiftRecovery.choose(reads)?.word
     }
 
     private fun dockedForegroundCurrentWord(): String =
@@ -24820,6 +24876,17 @@ Question: $prompt"""
             themePaneHost.cycleThemeMode()
             refreshSearchSurfaces()
         })
+        // Typography mode. A look, so it lives with the other look settings rather than in an
+        // "experimental" corner: every app becomes its lettering, no logos anywhere.
+        entries.add(SettingSearchEntry(
+            "Typography mode",
+            if (iconlessMode()) "On · apps are lettering, no icons" else toggleStateLabel(false),
+            listOf("typography", "typography mode", "iconless", "icon-less", "no icons", "hide icons",
+                   "text only", "text mode", "minimal", "minimalist", "letters", "no logos")
+        ) {
+            setIconlessMode(!iconlessMode())
+            refreshSearchSurfaces()
+        })
         listOf(
             "System" to THEME_MODE_SYSTEM,
             "Dark" to THEME_MODE_DARK,
@@ -24924,7 +24991,9 @@ Question: $prompt"""
         entries.add(SettingSearchEntry(
             "Keyboard AI model",
             when {
-                com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this) -> "On-device · ready"
+                // fastInstalled, not modelInstalled: the latter is true when *either* tier is on
+                // disk, so having only Gemma made this row claim Bonsai was ready when it wasn't.
+                com.fran.teclas.llm.LocalLlmEngine.fastInstalled(this) -> "On-device · ready"
                 com.fran.teclas.llm.LocalLlmEngine.downloading ->
                     "Downloading… ${com.fran.teclas.llm.LocalLlmEngine.downloadedBytes / 1_048_576}MB of 237MB"
                 else -> "237MB download · tap to fetch"
@@ -24932,7 +25001,7 @@ Question: $prompt"""
             listOf("keyboard ai", "bonsai", "local model", "offline ai", "llm", "download model")
         ) {
             when {
-                com.fran.teclas.llm.LocalLlmEngine.modelInstalled(this) ->
+                com.fran.teclas.llm.LocalLlmEngine.fastInstalled(this) ->
                     Toast.makeText(this, "Keyboard AI model is installed.", Toast.LENGTH_SHORT).show()
                 com.fran.teclas.llm.LocalLlmEngine.downloading ->
                     Toast.makeText(this, "Still downloading — check back in a bit.", Toast.LENGTH_SHORT).show()
@@ -24949,6 +25018,24 @@ Question: $prompt"""
                     }
                 }
             }
+        })
+        // The quality tier had a full download pane but no way to reach it by typing — "gemma" or
+        // "smart model" found nothing. On a phone that can't hold it, the row says so rather than
+        // going silently missing, so the answer to "why don't I have this" is on screen.
+        entries.add(SettingSearchEntry(
+            "Quality AI · Gemma 3 4B",
+            when {
+                !com.fran.teclas.llm.LocalLlmEngine.deviceSupportsQuality(this) ->
+                    "Needs ~6 GB RAM · not available on this phone"
+                com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this) -> "Installed · used for the brief, chat and rewrites"
+                com.fran.teclas.llm.LocalLlmEngine.downloading ->
+                    "Downloading… ${com.fran.teclas.llm.LocalLlmEngine.downloadedBytes / 1_048_576}MB of 2489MB"
+                else -> "2.5 GB download · far better writing than Bonsai"
+            },
+            listOf("gemma", "gemma 3", "quality ai", "smart model", "quality model", "big model",
+                   "better ai", "local llm", "4b", "ai models")
+        ) {
+            showAiModelsDialog()
         })
         entries.add(SettingSearchEntry(
             "Semantic search",
@@ -26839,7 +26926,24 @@ Question: $prompt"""
         }
     }
 
+    /** Typography mode: no app logos anywhere, only lettering. See [iconFor]. */
+    internal fun iconlessMode(): Boolean = prefs().getBoolean(ICONLESS_MODE_PREF, false)
+
+    /** Flip typography mode and rebuild what is on screen. The resolved-icon cache is keyed by
+     *  component and pack, not by this pref, so it has to be dropped or the old logos survive the
+     *  switch (and the real ones would not come back when switching off). */
+    internal fun setIconlessMode(on: Boolean) {
+        prefs().edit().putBoolean(ICONLESS_MODE_PREF, on).apply()
+        appIconStateCache.evictAll()
+        updateLauncherTheme(animated = true, forceRender = true)
+    }
+
     internal fun iconFor(app: LibraryApp): Drawable {
+        // Icon-less mode short-circuits ahead of overrides and icon packs on purpose: the point is
+        // that no app gets to put its logo on your home screen, and a per-app override or an
+        // installed pack would be exactly that. The letter tile is the identity here, not a
+        // fallback, so it also skips the icon cache — fallbackLetterIcon keeps its own.
+        if (iconlessMode()) return fallbackLetterIcon(app)
         val override = prefs().getString(iconOverrideKey(app), null)
         val activePack = prefs().getString(ACTIVE_ICON_PACK_PREF, null)
         val cacheKey = listOf(
@@ -26885,7 +26989,7 @@ Question: $prompt"""
             color = 0xFF10110F.toInt(); textAlign = android.graphics.Paint.Align.CENTER
             typeface = Typeface.DEFAULT_BOLD; textSize = dp(18).toFloat()
         }
-        canvas.drawText(app.name.take(1).uppercase(Locale.US), size / 2f, size / 2f - (paint.descent() + paint.ascent()) / 2f, paint)
+        canvas.drawText(AppMonogram.of(app.name), size / 2f, size / 2f - (paint.descent() + paint.ascent()) / 2f, paint)
         val drawable = android.graphics.drawable.BitmapDrawable(resources, bitmap)
         fallbackIconCache.put(key, drawable)
         return drawable
@@ -29782,6 +29886,10 @@ Question: $prompt"""
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
         private const val GEMINI_ENABLED_PREF = "gemini_enabled"
         private const val SEMANTIC_SEARCH_PREF = "semantic_search"
+        // Typography mode: app logos are replaced everywhere by lettering. Deliberately global
+        // rather than home-scoped — it is an identity choice for the whole launcher, not a
+        // per-homescreen decoration, and a drawer full of logos would undo the point.
+        internal const val ICONLESS_MODE_PREF = "iconless_mode"
         private const val BRIEF_POS_X_PREF = "brief_widget_x"
         private const val BRIEF_POS_Y_PREF = "brief_widget_y"
         internal const val BRIEF_THEME_PREF = "brief_theme"
