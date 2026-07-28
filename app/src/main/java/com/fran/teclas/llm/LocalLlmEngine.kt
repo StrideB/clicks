@@ -35,8 +35,11 @@ object LocalLlmEngine {
         2_489_894_016L)
 
     init {
+        // The failure handler is guarded too: android.util.Log is a throwing stub off-device, so
+        // an unguarded log here turns "no native library" into a failed object initializer, and
+        // every later reference to this object dies with NoClassDefFoundError instead.
         runCatching { System.loadLibrary("teclasllm") }
-            .onFailure { Log.w(TAG, "native lib missing: ${it.message}") }
+            .onFailure { e -> runCatching { Log.w(TAG, "native lib missing: ${e.message}") } }
     }
 
     @Volatile private var handle: Long = 0
@@ -94,21 +97,6 @@ object LocalLlmEngine {
 
     // ---------------------------------------------------------------- hardware safety
 
-    /**
-     * Below this much total RAM, the quality model is refused and Bonsai serves instead.
-     *
-     * Gemma 3 4B Q4_K_M is ~2.5GB of weights plus a KV cache and llama.cpp's own working set. The
-     * weights are mmapped, so a device that cannot hold them does not cleanly OOM — it thrashes,
-     * faulting pages back in on every token. That is the worst outcome available: slow *and* hot,
-     * with no error to point at. 6GB total leaves roughly 2-3GB actually available on a modern
-     * Android build, which is the floor where this stops paging constantly.
-     */
-    const val QUALITY_MIN_RAM_BYTES = 6L * 1024 * 1024 * 1024
-
-    /** Pure policy half of [deviceSupportsQuality], so the threshold can be tested without a device. */
-    fun qualityAllowed(totalRamBytes: Long, lowRamDevice: Boolean): Boolean =
-        !lowRamDevice && totalRamBytes >= QUALITY_MIN_RAM_BYTES
-
     // Installed RAM does not change while the app runs, so this is worth exactly one lookup.
     @Volatile private var qualityFits: Boolean? = null
 
@@ -118,7 +106,7 @@ object LocalLlmEngine {
         val fits = runCatching {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
             val info = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
-            qualityAllowed(info.totalMem, am.isLowRamDevice)
+            LlmPolicy.qualityAllowed(info.totalMem, am.isLowRamDevice)
         }.getOrDefault(false)
         qualityFits = fits
         return fits
@@ -126,27 +114,14 @@ object LocalLlmEngine {
 
     // ---------------------------------------------------------------- idle release
 
-    /**
-     * How long a loaded model may sit unused before its memory goes back to the system.
-     *
-     * [unload] existed but nothing ever called it, so the first generation of the day pinned the
-     * weights for the lifetime of the process — and because the IME shares this process with the
-     * launcher, that process effectively never dies. A phone that ran one brief was still holding
-     * a multi-gigabyte mapping hours later.
-     */
-    private const val IDLE_RELEASE_MS = 5 * 60_000L
+    private const val IDLE_RELEASE_MS = LlmPolicy.IDLE_RELEASE_MS
 
     @Volatile private var lastUseMs = 0L
     @Volatile private var releaseScheduled = false
 
-    /** Pure decision half of [releaseIfIdle]. */
-    fun shouldRelease(loaded: Boolean, busy: Boolean, lastUseMs: Long, nowMs: Long,
-                      idleMs: Long = IDLE_RELEASE_MS): Boolean =
-        loaded && !busy && nowMs - lastUseMs >= idleMs
-
     /** Free the model if it has been idle long enough. Returns true when it actually unloaded. */
     fun releaseIfIdle(nowMs: Long = System.currentTimeMillis()): Boolean {
-        if (!shouldRelease(handle != 0L, generating, lastUseMs, nowMs)) return false
+        if (!LlmPolicy.shouldRelease(handle != 0L, generating, lastUseMs, nowMs, IDLE_RELEASE_MS)) return false
         unload()
         return true
     }
