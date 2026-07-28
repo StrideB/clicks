@@ -54,6 +54,30 @@ cap jobs             "dumpsys jobscheduler | grep -A 12 $PKG"
 cap thermal          "dumpsys thermalservice"
 cap procstats        "dumpsys procstats --hours 3 $PKG"
 
+# --- Who is ACTUALLY draining the battery, ranked -------------------------------------------
+# The decisive probe. batterystats attributes estimated mAh per UID; if our package is not near
+# the top of this list, the launcher is not what is heating the phone, however plausible the code
+# looked. Everything else in this script is context for interpreting these numbers.
+cap power-ranked     "dumpsys batterystats --charged"
+
+# --- Radio vs CPU ---------------------------------------------------------------------------
+# "Warm at the top" is very often the modem or the charging circuitry rather than the SoC, and a
+# radio held awake by polling looks nothing like a busy CPU in top.
+cap netstats         "dumpsys netstats detail"
+cap radio            "dumpsys telephony.registry"
+
+# --- Thermal zones: which part of the phone is actually hot ---------------------------------
+# Zone names map to physical locations (modem / cpu / battery / charger / skin). This turns
+# "warm top left" into a measurement instead of a guess.
+echo "  - thermal-zones"
+{
+  echo "\$ per-zone temperatures"; echo
+  adb shell 'for z in /sys/class/thermal/thermal_zone*; do
+      t=$(cat $z/type 2>/dev/null); v=$(cat $z/temp 2>/dev/null);
+      [ -n "$t" ] && [ -n "$v" ] && echo "$t $v";
+    done' 2>&1
+} > "$OUT/thermal-zones.txt"
+
 # --- The accessibility service: the prime suspect for system-wide event load ----------------
 cap a11y             "settings get secure enabled_accessibility_services"
 cap a11y-dump        "dumpsys accessibility"
@@ -85,6 +109,22 @@ adb logcat -d 2>&1 | grep -iE "TypoLexicon|Teclas|SpaceManager|ContextSensors|Wi
   echo
   echo "TOP CPU"
   sed -n '3,12p' "$OUT/cpu-top.txt" 2>/dev/null | sed 's/^/  /'
+  echo
+  echo "ESTIMATED POWER USE, RANKED  <-- the decisive number"
+  echo "  (if $PKG is not near the top, the launcher is not the heat source)"
+  sed -n '/Estimated power use (mAh)/,/^$/p' "$OUT/power-ranked.txt" 2>/dev/null \
+    | head -25 | sed 's/^/  /' \
+    || echo "  not reported on this device"
+  echo
+  echo "THIS APP - CPU, NETWORK, WAKELOCKS"
+  grep -E "Estimated power use|Uid .*$PKG|$PKG" "$OUT/power-ranked.txt" 2>/dev/null | head -6 | sed 's/^/  /'
+  echo
+  echo "RADIO / NETWORK  (a polled radio heats the top of the phone without showing up in top)"
+  grep -iE "Mobile radio active|Cellular|Wifi (on|running)|Total (mobile|wifi)" "$OUT/power-ranked.txt" 2>/dev/null \
+    | head -8 | sed 's/^/  /'
+  echo
+  echo "HOTTEST THERMAL ZONES  (temps are usually milli-degrees C: 45000 = 45C)"
+  sort -k2 -rn "$OUT/thermal-zones.txt" 2>/dev/null | grep -vE "^\\$|^$" | head -8 | sed 's/^/  /'
   echo
   echo "TYPO LEXICON"
   grep -i "TypoLexicon" "$OUT/teclas-log.txt" 2>/dev/null | tail -3 | sed 's/^/  /' \
