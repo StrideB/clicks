@@ -46,6 +46,13 @@
         android:label="@string/app_name"
         android:resizeableActivity="true"
         android:theme="@style/AppTheme">
+        <!-- Let simpleperf and Perfetto attribute CPU inside a RELEASE build. Without this the
+             only way to ask "which function is burning two cores" on a shipping APK is to read
+             /proc by hand, which cannot see threads that are created and destroyed between
+             samples — and that turned out to be where most of the cost was hiding. Grants
+             profiling only, never debugging: no code execution, no data access, and the shell
+             already has to be connected over adb. -->
+        <profileable android:shell="true" />
         <!-- Samsung DeX: keep the process alive when the display configuration changes
              (dock/undock, fold/unfold onto an external display) instead of relaunching.
              Documented Samsung meta-data; ignored everywhere else. -->
