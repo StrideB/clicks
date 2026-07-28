@@ -23,24 +23,28 @@ if [ ! -x "$TP" ]; then
   chmod +x "$TP"
 fi
 
+# One query per invocation: trace_processor allows only the FINAL statement to be a SELECT, so a
+# file with three of them errors out and prints nothing at all.
 Q="$(mktemp)"; trap 'rm -f "$Q"' EXIT
-cat > "$Q" <<SQL
-select '== WHOLE DEVICE, TOP PROCESSES (cpu seconds) ==' as x;
+run() {  # run <heading> <sql>
+  echo; echo "== $1 =="
+  printf '%s\n' "$2" > "$Q"
+  "$TP" "$TRACE" -q "$Q" 2>/dev/null
+}
+
+run "WHOLE DEVICE, TOP PROCESSES (cpu seconds)" "
 select p.name as process, round(sum(s.dur)/1e9, 1) as cpu_s
 from sched_slice s join thread t using(utid) join process p using(upid)
-group by p.name order by cpu_s desc limit 12;
+group by p.name order by cpu_s desc limit 12;"
 
-select '== $PKG, BY THREAD NAME ==' as x;
+run "$PKG, BY THREAD NAME  (threads = how many distinct threads shared that name)" "
 select t.name as thread, round(sum(s.dur)/1e9, 2) as cpu_s,
        count(distinct t.utid) as threads, count(*) as slices
 from sched_slice s join thread t using(utid) join process p using(upid)
 where p.name = '$PKG'
-group by t.name order by cpu_s desc limit 25;
+group by t.name order by cpu_s desc limit 25;"
 
-select '== $PKG, TOTAL ==' as x;
+run "$PKG, TOTAL" "
 select round(sum(s.dur)/1e9, 1) as cpu_s, count(distinct t.utid) as distinct_threads
 from sched_slice s join thread t using(utid) join process p using(upid)
-where p.name = '$PKG';
-SQL
-
-"$TP" "$TRACE" -q "$Q"
+where p.name = '$PKG';"
