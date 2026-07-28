@@ -21384,6 +21384,13 @@ Question: $prompt"""
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        // Typography mode. Sits with the other look settings because that is what it is — a look,
+        // not a feature: every app becomes its own lettering and no logo appears anywhere.
+        parent.addView(settingToggle("TYPOGRAPHY MODE   NO ICONS", iconlessMode()) {
+            setIconlessMode(!iconlessMode())
+            haptic(this)
+            openHere(teclasSettingsTarget())
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(themePaneHost.themeColorSelector(), LinearLayout.LayoutParams.MATCH_PARENT, dp(46))
         parent.addView(keyboardThemeGallerySetting(), LinearLayout.LayoutParams.MATCH_PARENT, dp(132))
         parent.addView(settingAction("DAILY BRIEF THEMES   ${com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId()).name.uppercase(Locale.US)} →") {
@@ -24869,6 +24876,17 @@ Question: $prompt"""
             themePaneHost.cycleThemeMode()
             refreshSearchSurfaces()
         })
+        // Typography mode. A look, so it lives with the other look settings rather than in an
+        // "experimental" corner: every app becomes its lettering, no logos anywhere.
+        entries.add(SettingSearchEntry(
+            "Typography mode",
+            if (iconlessMode()) "On · apps are lettering, no icons" else toggleStateLabel(false),
+            listOf("typography", "typography mode", "iconless", "icon-less", "no icons", "hide icons",
+                   "text only", "text mode", "minimal", "minimalist", "letters", "no logos")
+        ) {
+            setIconlessMode(!iconlessMode())
+            refreshSearchSurfaces()
+        })
         listOf(
             "System" to THEME_MODE_SYSTEM,
             "Dark" to THEME_MODE_DARK,
@@ -26908,7 +26926,24 @@ Question: $prompt"""
         }
     }
 
+    /** Typography mode: no app logos anywhere, only lettering. See [iconFor]. */
+    internal fun iconlessMode(): Boolean = prefs().getBoolean(ICONLESS_MODE_PREF, false)
+
+    /** Flip typography mode and rebuild what is on screen. The resolved-icon cache is keyed by
+     *  component and pack, not by this pref, so it has to be dropped or the old logos survive the
+     *  switch (and the real ones would not come back when switching off). */
+    internal fun setIconlessMode(on: Boolean) {
+        prefs().edit().putBoolean(ICONLESS_MODE_PREF, on).apply()
+        appIconStateCache.evictAll()
+        updateLauncherTheme(animated = true, forceRender = true)
+    }
+
     internal fun iconFor(app: LibraryApp): Drawable {
+        // Icon-less mode short-circuits ahead of overrides and icon packs on purpose: the point is
+        // that no app gets to put its logo on your home screen, and a per-app override or an
+        // installed pack would be exactly that. The letter tile is the identity here, not a
+        // fallback, so it also skips the icon cache — fallbackLetterIcon keeps its own.
+        if (iconlessMode()) return fallbackLetterIcon(app)
         val override = prefs().getString(iconOverrideKey(app), null)
         val activePack = prefs().getString(ACTIVE_ICON_PACK_PREF, null)
         val cacheKey = listOf(
@@ -26954,7 +26989,7 @@ Question: $prompt"""
             color = 0xFF10110F.toInt(); textAlign = android.graphics.Paint.Align.CENTER
             typeface = Typeface.DEFAULT_BOLD; textSize = dp(18).toFloat()
         }
-        canvas.drawText(app.name.take(1).uppercase(Locale.US), size / 2f, size / 2f - (paint.descent() + paint.ascent()) / 2f, paint)
+        canvas.drawText(AppMonogram.of(app.name), size / 2f, size / 2f - (paint.descent() + paint.ascent()) / 2f, paint)
         val drawable = android.graphics.drawable.BitmapDrawable(resources, bitmap)
         fallbackIconCache.put(key, drawable)
         return drawable
@@ -29851,6 +29886,10 @@ Question: $prompt"""
         private const val APPLE_MUSIC_INTEGRATION_PREF = "apple_music_integration"
         private const val GEMINI_ENABLED_PREF = "gemini_enabled"
         private const val SEMANTIC_SEARCH_PREF = "semantic_search"
+        // Typography mode: app logos are replaced everywhere by lettering. Deliberately global
+        // rather than home-scoped — it is an identity choice for the whole launcher, not a
+        // per-homescreen decoration, and a drawer full of logos would undo the point.
+        internal const val ICONLESS_MODE_PREF = "iconless_mode"
         private const val BRIEF_POS_X_PREF = "brief_widget_x"
         private const val BRIEF_POS_Y_PREF = "brief_widget_y"
         internal const val BRIEF_THEME_PREF = "brief_theme"
