@@ -23695,10 +23695,38 @@ Question: $prompt"""
         if (trace.size < 2 || trace.size != typed.length) return null
         val cands = dec.decode(trace.toList(), prev.lowercase(Locale.US), topK = 3,
             nextCharWeights = { prefix -> predictionEngine.nextCharWeights(prefix) })   // Stage 3: predictive targeting
-        val top = cands.firstOrNull() ?: return null
+        val top = cands.firstOrNull()
+        if (top == null) return decodeOffPositionWord(dec, trace, prev)
         if (cands.size >= 2 && top.score - cands[1].score < 0.6) return null   // ambiguous — don't override
         if (top.word.equals(typed, ignoreCase = true)) return null
         return top.word
+    }
+
+    /**
+     * Last resort for "I typed a whole word without looking and my hand was one key off": nothing in
+     * the dictionary explains these taps, so try the same decode with the trail shifted by one key
+     * in each direction and see whether one of those hand positions reads as real words.
+     *
+     * Only reachable when the normal decode found nothing at all — a word that decoded is never
+     * reconsidered, so this cannot rewrite correct typing. [ShiftRecovery] holds the accept rules.
+     */
+    private fun decodeOffPositionWord(
+        dec: com.fran.teclas.keyboard.TapLatticeDecoder,
+        trace: List<Pair<Float, Float>>,
+        prev: String,
+    ): String? {
+        if (!com.fran.teclas.keyboard.ShiftRecovery.worthTrying(normalDecodeFound = false, tapCount = trace.size)) return null
+        val sample = keyBounds.values.firstOrNull() ?: return null
+        val shifts = com.fran.teclas.keyboard.ShiftRecovery.candidateShifts(
+            sample.width().toFloat(), sample.height().toFloat())
+        if (shifts.isEmpty()) return null
+        val prevLower = prev.lowercase(Locale.US)
+        val reads = shifts.mapNotNull { s ->
+            val moved = com.fran.teclas.keyboard.ShiftRecovery.shiftTaps(trace, s)
+            dec.decode(moved, prevLower, topK = 1).firstOrNull()
+                ?.let { com.fran.teclas.keyboard.ShiftRecovery.Read(s, it.word, it.score) }
+        }
+        return com.fran.teclas.keyboard.ShiftRecovery.choose(reads)?.word
     }
 
     private fun dockedForegroundCurrentWord(): String =
