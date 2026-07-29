@@ -23736,8 +23736,7 @@ Question: $prompt"""
         if (trace.size < 2 || trace.size != typed.length) return null
         val cands = dec.decode(trace.toList(), prev.lowercase(Locale.US), topK = 3,
             nextCharWeights = { prefix -> predictionEngine.nextCharWeights(prefix) })   // Stage 3: predictive targeting
-        val top = cands.firstOrNull()
-        if (top == null) return decodeOffPositionWord(dec, trace, prev)
+        val top = cands.firstOrNull() ?: return null
         if (cands.size >= 2 && top.score - cands[1].score < 0.6) return null   // ambiguous — don't override
         if (top.word.equals(typed, ignoreCase = true)) return null
         return top.word
@@ -23748,14 +23747,17 @@ Question: $prompt"""
      * the dictionary explains these taps, so try the same decode with the trail shifted by one key
      * in each direction and see whether one of those hand positions reads as real words.
      *
-     * Only reachable when the normal decode found nothing at all — a word that decoded is never
-     * reconsidered, so this cannot rewrite correct typing. [ShiftRecovery] holds the accept rules.
+     * Runs only after BOTH the geometry decode and the string-edit corrector have declined, so a
+     * hand-position guess can never pre-empt a known typo with a known fix. It also costs up to
+     * eight extra beam walks, which is affordable exactly once — at the end, on a word nothing
+     * else could explain.
      */
     private fun decodeOffPositionWord(
         dec: com.fran.teclas.keyboard.TapLatticeDecoder,
         trace: List<Pair<Float, Float>>,
         prev: String,
     ): String? {
+        if (trace.size < 2) return null
         if (!com.fran.teclas.keyboard.ShiftRecovery.worthTrying(normalDecodeFound = false, tapCount = trace.size)) return null
         val sample = keyBounds.values.firstOrNull() ?: return null
         val shifts = com.fran.teclas.keyboard.ShiftRecovery.candidateShifts(
@@ -23789,9 +23791,16 @@ Question: $prompt"""
         if (word.length < 2 || word.length > 24) return
         val before = dockedForegroundDraft.dropLast(word.length).toString()
         val prev = letterRunRegex.findAll(before).lastOrNull()?.value.orEmpty()
-        // Geometry decode first (Gboard-style); fall back to string-edit correction.
+        // Geometry decode first (Gboard-style), then string-edit correction — which is the path
+        // that consults the typo lexicon and the dictionary. Off-position recovery comes LAST, and
+        // that ordering is the whole point: it originally sat inside the geometry decode, so a
+        // shifted-hand guess answered before the lexicon ever ran and quietly replaced corrections
+        // the lexicon would have made. A guess about where the hand was must never outrank a known
+        // typo with a known fix.
         val corrected = decodeLauncherTapWord(word, prev)
-            ?: autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev) ?: return
+            ?: autocorrectCore.computeCorrection(word, ngramRepo.cachedNextWords(prev), prev)
+            ?: tapDecoder?.let { decodeOffPositionWord(it, launcherTapTrace, prev) }
+            ?: return
         if (corrected.equals(word, ignoreCase = true)) return
         val cased = if (word.first().isUpperCase()) corrected.replaceFirstChar { it.uppercase(Locale.US) } else corrected
         injectReplaceTailInForegroundApp(word, cased)
