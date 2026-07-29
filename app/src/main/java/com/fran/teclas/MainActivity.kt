@@ -21852,8 +21852,16 @@ Question: $prompt"""
         // Phones without the RAM for a 4B model don't get offered a 2.5 GB download they can only
         // thrash on — an mmapped model too big for the device doesn't fail, it just runs hot.
         val gemmaFits = com.fran.teclas.llm.LocalLlmEngine.deviceSupportsQuality(this)
+        // A phone with Gemini Nano already has a better deal than this download: Nano runs in
+        // AICore (a system process), so it costs this app no memory at all, where Gemma costs
+        // 2.5GB of disk and ~2.4GB of mapping. Don't sell a 2.5GB download to someone who gains
+        // nothing from it — GeminiClient now routes quality work to Nano on these devices anyway,
+        // so the model would sit on disk unused.
+        val nanoServes = GeminiClient.nano?.ready == true
         val gemmaStatus = label(
             when {
+                nanoServes && !com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this) ->
+                    "Not needed on this phone · Gemini Nano already runs the AI on-device, for free, using no app memory."
                 !gemmaFits -> "Not available on this phone · needs about 6 GB of RAM. Bonsai runs the AI instead."
                 com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this) -> "Installed · a much smarter local model for the brief, chat and rewrites"
                 else -> "Optional · 2.5 GB · far better writing and reasoning than Bonsai (slower, Wi-Fi + storage)"
@@ -21867,12 +21875,17 @@ Question: $prompt"""
             background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(0xFFC9A7FF.toInt()) }
             text = when {
                 !gemmaFits -> "Not supported"
+                nanoServes && !com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity) -> "Not needed"
                 com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity) -> "Re-download"
                 else -> "Download (2.5 GB)"
             }
-            isClickable = gemmaFits
-            isEnabled = gemmaFits
-            alpha = if (gemmaFits) 1f else 0.45f
+            // Offerable only when it would actually be used: the device can hold it, and Nano
+            // isn't already serving. Re-download stays available if the model is already there.
+            val offerable = gemmaFits &&
+                (!nanoServes || com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this@MainActivity))
+            isClickable = offerable
+            isEnabled = offerable
+            alpha = if (offerable) 1f else 0.45f
             setOnClickListener {
                 haptic(this)
                 if (!gemmaFits) return@setOnClickListener
