@@ -179,6 +179,15 @@ object EmbedEngine {
     }
 
     /**
+     * Give the ~84MB embedder back when the system asks for memory, mirroring LocalLlmEngine.
+     * Skipped while an embed is in flight — freeing then is a native use-after-free, not a saving.
+     */
+    fun onTrimMemory(level: Int) {
+        val urgent = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        if (urgent && embedsInFlight.get() == 0) unload()
+    }
+
+    /**
      * One sleeping daemon thread per idle window rather than a poll loop — the same shape
      * LocalLlmEngine uses. If another embed lands while waiting, [lastUseMs] moves and the loop
      * re-waits instead of freeing a model that is still in use.

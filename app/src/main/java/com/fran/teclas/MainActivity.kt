@@ -1320,6 +1320,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         com.fran.teclas.llm.LocalLlmEngine.onTrimMemory(level)
+        // The embedder is another ~84MB of native mapping; give it back under pressure too.
+        com.fran.teclas.llm.EmbedEngine.onTrimMemory(level)
     }
 
     override fun onDestroy() {

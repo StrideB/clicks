@@ -31,9 +31,32 @@ object LlmPolicy {
      */
     const val IDLE_RELEASE_MS = 5 * 60_000L
 
+    /**
+     * Headroom required *beyond* the weights before a model may be mapped in.
+     *
+     * llama.cpp needs a KV cache and a working set on top of the file, and the rest of the phone
+     * still has to run. Without this margin the load "succeeds" and then everything, including the
+     * launcher itself, pages against it.
+     */
+    const val LOAD_HEADROOM_BYTES = 1_200L * 1024 * 1024
+
     /** Whether a device with this much RAM may load the 4B model. */
     fun qualityAllowed(totalRamBytes: Long, lowRamDevice: Boolean): Boolean =
         !lowRamDevice && totalRamBytes >= QUALITY_MIN_RAM_BYTES
+
+    /**
+     * Whether a model of [modelBytes] can be afforded *right now*.
+     *
+     * [qualityAllowed] asks what the phone was built with; this asks what it has left this second,
+     * and they are wildly different numbers on a device that has been awake for a while. Installed
+     * RAM never changes, so that check was cached once and answered "yes, 11 GB" on a phone with
+     * 462 MB free and 5 GB already in swap — and mapping 2.5 GB into that thrashes: page faults on
+     * every token, kernel reclaim spinning, the SoC hot, and no error anywhere to point at.
+     *
+     * Must be consulted per load, never cached.
+     */
+    fun canAffordNow(availBytes: Long, lowMemory: Boolean, modelBytes: Long): Boolean =
+        !lowMemory && availBytes >= modelBytes + LOAD_HEADROOM_BYTES
 
     /** Whether a loaded model has been idle long enough to free. Never true mid-generation. */
     fun shouldRelease(

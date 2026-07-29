@@ -62,4 +62,42 @@ class LocalLlmPolicyTest {
     @Test fun `nothing loaded is nothing to release`() {
         assertFalse(LlmPolicy.shouldRelease(loaded = false, busy = false, lastUseMs = 0, nowMs = idle * 10, idleMs = idle))
     }
+
+    // ------------------------------------------------- what the phone has LEFT, not what it shipped with
+
+    private val gemma = 2_489_894_016L   // Gemma 3 4B Q4_K_M
+    private val bonsai = 248_302_272L    // Bonsai 1.7B Q1_0
+
+    @Test fun `the reported heat case is now refused`() {
+        // Measured on the device that was running hot: 11GB installed, but 462MB actually free with
+        // 5GB already in swap. qualityAllowed said yes (it only sees installed RAM), so 2.5GB of
+        // Gemma was mapped in and the phone thrashed. canAffordNow is the check that says no.
+        assertTrue("installed RAM alone still permits it", LlmPolicy.qualityAllowed(11 * gb, lowRamDevice = false))
+        assertFalse(
+            "but there is no room for it right now",
+            LlmPolicy.canAffordNow(availBytes = 462L * 1024 * 1024, lowMemory = false, modelBytes = gemma)
+        )
+    }
+
+    @Test fun `a roomy phone still loads the quality model`() {
+        assertTrue(LlmPolicy.canAffordNow(availBytes = 6L * gb, lowMemory = false, modelBytes = gemma))
+    }
+
+    @Test fun `headroom beyond the weights is required, not just the file size`() {
+        // Exactly the weights and nothing spare is a trap: the KV cache and working set still have
+        // to fit, and the rest of the phone has to keep running.
+        assertFalse(LlmPolicy.canAffordNow(availBytes = gemma, lowMemory = false, modelBytes = gemma))
+        assertTrue(LlmPolicy.canAffordNow(
+            availBytes = gemma + LlmPolicy.LOAD_HEADROOM_BYTES, lowMemory = false, modelBytes = gemma))
+    }
+
+    @Test fun `the small model still fits where the big one does not`() {
+        val avail = 2L * gb
+        assertFalse(LlmPolicy.canAffordNow(avail, lowMemory = false, modelBytes = gemma))
+        assertTrue(LlmPolicy.canAffordNow(avail, lowMemory = false, modelBytes = bonsai))
+    }
+
+    @Test fun `a system already reporting lowMemory gets nothing`() {
+        assertFalse(LlmPolicy.canAffordNow(availBytes = 8L * gb, lowMemory = true, modelBytes = bonsai))
+    }
 }
