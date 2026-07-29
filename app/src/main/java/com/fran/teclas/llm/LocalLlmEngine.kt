@@ -256,18 +256,32 @@ object LocalLlmEngine {
     /** Which model to serve: [quality] prefers Gemma (better, slower), else Bonsai (fast). Falls
      *  back to whichever is actually installed. */
     private fun specFor(context: Context, quality: Boolean): ModelSpec? {
-        // A phone without the RAM for the 4B model never gets handed it, even if the file is on
-        // disk — an mmapped model it cannot hold thrashes rather than fails, so the guard has to
-        // sit here at load time and not only in the download UI.
-        val wantQuality = quality && deviceSupportsQuality(context)
+        // Two different questions, and only asking the first one is what cooked a phone:
+        //   deviceSupportsQuality -> what was this device BUILT with (cached; 11GB installed)
+        //   canAffordNow          -> what does it have LEFT right now (never cached)
+        // A device meminfo showed at 462MB free with 5GB already swapped still passed the first
+        // check and mapped in 2.5GB of Gemma, which is precisely the thrash-not-fail case the
+        // policy warns about. Both must pass before the big model is handed out.
+        val wantQuality = quality && deviceSupportsQuality(context) && canAffordNow(context, GEMMA)
         val preferred = if (wantQuality) GEMMA else BONSAI
         val other = if (wantQuality) BONSAI else GEMMA
         return when {
-            installed(context, preferred) -> preferred
-            installed(context, other) && (other != GEMMA || deviceSupportsQuality(context)) -> other
-            else -> null
+            installed(context, preferred) && canAffordNow(context, preferred) -> preferred
+            installed(context, other) &&
+                (other != GEMMA || (deviceSupportsQuality(context) && canAffordNow(context, other))) &&
+                canAffordNow(context, other) -> other
+            else -> null   // no headroom for anything: skip local generation rather than thrash
         }
     }
+
+    /** Live memory check — deliberately re-read per load, never cached. See [LlmPolicy.canAffordNow]. */
+    private fun canAffordNow(context: Context, spec: ModelSpec): Boolean = runCatching {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val info = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        LlmPolicy.canAffordNow(info.availMem, info.lowMemory, spec.bytes).also { ok ->
+            if (!ok) Log.w(TAG, "skip ${spec.file}: availMem=${info.availMem / 1048576}MB low=${info.lowMemory}")
+        }
+    }.getOrDefault(false)
 
     /** One model loaded at a time. Interactive callers pass quality=false (fast Bonsai); the brief
      *  passes quality=true (Gemma). If the requested tier differs from what's loaded, swap it in

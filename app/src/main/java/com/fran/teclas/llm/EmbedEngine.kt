@@ -127,9 +127,89 @@ object EmbedEngine {
         if (text.isBlank()) return null
         val h = loadedHandle(context) ?: run { diag(context, "embed: model not loaded"); return null }
         val prefix = if (isQuery) "search_query: " else "search_document: "
-        return runCatching { nativeEmbed(h, prefix + text) }
-            .getOrElse { Log.w(TAG, "embed failed: ${it.message}"); diag(context, "embed exc: ${it.message}"); null }
-            ?.also { if (!diagOnce) { diagOnce = true; diag(context, "embed OK dim=${it.size} [${it.take(3).joinToString(",") { v -> "%.3f".format(v) }}...]") } }
+        lastUseMs = System.currentTimeMillis()
+        // Mark in-flight BEFORE touching native: the idle-release thread must never free a handle
+        // that nativeEmbed is still using, which would be a use-after-free in native code.
+        embedsInFlight.incrementAndGet()
+        try {
+            return runCatching { nativeEmbed(h, prefix + text) }
+                .getOrElse { Log.w(TAG, "embed failed: ${it.message}"); diag(context, "embed exc: ${it.message}"); null }
+                ?.also { if (!diagOnce) { diagOnce = true; diag(context, "embed OK dim=${it.size} [${it.take(3).joinToString(",") { v -> "%.3f".format(v) }}...]") } }
+        } finally {
+            embedsInFlight.decrementAndGet()
+            lastUseMs = System.currentTimeMillis()
+            scheduleIdleRelease()
+        }
+    }
+
+    // ── Idle release ────────────────────────────────────────────────────────────────────────
+    //
+    // The embedder is an ~84MB GGUF. `nativeFree` existed but had NO callers, so once the model was
+    // loaded it stayed resident for the entire process lifetime — and a launcher process effectively
+    // never dies. On a device already under memory pressure that permanently-held block pushes other
+    // apps into swap, and the resulting kswapd / zram churn burns CPU and heats the SoC continuously.
+    // LocalLlmEngine already released its model when idle; this mirrors that.
+    //
+    // Embedding is rare and bursty (index refresh, a search), so holding the model between bursts
+    // buys nothing: reloading costs a few hundred ms on the next use, off the main thread.
+
+    private const val IDLE_RELEASE_MS = 60_000L
+
+    @Volatile private var lastUseMs = 0L
+    @Volatile private var releaseScheduled = false
+
+    /** Non-zero while nativeEmbed is running; freeing then would be a use-after-free. */
+    private val embedsInFlight = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Free the embedder if it has been idle long enough. Returns true when it actually unloaded. */
+    fun releaseIfIdle(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (handle == 0L) return false
+        if (embedsInFlight.get() > 0) return false
+        if (nowMs - lastUseMs < IDLE_RELEASE_MS) return false
+        unload()
+        return true
+    }
+
+    @Synchronized
+    fun unload() {
+        if (handle != 0L) {
+            runCatching { nativeFree(handle) }
+            handle = 0
+        }
+    }
+
+    /**
+     * Give the ~84MB embedder back when the system asks for memory, mirroring LocalLlmEngine.
+     * Skipped while an embed is in flight — freeing then is a native use-after-free, not a saving.
+     */
+    fun onTrimMemory(level: Int) {
+        val urgent = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW
+        if (urgent && embedsInFlight.get() == 0) unload()
+    }
+
+    /**
+     * One sleeping daemon thread per idle window rather than a poll loop — the same shape
+     * LocalLlmEngine uses. If another embed lands while waiting, [lastUseMs] moves and the loop
+     * re-waits instead of freeing a model that is still in use.
+     */
+    private fun scheduleIdleRelease() {
+        if (releaseScheduled) return
+        synchronized(this) {
+            if (releaseScheduled) return
+            releaseScheduled = true
+        }
+        Thread({
+            try {
+                while (true) {
+                    val waitMs = IDLE_RELEASE_MS - (System.currentTimeMillis() - lastUseMs)
+                    if (waitMs <= 0) break
+                    try { Thread.sleep(waitMs) } catch (_: InterruptedException) { return@Thread }
+                }
+                releaseIfIdle()
+            } finally {
+                releaseScheduled = false
+            }
+        }, "teclas-embed-idle-release").apply { isDaemon = true }.start()
     }
 
     @Volatile private var diagOnce = false

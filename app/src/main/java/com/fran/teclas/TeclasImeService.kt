@@ -796,6 +796,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         com.fran.teclas.llm.LocalLlmEngine.onTrimMemory(level)
+        com.fran.teclas.llm.EmbedEngine.onTrimMemory(level)
     }
 
     override fun onDestroy() {

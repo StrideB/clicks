@@ -1320,6 +1320,45 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         com.fran.teclas.llm.LocalLlmEngine.onTrimMemory(level)
+        // The embedder is another ~84MB of native mapping; give it back under pressure too.
+        com.fran.teclas.llm.EmbedEngine.onTrimMemory(level)
+        trimImageCaches(level)
+    }
+
+    /**
+     * Release image memory when the system asks. meminfo on a device that was running hot showed
+     * 196MB across 302 malloc'd bitmaps, and none of these caches had ANY release path — they only
+     * ever grew and were only ever bounded by their own size caps, which say nothing about what the
+     * rest of the phone needs. Everything dropped here is re-derivable: icons re-resolve from the
+     * package manager, keycaps re-bake, the depth cutout re-decodes from its cached PNG.
+     *
+     * Two tiers, because the cost of being wrong differs:
+     *  - RUNNING_LOW and above: caches only. Invisible to the user; worst case is a little work on
+     *    the next draw.
+     *  - UI_HIDDEN / CRITICAL / COMPLETE: also the full-screen wallpaper drawables. Those are the
+     *    single largest bitmaps we hold, but re-decoding one is visible as a flash, so it is only
+     *    worth it once we are backgrounded or the system is genuinely desperate.
+     */
+    private fun trimImageCaches(level: Int) {
+        // The TRIM_MEMORY_* constants are ordered by severity (RUNNING_MODERATE 5 < RUNNING_LOW 10 <
+        // RUNNING_CRITICAL 15 < UI_HIDDEN 20 < BACKGROUND 40 < MODERATE 60 < COMPLETE 80), so simple
+        // >= comparisons cover every level above each threshold.
+        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+
+        runCatching { appIconStateCache.evictAll() }
+        runCatching { fallbackIconCache.evictAll() }
+        runCatching { RcapsKeycaps.trimMemory() }
+        runCatching { WallpaperDepth.trimMemory() }
+
+        val severe = level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL
+        if (severe) {
+            // Cleared, not recycled: views may still hold these drawables. The signature is cleared
+            // alongside so the next render re-decodes instead of trusting a now-empty cache.
+            homeWallpaperDrawable = null
+            lastGoodHomeWallpaperDrawable = null
+            homeWallpaperDrawableSig = null
+        }
+        android.util.Log.d("TeclasRender", "trimImageCaches(level=$level, severe=$severe)")
     }
 
     override fun onDestroy() {
