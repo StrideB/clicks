@@ -92,6 +92,34 @@ object LocalLlmEngine {
 
     fun fastInstalled(context: Context): Boolean = installed(context, BONSAI)
     fun qualityInstalled(context: Context): Boolean = installed(context, GEMMA)
+
+    /**
+     * Delete a downloaded model and reclaim its disk.
+     *
+     * The settings screen could download 2.5GB and offer no way to get it back — the only escape
+     * was clearing the app's data, which also throws away the user's entire launcher setup. A
+     * download that cannot be undone is not really optional.
+     *
+     * Unloads first when this is the model currently mapped, so the file is not deleted out from
+     * under a live handle, and clears the cached "which spec is active" answer so the UI and the
+     * loader both re-evaluate.
+     */
+    @Synchronized
+    fun deleteQualityModel(context: Context): Boolean = deleteSpec(context, GEMMA)
+
+    @Synchronized
+    fun deleteFastModel(context: Context): Boolean = deleteSpec(context, BONSAI)
+
+    private fun deleteSpec(context: Context, spec: ModelSpec): Boolean {
+        if (generating) return false          // never pull a model out mid-generation
+        if (loadedSpec == spec) unload()
+        val f = fileFor(context, spec)
+        val gone = !f.exists() || f.delete()
+        // A half-finished download would otherwise keep occupying the disk we just tried to free.
+        runCatching { File(f.parentFile, "${spec.file}.part").delete() }
+        installedCache = computeActiveSpec(context)
+        return gone
+    }
     val totalBytes: Long get() = BONSAI.bytes
     val qualityBytes: Long get() = GEMMA.bytes
 

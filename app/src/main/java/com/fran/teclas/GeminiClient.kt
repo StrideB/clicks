@@ -140,11 +140,23 @@ Reply ONLY as compact JSON: {"skill":"<one skill name from the list, or NONE>","
         apiKey: String, model: String, prompt: String, maxTokens: Int, temperature: Double,
         json: Boolean = false, grammar: String? = null, allowLocal: Boolean = true, quality: Boolean = false,
     ): String? {
-        // Quality tasks (the brief) prefer the big local model (Gemma) OVER Nano — Nano is smaller.
-        // They're rare and can wait, so the ~11s local generation is worth the better writing.
-        if (quality && allowLocal) local?.invoke(prompt, maxTokens, temperature, json, grammar, true)?.let { out ->
-            lastErrorMessage = null
-            return out
+        // Quality tasks (the brief) prefer the big local model (Gemma) over Nano — but ONLY on a
+        // device where Nano cannot serve at all.
+        //
+        // This used to be unconditional, and it is how a 2.5GB model came to be mapped into a phone
+        // that already had Gemini Nano AVAILABLE: the brief asked for quality, skipped Nano by
+        // design, and pulled Gemma in. Measured cost of that trade on a real device: 2.4GB of
+        // mapping, ~700MB of the app pushed into swap, kswapd/zram churning, and the SoC at 70C —
+        // to slightly improve the wording of a daily summary.
+        //
+        // When AICore reports Nano AVAILABLE it is free, near-instant, and costs this process no
+        // memory at all. That is worth more than the margin in prose quality. Devices without Nano
+        // are unaffected: they still get Gemma if it is downloaded and there is room for it.
+        if (quality && allowLocal && nano?.ready != true) {
+            local?.invoke(prompt, maxTokens, temperature, json, grammar, true)?.let { out ->
+                lastErrorMessage = null
+                return out
+            }
         }
         // Interactive/default: Gemini Nano first — fast, free, on-device. Any failure (unsupported,
         // still downloading, background-blocked in another app) falls through.
