@@ -3178,8 +3178,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // so it reads as a solid, consistent surface regardless of the global glass-effects setting.
     private fun appLibraryGlassEnabled(): Boolean = false
 
-    internal fun focusSurfaceGlassEnabled(): Boolean =
-        isHonorDevice() || glassEffectsEnabled() || widgetModeNativeGlassActive() || innerWallpaperModeActive()
+    /**
+     * Whether glass surfaces exist at all — the user's setting, and nothing else.
+     *
+     * This used to be `isHonorDevice() || glassEffectsEnabled() || widgetModeNativeGlassActive() ||
+     * innerWallpaperModeActive()`. Those are ORs, so three unrelated conditions could each force
+     * glass back on after the user switched it off — and `innerWallpaperModeActive()` is true for
+     * anyone who has simply set a wallpaper. On such a device the toggle could never turn glass off,
+     * which is exactly the reported "it says off but it still eats battery".
+     *
+     * WHICH glass to draw is a separate question and still device-dependent — see
+     * [nativeGlassSurfaceActive]. That distinction is the whole bug: an implementation detail was
+     * being allowed to override an explicit user choice.
+     */
+    internal fun focusSurfaceGlassEnabled(): Boolean = glassEffectsEnabled()
 
     private fun gridWorkspaceLabEnabled(): Boolean =
         prefs().getBoolean(GRID_WORKSPACE_LAB_PREF, false)
@@ -4890,6 +4902,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun innerGlassPanel(content: View, radiusDp: Int = 28): View = FrameLayout(this).apply {
+        // Same rule as foldAwareGlassPlate: glass off means no blur layer is built at all.
+        if (!glassEffectsEnabled()) {
+            addView(flatSurfacePlate(context, radiusDp), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            return@apply
+        }
         if (nativeGlassSurfaceActive()) {
             return NativeFoldGlassPanel(this@MainActivity, radiusDp).apply {
                 addView(content, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -4944,14 +4962,39 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    /**
+     * The single place glass surfaces are built — and now the single place the user's setting is
+     * honoured.
+     *
+     * "GLASS EFFECTS · off" used to change almost nothing. Every caller of this factory added a
+     * plate unconditionally, and on Samsung/Honor each plate is a [NativeFoldGlassPanel]: a
+     * full-screen RenderEffect blur, i.e. its own GPU layer with a pre-draw listener. A device
+     * measured with the toggle OFF was carrying 210MB of GL memory and 72MB of EGL. The setting was
+     * decorative; the cost was not.
+     *
+     * Gating here rather than at each call site is deliberate: there were four, and the next one
+     * added would have silently reintroduced the bug.
+     */
     private fun foldAwareGlassPlate(context: Context, radiusDp: Int, strength: Float = 1.72f): View =
-        if (nativeGlassSurfaceActive()) {
-            NativeFoldGlassPanel(context, radiusDp, compactDockGlass = true)
-        } else {
-            DynamicGlassPlate(context, radiusDp = radiusDp, strength = strength, edgeInsetDp = 0).apply {
+        when {
+            !glassEffectsEnabled() -> flatSurfacePlate(context, radiusDp)
+            nativeGlassSurfaceActive() -> NativeFoldGlassPanel(context, radiusDp, compactDockGlass = true)
+            else -> DynamicGlassPlate(context, radiusDp = radiusDp, strength = strength, edgeInsetDp = 0).apply {
                 setGlassProgress(1f)
             }
         }
+
+    /**
+     * What a surface looks like with glass off: one rounded solid fill. No blur, no RenderEffect, no
+     * hardware layer, no pre-draw listener — a plain background drawable the GPU composites for free.
+     * Tinted from the active theme so panels stay legible instead of turning into transparent holes.
+     */
+    private fun flatSurfacePlate(context: Context, radiusDp: Int): View = View(context).apply {
+        background = GradientDrawable().apply {
+            cornerRadius = dp(radiusDp).toFloat()
+            setColor(if (glassLightMode()) 0xF2F4F5F7.toInt() else 0xF21A1C20.toInt())
+        }
+    }
 
     private fun rootViewWidthOrScreen(): Int =
         if (this::rootView.isInitialized && rootView.width > 0) rootView.width else resources.displayMetrics.widthPixels
