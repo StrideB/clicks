@@ -18810,7 +18810,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     if (trackpadActive) return true
                     if (!tracking) {
                         if (downOnLetterKey &&
-                            (abs(ev.rawX - startRawX) > glideStart || abs(ev.rawY - startRawY) > glideStart)) {
+                            com.fran.teclas.keyboard.GlideGate.shouldActivate(
+                                ev.rawX - startRawX, ev.rawY - startRawY,
+                                ev.eventTime - ev.downTime, glideStart.toFloat())) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
