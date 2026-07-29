@@ -21853,6 +21853,48 @@ Question: $prompt"""
         }
         root.addView(gemmaBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
+        // Removing the quality model was impossible from inside the app: download and re-download
+        // were the only actions, and the file lives in app-private storage no file manager can
+        // reach — so reclaiming 2.5 GB meant clearing app data and losing themes, Spaces and
+        // learned typing with it. Only shown when there is actually something to remove.
+        if (com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this)) {
+            root.addView(TextView(this).apply {
+                textSize = 12.5f; setTextColor(InkDim); gravity = Gravity.CENTER
+                setPadding(dp(14), dp(9), dp(14), dp(9))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(10).toFloat(); setColor(Color.TRANSPARENT); setStroke(dp(1), Line)
+                }
+                text = "Remove · frees 2.5 GB"
+                isClickable = true
+                setOnClickListener {
+                    haptic(this)
+                    val btn = this
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Remove Gemma 3 4B?")
+                        .setMessage("Frees 2.5 GB. The brief, chat and rewrites fall back to Bonsai. You can download it again any time.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Remove") { _, _ ->
+                            btn.text = "Removing…"; btn.isEnabled = false
+                            mediaUiScope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    com.fran.teclas.llm.LocalLlmEngine.deleteModel(this@MainActivity, quality = true)
+                                }
+                                if (ok) {
+                                    gemmaStatus.text = "Removed · 2.5 GB freed. Bonsai runs the AI."
+                                    gemmaBtn.text = "Download (2.5 GB)"
+                                    btn.visibility = View.GONE
+                                } else {
+                                    gemmaStatus.text = "Couldn't remove it — try again once any download finishes."
+                                    btn.text = "Remove · frees 2.5 GB"; btn.isEnabled = true
+                                }
+                            }
+                        }
+                        .show()
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(8) })
+        }
+
         if (!ProManager.isUnlocked(this)) {
             root.addView(label("On-device AI models are a Teclas Pro feature. Free users get the core launcher.", 11f, 0xFFC9A7FF.toInt())
                 .apply { setPadding(0, dp(16), 0, 0) })

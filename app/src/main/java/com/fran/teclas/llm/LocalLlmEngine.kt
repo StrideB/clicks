@@ -92,6 +92,31 @@ object LocalLlmEngine {
 
     fun fastInstalled(context: Context): Boolean = installed(context, BONSAI)
     fun qualityInstalled(context: Context): Boolean = installed(context, GEMMA)
+
+    /**
+     * Delete a downloaded model and give the storage back. Blocking — call off the main thread.
+     *
+     * There was no way to do this at all: the UI could download and re-download, and the files sit
+     * in app-private filesDir where no file manager can reach them. Removing 2.5GB meant clearing
+     * the app's data and losing themes, Spaces and learned typing along with it.
+     *
+     * Unloads first when the model being deleted is the live one. Deleting a file that is still
+     * mmapped leaves the mapping valid but the name gone: the space is not returned until the
+     * process exits, and this process is shared with the IME so it effectively never does.
+     *
+     * The partial download is removed too, since a resumable `.part` can be most of the model.
+     */
+    fun deleteModel(context: Context, quality: Boolean): Boolean {
+        if (downloading) return false
+        val spec = if (quality) GEMMA else BONSAI
+        synchronized(this) { if (loadedSpec == spec) unload() }
+        val target = fileFor(context, spec)
+        runCatching { File(target.parentFile, "${spec.file}.part").delete() }
+        val gone = runCatching { !target.exists() || target.delete() }.getOrDefault(false)
+        installedCache = null
+        runCatching { computeActiveSpec(context) }
+        return gone
+    }
     val totalBytes: Long get() = BONSAI.bytes
     val qualityBytes: Long get() = GEMMA.bytes
 
