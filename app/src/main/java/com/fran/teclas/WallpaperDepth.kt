@@ -48,6 +48,20 @@ object WallpaperDepth {
     fun cachedCutout(signature: String): Bitmap? =
         if (memoKey == signature) memoCutout?.takeUnless { it.isRecycled } else null
 
+    /**
+     * Drop the in-memory cutout when the system asks for memory back.
+     *
+     * The cutout is a full-screen ARGB bitmap — tens of MB on a modern display — and it was held for
+     * the process lifetime with no release path. It is also the cheapest thing here to give up: the
+     * PNG stays on disk, so the next read is a decode rather than a re-segmentation. Deliberately
+     * does NOT recycle: a live view may still be drawing this bitmap, and recycling underneath it
+     * crashes. Dropping the reference is enough for the collector to take it once nothing draws it.
+     */
+    fun trimMemory() {
+        memoKey = null
+        memoCutout = null
+    }
+
     fun knownEmpty(signature: String): Boolean = emptyKey == signature
 
     /**

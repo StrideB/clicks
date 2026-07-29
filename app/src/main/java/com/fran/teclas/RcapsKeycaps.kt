@@ -52,6 +52,9 @@ object RcapsKeycaps {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
 
+    /** Give the baked caps back under memory pressure; they re-bake on the next draw. */
+    fun trimMemory() = cache.evictAll()
+
     fun drawable(density: Float, spec: Spec): Drawable = RcapsKeycapDrawable(density, spec)
 
     /** Fetch (or bake once) the cap bitmap for this exact size + spec. */
