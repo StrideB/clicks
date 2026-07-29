@@ -70,6 +70,18 @@ object EmbedEngine {
     fun ready(context: Context): Boolean = handle != 0L || modelInstalled(context)
     val totalBytes: Long get() = MODEL_BYTES
 
+    /** Delete the embedder and reclaim its disk; unloads first so nothing is freed underneath. */
+    @Synchronized
+    fun deleteModel(context: Context): Boolean {
+        if (embedsInFlight.get() > 0) return false
+        unload()
+        val f = modelFile(context)
+        val gone = !f.exists() || f.delete()
+        runCatching { File(f.parentFile, "$MODEL_FILE.part").delete() }
+        installedCache = false
+        return gone
+    }
+
     /** Download the embedder in the background (call off the main thread). Resumable via HTTP Range. */
     fun downloadModel(context: Context): Boolean {
         if (modelInstalled(context)) return true

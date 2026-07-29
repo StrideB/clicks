@@ -21717,6 +21717,45 @@ Question: $prompt"""
             text = t; textSize = size; setTextColor(color)
         }
 
+        /**
+         * A "Remove" control for a downloaded model.
+         *
+         * Downloading was one tap and reclaiming the space was impossible short of clearing app
+         * data — which also destroys the user's whole launcher setup. A 2.5 GB download with no
+         * way back is not really optional, so every model row gets this.
+         *
+         * Deliberately quiet (outlined, not filled): removing is the rare action, and it must not
+         * compete with Download for a mis-tap.
+         */
+        fun removeRow(sizeLabel: String, installed: () -> Boolean, remove: () -> Boolean): TextView =
+            TextView(this).apply {
+                textSize = 12.5f; setTextColor(InkDim); gravity = Gravity.CENTER
+                setPadding(dp(14), dp(9), dp(14), dp(9))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(10).toFloat()
+                    setColor(Color.TRANSPARENT)
+                    setStroke(dp(1), 0x33FFFFFF)
+                }
+                text = "Remove ($sizeLabel)"
+                val visible = installed()
+                visibility = if (visible) View.VISIBLE else View.GONE
+                isClickable = visible
+                // Captured explicitly: inside mediaUiScope.launch the receiver is the CoroutineScope,
+                // so `text`/`visibility` would no longer refer to this view.
+                val btn = this
+                setOnClickListener {
+                    haptic(btn)
+                    btn.text = "Removing…"
+                    btn.isEnabled = false
+                    mediaUiScope.launch {
+                        val ok = withContext(Dispatchers.IO) { runCatching { remove() }.getOrDefault(false) }
+                        btn.text = if (ok) "Removed" else "Could not remove"
+                        if (ok) btn.visibility = View.GONE
+                        btn.isEnabled = !ok
+                    }
+                }
+            }
+
         // ── Keyboard AI — Bonsai 1.7B (ungated, one-tap download) ────────────────
         root.addView(label("Keyboard AI · Bonsai 1.7B", 15f, Ink).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -21761,6 +21800,11 @@ Question: $prompt"""
             }
         }
         root.addView(bonsaiBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(
+            removeRow("237 MB", { com.fran.teclas.llm.LocalLlmEngine.fastInstalled(this) },
+                { com.fran.teclas.llm.LocalLlmEngine.deleteFastModel(this) }),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(6) })
 
         // ── Semantic search — nomic-embed (ungated, one-tap download) ───────────
         root.addView(label("Semantic search · nomic-embed", 15f, Ink).apply {
@@ -21794,6 +21838,11 @@ Question: $prompt"""
             }
         }
         root.addView(embedBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(
+            removeRow("84 MB", { com.fran.teclas.llm.EmbedEngine.modelInstalled(this) },
+                { com.fran.teclas.llm.EmbedEngine.deleteModel(this) }),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(6) })
 
         // ── Quality model — Gemma 3 4B (Pro, big) ───────────────────────────────
         root.addView(label("Quality AI · Gemma 3 4B", 15f, Ink).apply {
@@ -21852,6 +21901,11 @@ Question: $prompt"""
             }
         }
         root.addView(gemmaBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(
+            removeRow("2.5 GB", { com.fran.teclas.llm.LocalLlmEngine.qualityInstalled(this) },
+                { com.fran.teclas.llm.LocalLlmEngine.deleteQualityModel(this) }),
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(6) })
 
         if (!ProManager.isUnlocked(this)) {
             root.addView(label("On-device AI models are a Teclas Pro feature. Free users get the core launcher.", 11f, 0xFFC9A7FF.toInt())
