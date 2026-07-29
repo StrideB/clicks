@@ -46,7 +46,10 @@ adb logcat -d 2>&1 | grep -iE "FATAL EXCEPTION|ANR in|Force finishing|$PKG.*died
   > "$OUT/crash-grep.txt" 2>&1
 
 # --- Heat: who is actually burning CPU / holding wakelocks ---------------------------------
-cap cpu-top          "top -n 1 -m 15 -o %CPU,RES,PID,ARGS"
+# `top -o` only selects columns; without -s it is NOT sorted by CPU, so every row read 0.0% and the
+# probe never named a culprit. dumpsys cpuinfo is the dependable ranked view on Android.
+cap cpu-ranked       "dumpsys cpuinfo"
+cap cpu-top          "top -b -n 1 -m 20 -s 9"
 cap battery-app      "dumpsys batterystats $PKG"
 cap wakelocks        "dumpsys power | grep -A 40 'Wake Locks'"
 cap alarms           "dumpsys alarm | grep -A 6 $PKG"
@@ -107,10 +110,19 @@ adb logcat -d 2>&1 | grep -iE "TypoLexicon|Teclas|SpaceManager|ContextSensors|Wi
   if [ -s "$OUT/crash-grep.txt" ]; then sed 's/^/  /' "$OUT/crash-grep.txt" | head -25
   else echo "  none found in the current log buffer"; fi
   echo
-  echo "TOP CPU"
-  sed -n '3,12p' "$OUT/cpu-top.txt" 2>/dev/null | sed 's/^/  /'
+  echo "CPU BY PROCESS, RANKED  <-- who is burning the SoC right now"
+  grep -E "^[[:space:]]*[0-9.]+%" "$OUT/cpu-ranked.txt" 2>/dev/null | head -12 | sed 's/^/  /' \
+    || sed -n '1,12p' "$OUT/cpu-ranked.txt" 2>/dev/null | sed 's/^/  /'
   echo
-  echo "ESTIMATED POWER USE, RANKED  <-- the decisive number"
+  echo "TOTAL CPU LOAD"
+  grep -iE "^Load|TOTAL:" "$OUT/cpu-ranked.txt" 2>/dev/null | head -4 | sed 's/^/  /'
+  echo
+  echo "MEASUREMENT WINDOW  (power numbers below are meaningless if this is seconds)"
+  grep -iE "Computed drain|Time on battery:" "$OUT/power-ranked.txt" 2>/dev/null | head -3 | sed 's/^/  /'
+  echo "  NOTE: run --reset, then USE THE PHONE 15-30 MIN, then capture. A capture taken"
+  echo "        immediately after --reset measures ~1 second and ranks nothing."
+  echo
+  echo "ESTIMATED POWER USE, RANKED"
   echo "  (if $PKG is not near the top, the launcher is not the heat source)"
   sed -n '/Estimated power use (mAh)/,/^$/p' "$OUT/power-ranked.txt" 2>/dev/null \
     | head -25 | sed 's/^/  /' \
@@ -124,7 +136,10 @@ adb logcat -d 2>&1 | grep -iE "TypoLexicon|Teclas|SpaceManager|ContextSensors|Wi
     | head -8 | sed 's/^/  /'
   echo
   echo "HOTTEST THERMAL ZONES  (temps are usually milli-degrees C: 45000 = 45C)"
-  sort -k2 -rn "$OUT/thermal-zones.txt" 2>/dev/null | grep -vE "^\\$|^$" | head -8 | sed 's/^/  /'
+  # Exclude *-trip-* zones: those are threshold constants (105000 = the 105C shutdown limit),
+  # not live readings, and they otherwise dominate the sort and hide the real temperatures.
+  grep -viE "trip|limit|alert" "$OUT/thermal-zones.txt" 2>/dev/null \
+    | sort -k2 -rn | grep -vE "^\\$|^$" | head -8 | sed 's/^/  /' 
   echo
   echo "TYPO LEXICON"
   grep -i "TypoLexicon" "$OUT/teclas-log.txt" 2>/dev/null | tail -3 | sed 's/^/  /' \
