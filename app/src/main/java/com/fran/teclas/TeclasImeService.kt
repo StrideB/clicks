@@ -4420,7 +4420,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (!tracking && downOnLetterKey &&
-                        (abs(ev.rawX - startRawX) > glideActivationSlop || abs(ev.rawY - startRawY) > glideActivationSlop)) {
+                        com.fran.teclas.keyboard.GlideGate.shouldActivate(
+                            ev.rawX - startRawX, ev.rawY - startRawY,
+                            ev.eventTime - ev.downTime, glideActivationSlop)) {
                         tracking = true
                         glideStoleDownCommit = true
                         if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
