@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  cueAba flavor additions. Merged into the main manifest only for this flavor,
+  so a consumer build declares none of it.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          Sign-in for the Cue ABA integration. Not exported: it is reachable
+          only from the launcher's own search surface, never from another app.
+          FLAG_SECURE is set in code because the session it establishes leads
+          to screens showing patient names.
+        -->
+        <activity
+            android:name="com.fran.teclas.cue.CueSignInActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
+    </application>
+
+</manifest>

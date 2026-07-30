@@ -24,5 +24,8 @@ tools/neural_swipe/venv/
 # Device diagnostic captures (tools/diagnose_device.sh) — local only, may contain device details
 diagnostics/
 
+# Private Cue ABA endpoint config for the cueAba flavor — see app/cue.properties.example
+app/cue.properties
+
 __pycache__/
 *.pyc

@@ -21,6 +21,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.fran.teclas.MainActivity.Companion.Line
+import com.fran.teclas.cue.CueBridge
 import com.fran.teclas.predict.SpaceManager
 import java.util.Locale
 import kotlin.math.sin
@@ -269,6 +270,26 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     internal fun unfoldedSearchResultsList(): View =
         unfoldedSearchResultsDashboard(surface = "unfolded-focus")
 
+    /**
+     * Cue ABA records for the live query, as ready-to-add views.
+     *
+     * Returns an empty list in the `consumer` flavor — CueBridge.ENABLED is a
+     * compile-time false there, so this whole call folds away and no ABA code
+     * ships. In `cueAba` it returns cached results immediately and repaints
+     * when the network answers.
+     *
+     * These sit ABOVE the instant answer on purpose: if you typed something
+     * that names a kiddo, an authorization or your own clinic, that record IS
+     * the answer — a web result underneath it is the fallback, not the lede.
+     */
+    private fun cueSearchViews(): List<View> {
+        if (!CueBridge.ENABLED) return emptyList()
+        val results = CueBridge.results(activity, activity.query) {
+            if (activity.libraryOpen) activity.refreshLibraryContent() else activity.render()
+        }
+        return CueBridge.views(activity, results)
+    }
+
     private fun unfoldedSearchResultsDashboard(surface: String): View = with(activity) {
         buildingSurface = surface
         pendingRowKeys = mutableSetOf()
@@ -298,6 +319,10 @@ internal class SearchResultsHost(private val activity: MainActivity) {
             setPadding(0, dp(8), 0, dp(4))
 
             addView(unfoldedSearchScrollColumn {
+                // ZONE 0 — Cue ABA records. Empty in the consumer flavor.
+                // Each view already carries its own LayoutParams (including the
+                // bottom gap), so add it bare rather than overriding them.
+                cueSearchViews().forEach { addView(it) }
                 command?.let {
                     addView(searchZoneHeader("Action"))
                     addView(searchCommandCard(it), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(72)).apply {
@@ -420,6 +445,11 @@ internal class SearchResultsHost(private val activity: MainActivity) {
                     bottomMargin = dp(12)
                 })
             }
+
+            // ZONE 0 — Cue ABA records. Empty in the consumer flavor.
+            // Each view already carries its own LayoutParams (including the bottom
+            // gap), so add it bare rather than overriding them.
+            cueSearchViews().forEach { addView(it) }
 
             // ZONE 1 — a single instant answer. Only the strongest vertical becomes the hero.
             val places = searchPlaces()

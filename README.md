@@ -413,6 +413,12 @@ Permissions are requested as needed. Notification Listener access is required fo
 
 ## Build
 
+The app has two product flavors on a `distribution` dimension, so Gradle task
+names carry the flavor: `installConsumerDebug`, `assembleCueAbaRelease`, and so
+on. `consumer` is the launcher as described in this README. `cueAba` adds a
+private ABA clinic record search to the search surface and ships nothing else —
+see `docs/CUE_ABA_INTEGRATION.md`. A consumer build contains none of that code.
+
 Build debug APK:
 
 ```sh

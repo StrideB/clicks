@@ -104,10 +104,18 @@ internal object SearchRouter {
      * a contact, a setting) — a bare keyword that matched something local shouldn't be dragged to
      * the web or handed to a model.
      */
-    fun route(raw: String, hasDirectHits: Boolean = false): Verdict {
+    fun route(raw: String, hasDirectHits: Boolean = false, cueClaimed: Boolean = false): Verdict {
         val q = raw.trim().lowercase(Locale.US)
         if (q.length < 2) return Verdict(Route.NONE, "too short")
         val words = q.split(' ', '\n').filter { it.isNotBlank() }
+
+        // A query that names a Cue ABA record type is answered by the clinic, full stop. This is
+        // checked before every other signal — including COMPOSE — because several record nouns
+        // collide with generic web vocabulary ("claims", "reports", "schedule", "billing"), and a
+        // patient-adjacent query must never reach a search engine or an on-device model. NONE
+        // rather than a new Route: the launcher's own results already ARE the answer here, which is
+        // exactly what NONE means, and no caller has to learn a new case.
+        if (cueClaimed) return Verdict(Route.NONE, "cue record")
 
         // Composition can't be served by a search engine, and its phrasing ("write a note about
         // the game tonight") often contains freshness words that would otherwise route to web.

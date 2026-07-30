@@ -46,6 +46,7 @@ import com.fran.teclas.brief.accentColorInt
 import com.fran.teclas.brief.backgroundDrawable
 import com.fran.teclas.brief.cardDrawable
 import com.fran.teclas.brief.cardFillColorInt
+import com.fran.teclas.cue.CueBridge
 import com.fran.teclas.glide.KeyInfo
 import com.fran.teclas.glide.StatisticalGlideTypingClassifier
 import com.fran.teclas.brief.mutedColorInt
@@ -24639,7 +24640,7 @@ Question: $prompt"""
                 askGemini(SearchRouter.cleanPrompt(q))
             }
             // With no model reachable, an "answer" route has nothing to answer with — it's a web query.
-            val verdict = SearchRouter.route(q, directHits)
+            val verdict = SearchRouter.route(q, directHits, CueBridge.claimsQuery(this@MainActivity, q))
             val answerable = verdict.route == SearchRouter.Route.ANSWER &&
                 GeminiClient.configured(prefs()) && !aiInlineDeclined(q)
             when {

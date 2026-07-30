@@ -74,4 +74,45 @@ class SearchRouterTest {
     @Test fun `short question marks are not questions`() {
         assertEquals(SearchRouter.Route.WEB, route("ok?"))
     }
+
+    // ── Cue ABA records (cueAba flavor) ──────────────────────────────────────
+
+    @Test fun `a claimed cue query never leaves the device`() {
+        // These all carry a WEB signal on their own — "billing" is commercial-ish,
+        // "schedule" and "reports" are freshness words. Once Cue claims the query
+        // they must stay local: a patient-adjacent search reaching Google is the
+        // failure this check exists to prevent.
+        listOf("auths", "claims", "billing", "schedule", "reports", "kiddos").forEach {
+            assertEquals(
+                "'$it' should route WEB without Cue",
+                SearchRouter.Route.WEB,
+                SearchRouter.route(it, hasDirectHits = false, cueClaimed = false).route,
+            )
+            assertEquals(
+                "'$it' must stay local once Cue claims it",
+                SearchRouter.Route.NONE,
+                SearchRouter.route(it, hasDirectHits = false, cueClaimed = true).route,
+            )
+        }
+    }
+
+    @Test fun `cue claim outranks every other signal`() {
+        // Composition normally wins outright, and freshness normally forces WEB.
+        // A claimed query beats both, because the clinic is the answer.
+        assertEquals(SearchRouter.Route.NONE, SearchRouter.route("write a note for mara", cueClaimed = true).route)
+        assertEquals(SearchRouter.Route.NONE, SearchRouter.route("today's sessions", cueClaimed = true).route)
+        assertEquals("cue record", SearchRouter.route("auths", cueClaimed = true).why)
+    }
+
+    @Test fun `an unclaimed query is routed exactly as before`() {
+        // The consumer flavor always passes cueClaimed=false, so the default must
+        // leave every existing verdict untouched.
+        listOf("why is the sky blue", "btc price", "pizza near me", "reddit best knife").forEach {
+            assertEquals(
+                "'$it' verdict must not shift",
+                SearchRouter.route(it).route,
+                SearchRouter.route(it, hasDirectHits = false, cueClaimed = false).route,
+            )
+        }
+    }
 }

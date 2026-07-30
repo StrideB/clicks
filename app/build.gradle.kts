@@ -1,3 +1,4 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -5,6 +6,15 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
 }
+
+// Cue ABA endpoint configuration for the `cueAba` flavor. Deliberately NOT
+// committed (see .gitignore) — copy cue.properties.example and fill it in. An
+// absent file is fine: the fields default to empty and the integration reports
+// itself unconfigured instead of failing the build.
+val cueProperties = Properties().apply {
+    file("cue.properties").takeIf { it.exists() }?.inputStream()?.use(::load)
+}
+fun cueProperty(key: String): String = (cueProperties[key] as String?).orEmpty()
 
 android {
     namespace = "com.fran.teclas"
@@ -49,6 +59,35 @@ android {
         }
     }
 
+    // ── Distribution flavors ──────────────────────────────────────────────────
+    // `consumer` is the launcher as it has always been. `cueAba` adds the private
+    // Cue ABA record search. The split is a source set, not a runtime flag, so a
+    // consumer APK contains no Cue code, no endpoints and no strings — R8 has
+    // nothing to strip because nothing was compiled in.
+    //
+    // Both flavors share `applicationId`, deliberately: this is a personal daily
+    // driver, and a suffix would install a second launcher with none of the
+    // existing prefs, themes or trained prediction data. Add
+    // `applicationIdSuffix = ".aba"` to cueAba if you ever want them side by side.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("cueAba") {
+            dimension = "distribution"
+            versionNameSuffix = "-aba"
+            buildConfigField("boolean", "CUE_ABA", "true")
+            buildConfigField("String", "CUE_API_BASE_URL", "\"${cueProperty("cue.api.base.url").ifEmpty { "https://app.cueaba.com" }}\"")
+            buildConfigField("String", "CUE_SUPABASE_URL", "\"${cueProperty("supabase.url")}\"")
+            buildConfigField("String", "CUE_SUPABASE_ANON_KEY", "\"${cueProperty("supabase.anon.key")}\"")
+        }
+        create("consumer") {
+            dimension = "distribution"
+            buildConfigField("boolean", "CUE_ABA", "false")
+            buildConfigField("String", "CUE_API_BASE_URL", "\"\"")
+            buildConfigField("String", "CUE_SUPABASE_URL", "\"\"")
+            buildConfigField("String", "CUE_SUPABASE_ANON_KEY", "\"\"")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -66,6 +105,8 @@ android {
 
     buildFeatures {
         compose = true
+        // Flavors gate the Cue integration through BuildConfig.CUE_ABA.
+        buildConfig = true
     }
 
     lint {

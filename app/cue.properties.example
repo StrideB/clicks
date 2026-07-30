@@ -1,0 +1,20 @@
+# Cue ABA endpoint configuration for the `cueAba` product flavor.
+#
+# Copy to app/cue.properties and fill in. That file is gitignored: this
+# integration is private, so the endpoint and project ref stay off the repo even
+# though the anon key itself is a public, RLS-enforced client credential.
+#
+# Do NOT put a service-role key, database password, or Cue API key (`cue_live_…`)
+# here. An org API key would grant admin-equivalent, org-wide read access to
+# whoever holds the APK, which defeats the per-role scoping the search relies on.
+# The launcher signs in as a person and inherits that person's scope.
+#
+# With this file absent, the cueAba flavor still builds — the integration simply
+# reports itself unconfigured and stays out of the search surface.
+
+# Your Cue deployment. Used for /api/native/v1/*.
+cue.api.base.url=https://app.cueaba.com
+
+# Supabase project the Cue deployment authenticates against.
+supabase.url=
+supabase.anon.key=
