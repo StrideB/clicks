@@ -250,6 +250,7 @@
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@android:style/Theme.Material.NoActionBar" />
     </application>
 </manifest>

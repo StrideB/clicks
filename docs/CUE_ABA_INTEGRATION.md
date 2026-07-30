@@ -170,13 +170,34 @@ recents-exposed surface on the phone.
 `FLAG_SECURE` clears on the next search render rather than the moment the
 surface closes, so it can briefly outlive the cards. That errs toward secure.
 
-## Reaching your account
+## Reaching the connection
 
-There is no settings entry to hunt for. Type `cue`:
+Two ways in, because "type the magic word" is not discoverable for someone who
+just installed the APK:
 
-- signed out — a **Connect to Cue** card, one tap to sign-in;
-- signed in — an account card with your name, role, clinic, masking toggle,
-  **Switch clinic** (when you have more than one), and **Sign out**.
+- **Settings search** — `cue`, `clinic`, `connect`, `sign in`, `account` and
+  friends all surface a **Cue ABA** row that reports its own state ("Connected ·
+  Bright Path ABA Clinic" / "Not connected"). Registered in
+  `settingSearchEntries()`.
+- **Typing `cue`** — signed out gives a Connect card; signed in gives an account
+  card with role, clinic, masking toggle, Switch clinic and Sign out.
+
+### The sign-in screen
+
+`CueSignInActivity`, plain Android views, on the launcher's own `Neu` tokens and
+the user's `go_key_color` accent. Two rules it learned by rendering as an empty
+white rectangle:
+
+- **Every child gets an explicit height.** A bare `View` with `WRAP_CONTENT`
+  does not collapse to its minimum — `View.getDefaultSize()` returns the full
+  `AT_MOST` size — so a spacer added that way consumes the whole viewport and
+  pushes the form off the bottom. `gap()` always sets a real height.
+- **The root sits on a software layer.** `NeuDrawable`'s shadows use a
+  `BlurMaskFilter`, which a hardware-accelerated canvas silently ignores,
+  flattening every surface. `MainActivity` does the same for the daily brief.
+
+It is wrapped in a `ScrollView` with `adjustResize`, so the keyboard never
+covers the password field on a short display.
 
 ## Files
 

@@ -24939,6 +24939,22 @@ Question: $prompt"""
             themePaneHost.openThemeStudio()
             refreshSearchSurfaces()
         })
+        // Cue ABA connection. The record cards are reachable by typing a record
+        // noun, but the CONNECTION needs a home you can find without already
+        // knowing the magic word — so it lives in settings search under the
+        // words people actually reach for when an app isn't signed in yet.
+        entries.add(SettingSearchEntry(
+            "Cue ABA",
+            CueBridge.identity(this)?.let { "Connected · ${it.organizationName}" }
+                ?: if (CueBridge.isConfigured()) "Not connected · sign in to search clinic records"
+                else "Not configured in this build",
+            listOf(
+                "cue", "cue aba", "aba", "clinic", "connect", "connect to cue",
+                "sign in", "signin", "log in", "login", "account", "clinic records",
+            )
+        ) {
+            CueBridge.openSignIn(this)
+        })
         DefaultThemes.all.forEach { theme ->
             entries.add(SettingSearchEntry(
                 "Theme: ${theme.name}",
