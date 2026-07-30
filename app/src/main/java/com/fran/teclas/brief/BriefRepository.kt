@@ -104,6 +104,9 @@ class BriefRepository(
                 is CalendarSignal -> "c:${signal.id}:${signal.beginMillis}"
                 is WeatherSignal -> "w:${signal.id}:${signal.summary}"
                 is MediaSignal -> "m:${signal.id}:${signal.title}:${signal.artist}"
+                // Due time is part of the identity: the same overdue note becomes
+                // a different thing to say once its deadline passes.
+                is CueSignal -> "q:${signal.id}:${signal.title}:${signal.dueAtMillis}"
             }
         }
         return "${now / GEMINI_BUCKET_MS}|${body.hashCode().toString(16)}"
@@ -229,5 +232,6 @@ class BriefRepository(
         is CalendarSignal -> "${signal.title}|${signal.beginMillis}|${signal.location}".hashCode().toString(16)
         is WeatherSignal -> signal.summary.hashCode().toString(16)
         is MediaSignal -> "${signal.title}|${signal.artist}".hashCode().toString(16)
+        is CueSignal -> "${signal.title}|${signal.body}|${signal.dueAtMillis}".hashCode().toString(16)
     }
 }
