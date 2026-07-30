@@ -47,8 +47,19 @@ internal object CueBridge {
     /** How long a tap-to-reveal lasts before masking closes over again. */
     private const val REVEAL_WINDOW_MS = 120_000L
 
+    /**
+     * Searches only. Kept separate from [background] because it is what the user
+     * is waiting on: the index sync decrypts every patient and staff name
+     * server-side, and when both shared one single-threaded executor a search
+     * typed during startup queued behind that sync and appeared to hang forever.
+     */
     private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "cue-search").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
+        Thread(runnable, "cue-search").apply { isDaemon = true }
+    }
+
+    /** Warm-up, vocabulary/index sync, brief refresh. Nothing here is awaited. */
+    private val background = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "cue-sync").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
     private val main = Handler(Looper.getMainLooper())
     private val requestId = AtomicLong(0L)
@@ -276,7 +287,7 @@ internal object CueBridge {
         if (now - briefFetchedAt > BRIEF_TTL_MS && !briefInFlight) {
             briefInFlight = true
             val app = context.applicationContext
-            worker.execute {
+            background.execute {
                 val fetched = runCatching { CueApi.briefItems(app) }.getOrDefault(emptyList())
                 main.post {
                     briefItems = fetched
@@ -339,7 +350,7 @@ internal object CueBridge {
     /** Called after sign-in so the snapshot picks up the new session immediately. */
     fun onSessionChanged(context: Context) {
         val app = context.applicationContext
-        worker.execute {
+        background.execute {
             signedIn = CueSession.isSignedIn(app)
             CueSession.identity(app)
             // A different clinic is a different caseload — re-index rather than
@@ -438,7 +449,7 @@ internal object CueBridge {
         val app = context.applicationContext
         CueVocabulary.load(app)
         registerScreenOffTeardown(app)
-        worker.execute {
+        background.execute {
             signedIn = CueSession.isSignedIn(app)
             if (signedIn) {
                 CueSession.identity(app)
