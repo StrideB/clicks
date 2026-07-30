@@ -144,6 +144,31 @@ internal object CueSession {
         return accessToken
     }
 
+    // ── Keystore-backed storage for anything else that must not sit in the
+    // clear. CueIndex holds patient names; it uses these rather than opening
+    // its own store, so there is exactly one encrypted file to reason about
+    // and one place that sign-out has to clear.
+
+    fun secureString(context: Context, key: String): String? =
+        prefs(context)?.getString(key, null)?.takeIf { it.isNotBlank() }
+
+    fun putSecureString(context: Context, key: String, value: String) {
+        prefs(context)?.edit()?.putString(key, value)?.apply()
+    }
+
+    fun secureLong(context: Context, key: String): Long =
+        prefs(context)?.getLong(key, 0L) ?: 0L
+
+    fun putSecureLong(context: Context, key: String, value: Long) {
+        prefs(context)?.edit()?.putLong(key, value)?.apply()
+    }
+
+    fun removeSecure(context: Context, vararg keys: String) {
+        val editor = prefs(context)?.edit() ?: return
+        keys.forEach { editor.remove(it) }
+        editor.apply()
+    }
+
     /** Fetch and persist identity. Returns null on success, or a message. */
     fun loadIdentity(context: Context): String? {
         val payload = CueApi.get(context, "me") ?: return "Signed in, but Cue did not return your profile."

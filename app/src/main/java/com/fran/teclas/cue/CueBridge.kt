@@ -1,15 +1,22 @@
 package com.fran.teclas.cue
 
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.WindowManager
+import android.widget.Toast
+import com.fran.teclas.BuildConfig
 import com.fran.teclas.MainActivity
+import com.fran.teclas.brief.CueSignal
+import com.fran.teclas.brief.Launch
+import com.fran.teclas.brief.Signal
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -31,14 +38,28 @@ internal object CueBridge {
     private const val MIN_FREE_TEXT_LENGTH = 3
     private const val DEBOUNCE_MS = 280L
 
+    /** How long a fetched brief stays good. Cue's own brief is a daily artifact. */
+    private const val BRIEF_TTL_MS = 15 * 60_000L
+
     private const val SETTINGS_PREFS = "cue_settings"
     private const val KEY_MASKING = "phi_masking"
 
     /** How long a tap-to-reveal lasts before masking closes over again. */
     private const val REVEAL_WINDOW_MS = 120_000L
 
+    /**
+     * Searches only. Kept separate from [background] because it is what the user
+     * is waiting on: the index sync decrypts every patient and staff name
+     * server-side, and when both shared one single-threaded executor a search
+     * typed during startup queued behind that sync and appeared to hang forever.
+     */
     private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "cue-search").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
+        Thread(runnable, "cue-search").apply { isDaemon = true }
+    }
+
+    /** Warm-up, vocabulary/index sync, brief refresh. Nothing here is awaited. */
+    private val background = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "cue-sync").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
     private val main = Handler(Looper.getMainLooper())
     private val requestId = AtomicLong(0L)
@@ -66,6 +87,11 @@ internal object CueBridge {
     @Volatile private var windowSecured = false
 
     private var pending: Runnable? = null
+
+    /** Last fetched brief, and when. Refreshed in the background, never awaited. */
+    @Volatile private var briefItems: List<CueBriefItem> = emptyList()
+    @Volatile private var briefFetchedAt = 0L
+    @Volatile private var briefInFlight = false
 
     fun isSignedIn(context: Context): Boolean {
         prime(context)
@@ -115,9 +141,18 @@ internal object CueBridge {
             return CueResults.account(trimmed)
         }
 
-        if (!namesType && trimmed.length < MIN_FREE_TEXT_LENGTH) {
-            cancelPending()
-            return CueResults.NONE
+        if (!namesType) {
+            if (trimmed.length < MIN_FREE_TEXT_LENGTH) {
+                cancelPending()
+                return CueResults.NONE
+            }
+            // Free text that matches nothing in the local index is almost
+            // certainly not a Cue record — don't spend a request on it. A cold
+            // or empty index means "unknown", so we still ask.
+            if (!CueIndex.isEmpty() && !CueIndex.matches(trimmed)) {
+                cancelPending()
+                return CueResults.NONE
+            }
         }
 
         val current = cached
@@ -189,6 +224,112 @@ internal object CueBridge {
         }
     }
 
+    /**
+     * Confirm, then perform a state change.
+     *
+     * Clocking in creates a billable, auditable record, and a homescreen is
+     * exactly where a mis-tap happens — so a write is never one tap. The dialog
+     * names the record and the consequence, and the request runs off the main
+     * thread with the result reported back as a toast.
+     *
+     * The server re-checks ownership, date and legal transition regardless of
+     * what this offers.
+     */
+    fun confirmAndRun(activity: MainActivity, action: CueAction) {
+        val write = action.writes ?: return
+        val app = activity.applicationContext
+
+        AlertDialog.Builder(activity)
+            .setTitle(action.label)
+            .setMessage(consequenceOf(write))
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton(action.label) { _, _ ->
+                Toast.makeText(app, "${action.label}…", Toast.LENGTH_SHORT).show()
+                worker.execute {
+                    val failure = runCatching { CueApi.post(app, write) }
+                        .getOrElse { "Could not reach Cue" }
+                    main.post {
+                        if (failure == null) {
+                            Toast.makeText(app, "${action.label} recorded", Toast.LENGTH_SHORT).show()
+                            // The card that offered this is now stale — its EVV
+                            // state changed, so drop it and re-query.
+                            cached = CueResults.NONE
+                            activity.render()
+                        } else {
+                            Toast.makeText(app, failure, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+            .show()
+    }
+
+    /** Plain-language consequence, so the dialog is not just a second tap. */
+    private fun consequenceOf(write: CueWrite): String = when (write.action) {
+        "clock_in" -> "This starts EVV for the visit and begins a billable record."
+        "clock_out" -> "This ends the visit and closes its EVV window."
+        "confirm", "accept" -> "This confirms you are taking the session."
+        "decline" -> "This releases the session back to the scheduler."
+        else -> "This records a change in Cue."
+    }
+
+    /**
+     * Today's Cue items for the launcher's brief.
+     *
+     * Returns whatever was last fetched and refreshes in the background — the
+     * brief is assembled on the main thread and cannot wait on a network call.
+     */
+    fun briefItems(context: Context): List<CueBriefItem> {
+        prime(context)
+        if (!signedIn) return emptyList()
+
+        val now = System.currentTimeMillis()
+        if (now - briefFetchedAt > BRIEF_TTL_MS && !briefInFlight) {
+            briefInFlight = true
+            val app = context.applicationContext
+            background.execute {
+                val fetched = runCatching { CueApi.briefItems(app) }.getOrDefault(emptyList())
+                main.post {
+                    briefItems = fetched
+                    briefFetchedAt = System.currentTimeMillis()
+                    briefInFlight = false
+                }
+            }
+        }
+        return briefItems
+    }
+
+    /**
+     * Cue's items as launcher [Signal]s, ready for the Today ranker.
+     *
+     * Non-blocking by construction: [briefItems] returns the last fetch and
+     * refreshes in the background, so an empty list here means "nothing yet",
+     * never "waiting on the network".
+     */
+    fun briefSignals(context: Context): List<Signal> {
+        val now = System.currentTimeMillis()
+        return briefItems(context).map { item ->
+            val open = openIntentFor(item)
+            CueSignal(
+                id = "cue:${item.id}",
+                timestamp = if (item.dueAtMillis > 0) item.dueAtMillis else now,
+                title = item.title,
+                body = item.body,
+                dueAtMillis = item.dueAtMillis,
+                actions = if (open != null) listOf(Launch("Open in Cue", open)) else emptyList(),
+            )
+        }
+    }
+
+    /** Where a brief item opens: the Cue app first, then the same record on the web. */
+    private fun openIntentFor(item: CueBriefItem): Intent? {
+        val target = item.deeplink ?: item.href?.let { href ->
+            if (href.startsWith("http")) href else BuildConfig.CUE_API_BASE_URL.trimEnd('/') + href
+        } ?: BuildConfig.CUE_API_BASE_URL.takeIf { it.isNotBlank() }
+        ?: return null
+        return Intent(Intent.ACTION_VIEW, Uri.parse(target)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
     fun openSignIn(context: Context) {
         context.startActivity(
             Intent(context, CueSignInActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -196,8 +337,12 @@ internal object CueBridge {
     }
 
     fun signOut(context: Context) {
+        val app = context.applicationContext
+        // The index holds patient names. It goes with the session, not after it.
+        CueIndex.clear(app)
         CueSession.signOut(context)
         signedIn = false
+        primed = false
         cached = CueResults.NONE
         cancelPending()
     }
@@ -205,15 +350,21 @@ internal object CueBridge {
     /** Called after sign-in so the snapshot picks up the new session immediately. */
     fun onSessionChanged(context: Context) {
         val app = context.applicationContext
-        worker.execute {
+        background.execute {
             signedIn = CueSession.isSignedIn(app)
             CueSession.identity(app)
+            // A different clinic is a different caseload — re-index rather than
+            // matching the previous org's names.
+            CueIndex.clear(app)
+            if (signedIn) runCatching { CueIndex.sync(app) }
         }
     }
 
     /** Drop everything held in memory. Called when the launcher locks or backgrounds. */
     fun clearCache() {
         cached = CueResults.NONE
+        briefItems = emptyList()
+        briefFetchedAt = 0L
         cancelPending()
     }
 
@@ -261,6 +412,7 @@ internal object CueBridge {
             override fun onReceive(context: Context?, intent: Intent?) {
                 revealedUntil = 0L
                 cached = CueResults.NONE
+                briefItems = emptyList()
             }
         }
         val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
@@ -297,11 +449,13 @@ internal object CueBridge {
         val app = context.applicationContext
         CueVocabulary.load(app)
         registerScreenOffTeardown(app)
-        worker.execute {
+        background.execute {
             signedIn = CueSession.isSignedIn(app)
             if (signedIn) {
                 CueSession.identity(app)
+                CueIndex.load(app)
                 if (CueVocabulary.isStale(app)) runCatching { CueVocabulary.sync(app) }
+                if (CueIndex.isStale(app)) runCatching { CueIndex.sync(app) }
             }
         }
     }

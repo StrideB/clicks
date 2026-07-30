@@ -35,10 +35,42 @@ internal data class CueMeter(val label: String, val used: Int, val total: Int, v
 
 internal data class CueAction(
     val label: String,
+    /** Native Cue app destination. Tried first; may resolve to nothing. */
     val deeplink: String?,
+    /** Web destination for the same record, relative to the Cue base URL. */
+    val href: String?,
     val tel: String?,
     val geo: String?,
+    /** Set when this action changes server state — see [CueWrite]. */
+    val writes: CueWrite?,
     val primary: Boolean,
+) {
+    val isWrite: Boolean get() = writes != null
+}
+
+/**
+ * A server-side state change offered by a card — clocking in, clocking out.
+ *
+ * These create billable, auditable records, so the launcher always confirms
+ * before firing one. A homescreen is exactly where a mis-tap happens.
+ */
+internal data class CueWrite(val resource: String, val id: String, val action: String)
+
+/**
+ * One item from Cue's daily brief, on its way to the launcher's Today surface.
+ *
+ * Deliberately not a [CueCard]: brief items are ranked next to notifications and
+ * calendar events by the launcher's own ranker, so they carry only what that
+ * ranker needs plus somewhere to go.
+ */
+internal data class CueBriefItem(
+    val id: String,
+    val title: String,
+    val body: String,
+    /** Epoch millis the item becomes relevant, or 0 when it has no due time. */
+    val dueAtMillis: Long,
+    val href: String?,
+    val deeplink: String?,
 )
 
 internal data class CueBucket(val label: String, val count: Int, val tone: String)

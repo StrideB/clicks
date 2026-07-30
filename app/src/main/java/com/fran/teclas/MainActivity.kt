@@ -955,7 +955,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         briefRepository = BriefRepository(
             prefs = prefs(),
             collector = BriefCollector(
-                calendarProvider = { calendarEvents }
+                calendarProvider = { calendarEvents },
+                // Cue's clinical items get ranked alongside notifications rather
+                // than living in a separate list — a clinician's day is one list.
+                cueProvider = { CueBridge.briefSignals(this) }
             ),
             generator = BriefGenerator(prefs()),
             scope = mediaUiScope
