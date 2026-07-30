@@ -193,6 +193,10 @@ internal class TravelPaneHost(private val activity: MainActivity) {
                         }.awaitAll().flatten()
                     }
                 }
+                // Cache regardless of whether the overlay is still open: the parse cost the user a
+                // Gemini call, and search should be able to answer a flight-number query later
+                // without repeating it.
+                FlightCache.save(activity.prefs(), parsed.map { it.first })
                 if (travelOverlay != null) {
                     // Keep only future/undated segments, sorted by date when parseable.
                     itineraries = parsed

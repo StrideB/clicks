@@ -24489,6 +24489,10 @@ Question: $prompt"""
                 "From your Gmail", 0xFF5FD0C4.toInt(), SearchKind.TRAVEL, null
             ) { travelPaneHost.openTravelOverlay(startOnBoardingPasses = boarding) })
         }
+        // Actual itineraries outrank the generic "open the Travel pane" entry: typing "BA249" should
+        // answer with that flight, not with a door to go looking for it. Inserted after the generic
+        // row is placed at 0 so these end up above it.
+        searchFlightResults(q).asReversed().forEach { results.add(0, it) }
         // Recall: "what was I supposed to do with ana?" surfaces stored commitments up top.
         searchCommitmentResults(q).forEachIndexed { i, r -> results.add(minOf(i, results.size), r) }
         results.addAll(searchContactResults(q))
@@ -24612,6 +24616,85 @@ Question: $prompt"""
         val lower = text.lowercase(Locale.US)
         return listOf("flight", "flights", "boarding", "boarding pass", "trip", "trips", "travel", "itinerary")
             .any { lower.contains(it) }
+    }
+
+    // ── Flights in search ────────────────────────────────────────────────────
+    // TravelPaneHost already parses Gmail confirmations into FlightSegments via Gemini, and
+    // FlightCache persists that parse. So answering "BA249" is a prefs read — no network, no LLM,
+    // no per-keystroke cost. Nothing here fetches live status; a segment says exactly what the
+    // confirmation email said.
+
+    /**
+     * A typed flight designator: 2-3 leading characters (IATA carrier code, which may contain a
+     * digit — "U2", "4U", "LH") followed by 1-4 digits, with optional space. "BA249", "ba 249",
+     * "UA328", "LH400". Returned uppercased and space-stripped for comparison.
+     *
+     * Requires at least one letter in the carrier code so a bare number never matches — otherwise
+     * every phone number and every "5" would look like a flight.
+     */
+    private fun flightDesignatorFromQuery(text: String): String? {
+        val clean = text.trim().uppercase(Locale.US).replace(" ", "")
+        if (clean.length < 3 || clean.length > 7) return null
+        val m = Regex("^([A-Z][A-Z0-9]|[A-Z0-9][A-Z]|[A-Z]{2}[A-Z0-9]?)(\\d{1,4})$").find(clean) ?: return null
+        if (m.groupValues[1].none { it.isLetter() }) return null
+        return m.groupValues[1] + m.groupValues[2]
+    }
+
+    /** Normalized designator for a cached segment, so "BA 249" and "ba249" both match. */
+    private fun segmentDesignator(seg: FlightSegment): String =
+        (seg.flightNumber).uppercase(Locale.US).replace(" ", "").replace("-", "")
+
+    /**
+     * Cached itineraries matching [query] — by flight designator, airline, or either endpoint, so
+     * "BA249", "british airways" and "lisbon" all find the same trip. Empty when nothing matches or
+     * nothing has been parsed yet (the Travel pane has to have been opened once with AI configured).
+     */
+    private fun searchFlightResults(query: String): List<SearchResult> {
+        val q = query.trim()
+        if (q.length < 2) return emptyList()
+        val segments = FlightCache.load(prefs())
+        if (segments.isEmpty()) return emptyList()
+        val lower = q.lowercase(Locale.US)
+        val designator = flightDesignatorFromQuery(q)
+        val wantsAll = looksLikeTravelQuery(q)
+
+        return segments.filter { seg ->
+            wantsAll ||
+                (designator != null && segmentDesignator(seg).startsWith(designator)) ||
+                seg.airline.lowercase(Locale.US).contains(lower) ||
+                seg.from.lowercase(Locale.US).contains(lower) ||
+                seg.to.lowercase(Locale.US).contains(lower)
+        }.take(4).map { seg ->
+            SearchResult(
+                flightResultTitle(seg),
+                flightResultSubtitle(seg),
+                0xFF5FD0C4.toInt(),
+                SearchKind.TRAVEL,
+                null,
+            ) { travelPaneHost.openTravelOverlay(startOnBoardingPasses = false) }
+        }
+    }
+
+    /** "BA249 · LHR → LIS", falling back to whatever the email actually yielded. */
+    private fun flightResultTitle(seg: FlightSegment): String {
+        val code = seg.flightNumber.trim().ifBlank { seg.airline.trim() }
+        val route = listOf(seg.from.trim(), seg.to.trim()).filter { it.isNotEmpty() }
+        return when {
+            code.isNotEmpty() && route.size == 2 -> "$code · ${route[0]} → ${route[1]}"
+            route.size == 2 -> "${route[0]} → ${route[1]}"
+            code.isNotEmpty() -> code
+            else -> "Flight"
+        }
+    }
+
+    /** Date, departure time and seat — only the parts the confirmation actually contained. */
+    private fun flightResultSubtitle(seg: FlightSegment): String {
+        val bits = mutableListOf<String>()
+        seg.date.trim().takeIf { it.isNotEmpty() }?.let { bits.add(it) }
+        seg.depart.trim().takeIf { it.isNotEmpty() }?.let { bits.add(it) }
+        seg.seat.trim().takeIf { it.isNotEmpty() }?.let { bits.add("Seat $it") }
+        if (bits.isEmpty()) seg.airline.trim().takeIf { it.isNotEmpty() }?.let { bits.add(it) }
+        return bits.joinToString(" · ").ifBlank { "From your Gmail" }
     }
 
     // A typed phone number ("5551234567", "(555) 123-4567", "+1 555 123 4567") — only digits
