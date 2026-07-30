@@ -37,9 +37,10 @@ API key to admin-equivalent, org-wide access for whoever holds the APK, which
 would defeat exactly the per-person scoping that makes this safe to hand out.
 
 **One prerequisite, once, for everyone:** `/api/native/v1/search` must be live
-at `cue.api.base.url`. It exists on the cue repo's
-`claude/private-launcher-aba-integration-24kmjy` branch, not on `main`. Until
-that is deployed, the launcher shows "Cue unavailable — Not found".
+at `cue.api.base.url`. It lives on the cue repo's `cue-aba` branch — same name,
+both repos — and is not on `main` yet. Until it is deployed, the launcher shows
+"Cue unavailable — Not found", which is the diagnostic for "the API half isn't
+up".
 
 ## How it knows which clinic
 
