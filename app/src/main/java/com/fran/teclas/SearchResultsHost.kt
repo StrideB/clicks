@@ -609,11 +609,9 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     // so a font-size change still takes effect on the next build.
     private var fontScaleMemo = 0f
 
+    /** Memoized per build pass; the formula itself lives on the activity so Cue cards share it. */
     private fun searchFontScale(): Float {
-        if (fontScaleMemo <= 0f) {
-            val progress = activity.searchFontSizePref().coerceIn(0, 100)
-            fontScaleMemo = 0.90f + progress / 100f * 0.50f   // 0→0.90x, 50→1.15x (Medium), 100→1.40x
-        }
+        if (fontScaleMemo <= 0f) fontScaleMemo = activity.searchFontScale()
         return fontScaleMemo
     }
 

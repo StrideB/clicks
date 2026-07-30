@@ -14636,6 +14636,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     // (Medium). Scales zone headers, result titles/subtitles, and app-tile labels together.
     // (searchFontScale, which consumes this pref, lives in SearchResultsHost.)
     internal fun searchFontSizePref(): Int = prefs().getInt(SEARCH_FONT_SIZE_PREF, SEARCH_FONT_SIZE_DEFAULT)
+
+    /**
+     * The multiplier every text size on the search surface is scaled by.
+     *
+     * Lives here rather than in SearchResultsHost because the Cue cards need the same answer: they
+     * are built elsewhere, so with their own sizes they were the one part of search that did not
+     * respond to the slider at all.
+     */
+    internal fun searchFontScale(): Float =
+        0.90f + searchFontSizePref().coerceIn(0, 100) / 100f * 0.50f   // 0→0.90x, 50→1.15x, 100→1.40x
     private fun searchFontSizeLabel(progress: Int = searchFontSizePref()): String = when {
         progress < 34 -> "SMALL"
         progress < 67 -> "MEDIUM"
