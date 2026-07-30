@@ -257,8 +257,7 @@ internal fun Context.systemStatusBarHeight(): Int {
 }
 
 /**
- * Height (px) of the bottom band the 3-button navigation bar takes touches in — 0 on gesture
- * navigation.
+ * Height (px) of the bottom band the 3-button navigation bar occupies — 0 on gesture navigation.
  *
  * Our windows draw to the physical bottom edge (the launcher pads the status bar in by hand; the
  * docked deck window uses FLAG_LAYOUT_NO_LIMITS), so with buttons enabled the system's
@@ -266,27 +265,58 @@ internal fun Context.systemStatusBarHeight(): Int {
  * reserve this band so the keyboard sits above the buttons instead.
  *
  * Gesture navigation must NOT be lifted: the handle floats harmlessly over the deck, and reserving
- * its ~24dp inset would open a dead strip beneath the full-bleed keyboard. `tappableElement` is what
- * separates the two — it reports the region system UI actually consumes touches in, which is the
- * whole button bar under 3-button nav and zero under gestures. `navigationBars` is intersected with
- * it so a hidden bar still reads as 0.
+ * its ~24dp inset would open a dead strip beneath the full-bleed keyboard.
+ *
+ * *Which mode* and *how tall* are answered separately, because deriving the mode from insets alone
+ * is not dependable. The first cut inferred it from `tappableElement` — 0 under gestures, the whole
+ * bar under buttons — and it shipped without lifting anything on a real device. So the mode now
+ * comes from `Settings.Secure.navigation_mode`, the very setting the user toggles (0 = 3-button,
+ * 1 = 2-button, 2 = gestural), and insets are used only to measure. tappableElement survives purely
+ * as the fallback for a device that doesn't publish the setting.
+ *
+ * Height comes from real insets so a nav bar that isn't at the bottom (landscape, where it moves to
+ * the side) correctly measures 0; the `navigation_bar_height` resource is the last resort, used only
+ * when no window can be asked.
  */
 internal fun Context.systemNavButtonsInset(): Int {
+    // Prefer the attached window's own insets — the authoritative value. currentWindowMetrics is the
+    // fallback for a Service (and for the first render, before the decor is attached); its insets are
+    // documented as less accurate, which is part of why the first attempt missed.
     val insets = runCatching {
-        getSystemService(WindowManager::class.java)?.currentWindowMetrics?.windowInsets
+        (this as? android.app.Activity)?.window?.peekDecorView()?.rootWindowInsets
+            ?: getSystemService(WindowManager::class.java)?.currentWindowMetrics?.windowInsets
     }.getOrNull()
-    if (insets != null) {
-        val bars = insets.getInsets(WindowInsets.Type.navigationBars()).bottom
-        val tappable = insets.getInsets(WindowInsets.Type.tappableElement()).bottom
-        return minOf(bars, tappable)
+    val bars = insets?.getInsets(WindowInsets.Type.navigationBars())?.bottom
+    val tappable = insets?.getInsets(WindowInsets.Type.tappableElement())?.bottom
+
+    val gestural = when (navigationModeSetting()) {
+        0, 1 -> false          // 3-button / 2-button: a real bar owns the bottom
+        2 -> true              // fully gestural: nothing to reserve
+        else -> if (tappable != null && bars != null) tappable < bars else null
     }
-    // No window metrics (non-visual context on some OEM builds): fall back to the platform's own
-    // nav-mode flag. 0 = 3-button, 1 = 2-button, 2 = fully gestural.
-    val modeId = resources.getIdentifier("config_navBarInteractionMode", "integer", "android")
-    val mode = if (modeId > 0) runCatching { resources.getInteger(modeId) }.getOrNull() else null
-    if (mode == null || mode == 2) return 0
-    val heightId = resources.getIdentifier("navigation_bar_height", "dimen", "android")
-    return if (heightId > 0) runCatching { resources.getDimensionPixelSize(heightId) }.getOrDefault(0) else 0
+
+    val measured = when {
+        gestural == true -> 0
+        bars != null -> bars   // real inset: already 0 when the bar is on the side or hidden
+        gestural == false -> resourceNavBarHeight()
+        else -> 0
+    }
+    android.util.Log.d(
+        "TeclasNav",
+        "navMode=${navigationModeSetting()} gestural=$gestural bars=$bars tappable=$tappable " +
+            "res=${resourceNavBarHeight()} -> $measured"
+    )
+    return measured
+}
+
+/** `Settings.Secure.navigation_mode`: 0 = 3-button, 1 = 2-button, 2 = gestural. Null if absent. */
+private fun Context.navigationModeSetting(): Int? = runCatching {
+    android.provider.Settings.Secure.getInt(contentResolver, "navigation_mode")
+}.getOrNull()
+
+private fun Context.resourceNavBarHeight(): Int {
+    val id = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+    return if (id > 0) runCatching { resources.getDimensionPixelSize(id) }.getOrDefault(0) else 0
 }
 
 // ── Neu-token drawable factories (tokens passed explicitly) ─────────────────

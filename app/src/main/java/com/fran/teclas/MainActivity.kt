@@ -2025,6 +2025,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             )
         }
         rootView = root
+        // The authoritative nav-bar measurement only exists once the window actually has insets, and
+        // the first render runs before the decor is attached — so converge here instead of trusting
+        // whatever estimate render() had to start from. Re-renders only if the value moved, so the
+        // next pass over the rebuilt tree measures the same number and stops.
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            refreshNavBarInset()
+            insets
+        }
         contentFrame = FrameLayout(this).apply {
             addView(
                 when {
@@ -28865,7 +28873,9 @@ Question: $prompt"""
         if (measured == navBarInsetPx) return
         val hadValue = navBarInsetPx >= 0
         navBarInsetPx = measured
-        if (hadValue && ::rootView.isInitialized) render()
+        // post(): this also runs from inside an inset dispatch, and rebuilding the tree mid-dispatch
+        // is not safe.
+        if (hadValue && ::rootView.isInitialized) rootView.post { render() }
     }
 
     private fun selectedNeuTokens(): NeuTokens {
