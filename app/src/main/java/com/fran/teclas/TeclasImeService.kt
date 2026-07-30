@@ -590,12 +590,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val deckParams = if (imeIsWideCanvas()) {
             android.widget.FrameLayout.LayoutParams(
                 imeKeyboardPanelWidth(),
-                imeKeyboardHeight(),
+                imeDeckTotalHeight(),
                 Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         } else {
             android.widget.FrameLayout.LayoutParams(
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                imeKeyboardHeight())
+                imeDeckTotalHeight())
         }
         return android.widget.FrameLayout(this).apply {
             addView(deck, deckParams)
@@ -734,7 +734,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     override fun onWindowShown() {
         super.onWindowShown()
-        if (shouldDeferToDeck()) hideImeSurface()
+        if (shouldDeferToDeck()) {
+            hideImeSurface()
+        } else {
+            // The authoritative nav-band measurement needs an attached window, and the deck was built
+            // before one existed. Re-apply on every show, which also picks up a nav-mode change made
+            // while the keyboard was alive — onCreateInputView runs only once.
+            applyImeDeckHeight()
+        }
     }
 
     override fun onUpdateSelection(
@@ -826,9 +833,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             // Side padding reclaimed for the key grid: wider touch cells on every row (the visual
             // breathing room now comes from each key face's inset, not dead deck border).
-            setPadding(dp(2), dp(10), dp(2), dp(8))
+            setPadding(dp(2), dp(10), dp(2), dp(8) + imeNavBarInset())
             background = deckBackground()
-            minimumHeight = imeKeyboardHeight()
+            minimumHeight = imeDeckTotalHeight()
             // Per-component open-cost breakdown (RENDER_LOG): buildKeyboard's total was ~19ms after
             // the canvas switch; these localize whatever remains (strip vs chrome vs key grid).
             addView(renderTime("open strip") { buildSuggestionStrip() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0))
@@ -2524,7 +2531,15 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun applyImeDeckHeight() {
-        val target = imeKeyboardHeight()
+        val target = imeDeckTotalHeight()
+        // Re-applied on every show, not just at build: nav mode is a system setting the user can flip
+        // while the keyboard is alive, and onCreateInputView runs only once.
+        deckView?.let { deck ->
+            val band = imeNavBarInset()
+            if (deck.paddingBottom != dp(8) + band) {
+                deck.setPadding(deck.paddingLeft, deck.paddingTop, deck.paddingRight, dp(8) + band)
+            }
+        }
         deckView?.minimumHeight = target
         deckView?.layoutParams?.let { lp ->
             if (lp.height != target) {
@@ -4715,6 +4730,20 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val maxWidth = resources.displayMetrics.widthPixels
         return (maxWidth - dp(60)).coerceAtLeast(dp(720))
     }
+
+    /**
+     * Bottom band the 3-button navigation bar owns inside our own window, in px — 0 on gestures.
+     *
+     * The framework does not keep the IME's input view clear of the button bar here (an IME window
+     * targeting SDK 35+ is edge-to-edge like any other), so back/home/recents landed on the bottom
+     * key row exactly as they did on the launcher. The deck grows by the band and pads its keys up
+     * out of it, so the deck's own background fills the strip and the buttons sit on keyboard-coloured
+     * surface instead of a transparent gap.
+     */
+    private fun imeNavBarInset(): Int = systemNavButtonsInset(imeRoot)
+
+    /** Total deck height: the key content plus the nav-button band it has to sit above. */
+    private fun imeDeckTotalHeight(): Int = imeKeyboardHeight() + imeNavBarInset()
 
     private fun imeKeyboardHeight(): Int {
         val rowCount = 4

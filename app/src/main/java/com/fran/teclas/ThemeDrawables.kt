@@ -278,12 +278,13 @@ internal fun Context.systemStatusBarHeight(): Int {
  * the side) correctly measures 0; the `navigation_bar_height` resource is the last resort, used only
  * when no window can be asked.
  */
-internal fun Context.systemNavButtonsInset(): Int {
-    // Prefer the attached window's own insets — the authoritative value. currentWindowMetrics is the
+internal fun Context.systemNavButtonsInset(fromView: android.view.View? = null): Int {
+    // Prefer an attached view's own insets — the authoritative value. currentWindowMetrics is the
     // fallback for a Service (and for the first render, before the decor is attached); its insets are
     // documented as less accurate, which is part of why the first attempt missed.
     val insets = runCatching {
-        (this as? android.app.Activity)?.window?.peekDecorView()?.rootWindowInsets
+        fromView?.rootWindowInsets
+            ?: (this as? android.app.Activity)?.window?.peekDecorView()?.rootWindowInsets
             ?: getSystemService(WindowManager::class.java)?.currentWindowMetrics?.windowInsets
     }.getOrNull()
     val bars = insets?.getInsets(WindowInsets.Type.navigationBars())?.bottom
@@ -301,13 +302,20 @@ internal fun Context.systemNavButtonsInset(): Int {
         gestural == false -> resourceNavBarHeight()
         else -> 0
     }
-    android.util.Log.d(
-        "TeclasNav",
-        "navMode=${navigationModeSetting()} gestural=$gestural bars=$bars tappable=$tappable " +
-            "res=${resourceNavBarHeight()} -> $measured"
-    )
+    // Only on change: this is called on every keyboard show and every deck-height sync, and a line
+    // per call would bury the one transition worth reading.
+    if (measured != lastLoggedNavInset) {
+        lastLoggedNavInset = measured
+        android.util.Log.d(
+            "TeclasNav",
+            "navMode=${navigationModeSetting()} gestural=$gestural bars=$bars tappable=$tappable " +
+                "res=${resourceNavBarHeight()} -> $measured"
+        )
+    }
     return measured
 }
+
+private var lastLoggedNavInset = Int.MIN_VALUE
 
 /** `Settings.Secure.navigation_mode`: 0 = 3-button, 1 = 2-button, 2 = gestural. Null if absent. */
 private fun Context.navigationModeSetting(): Int? = runCatching {
