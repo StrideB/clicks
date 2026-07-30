@@ -28258,18 +28258,8 @@ Question: $prompt"""
         }
     }
 
-    private fun keyboardDeckBottomEdgeColor(): Int {
-        val dark = !keyboardLightMode()
-        return when {
-            keyboardTheme == KEYBOARD_THEME_BRUSHED -> if (dark) 0xFF101113.toInt() else 0xFFD4D8DF.toInt()
-            keyboardTheme == KEYBOARD_THEME_SEEME -> 0xFF050608.toInt()
-            keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK -> 0xFF050506.toInt()
-            keyboardTheme == KEYBOARD_THEME_HYPER3D || keyboardTheme == KEYBOARD_THEME_TECLAS -> if (dark) 0xFF08090C.toInt() else 0xFFC7CED9.toInt()
-            keyboardTheme == KEYBOARD_THEME_GOKEYS -> if (dark) 0xFF0B0C0F.toInt() else 0xFFC9D0DA.toInt()
-            KeyboardThemeDrawables.isAddedTheme(keyboardTheme) -> if (dark) 0xFF111318.toInt() else 0xFFDDE2E9.toInt()
-            else -> if (dark) 0xFF1B1D21.toInt() else 0xFFE3E7EE.toInt()
-        }
-    }
+    private fun keyboardDeckBottomEdgeColor(): Int =
+        keyboardDeckBottomEdgeColor(keyboardTheme, keyboardLightMode())
 
     private fun keyboardLightMode(): Boolean {
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {

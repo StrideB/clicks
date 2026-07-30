@@ -737,10 +737,16 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (shouldDeferToDeck()) {
             hideImeSurface()
         } else {
+            // Claim the button band before measuring it: until the window stops fitting system
+            // windows, its own nav-bar inset reads 0 and there is nothing for the deck to reserve.
+            syncImeSystemBars()
             // The authoritative nav-band measurement needs an attached window, and the deck was built
             // before one existed. Re-apply on every show, which also picks up a nav-mode change made
             // while the keyboard was alive — onCreateInputView runs only once.
             applyImeDeckHeight()
+            // Handing the band over re-dispatches insets, which lands after this frame — measure
+            // again once it has, or the first show keeps the pre-handover value of 0.
+            imeRoot?.post { applyImeDeckHeight() }
         }
     }
 
@@ -4750,6 +4756,42 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
      * surface instead of a transparent gap.
      */
     private fun imeNavBarInset(): Int = systemNavButtonsInset(imeRoot)
+
+    /** The colour the deck's own background ends on — what the button strip has to be. */
+    private fun imeDeckBottomColor(): Int =
+        keyboardDeckBottomEdgeColor(keyboardVisualTheme(), keyboardLightMode(keyboardVisualTheme()))
+
+    /**
+     * Make the button strip part of the keyboard rather than part of the app behind it.
+     *
+     * Padding the deck by the nav band only helps if our window reaches the bottom edge. By default
+     * the framework insets the IME window above the button bar, so the strip behind the buttons
+     * belongs to the app being typed into — a white band directly under a black keyboard. Two levers,
+     * because which one works depends on the platform version:
+     *
+     *  - setDecorFitsSystemWindows(false) hands the band to us. Our own [imeNavBarInset] then reads
+     *    non-zero, the deck pads its keys up out of it, and the deck's background — glass, gradient,
+     *    whatever the theme draws — is what shows behind the buttons. No colour to match.
+     *  - navigationBarColor for Android 14 and below, where the platform still honours it and the
+     *    bar is drawn by whoever owns the system-bar backgrounds.
+     *
+     * Both are idempotent, so this runs on every show; the theme can change between two of them.
+     */
+    private fun syncImeSystemBars() {
+        val w = window?.window ?: return
+        runCatching { w.setDecorFitsSystemWindows(false) }
+        val light = keyboardLightMode(keyboardVisualTheme())
+        runCatching {
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+            @Suppress("DEPRECATION")
+            w.navigationBarColor = imeDeckBottomColor()
+            w.isNavigationBarContrastEnforced = false
+            w.insetsController?.setSystemBarsAppearance(
+                if (light) android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS else 0,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+            )
+        }
+    }
 
     /** Total deck height: the key content plus the nav-button band it has to sit above. */
     private fun imeDeckTotalHeight(): Int = imeKeyboardHeight() + imeNavBarInset()

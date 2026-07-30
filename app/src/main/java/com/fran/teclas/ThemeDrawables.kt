@@ -317,6 +317,24 @@ internal fun Context.systemNavButtonsInset(fromView: android.view.View? = null):
 
 private var lastLoggedNavInset = Int.MIN_VALUE
 
+/**
+ * The colour a keyboard deck's background ends on at its bottom edge, by theme.
+ *
+ * Shared because three surfaces have to agree on it: the launcher's full-bleed dock, the docked
+ * overlay, and the IME — which tints the system navigation bar with it, so the button strip is not a
+ * different colour from the keys directly above it. Theme ids are the same strings all three classes
+ * keep as private constants.
+ */
+internal fun keyboardDeckBottomEdgeColor(theme: String, light: Boolean): Int = when {
+    theme == "brushed" -> if (light) 0xFFD4D8DF.toInt() else 0xFF101113.toInt()
+    theme == "seeme" -> 0xFF050608.toInt()
+    theme == "hyper3d_black" -> 0xFF050506.toInt()
+    theme == "hyper3d" || theme == "teclas" -> if (light) 0xFFC7CED9.toInt() else 0xFF08090C.toInt()
+    theme == "gokeys" -> if (light) 0xFFC9D0DA.toInt() else 0xFF0B0C0F.toInt()
+    KeyboardThemeDrawables.isAddedTheme(theme) -> if (light) 0xFFDDE2E9.toInt() else 0xFF111318.toInt()
+    else -> if (light) 0xFFE3E7EE.toInt() else 0xFF1B1D21.toInt()
+}
+
 /** `Settings.Secure.navigation_mode`: 0 = 3-button, 1 = 2-button, 2 = gestural. Null if absent. */
 private fun Context.navigationModeSetting(): Int? = runCatching {
     android.provider.Settings.Secure.getInt(contentResolver, "navigation_mode")
