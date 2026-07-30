@@ -2011,18 +2011,24 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             window.setBackgroundDrawable(ColorDrawable(activeNeuTokens.base))
             window.decorView.setBackgroundColor(activeNeuTokens.base)
         }
+        val hideDockForPane = !unfolded && openPane?.kind == PaneKind.SETTINGS
+        val showRootDock = unfolded || keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
+        // When a keyboard reaches the bottom edge it reserves the nav-button band inside itself (see
+        // keyboardBottomPadding), so the root must not reserve it a second time. Only when there is no
+        // keyboard down there does the root take the band, to keep home content off the buttons.
+        val keyboardOwnsBottom = (showRootDock && !hideDockForPane) ||
+            (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock())
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
             clipToPadding = false
             setBackgroundColor(if (wallpaperCanvas) Color.TRANSPARENT else activeNeuTokens.base)
-            // Bottom = the 3-button nav bar band (0 on gestures) plus the floating deck's own lift.
-            // Without the nav band the keyboard's bottom key row sat under the system buttons.
             setPadding(
                 0,
                 launcherStatusBarInset(),
                 0,
-                launcherNavBarReserve() + (if (phoneDockedFullBleed || phoneWidgetCanvas) 0 else keyboardBottomLift())
+                (if (keyboardOwnsBottom) 0 else launcherNavBarReserve()) +
+                    (if (phoneDockedFullBleed || phoneWidgetCanvas) 0 else keyboardBottomLift())
             )
         }
         rootView = root
@@ -2053,8 +2059,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         root.addView(contentFrame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        val hideDockForPane = !unfolded && openPane?.kind == PaneKind.SETTINGS
-        val showRootDock = unfolded || keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
         if (showRootDock && !hideDockForPane) {
             // Docked mode: the keyboard is a full-width opaque deck — an opaque backdrop fills the
             // whole dock band so the neumorphic deck's shadow inset / rounded corners never let the
@@ -2099,7 +2103,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // full-screen — otherwise its lower half is buried behind the opaque keyboard
                         // and only the top of the image is ever visible.
                         if (phoneDockedFullBleed) {
-                            lp.bottomMargin = activeRootDockHeight() + keyboardBottomLift() + launcherNavBarReserve()
+                            lp.bottomMargin = activeRootDockHeight() + keyboardBottomLift()
                         }
                         addView(it, lp)
                     }
@@ -2110,37 +2114,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     }, FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
-                        systemGestureReservedBottomInset() + dp(18),
-                        Gravity.BOTTOM
-                    ).apply {
-                        // These deck fills are siblings of root inside the full-screen shell, so they
-                        // don't inherit root's nav-bar padding — offset them by hand or they slide
-                        // under the buttons while the keyboard above them sits correctly.
-                        bottomMargin = launcherNavBarReserve()
-                    })
-                }
-                addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-                // 3-button navigation: the full-bleed deck now stops above the button bar, and on
-                // Android 15+ window.navigationBarColor is ignored for edge-to-edge apps — so without
-                // this the band between the bottom key row and the buttons would show bare wallpaper —
-                // a visibly different colour from the keyboard right where the two meet. Carry the
-                // deck's bottom-edge colour into it in every placement that puts a keyboard at the
-                // bottom (docked full-bleed, the root dock, and the widget canvas), so the buttons
-                // always sit on keyboard surface and the whole thing reads as one slab.
-                val keyboardOwnsBottom = (showRootDock && !hideDockForPane) ||
-                    (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock())
-                if (keyboardOwnsBottom && launcherNavBarInset() > 0) {
-                    addView(View(context).apply {
-                        // Flat, not the deck's gradient: this band continues the deck's *bottom edge*,
-                        // so it has to be the exact colour that edge ends on or the seam shows.
-                        setBackgroundColor(keyboardDeckBottomEdgeColor())
-                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                    }, FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        launcherNavBarInset(),
+                        // Grown by the button band: the deck above now extends over it, and this fill
+                        // backs the deck, so it has to reach the bottom edge too.
+                        systemGestureReservedBottomInset() + dp(18) + launcherNavBarReserve(),
                         Gravity.BOTTOM
                     ))
                 }
+                addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                 if (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock()) {
                     addView(View(context).apply {
                         background = keyboardDeckBottomEdgeBackground()
@@ -2149,9 +2129,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         dp(10),
                         Gravity.BOTTOM
-                    ).apply {
-                        bottomMargin = launcherNavBarReserve()
-                    })
+                    ))
                 }
                 dockedFreeformBackdropView = View(context).apply {
                     background = dockedFreeformBackdropDrawable()
@@ -3286,8 +3264,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // The root keyboard dock already owns the bottom of the screen (it's a sibling below
         // the content frame), so only pad the content for the slice of the lower panel the
         // dock doesn't cover.
-        val dockReserved = activeRootDockHeight() + launcherDockedKeyboardBottomLift() + keyboardBottomLift() +
-            launcherNavBarReserve()
+        val dockReserved = activeRootDockHeight() + launcherDockedKeyboardBottomLift() + keyboardBottomLift()
         return (screenHeight - posture.hinge.top - dockReserved).coerceIn(0, screenHeight / 2)
     }
 
@@ -11210,7 +11187,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val metrics = resources.displayMetrics
         val contentHeight = metrics.heightPixels -
             launcherStatusBarInset() -
-            launcherNavBarReserve() -
             dp(34) -
             keyboardHeight()
         val reservedHomeChrome = dp(20) + dp(70) + dp(80) + dp(28)
@@ -23858,7 +23834,7 @@ Question: $prompt"""
             keyboardDockView.getLocationOnScreen(loc)
             loc[1].takeIf { it > 0 && keyboardDockView.height > 0 }
         } else null
-        val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift() - launcherNavBarReserve())
+        val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift())
             .takeIf { it in 1 until screenH }
         val keyboardTopPx = DockedFreeform.resolveKeyboardTop(this, measured, computed)
         // Share the top with the accessibility service so it can re-pin via Shizuku on window changes.
@@ -27056,8 +27032,15 @@ Question: $prompt"""
         return keyboardHeight() + launcherSuggestionStripOuterHeight()
     }
 
+    /**
+     * Lifts the deck off the screen's bottom edge — but not when the nav-button band is already doing
+     * that job. Keeping both would leave a 10dp strip of *dock* backdrop below the deck and under the
+     * buttons, which is a different surface again on translucent themes. The band alone is the lift.
+     */
     private fun launcherDockedKeyboardBottomLift(): Int =
-        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive() && openPane == null) DockedKeyboardMetrics.overlayBottomLiftPx(this) else 0
+        if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive() && openPane == null &&
+            launcherNavBarReserve() <= 0
+        ) DockedKeyboardMetrics.overlayBottomLiftPx(this) else 0
 
     private fun expandedRootDockHeight(): Int {
         if (widgetPaneUsesRootDock()) return widgetKeyboardHeight()
@@ -28752,7 +28735,23 @@ Question: $prompt"""
         return rowsHeight - overlap + keyboardTopPadding() + keyboardBottomPadding() + settingsHeight + suggestionStripHeight()
     }
     private fun keyboardTopPadding() = dp(4)
-    private fun keyboardBottomPadding() = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(18) else dp(2)
+    /**
+     * Padding under the keys inside the deck — and, with 3-button navigation, the button band too.
+     *
+     * The band is reserved *inside* the deck rather than beneath it so that what shows behind the
+     * buttons is the deck's own background. Painting a separate strip in a matching colour only works
+     * for opaque themes: the Default deck is translucent glass over a blur plate, so a flat fill read
+     * as a different surface whatever colour it was given. Growing the deck makes the question moot —
+     * the band *is* the deck. [keyboardHeight] already counts this padding, so the dock, the wallpaper
+     * cutoff and the freeform keyboard-top all follow without further arithmetic.
+     *
+     * Skipped on the unfolded inner layout, where the keyboard is a floating panel that never reaches
+     * the bottom edge.
+     */
+    private fun keyboardBottomPadding(): Int {
+        val base = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(18) else dp(2)
+        return base + if (isUnfoldedInnerLayoutActive()) 0 else launcherNavBarReserve()
+    }
     private fun keyboardBottomLift() = dp(3)
 
     private fun keyTextSize(label: String): Float {
