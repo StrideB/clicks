@@ -1,12 +1,5 @@
 package com.fran.teclas.weather
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -21,7 +14,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -168,31 +160,27 @@ private fun Text(
     style = style.merge(TextStyle(shadow = WeatherTextShadow))
 )
 
-// ---------- Animated condition icon (Canvas, no external assets) ----------
+// ---------- Condition icon (Canvas, no external assets) ----------
+/**
+ * Static. The live animation was removed deliberately — see docs/heat-diagnostics.md.
+ *
+ * This previously ran three concurrent infinite transitions (a 26 s spin, a 3 s bob, a 1.4 s
+ * precipitation fall). Compose drives an infinite transition off the frame clock, so the Canvas
+ * repainted **every vsync for as long as the home screen was visible** — 60-120 fps of sustained
+ * CPU + GPU, forever, for an icon a few dp across. Any of the 20 non-Classic weather widget styles
+ * put this on the home screen (MainActivity renders it via weatherStyleById(...).render()), so for
+ * anyone who had picked one it never stopped.
+ *
+ * The reduce-motion gate that used to guard it only helped users who had turned system animations
+ * off globally, which is nobody by default.
+ *
+ * The frozen values below are the same ones the old reduce-motion path used, so the icon looks
+ * exactly as it did at rest: sun rays unrotated, cloud at mid-bob, no falling precipitation.
+ */
 @Composable
 fun WeatherGlyph(condition: Condition, sizeDp: Int, tint: Color = glyphColor, accent: Color) {
-    // Respect the system "remove animations" setting like every other animated surface in the app.
-    // Without this gate the three infinite transitions below repaint the Canvas every vsync for as
-    // long as the home screen is visible — a continuous CPU/GPU draw even when the user asked for none.
-    if (rememberReduceMotion()) {
-        Canvas(Modifier.size(sizeDp.dp)) {
-            drawWeatherGlyph(condition, spin = 0f, bob = 0.5f, fall = 0f, tint = tint, accent = accent)
-        }
-        return
-    }
-    val transition = rememberInfiniteTransition(label = "wx")
-    val spin by transition.animateFloat(
-        0f, 360f, infiniteRepeatable(tween(26000, easing = LinearEasing)), label = "spin"
-    )
-    val bob by transition.animateFloat(
-        0f, 1f, infiniteRepeatable(tween(3000, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "bob"
-    )
-    val fall by transition.animateFloat(
-        0f, 1f, infiniteRepeatable(tween(1400, easing = LinearEasing)), label = "fall"
-    )
-
     Canvas(Modifier.size(sizeDp.dp)) {
-        drawWeatherGlyph(condition, spin, bob, fall, tint, accent)
+        drawWeatherGlyph(condition, spin = 0f, bob = 0.5f, fall = 0f, tint = tint, accent = accent)
     }
 }
 
@@ -230,21 +218,8 @@ private fun DrawScope.drawWeatherGlyph(
     }
 }
 
-// True when the OS animator duration scale is 0 (Settings → Accessibility → Remove animations,
-// or Developer options → Animator duration scale off). Read once per composition; it doesn't change live.
-@Composable
-private fun rememberReduceMotion(): Boolean {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    return androidx.compose.runtime.remember(context) {
-        runCatching {
-            android.provider.Settings.Global.getFloat(
-                context.contentResolver,
-                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            ) == 0f
-        }.getOrDefault(false)
-    }
-}
+// (rememberReduceMotion removed with the weather animation it gated — the glyph is now
+// unconditionally static, so there is nothing left to opt out of.)
 
 private fun DrawScope.drawCloud(tint: Color, s: Float, bob: Float) {
     val dy = (bob - 0.5f) * s * 0.05f

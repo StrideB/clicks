@@ -1,8 +1,79 @@
 # On-device heat diagnostics
 
-How to verify (or refute) the heat fix in PR #97 on a real phone, and how to run the test suite
-locally. Written for the specific hypothesis below — but the measurement recipe generalises to the
-next "why is it warm" question.
+How to verify (or refute) the heat fixes on a real phone, and how to run the test suite locally.
+Written for the specific hypotheses below — but the measurement recipe generalises to the next
+"why is it warm" question.
+
+There are two distinct heat sources, and they behave differently:
+
+- **Notification-driven LLM inference** (PR #97) — bursty, correlated with incoming messages.
+- **Continuous per-frame rendering** (below) — flat, constant, present whenever the home screen
+  is showing. This one is worse in practice because it never stops and never lets the display
+  pipeline idle.
+
+---
+
+# Continuous render audit
+
+A full sweep of every surface in the launcher that can repaint on a frame clock. The distinction
+that matters: an animation bounded by user interaction is fine, an animation that runs *for as
+long as a screen is visible* is a permanent tax — it pins the GPU and prevents the display from
+dropping to its idle refresh rate.
+
+## Removed
+
+| Surface | What it did | Why it mattered |
+|---|---|---|
+| `WeatherGlyph` (`weather/WeatherStyles.kt`) | Three concurrent Compose infinite transitions — 26 s spin, 3 s bob, 1.4 s precipitation fall | Repainted **every vsync while the home screen was visible**, forever. Active for any of the 20 non-Classic weather widget styles |
+| `WeatherDripView` (`MainActivity`) | Rain-drop particle simulation: per-frame spawning + physics, drawn full-width over the widget stack | Defaulted **on**. 6.5 s per-frame bursts re-armed on every weather refresh and every home return |
+| `AnimatedWeatherIconView` (`MainActivity`) | "Live photo" bursts via `postInvalidateOnAnimation` | Same gate, same default-on, same re-arming |
+| `startWallpaperDrift()` (`MainActivity`) | `INFINITE` `ValueAnimator` translating the depth cutout **and** the background wallpaper every frame on an 11 s cycle | The most expensive of the set: moving two full-screen bitmaps per vsync forces the entire home-screen layer to recomposite each frame |
+
+The weather effects all hung off one gate, `animatedWeatherEnabled()`. That is now hard-coded to
+`false` rather than merely flipped in default, because a default only affects fresh installs — an
+existing install already had `true` written to prefs and would have kept animating. The two
+settings toggles still write `ANIMATED_WEATHER_PREF`; it is no longer read, so they are inert and
+should come out of the settings UI separately.
+
+Nothing disappears visually: the weather icon draws its static frame (the same one the old
+reduce-motion path used), and the drip overlay draws nothing.
+
+## Checked and deliberately kept
+
+These are all bounded by user interaction or by a state the user can see, so they cost nothing at
+rest. Listed so the next audit does not have to re-derive it:
+
+| Surface | Bound |
+|---|---|
+| Mic listening pulse (`MainActivity:2358`) | Only while voice input is active |
+| Vinyl disc spin (`MusicPlayer`) | Only while `isPlaying` **and** the music pane is open |
+| Caret blinks (`brand/TeclasBrand`, `brief/TodayPage`) | Only on screens being actively read; removing them would look broken |
+| Glide trail (`MainActivity`, `TeclasImeService`, `SearchResultsHost`) | Driven by touch; stops on release |
+| IME frame sampler (`TeclasImeService:195`) | Diagnostics flag only, and budget-capped to 20 frames after input |
+| Fling (`MainActivity:19044`) | Ends when the fling settles |
+| Fluid Hours wallpaper | Fires at the 4 phase boundaries per day, not per frame |
+| Wallpaper depth (ML Kit segmentation) | One-shot per wallpaper change, then cached |
+
+Fluid Hours and wallpaper depth are the two most likely to *look* like heat suspects and aren't —
+they are expensive per invocation but invoked rarely. Deleting them would cost real features for
+no thermal gain, so they were left alone.
+
+## Confirming the render fix on-device
+
+Different measurement from the notification one — you want a *flat* number, not a spike:
+
+```bash
+# Frame stats while sitting on the home screen doing nothing.
+adb shell dumpsys gfxinfo com.fran.teclas reset
+# leave the home screen visible, untouched, for 60s
+adb shell dumpsys gfxinfo com.fran.teclas | grep -E "Total frames|Janky|50th|90th"
+```
+
+Idle on the home screen should now render **almost no frames**. Before the fix, with a non-Classic
+weather style or wallpaper drift on, the frame count climbed continuously while the phone sat
+untouched — that is the signature, and it is unambiguous.
+
+---
 
 ## The hypothesis under test
 

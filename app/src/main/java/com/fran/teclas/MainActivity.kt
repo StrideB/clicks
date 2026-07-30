@@ -3681,26 +3681,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
+    /**
+     * Removed: the continuous wallpaper parallax ("living drift"). See docs/heat-diagnostics.md.
+     *
+     * This ran an INFINITE ValueAnimator that translated the depth cutout *and* the background
+     * wallpaper every frame, forever, whenever the home screen was showing. Moving two large
+     * full-screen bitmaps per vsync forces the whole home-screen layer to recomposite each frame,
+     * which is the most expensive continuous GPU work the launcher had — an 11 s cycle that never
+     * ended and never idled the display pipeline.
+     *
+     * Kept as a no-op rather than deleted outright so the call sites (settings toggle, wallpaper
+     * change, resume) stay honest and keep cancelling cleanly.
+     */
     private fun startWallpaperDrift() {
-        val subject = wallpaperCutoutImageView ?: return
-        if (reduceMotionEnabled()) return
         cancelWallpaperDrift()
-        // A whisper of continuous parallax: the subject breathes a few px against the background.
-        // This is the battery-costly path — only ever runs when the user opts in.
-        val amp = dp(6).toFloat()
-        wallpaperDriftAnimator = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 11_000L
-            repeatMode = android.animation.ValueAnimator.REVERSE
-            repeatCount = android.animation.ValueAnimator.INFINITE
-            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
-            addUpdateListener { a ->
-                val p = a.animatedValue as Float
-                subject.translationX = amp * p
-                subject.translationY = -amp * 0.6f * p
-                innerWallpaperImageView?.let { it.translationX = -amp * 0.4f * p }
-            }
-            start()
-        }
     }
 
     private fun cancelWallpaperDrift() {
@@ -25876,7 +25870,23 @@ Question: $prompt"""
 
     private fun showDockLabels(): Boolean = prefs().getBoolean(DOCK_LABELS_PREF, true)
 
-    private fun animatedWeatherEnabled(): Boolean = prefs().getBoolean(ANIMATED_WEATHER_PREF, true)
+    /**
+     * Removed: the live weather effects. See docs/heat-diagnostics.md.
+     *
+     * This was the single gate for two per-frame surfaces, both of which defaulted to ON:
+     *  - [WeatherDripView] — a rain-drop particle simulation with per-frame spawning and physics,
+     *    drawn full-width over the widget stack.
+     *  - [AnimatedWeatherIconView] — 6.5 s `postInvalidateOnAnimation` bursts, re-triggered on
+     *    every weather refresh and every return to the home screen.
+     *
+     * Hard-coded to false rather than just flipping the pref default, because the default only
+     * affects fresh installs — an existing install already has `true` written to prefs and would
+     * have kept animating. The two settings toggles still write [ANIMATED_WEATHER_PREF] but it is
+     * no longer read; the toggles are inert and should come out of the settings UI separately.
+     *
+     * Both views still render — the icon draws its static frame, the drip view draws nothing.
+     */
+    private fun animatedWeatherEnabled(): Boolean = false
 
     internal fun invalidateLibraryCaches() {
         libraryCategoriesCacheSignature = null
