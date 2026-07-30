@@ -58,6 +58,28 @@ data class WeatherSignal(
     override val actions: List<BriefAction> = emptyList()
 ) : Signal
 
+/**
+ * A clinical item from Cue — an overdue note, an authorization about to lapse,
+ * a session starting soon.
+ *
+ * Lives here rather than in the `cue` package because [Signal] is sealed:
+ * permitted subtypes must share its package. The launcher's own ranker then
+ * orders Cue items alongside notifications and calendar events, which is the
+ * point — a clinician's day is one list, not two.
+ *
+ * Carries a plain [Intent] like [CalendarSignal] does, not a PendingIntent:
+ * these are ours to construct, not something a notification handed us.
+ */
+data class CueSignal(
+    override val id: String,          // "cue:<item id>"
+    override val timestamp: Long,     // due time when known, else collection time
+    val title: String,
+    val body: String,
+    /** Non-zero when the item has a real deadline; drives ranking urgency. */
+    val dueAtMillis: Long,
+    override val actions: List<BriefAction>
+) : Signal
+
 /** Optional now-playing media. Modeled for completeness; not collected in v1 (widget stack owns it). */
 data class MediaSignal(
     override val id: String,          // "media"

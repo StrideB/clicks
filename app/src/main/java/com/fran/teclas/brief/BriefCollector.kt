@@ -16,6 +16,15 @@ import com.fran.teclas.TeclasNotificationListener
  */
 class BriefCollector(
     private val calendarProvider: () -> List<CalendarEvent>,
+    /**
+     * Clinical items from Cue, already fetched. Defaulted to empty so builds
+     * without the integration — and every existing test — are unaffected.
+     *
+     * A provider rather than a fetch: collect() runs on the main thread while
+     * the brief is assembled, so it can never wait on a network call. The
+     * bridge returns what it last saw and refreshes in the background.
+     */
+    private val cueProvider: () -> List<Signal> = { emptyList() },
     private val nowMs: () -> Long = { System.currentTimeMillis() }
 ) {
     // Weather is intentionally NOT collected — the homescreen already shows it, so it would just be
@@ -23,6 +32,10 @@ class BriefCollector(
     fun collect(): List<Signal> {
         val out = ArrayList<Signal>()
         out += notificationSignals()
+        // Cue items are the one non-notification source Today collects: they are
+        // things you must DO, which is exactly what this surface is for, and
+        // they have no other home on the phone.
+        out += cueProvider()
         // Calendar already has a dedicated homescreen surface. Today is intentionally not another
         // calendar/notification list; it only turns live notifications into actionable notes.
         return out

@@ -550,7 +550,13 @@ internal object CueCardViews {
             return LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 card.actions.take(3).forEach { action ->
-                    val color = if (action.primary) CueTone.forType(card.type) else activeNeuTokens.inkDim
+                    // A write reads in the semantic color of what it does, not
+                    // the record's spine — it is a commitment, not a link.
+                    val color = when {
+                        action.isWrite -> Neu.GREEN
+                        action.primary -> CueTone.forType(card.type)
+                        else -> activeNeuTokens.inkDim
+                    }
                     addView(mono(action.label.uppercase(), 8f, color).apply {
                         letterSpacing = 0.1f
                         gravity = Gravity.CENTER
@@ -571,29 +577,54 @@ internal object CueCardViews {
 
     // ── Action dispatch ──────────────────────────────────────────────────────
 
-    /** Fire an action, falling back to the Cue web app when nothing handles cue://. */
-    private fun fire(context: Context, action: CueAction) {
+    /**
+     * Fire an action.
+     *
+     * Navigation order is deliberate: the native Cue app first (`cue://`), then
+     * the same record on the web (`href`). Only if both are missing does this
+     * fall back to the Cue home page — landing a user on a dashboard root when
+     * they tapped a specific kiddo is a failure, not a fallback.
+     *
+     * Actions that WRITE never come through here; see [CueBridge.confirmAndRun].
+     */
+    private fun fire(activity: MainActivity, action: CueAction) {
+        if (action.isWrite) {
+            CueBridge.confirmAndRun(activity, action)
+            return
+        }
+
         val tel = action.tel
         val geo = action.geo
-        val deeplink = action.deeplink
-        val intent = when {
-            tel != null -> Intent(Intent.ACTION_DIAL, Uri.parse("tel:$tel"))
-            geo != null -> Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(geo)}"))
-            deeplink != null -> Intent(Intent.ACTION_VIEW, Uri.parse(deeplink))
-            else -> return
-        }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-        try {
-            context.startActivity(intent)
-        } catch (_: ActivityNotFoundException) {
-            if (deeplink == null || BuildConfig.CUE_API_BASE_URL.isBlank()) return
-            runCatching {
-                context.startActivity(
-                    Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.CUE_API_BASE_URL))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                )
+        when {
+            tel != null -> {
+                open(activity, Intent(Intent.ACTION_DIAL, Uri.parse("tel:$tel")))
+                return
+            }
+            geo != null -> {
+                open(activity, Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(geo)}")))
+                return
             }
         }
+
+        // cue:// resolves only when the Cue app is installed on this device.
+        action.deeplink?.let { link ->
+            if (open(activity, Intent(Intent.ACTION_VIEW, Uri.parse(link)))) return
+        }
+        action.href?.let { href ->
+            val url = if (href.startsWith("http")) href else BuildConfig.CUE_API_BASE_URL.trimEnd('/') + href
+            if (open(activity, Intent(Intent.ACTION_VIEW, Uri.parse(url)))) return
+        }
+        if (BuildConfig.CUE_API_BASE_URL.isNotBlank()) {
+            open(activity, Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.CUE_API_BASE_URL)))
+        }
+    }
+
+    /** Start [intent], reporting whether anything on the device handled it. */
+    private fun open(context: Context, intent: Intent): Boolean = try {
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    } catch (_: ActivityNotFoundException) {
+        false
     }
 
     // ── Bits ─────────────────────────────────────────────────────────────────

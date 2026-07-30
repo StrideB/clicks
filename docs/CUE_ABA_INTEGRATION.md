@@ -84,6 +84,71 @@ shows a picker whenever there is more than one — captioned "the default is a
 guess" until you resolve it. The selection can only ever narrow to something you
 already hold, so a forged header cannot widen scope.
 
+## Where taps land
+
+Every card action carries both a `cue://` deeplink and an `href` to the same
+record on the web, because a client cannot know whether the Cue app is
+installed. The launcher tries them in that order and only falls back to the Cue
+home page if both are missing — landing someone on a dashboard root when they
+tapped a named kiddo is a failure, not a fallback.
+
+`cue://` was previously registered nowhere: Cue's Android app declared
+`com.cueaba.app` and a `wear` scheme, while the iOS widgets were already
+emitting `cue://` links. Android now registers it and folds it into the existing
+notification-route path, so `cue://kiddo/<id>` opens the Kiddos screen through
+the same `routeForNotification()` matcher push notifications use.
+
+**Follow-up on Cue's side:** that matcher resolves to a *section*, not a record.
+The launcher already sends the id in the URI, so routing to the exact kiddo is
+purely a change inside the Cue app.
+
+## Writes — the EVV clock
+
+Session cards offer **Clock in** / **Clock out**, and nothing else writes.
+
+Offered only when all of these hold, checked server-side in `sessionActions()`
+and enforced again in the POST handler:
+
+- you are the assigned technician on that session
+- the session is today
+- the EVV state allows that direction
+- the session is not cancelled
+
+Every write action carries a `writes` descriptor, and the launcher refuses to
+fire one on a single tap: `CueBridge.confirmAndRun()` shows a dialog naming the
+consequence ("This starts EVV for the visit and begins a billable record")
+before anything is sent. A homescreen is exactly where a mis-tap happens.
+
+A write action never doubles as navigation — it has no `href` or `deeplink` — so
+there is no path where a tap meant to open a record files a billable one.
+
+## Today brief
+
+Cue's clinical items are ranked *alongside* your notifications and calendar
+rather than living in a separate list, because a clinician's day is one list.
+
+`CueSignal` is a `Signal` subtype (it has to live in the `brief` package — the
+interface is sealed), fed by `BriefCollector`'s `cueProvider`. An overdue note
+outranks everything; an item with no deadline sits just under calendar.
+
+`briefSignals()` never blocks: it returns the last fetch and refreshes in the
+background on a 15-minute TTL, because `collect()` runs on the main thread while
+the brief is assembled.
+
+It reuses `BriefCategory.CALENDAR` rather than adding an enum value — that enum
+is matched exhaustively in `MainActivity`, `SpaceTodayScreen` and `PreScorer`,
+and a clinical item is a time-bound commitment anyway.
+
+## Push — deliberately not in the launcher
+
+Cue's own Android app already ships `CueFirebaseMessagingService`. Registering a
+second FCM device from the launcher would deliver every alert twice to the same
+phone. The launcher's contribution is the brief above: it turns those same
+events into ranked homescreen items you see without opening anything.
+
+If the Cue app is not installed, push is genuinely absent — that is the tradeoff,
+and the brief's 15-minute refresh is the substitute.
+
 ## Query grammar
 
 Three layers, in the order people type:
@@ -112,6 +177,12 @@ main thread:
 
 - `CueVocabulary` resolves type nouns locally, from ordinary prefs. No PHI, no
   network, no Keystore.
+- `CueIndex` holds record names locally, so free text that matches nothing in
+  this clinic never costs a request. **It is PHI** — patient names — so it lives
+  in the same Keystore-backed store as the session, and is cleared on sign-out
+  and on clinic switch. Names only: no diagnosis, no payer, no dates, so a
+  leaked index reveals membership rather than condition. A cold or empty index
+  means "unknown", never "no match", so a miss still asks the server.
 - `CueBridge.signedIn` is a `@Volatile` snapshot computed once on a worker.
   Resolving it for real opens `EncryptedSharedPreferences`, which unlocks a
   Keystore key — tens of milliseconds that the typing path cannot pay.

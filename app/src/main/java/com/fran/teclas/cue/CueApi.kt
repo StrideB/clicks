@@ -72,6 +72,93 @@ internal object CueApi {
         )
     }
 
+    /**
+     * Fire a state change — the EVV clock, and anything else Cue exposes as a
+     * write. Returns null on success, or a message to show the user.
+     *
+     * The server re-checks everything: that this is your session, that it is
+     * today, that the transition is legal. Nothing here is trusted.
+     */
+    fun post(context: Context, write: CueWrite, body: JSONObject = JSONObject()): String? {
+        val token = CueSession.accessToken(context) ?: return "Not signed in to Cue"
+        val url = "${BuildConfig.CUE_API_BASE_URL.trimEnd('/')}/api/native/v1/${write.resource}" +
+            "?id=${URLEncoder.encode(write.id, "UTF-8")}&action=${URLEncoder.encode(write.action, "UTF-8")}"
+
+        val response = runCatching {
+            (URL(url).openConnection() as HttpURLConnection).run {
+                requestMethod = "POST"
+                connectTimeout = 10_000
+                readTimeout = 20_000
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+                CueSession.selectedOrganizationID(context)?.let {
+                    setRequestProperty("X-Cue-Organization", it)
+                }
+                outputStream.use { it.write(body.toString().toByteArray()) }
+                val ok = responseCode in 200..299
+                val text = (if (ok) inputStream else errorStream)
+                    ?.bufferedReader()?.use { reader -> reader.readText() }.orEmpty()
+                disconnect()
+                ok to text
+            }
+        }.getOrNull() ?: return "Could not reach Cue"
+
+        val (ok, text) = response
+        if (ok) return null
+        val message = runCatching { JSONObject(text).optString("error") }.getOrNull()
+        return message?.takeIf { it.isNotBlank() } ?: "Cue rejected the request"
+    }
+
+    /**
+     * Today's brief, as items for the launcher's own ranker.
+     *
+     * Uses the existing `brief` resource rather than a new endpoint — Cue
+     * already shapes these for the iOS widget and watch.
+     */
+    fun briefItems(context: Context, limit: Int = 8): List<CueBriefItem> {
+        val payload = get(context, "brief") ?: return emptyList()
+        val array = payload.optJSONArray("items")
+            ?: payload.optJSONArray("tasks")
+            ?: payload.optJSONArray("results")
+            ?: return emptyList()
+
+        val items = mutableListOf<CueBriefItem>()
+        for (index in 0 until array.length()) {
+            val json = array.optJSONObject(index) ?: continue
+            val title = json.optString("title")
+            if (title.isBlank()) continue
+            val metadata = json.optJSONObject("metadata")
+            items.add(CueBriefItem(
+                id = json.optString("id").ifBlank { "cue-brief-$index" },
+                title = title,
+                body = json.optString("body"),
+                dueAtMillis = parseInstant(json.optString("dueAt")),
+                href = metadata?.optString("href")?.takeIf { it.isNotBlank() },
+                deeplink = metadata?.optString("route")?.takeIf { it.isNotBlank() }?.let { "cue://$it" },
+            ))
+        }
+        return items.take(limit)
+    }
+
+    /**
+     * Epoch millis from an ISO-8601 timestamp, or 0 when absent/unparseable.
+     * Hand-rolled rather than pulling in a formatter: the shapes Cue emits are
+     * `2026-07-30`, `2026-07-30T15:30:00`, and the same with a Z or offset.
+     */
+    private fun parseInstant(raw: String): Long {
+        if (raw.isBlank()) return 0L
+        return runCatching {
+            val normalized = when {
+                raw.length == 10 -> "${raw}T00:00:00Z"
+                raw.endsWith("Z") || raw.contains('+') -> raw
+                else -> "${raw}Z"
+            }
+            java.time.Instant.parse(normalized).toEpochMilli()
+        }.getOrElse { 0L }
+    }
+
     private fun parseSummary(json: JSONObject): CueSummary {
         val buckets = mutableListOf<CueBucket>()
         json.optJSONArray("distribution")?.let { array ->
@@ -131,11 +218,16 @@ internal object CueApi {
         val actions = mutableListOf<CueAction>()
         for (index in 0 until array.length()) {
             val json = array.optJSONObject(index) ?: continue
+            val writes = json.optJSONObject("writes")?.let {
+                CueWrite(it.optString("resource"), it.optString("id"), it.optString("action"))
+            }
             actions.add(CueAction(
                 label = json.optString("label"),
                 deeplink = json.optString("deeplink").takeIf { it.isNotBlank() },
+                href = json.optString("href").takeIf { it.isNotBlank() },
                 tel = json.optString("tel").takeIf { it.isNotBlank() },
                 geo = json.optString("geo").takeIf { it.isNotBlank() },
+                writes = writes,
                 primary = json.optBoolean("primary", false),
             ))
         }

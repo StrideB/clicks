@@ -92,6 +92,10 @@ class BriefGenerator(private val prefs: SharedPreferences) {
                 .put("location", signal.location ?: "")
             is WeatherSignal -> o.put("text", signal.summary)
             is MediaSignal -> o.put("title", signal.title).put("artist", signal.artist)
+            is CueSignal -> o
+                .put("title", signal.title)
+                .put("text", signal.body.take(220))
+                .put("source", "cue")
         }
         return o
     }
@@ -115,6 +119,9 @@ class BriefGenerator(private val prefs: SharedPreferences) {
     }
 
     private fun priority(s: Signal, now: Long): Int = when (s) {
+        // An overdue note or a lapsing authorization is the most time-critical
+        // thing on a clinician's phone; without a deadline it waits its turn.
+        is CueSignal -> if (s.dueAtMillis in 1..now) 0 else 1
         is CalendarSignal -> 0
         is NotificationSignal -> when (BriefCategory.from(s.category)) {
             BriefCategory.CALL -> 1
@@ -129,12 +136,17 @@ class BriefGenerator(private val prefs: SharedPreferences) {
     // Within a tier: soonest calendar event first; newest notification first.
     private fun proximityKey(s: Signal, now: Long): Long = when (s) {
         is CalendarSignal -> s.beginMillis
+        is CueSignal -> if (s.dueAtMillis > 0) s.dueAtMillis else -s.timestamp
         else -> -s.timestamp
     }
 
     // ------------------------------------------------------------------------------------ Shared
 
     private fun categoryOf(s: Signal): BriefCategory = when (s) {
+        // CALENDAR, not a new enum value: BriefCategory is matched exhaustively
+        // in MainActivity, SpaceTodayScreen and PreScorer, and a clinical item
+        // is a time-bound commitment anyway.
+        is CueSignal -> BriefCategory.CALENDAR
         is CalendarSignal -> BriefCategory.CALENDAR
         is WeatherSignal -> BriefCategory.WEATHER
         is MediaSignal -> BriefCategory.MUSIC
@@ -162,6 +174,7 @@ class BriefGenerator(private val prefs: SharedPreferences) {
         is CalendarSignal -> s.title.ifBlank { "Upcoming event" }.take(60)
         is WeatherSignal -> s.summary.take(60)
         is MediaSignal -> s.title.take(60)
+        is CueSignal -> s.title.take(60)
     }
 
     private fun defaultSubtitle(s: Signal): String = when (s) {
@@ -172,6 +185,7 @@ class BriefGenerator(private val prefs: SharedPreferences) {
         is CalendarSignal -> listOfNotNull(s.timeLabel.ifBlank { null }, s.location).joinToString(" · ")
         is WeatherSignal -> "Now"
         is MediaSignal -> s.artist
+        is CueSignal -> s.body.take(90)
     }
 
     // Prefer a reply, then a "call back"/answer, then Open, then whatever exists first.
