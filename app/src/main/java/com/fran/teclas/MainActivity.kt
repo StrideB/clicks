@@ -2021,7 +2021,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 0,
                 launcherStatusBarInset(),
                 0,
-                launcherNavBarInset() + (if (phoneDockedFullBleed || phoneWidgetCanvas) 0 else keyboardBottomLift())
+                launcherNavBarReserve() + (if (phoneDockedFullBleed || phoneWidgetCanvas) 0 else keyboardBottomLift())
             )
         }
         rootView = root
@@ -2098,7 +2098,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // full-screen — otherwise its lower half is buried behind the opaque keyboard
                         // and only the top of the image is ever visible.
                         if (phoneDockedFullBleed) {
-                            lp.bottomMargin = activeRootDockHeight() + keyboardBottomLift() + launcherNavBarInset()
+                            lp.bottomMargin = activeRootDockHeight() + keyboardBottomLift() + launcherNavBarReserve()
                         }
                         addView(it, lp)
                     }
@@ -2115,7 +2115,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // These deck fills are siblings of root inside the full-screen shell, so they
                         // don't inherit root's nav-bar padding — offset them by hand or they slide
                         // under the buttons while the keyboard above them sits correctly.
-                        bottomMargin = launcherNavBarInset()
+                        bottomMargin = launcherNavBarReserve()
                     })
                 }
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
@@ -2145,7 +2145,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         dp(10),
                         Gravity.BOTTOM
                     ).apply {
-                        bottomMargin = launcherNavBarInset()
+                        bottomMargin = launcherNavBarReserve()
                     })
                 }
                 dockedFreeformBackdropView = View(context).apply {
@@ -3282,7 +3282,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // the content frame), so only pad the content for the slice of the lower panel the
         // dock doesn't cover.
         val dockReserved = activeRootDockHeight() + launcherDockedKeyboardBottomLift() + keyboardBottomLift() +
-            launcherNavBarInset()
+            launcherNavBarReserve()
         return (screenHeight - posture.hinge.top - dockReserved).coerceIn(0, screenHeight / 2)
     }
 
@@ -11205,7 +11205,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val metrics = resources.displayMetrics
         val contentHeight = metrics.heightPixels -
             launcherStatusBarInset() -
-            launcherNavBarInset() -
+            launcherNavBarReserve() -
             dp(34) -
             keyboardHeight()
         val reservedHomeChrome = dp(20) + dp(70) + dp(80) + dp(28)
@@ -23853,7 +23853,7 @@ Question: $prompt"""
             keyboardDockView.getLocationOnScreen(loc)
             loc[1].takeIf { it > 0 && keyboardDockView.height > 0 }
         } else null
-        val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift() - launcherNavBarInset())
+        val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift() - launcherNavBarReserve())
             .takeIf { it in 1 until screenH }
         val keyboardTopPx = DockedFreeform.resolveKeyboardTop(this, measured, computed)
         // Share the top with the accessibility service so it can re-pin via Shizuku on window changes.
@@ -28861,6 +28861,16 @@ Question: $prompt"""
         if (navBarInsetPx < 0) navBarInsetPx = systemNavButtonsInset()
         return navBarInsetPx
     }
+
+    /**
+     * What bottom-anchored surfaces actually reserve: the band minus a 5dp overlap.
+     *
+     * Clearing the full band read as too much air under the keyboard. The band is filled with the
+     * deck's own bottom-edge colour, so letting the deck sit slightly *into* it costs nothing
+     * visually — the two are the same surface — while tightening the gap. The fill itself still uses
+     * the full [launcherNavBarInset] so no transparent sliver is left at the physical bottom edge.
+     */
+    internal fun launcherNavBarReserve(): Int = (launcherNavBarInset() - dp(5)).coerceAtLeast(0)
 
     /**
      * Nav mode is a system setting that can change under a live launcher (Settings → gestures ↔
