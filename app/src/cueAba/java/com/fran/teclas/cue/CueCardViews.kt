@@ -52,6 +52,7 @@ internal object CueCardViews {
 
     fun build(activity: MainActivity, results: CueResults, blurPhi: Boolean): List<View> {
         if (results.mode == "signin") return listOf(header(activity, results), connectCard(activity))
+        if (results.mode == "account") return accountViews(activity)
 
         val hasNothing = !results.loading &&
             results.cards.isEmpty() &&
@@ -185,6 +186,107 @@ internal object CueCardViews {
             }
             view.layoutParams = stacked(activity, 8)
             return view
+        }
+    }
+
+    /** Who you are signed in as, plus the two controls worth reaching quickly. */
+    private fun accountViews(activity: MainActivity): List<View> {
+        with(activity) {
+            val identity = CueSession.identity(activity)
+            val accent = goKeyColor
+            val masking = CueBridge.isMaskingEnabled(activity)
+
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(13), dp(13), dp(12), dp(13))
+                background = SpineDrawable(
+                    Neu.drawable(activeNeuTokens, dp(15).toFloat(), NeuLevel.RAISED), accent, dp(3).toFloat(),
+                )
+                addView(TextView(context).apply {
+                    text = identity?.displayName ?: "Signed in to Cue"
+                    textSize = 15f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    setTextColor(activeNeuTokens.ink)
+                    includeFontPadding = false
+                }, wrapRow())
+                identity?.let {
+                    addView(mono(
+                        listOf(it.role.uppercase(), "${it.permissions.size} GRANTS")
+                            .filter { part -> part.isNotBlank() }.joinToString(" · "),
+                        9f, accent,
+                    ).apply {
+                        letterSpacing = 0.09f
+                        setPadding(0, dp(5), 0, 0)
+                    }, wrapRow())
+                    addView(fieldGrid(activity, listOf(
+                        CueField("Clinic", it.organizationName),
+                        CueField("Staff id", it.staffId.ifBlank { "—" }),
+                    ) + if (it.ambiguous) listOf(
+                        CueField("Scope", "Default guess — pick a clinic"),
+                    ) else emptyList(), blur = false, detail = true), wrapRow().apply { topMargin = dp(10) })
+                }
+
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(mono(
+                        if (masking) "MASKING ON" else "MASKING OFF",
+                        8f, if (masking) Neu.GREEN else Neu.AMBER,
+                    ).apply {
+                        letterSpacing = 0.1f
+                        gravity = Gravity.CENTER
+                        setPadding(dp(9), dp(5), dp(9), dp(5))
+                        background = Neu.drawable(activeNeuTokens, dp(8).toFloat(), NeuLevel.RAISED_SM)
+                        isClickable = true
+                        setOnClickListener {
+                            haptic(this)
+                            CueBridge.setMaskingEnabled(activity, !masking)
+                            activity.render()
+                        }
+                    }, LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply { marginEnd = dp(6) })
+
+                    if ((identity?.organizations?.size ?: 0) > 1) {
+                        addView(mono("SWITCH CLINIC", 8f, accent).apply {
+                            letterSpacing = 0.1f
+                            gravity = Gravity.CENTER
+                            setPadding(dp(9), dp(5), dp(9), dp(5))
+                            background = Neu.drawable(activeNeuTokens, dp(8).toFloat(), NeuLevel.RAISED_SM)
+                            isClickable = true
+                            setOnClickListener {
+                                haptic(this)
+                                CueBridge.openSignIn(activity)
+                            }
+                        }, LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ).apply { marginEnd = dp(6) })
+                    }
+
+                    addView(mono("SIGN OUT", 8f, Neu.ACCENT).apply {
+                        letterSpacing = 0.1f
+                        gravity = Gravity.CENTER
+                        setPadding(dp(9), dp(5), dp(9), dp(5))
+                        background = Neu.drawable(activeNeuTokens, dp(8).toFloat(), NeuLevel.RAISED_SM)
+                        isClickable = true
+                        setOnClickListener {
+                            haptic(this)
+                            CueBridge.signOut(activity)
+                            activity.render()
+                        }
+                    }, LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ))
+                }, wrapRow().apply { topMargin = dp(11) })
+            }
+            card.layoutParams = stacked(activity, 8)
+
+            val heading = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(4), dp(4), dp(4), dp(8))
+                addView(mono("CUE · ACCOUNT", 8.5f, accent).apply { letterSpacing = 0.16f })
+            }
+            heading.layoutParams = stacked(activity, 0)
+            return listOf(heading, card)
         }
     }
 
@@ -328,8 +430,16 @@ internal object CueCardViews {
 
                 setOnClickListener {
                     haptic(this)
-                    val primary = card.actions.firstOrNull { it.primary } ?: card.actions.firstOrNull()
-                    primary?.let { fire(activity, it) }
+                    // Masked cards spend their first tap on revealing themselves.
+                    // Navigating straight into a record you cannot read yet is
+                    // the wrong default, and it would leave the mask pointless.
+                    if (blur) {
+                        CueBridge.revealPhi()
+                        activity.render()
+                    } else {
+                        val primary = card.actions.firstOrNull { it.primary } ?: card.actions.firstOrNull()
+                        primary?.let { fire(activity, it) }
+                    }
                 }
             }
             view.layoutParams = stacked(activity, 8)

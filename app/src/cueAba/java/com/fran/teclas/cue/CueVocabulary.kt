@@ -26,17 +26,19 @@ internal object CueVocabulary {
     private const val MIN_PREFIX_LENGTH = 4
 
     private val BUILT_IN: Map<String, String> = buildMap {
-        fun put(type: String, vararg nouns: String) = nouns.forEach { put(it, type) }
-        put("organization", "company", "org", "orgs", "organization", "organizations", "clinic", "practice", "business", "entity")
-        put("auth", "auth", "auths", "authorization", "authorizations", "authorisation", "authorisations", "reauth", "reauths")
-        put("kiddo", "kiddo", "kiddos", "kid", "kids", "client", "clients", "patient", "patients", "caseload")
-        put("staff", "staff", "team", "tech", "techs", "rbt", "rbts", "bcba", "bcbas", "employee", "employees")
-        put("session", "session", "sessions", "schedule", "appointment", "appointments", "appts", "shift", "shifts", "visit", "visits")
-        put("claim", "claim", "claims", "billing", "invoice", "invoices")
-        put("document", "doc", "docs", "document", "documents", "file", "files", "paperwork")
-        put("incident", "incident", "incidents", "report", "reports")
-        put("candidate", "candidate", "candidates", "applicant", "applicants", "recruiting", "hiring")
-        put("task", "task", "tasks", "todo", "todos", "queue")
+        // `nouns(...)`, not `put(...)`: a local `put` here shadows MutableMap.put
+        // and recurses into itself.
+        fun nouns(type: String, vararg words: String) = words.forEach { this[it] = type }
+        nouns("organization", "company", "org", "orgs", "organization", "organizations", "clinic", "practice", "business", "entity")
+        nouns("auth", "auth", "auths", "authorization", "authorizations", "authorisation", "authorisations", "reauth", "reauths")
+        nouns("kiddo", "kiddo", "kiddos", "kid", "kids", "client", "clients", "patient", "patients", "caseload")
+        nouns("staff", "staff", "team", "tech", "techs", "rbt", "rbts", "bcba", "bcbas", "employee", "employees")
+        nouns("session", "session", "sessions", "schedule", "appointment", "appointments", "appts", "shift", "shifts", "visit", "visits")
+        nouns("claim", "claim", "claims", "billing", "invoice", "invoices")
+        nouns("document", "doc", "docs", "document", "documents", "file", "files", "paperwork")
+        nouns("incident", "incident", "incidents", "report", "reports")
+        nouns("candidate", "candidate", "candidates", "applicant", "applicants", "recruiting", "hiring")
+        nouns("task", "task", "tasks", "todo", "todos", "queue")
     }
 
     @Volatile private var nouns: Map<String, String> = BUILT_IN

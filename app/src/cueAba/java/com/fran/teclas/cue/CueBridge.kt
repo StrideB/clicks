@@ -1,10 +1,14 @@
 package com.fran.teclas.cue
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.WindowManager
 import com.fran.teclas.MainActivity
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
@@ -30,7 +34,10 @@ internal object CueBridge {
     private const val DEBOUNCE_MS = 280L
 
     private const val SETTINGS_PREFS = "cue_settings"
-    private const val KEY_PHI_BLUR = "phi_blur"
+    private const val KEY_MASKING = "phi_masking"
+
+    /** How long a tap-to-reveal lasts before masking closes over again. */
+    private const val REVEAL_WINDOW_MS = 120_000L
 
     private val worker = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "cue-search").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
@@ -53,6 +60,12 @@ internal object CueBridge {
      * sign-out; until then it reads false and Cue simply stays out of the way.
      */
     @Volatile private var signedIn = false
+
+    /** Wall-clock deadline for a tap-to-reveal. Never persisted. */
+    @Volatile private var revealedUntil = 0L
+
+    /** Mirrors the window flag so we only touch it on an actual transition. */
+    @Volatile private var windowSecured = false
 
     private var pending: Runnable? = null
 
@@ -98,6 +111,12 @@ internal object CueBridge {
             return if (invited && isConfigured()) CueResults.signInPrompt(trimmed) else CueResults.NONE
         }
 
+        // "cue" is the way back to your own account — sign out, toggle masking.
+        if (trimmed.equals("cue", ignoreCase = true)) {
+            cancelPending()
+            return CueResults.account(trimmed)
+        }
+
         if (!namesType && trimmed.length < MIN_FREE_TEXT_LENGTH) {
             cancelPending()
             return CueResults.NONE
@@ -119,22 +138,57 @@ internal object CueBridge {
      * show. The PHI blur is read here rather than passed in, so the shared
      * search surface stays unaware that PHI is a concept.
      */
-    fun views(activity: MainActivity, results: CueResults): List<View> =
-        CueCardViews.build(activity, results, blurPhi = isPhiBlurred(activity))
+    fun views(activity: MainActivity, results: CueResults): List<View> {
+        val built = CueCardViews.build(activity, results, blurPhi = isPhiBlurred(activity))
+        applyWindowSecurity(activity, built.isNotEmpty() && results.cards.any { it.phi })
+        return built
+    }
 
     /**
-     * Whether patient-identifying text is masked on screen. A launcher search
-     * overlay is the most shoulder-surfable surface on the phone, so this is a
-     * real setting rather than a debug flag.
+     * Whether patient-identifying text is masked right now.
+     *
+     * Masking is ON by default. A launcher search overlay is the most
+     * shoulder-surfable surface on the phone — the safe default is the one that
+     * shows nothing until you ask. Tapping a masked card reveals it for
+     * REVEAL_WINDOW_MS, and the reveal is torn down on screen-off, so walking
+     * away always re-arms it.
      */
-    fun isPhiBlurred(context: Context): Boolean = context.applicationContext
-        .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
-        .getBoolean(KEY_PHI_BLUR, false)
+    fun isPhiBlurred(context: Context): Boolean {
+        if (!isMaskingEnabled(context)) return false
+        return System.currentTimeMillis() >= revealedUntil
+    }
 
-    fun setPhiBlurred(context: Context, blurred: Boolean) {
+    fun isMaskingEnabled(context: Context): Boolean = context.applicationContext
+        .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+        .getBoolean(KEY_MASKING, true)
+
+    fun setMaskingEnabled(context: Context, enabled: Boolean) {
         context.applicationContext
             .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_PHI_BLUR, blurred).apply()
+            .edit().putBoolean(KEY_MASKING, enabled).apply()
+        if (enabled) revealedUntil = 0L
+    }
+
+    /** Temporarily lift the mask. Expires on its own, and on screen-off. */
+    fun revealPhi() {
+        revealedUntil = System.currentTimeMillis() + REVEAL_WINDOW_MS
+    }
+
+    /**
+     * Keep Cue records out of screenshots and the recents thumbnail while they
+     * are on screen. Cleared as soon as the surface renders without them, so the
+     * rest of the launcher stays screenshot-able.
+     */
+    fun applyWindowSecurity(activity: MainActivity, secure: Boolean) {
+        if (secure == windowSecured) return
+        windowSecured = secure
+        runCatching {
+            if (secure) {
+                activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            } else {
+                activity.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
     }
 
     fun openSignIn(context: Context) {
@@ -196,6 +250,32 @@ internal object CueBridge {
         }
     }
 
+    /**
+     * Re-arm masking and drop cached records when the screen goes off.
+     *
+     * Registered on the application context, so it lives as long as the process
+     * — the launcher has no other lifecycle hook that reliably covers "the phone
+     * is now in someone's pocket". ACTION_SCREEN_OFF is a protected system
+     * broadcast, hence NOT_EXPORTED on API 33+.
+     */
+    private fun registerScreenOffTeardown(app: Context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                revealedUntil = 0L
+                cached = CueResults.NONE
+            }
+        }
+        val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("UnspecifiedRegisterReceiverFlag")
+                app.registerReceiver(receiver, filter)
+            }
+        }
+    }
+
     private fun cancelPending() {
         pending?.let { main.removeCallbacks(it) }
         pending = null
@@ -218,6 +298,7 @@ internal object CueBridge {
         primed = true
         val app = context.applicationContext
         CueVocabulary.load(app)
+        registerScreenOffTeardown(app)
         worker.execute {
             signedIn = CueSession.isSignedIn(app)
             if (signedIn) {

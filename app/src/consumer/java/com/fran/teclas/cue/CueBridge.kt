@@ -36,7 +36,15 @@ internal object CueBridge {
 
     fun isPhiBlurred(context: Context): Boolean = false
 
-    fun setPhiBlurred(context: Context, blurred: Boolean) = Unit
+    fun isMaskingEnabled(context: Context): Boolean = false
+
+    fun setMaskingEnabled(context: Context, enabled: Boolean) = Unit
+
+    fun revealPhi() = Unit
+
+    fun applyWindowSecurity(activity: MainActivity, secure: Boolean) = Unit
+
+    fun onSessionChanged(context: Context) = Unit
 
     fun openSignIn(context: Context) = Unit
 

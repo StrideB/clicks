@@ -43,25 +43,45 @@ organization to whoever holds the APK. The launcher signs in as a person.
 
 ## How it knows which clinic
 
-It doesn't, and it must not. There is no org picker and no clinic ID stored
-anywhere in the app.
+You never type a clinic, and the app never invents one.
 
 1. You sign in with Supabase email + password (`CueSignInActivity`).
-2. The only thing persisted is a refresh token, in `EncryptedSharedPreferences`.
+2. Persisted: a refresh token, the cached identity, and — only if you work at
+   more than one clinic — which one you chose. All in
+   `EncryptedSharedPreferences`.
 3. Every request carries that session's JWT. Cue's `loadContext()` trades your
    user id for a `staff` row and reads `organization_id` off it.
 4. Every query is bounded by that org id, plus `canSeePatient()` /
    `canSeeStaff()` / `canSeeSession()`.
 
-Scope is a server fact the client cannot influence. Revoke the Supabase session
-in Cue and this launcher loses access on its next refresh — there is no second
-credential to hunt down.
+Scope is a server fact. The client can *narrow* to another of your own
+memberships (below), but it cannot introduce one, so it can never widen what you
+see. Revoke the Supabase session in Cue and this launcher loses access on its
+next refresh — there is no second credential to hunt down.
 
-**Known gap:** `loadContext()` selects a single staff row
-(`.order("updated_at").limit(1)`), so someone employed at two clinics silently
-gets whichever was touched most recently. On a homescreen that means you could
-search and see the wrong clinic's kiddos with no signal. Fix needs an explicit
-active-org concept in Cue before this is used across orgs.
+### Working at more than one clinic
+
+`loadContext()` used to select a single staff row (`.order("updated_at").limit(1)`),
+so someone employed at two clinics silently got whichever was touched most
+recently. Survivable on web, where the org is named in the chrome; not on a
+homescreen, where you could search and see the wrong clinic's kiddos with no
+signal at all.
+
+It now reads every active membership and applies `selectMembership()`
+(`cue/src/lib/native/org-scope.ts`, unit-tested):
+
+- an explicit choice is honored **only** if it names one of the caller's own
+  memberships — anything else is rejected outright, never silently defaulted, so
+  a stale selection fails loudly instead of quietly returning another clinic's
+  records;
+- with no choice, the first membership is used and flagged
+  `organization_ambiguous`.
+
+The launcher sends its choice as `X-Cue-Organization` and stores it alongside
+the session. `/me` returns every organization by name, and the sign-in screen
+shows a picker whenever there is more than one — captioned "the default is a
+guess" until you resolve it. The selection can only ever narrow to something you
+already hold, so a forged header cannot widen scope.
 
 ## Query grammar
 
@@ -120,25 +140,42 @@ caller has to learn a new branch. Covered in `SearchRouterTest`.
 A launcher search overlay is the most screenshot-, shoulder-surf- and
 recents-exposed surface on the phone.
 
-- `CueBridge.setPhiBlurred()` masks patient-identifying text on cards. Masking
-  preserves word shape so a blurred card still reads as a card.
-- `CueSignInActivity` sets `FLAG_SECURE`.
-- `CueSession` has **no plaintext fallback** — unlike `PredictCrypto`, which
+- **Masking is on by default.** The safe default is the one that shows nothing
+  until you ask. Masking preserves word shape, so a masked card still reads as a
+  card rather than a redaction.
+- **Tap to reveal.** A masked card spends its first tap lifting the mask instead
+  of navigating — opening a record you cannot read yet is the wrong default, and
+  it would make the mask pointless. A reveal lasts two minutes.
+- **Screen-off re-arms it.** A receiver on `ACTION_SCREEN_OFF` clears the reveal
+  and drops cached records, so putting the phone in your pocket always closes
+  the mask. Registered on the application context — the launcher has no other
+  hook that reliably covers "the phone is away now".
+- **`FLAG_SECURE` while records are on screen.** Applied by `CueBridge.views()`
+  whenever the rendered set contains PHI, cleared as soon as it doesn't, so the
+  rest of the launcher stays screenshot-able. `CueSignInActivity` sets it
+  unconditionally.
+- **No plaintext fallback in `CueSession`** — unlike `PredictCrypto`, which
   degrades to plain prefs. Losing prediction weights beats storing them in the
   clear; the reverse is true for a refresh token, which is a standing key to a
-  clinic's PHI. If the Keystore is unavailable the session lives in memory for
-  that process only.
-- Every search writes through Cue's `writeAuditLog()`. The raw query is never
-  logged — it can name a kiddo — only the shape of the request.
+  clinic's PHI. Without the Keystore the session lives in memory for that
+  process only.
+- **Audited, without logging the query.** Every search writes through Cue's
+  `writeAuditLog()`, recording the shape of the request only — the raw query can
+  name a kiddo.
+- **Read-only card actions.** Every action is a `cue://` deeplink or a
+  `tel:`/`geo:` intent. Nothing in the launcher writes to a clinical record, so
+  no homescreen tap can create a billable one.
 
-### Still open
+`FLAG_SECURE` clears on the next search render rather than the moment the
+surface closes, so it can briefly outlive the cards. That errs toward secure.
 
-- `FLAG_SECURE` is not yet set on the launcher's own search surface, only on
-  sign-in. Cards are visible in recents.
-- The blur does not re-arm on screen-off.
-- Card actions are read-mostly, but `Clock in` and `Fix & resubmit` write. EVV
-  clock-in from a homescreen card creates a billable record — worth deciding
-  whether v1 should be read-only.
+## Reaching your account
+
+There is no settings entry to hunt for. Type `cue`:
+
+- signed out — a **Connect to Cue** card, one tap to sign-in;
+- signed in — an account card with your name, role, clinic, masking toggle,
+  **Switch clinic** (when you have more than one), and **Sign out**.
 
 ## Files
 
@@ -157,3 +194,18 @@ app/src/consumer/java/com/fran/teclas/cue/CueBridge.kt   no-op twin
 Shared-code touchpoints are deliberately tiny: `cueSearchViews()` in
 `SearchResultsHost` (two call sites), and one argument added to
 `SearchRouter.route()`.
+
+## Verifying without a device
+
+`SearchRouterTest` covers the routing change and runs under plain JUnit.
+
+The rest of the flavor has no test source set yet, because a launcher build
+needs the Android SDK. What exists is a typecheck harness that resolves every
+reference against the real Android framework (Robolectric's `android-all`) plus
+stubs whose signatures are copied verbatim from the Teclas sources — so anything
+compiling against the stubs compiles against the real thing. It caught a
+recursive `put` shadowing `MutableMap.put`, reversed `EncryptedSharedPreferences`
+key/value schemes, and a `signOut` where `clearCache` was meant.
+
+It is not a substitute for `./gradlew installCueAbaDebug`. Run that before
+trusting a build.

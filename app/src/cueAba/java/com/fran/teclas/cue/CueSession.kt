@@ -12,12 +12,16 @@ import java.net.URL
 /**
  * Supabase session for the Cue integration.
  *
- * The launcher signs in as a person, never as a clinic. There is no org id here
- * and no way to set one: Cue's `loadContext()` reads `organization_id` off the
- * caller's staff row on every request, so scope is a server fact the client
- * cannot influence. The only thing persisted is a refresh token — revoke the
- * Supabase session and this launcher loses access on its next refresh, with no
- * second credential to hunt down.
+ * The launcher signs in as a person, never as a clinic. Cue's `loadContext()`
+ * reads `organization_id` off the caller's staff row on every request, so scope
+ * is a server fact the client cannot invent. Where someone holds staff rows at
+ * more than one clinic, the launcher may *choose among them* — see
+ * selectOrganization() — but the server validates that choice against their own
+ * memberships and rejects anything else, so the selection can only ever narrow.
+ *
+ * Persisted: a refresh token, the cached identity, and the chosen organization.
+ * Revoke the Supabase session and this launcher loses access on its next
+ * refresh, with no second credential to hunt down.
  *
  * Storage is EncryptedSharedPreferences (Keystore-backed) with no plaintext
  * fallback — see prefs() for why this differs from PredictCrypto.
@@ -29,6 +33,7 @@ internal object CueSession {
     private const val PREFS_NAME = "cue_session"
     private const val KEY_REFRESH = "refresh_token"
     private const val KEY_IDENTITY = "identity_json"
+    private const val KEY_ORG = "selected_organization_id"
 
     /** Refresh a minute early so a long request can't start on a dying token. */
     private const val EXPIRY_SKEW_MS = 60_000L
@@ -107,7 +112,7 @@ internal object CueSession {
     }
 
     fun signOut(context: Context) {
-        prefs(context)?.edit()?.remove(KEY_REFRESH)?.remove(KEY_IDENTITY)?.apply()
+        prefs(context)?.edit()?.remove(KEY_REFRESH)?.remove(KEY_IDENTITY)?.remove(KEY_ORG)?.apply()
         accessToken = null
         accessTokenExpiresAt = 0L
         cachedIdentity = null
@@ -153,13 +158,47 @@ internal object CueSession {
         user.optJSONArray("explicit_permissions")?.let { array ->
             for (index in 0 until array.length()) permissions.add(array.optString(index))
         }
+        val organizations = mutableListOf<CueOrganization>()
+        user.optJSONArray("organizations")?.let { array ->
+            for (index in 0 until array.length()) {
+                val entry = array.optJSONObject(index) ?: continue
+                organizations.add(CueOrganization(
+                    id = entry.optString("organization_id"),
+                    name = entry.optString("organization_name").ifBlank { "Unnamed clinic" },
+                    role = entry.optString("role"),
+                    active = entry.optBoolean("active", false),
+                ))
+            }
+        }
         return CueIdentity(
             organizationId = user.optString("organization_id"),
+            organizationName = user.optString("organization_name").ifBlank { "Your clinic" },
             staffId = user.optString("staff_id"),
             displayName = user.optString("display_name").ifBlank { "Cue user" },
             role = user.optString("role"),
             permissions = permissions,
+            organizations = organizations,
+            ambiguous = user.optBoolean("organization_ambiguous", false),
         )
+    }
+
+    /**
+     * The organization this launcher acts in, sent as X-Cue-Organization.
+     *
+     * Null until the user picks one. Cue validates it against their own staff
+     * rows and rejects anything else outright, so a stale selection fails loudly
+     * instead of quietly returning another clinic's records.
+     */
+    fun selectedOrganizationID(context: Context): String? =
+        prefs(context)?.getString(KEY_ORG, null)?.takeIf { it.isNotBlank() }
+
+    /** Choose an organization and re-resolve identity under it. */
+    fun selectOrganization(context: Context, organizationID: String?): String? {
+        prefs(context)?.edit()?.apply {
+            if (organizationID.isNullOrBlank()) remove(KEY_ORG) else putString(KEY_ORG, organizationID)
+        }?.apply()
+        cachedIdentity = null
+        return loadIdentity(context)
     }
 
     private fun adoptAccessToken(response: JSONObject) {

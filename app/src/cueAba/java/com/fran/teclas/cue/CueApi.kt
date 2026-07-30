@@ -34,6 +34,11 @@ internal object CueApi {
                 readTimeout = 12_000
                 setRequestProperty("Authorization", "Bearer $token")
                 setRequestProperty("Accept", "application/json")
+                // Which clinic to act in, when this person works at more than
+                // one. Cue rejects any value that is not one of their own.
+                CueSession.selectedOrganizationID(context)?.let {
+                    setRequestProperty("X-Cue-Organization", it)
+                }
                 val ok = responseCode in 200..299
                 val text = (if (ok) inputStream else errorStream)
                     ?.bufferedReader()?.use { it.readText() }.orEmpty()

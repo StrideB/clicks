@@ -72,17 +72,38 @@ internal data class CueResults(
          */
         fun signInPrompt(query: String) = CueResults(query, "signin", null, null, null, emptyList(), null)
 
+        /** Signed in and asking about Cue itself: who am I, and can I sign out. */
+        fun account(query: String) = CueResults(query, "account", null, null, null, emptyList(), null)
+
         val NONE = CueResults("", "empty", null, null, null, emptyList(), null)
     }
 }
 
-/** Identity from GET /api/native/v1/me — the launcher never chooses an org. */
+/** One organization this user holds an active staff row in. */
+internal data class CueOrganization(
+    val id: String,
+    val name: String,
+    val role: String,
+    val active: Boolean,
+)
+
+/**
+ * Identity from GET /api/native/v1/me.
+ *
+ * The launcher never invents an organization — it can only choose among the
+ * ones Cue says this person belongs to. [ambiguous] means Cue picked a default
+ * because nobody said which, and the user must resolve it before the records on
+ * screen can be trusted.
+ */
 internal data class CueIdentity(
     val organizationId: String,
+    val organizationName: String,
     val staffId: String,
     val displayName: String,
     val role: String,
     val permissions: Set<String>,
+    val organizations: List<CueOrganization>,
+    val ambiguous: Boolean,
 )
 
 /**
