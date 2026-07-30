@@ -239,5 +239,17 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Cue ABA sign-in. Not exported: reachable only from the launcher's own
+             search surface, never from another app. FLAG_SECURE is set in code
+             because the session it establishes leads to screens showing patient
+             names. This branch only — see docs/CUE_ABA_INTEGRATION.md. -->
+        <activity
+            android:name="com.fran.teclas.cue.CueSignInActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
     </application>
 </manifest>

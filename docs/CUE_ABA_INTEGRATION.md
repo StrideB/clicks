@@ -1,45 +1,45 @@
-# Cue ABA record search (`cueAba` flavor)
+# Cue ABA record search (`cue-aba` branch)
 
-Private integration that puts an ABA clinic's records behind the launcher's own
-search bar. Type a record type to get a ranked set; add a name to open one
-record. Nothing here ships in a normal Teclas build.
+Puts an ABA clinic's records behind the launcher's own search bar. Type a record
+type to get a ranked set; add a name to open one record.
+
+**This branch is the variant.** There are no product flavors and no feature
+flags — on `cue-aba` the integration is simply part of the launcher, and the
+ordinary commands build it:
+
+```sh
+./gradlew installDebug      # sideload
+./gradlew assembleRelease   # APK to hand to someone
+```
+
+`main` and the Play Store branch do not carry `app/src/main/java/com/fran/teclas/cue/`
+at all, which is what keeps ABA code out of a consumer build. Merging this
+branch into either of those would ship it — don't.
 
 Server side lives in the `cue` repo: `src/lib/native/search.ts`,
-`src/lib/native/search-grammar.ts`, and a `search` case in
-`src/app/api/native/v1/[resource]/route.ts`.
+`src/lib/native/search-grammar.ts`, `src/lib/native/org-scope.ts`, and a
+`search` case in `src/app/api/native/v1/[resource]/route.ts`.
 
-## Build flavors
+## Giving a build to someone else
 
-`distribution` dimension, two flavors:
+Nothing to configure. `app/cue.properties` is committed, so a clone builds and
+an installed APK needs only the person's own Cue sign-in.
 
-| Flavor | What it contains |
-| --- | --- |
-| `consumer` | The launcher as it has always been. No Cue code, endpoints, or strings. |
-| `cueAba` | Adds `app/src/cueAba/` — the whole integration. |
+They get **their own** scope, not yours: the launcher authenticates as a person,
+and Cue derives organization, role and caseload from that person's staff row on
+every request. Hand the same APK to an RBT and they see their assigned kiddos
+and nothing else — no authorizations, no claims, no staff directory.
 
-```
-./gradlew installCueAbaDebug     # your build
-./gradlew installConsumerDebug   # the clean one
-```
+The committed Supabase anon key is a public, client-facing credential enforced
+by Row-Level Security; `cue/android/cue.properties` commits the same value for
+the same reason. Never put a `cue_live_…` API key there — Cue resolves an org
+API key to admin-equivalent, org-wide access for whoever holds the APK, which
+would defeat exactly the per-person scoping that makes this safe to hand out.
 
-The split is a **source set, not a runtime flag**. `CueBridge.ENABLED` is a
-compile-time `const`, so every call site in shared code folds away in `consumer`
-and R8 has nothing to strip — nothing was compiled in to begin with.
-
-Both flavors share `applicationId` deliberately. A suffix would install a second
-launcher with none of your prefs, themes, or trained prediction data. Add
-`applicationIdSuffix = ".aba"` to the `cueAba` block if you ever want them side
-by side.
-
-### Configuration
-
-Copy `app/cue.properties.example` to `app/cue.properties` and fill it in. That
-file is gitignored — the endpoint stays off the repo. Building without it works;
-the integration just reports itself unconfigured and stays out of search.
-
-Never put a `cue_live_…` API key there. Cue resolves an org API key to
-admin-equivalent, org-wide scope, which would hand every kiddo in the
-organization to whoever holds the APK. The launcher signs in as a person.
+**One prerequisite, once, for everyone:** `/api/native/v1/search` must be live
+at `cue.api.base.url`. It exists on the cue repo's
+`claude/private-launcher-aba-integration-24kmjy` branch, not on `main`. Until
+that is deployed, the launcher shows "Cue unavailable — Not found".
 
 ## How it knows which clinic
 
@@ -180,7 +180,7 @@ There is no settings entry to hunt for. Type `cue`:
 ## Files
 
 ```
-app/src/cueAba/java/com/fran/teclas/cue/
+app/src/main/java/com/fran/teclas/cue/
   CueBridge.kt         entry point, cache, debounce, session snapshot
   CueSession.kt        Supabase auth, encrypted refresh token
   CueApi.kt            /api/native/v1/* client
@@ -188,8 +188,9 @@ app/src/cueAba/java/com/fran/teclas/cue/
   CueModels.kt         card model + per-type spine colors
   CueCardViews.kt      neumorphic renderers
   CueSignInActivity.kt sign-in and resolved identity
-app/src/consumer/java/com/fran/teclas/cue/CueBridge.kt   no-op twin
 ```
+
+This whole directory is absent on `main` and the Play Store branch.
 
 Shared-code touchpoints are deliberately tiny: `cueSearchViews()` in
 `SearchResultsHost` (two call sites), and one argument added to
@@ -199,13 +200,13 @@ Shared-code touchpoints are deliberately tiny: `cueSearchViews()` in
 
 `SearchRouterTest` covers the routing change and runs under plain JUnit.
 
-The rest of the flavor has no test source set yet, because a launcher build
-needs the Android SDK. What exists is a typecheck harness that resolves every
+The Cue package has no instrumented tests yet, because a launcher build needs
+the Android SDK. What exists is a typecheck harness that resolves every
 reference against the real Android framework (Robolectric's `android-all`) plus
 stubs whose signatures are copied verbatim from the Teclas sources — so anything
 compiling against the stubs compiles against the real thing. It caught a
 recursive `put` shadowing `MutableMap.put`, reversed `EncryptedSharedPreferences`
 key/value schemes, and a `signOut` where `clearCache` was meant.
 
-It is not a substitute for `./gradlew installCueAbaDebug`. Run that before
-trusting a build.
+It is not a substitute for `./gradlew installDebug`. Run that before trusting
+a build.

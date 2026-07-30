@@ -7,10 +7,18 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Cue ABA endpoint configuration for the `cueAba` flavor. Deliberately NOT
-// committed (see .gitignore) — copy cue.properties.example and fill it in. An
-// absent file is fine: the fields default to empty and the integration reports
-// itself unconfigured instead of failing the build.
+// Cue ABA endpoint configuration.
+//
+// Committed on this branch, on purpose: the whole point of `cue-aba` is that a
+// clone-and-build produces a working launcher with no setup steps, and that an
+// APK handed to a colleague needs nothing but their own Cue sign-in.
+//
+// The Supabase anon key is a public, client-facing credential enforced by
+// Row-Level Security — the same reasoning as cue/android/cue.properties, which
+// commits it too. Never add a service-role key, a database password, or a Cue
+// API key (`cue_live_…`) here: an org API key grants admin-equivalent org-wide
+// read access to whoever holds the APK, which would defeat the per-person role
+// scoping this integration relies on.
 val cueProperties = Properties().apply {
     file("cue.properties").takeIf { it.exists() }?.inputStream()?.use(::load)
 }
@@ -25,7 +33,12 @@ android {
         minSdk = 31
         targetSdk = 37
         versionCode = 42
-        versionName = "0.5.3"
+        versionName = "0.5.3-aba"
+
+        // Cue ABA endpoints. Baked in so `./gradlew installDebug` just works.
+        buildConfigField("String", "CUE_API_BASE_URL", "\"${cueProperty("cue.api.base.url").ifEmpty { "https://app.cueaba.com" }}\"")
+        buildConfigField("String", "CUE_SUPABASE_URL", "\"${cueProperty("supabase.url")}\"")
+        buildConfigField("String", "CUE_SUPABASE_ANON_KEY", "\"${cueProperty("supabase.anon.key")}\"")
 
         // Personal sideload app: every target device (Honor fold, Pixel, Apple-Silicon emulator)
         // is arm64-v8a. Shipping the other three ABIs tripled the APK's native-lib payload.
@@ -59,35 +72,6 @@ android {
         }
     }
 
-    // ── Distribution flavors ──────────────────────────────────────────────────
-    // `consumer` is the launcher as it has always been. `cueAba` adds the private
-    // Cue ABA record search. The split is a source set, not a runtime flag, so a
-    // consumer APK contains no Cue code, no endpoints and no strings — R8 has
-    // nothing to strip because nothing was compiled in.
-    //
-    // Both flavors share `applicationId`, deliberately: this is a personal daily
-    // driver, and a suffix would install a second launcher with none of the
-    // existing prefs, themes or trained prediction data. Add
-    // `applicationIdSuffix = ".aba"` to cueAba if you ever want them side by side.
-    flavorDimensions += "distribution"
-    productFlavors {
-        create("cueAba") {
-            dimension = "distribution"
-            versionNameSuffix = "-aba"
-            buildConfigField("boolean", "CUE_ABA", "true")
-            buildConfigField("String", "CUE_API_BASE_URL", "\"${cueProperty("cue.api.base.url").ifEmpty { "https://app.cueaba.com" }}\"")
-            buildConfigField("String", "CUE_SUPABASE_URL", "\"${cueProperty("supabase.url")}\"")
-            buildConfigField("String", "CUE_SUPABASE_ANON_KEY", "\"${cueProperty("supabase.anon.key")}\"")
-        }
-        create("consumer") {
-            dimension = "distribution"
-            buildConfigField("boolean", "CUE_ABA", "false")
-            buildConfigField("String", "CUE_API_BASE_URL", "\"\"")
-            buildConfigField("String", "CUE_SUPABASE_URL", "\"\"")
-            buildConfigField("String", "CUE_SUPABASE_ANON_KEY", "\"\"")
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -105,7 +89,7 @@ android {
 
     buildFeatures {
         compose = true
-        // Flavors gate the Cue integration through BuildConfig.CUE_ABA.
+        // Cue endpoints reach the app through BuildConfig.
         buildConfig = true
     }
 

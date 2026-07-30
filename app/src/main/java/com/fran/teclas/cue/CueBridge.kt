@@ -14,20 +14,18 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * The single entry point the launcher's shared code touches.
+ * The single entry point the launcher's search surface touches.
  *
- * A matching no-op object exists in the `consumer` source set, so call sites in
- * MainActivity / SearchResultsHost compile identically in both flavors and a
- * consumer APK contains none of this.
+ * This is the `cue-aba` branch: the integration is simply part of the launcher,
+ * with no flavor to select and no flag to set. `main` and the Play Store branch
+ * do not carry this package at all, which is what keeps the ABA code out of a
+ * consumer build.
  *
  * Concurrency: searches run on one background thread, results land on the main
  * thread. A monotonically increasing request id means a slow response for an
  * older query can never overwrite a newer one.
  */
 internal object CueBridge {
-
-    /** Compile-time truth. `consumer` returns false and gets dead-code stripped. */
-    const val ENABLED = true
 
     /** Free text needs a longer stem than a type noun before it earns a request. */
     private const val MIN_FREE_TEXT_LENGTH = 3

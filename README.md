@@ -413,11 +413,11 @@ Permissions are requested as needed. Notification Listener access is required fo
 
 ## Build
 
-The app has two product flavors on a `distribution` dimension, so Gradle task
-names carry the flavor: `installConsumerDebug`, `assembleCueAbaRelease`, and so
-on. `consumer` is the launcher as described in this README. `cueAba` adds a
-private ABA clinic record search to the search surface and ships nothing else —
-see `docs/CUE_ABA_INTEGRATION.md`. A consumer build contains none of that code.
+> **This is the `cue-aba` branch.** It is the launcher described below plus a
+> private Cue ABA record search wired into the search surface — no flavors, no
+> flags, ordinary build commands. See `docs/CUE_ABA_INTEGRATION.md`. Do not merge
+> this branch into `main` or the Play Store branch; they intentionally do not
+> carry that code.
 
 Build debug APK:
 

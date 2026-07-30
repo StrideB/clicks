@@ -273,17 +273,15 @@ internal class SearchResultsHost(private val activity: MainActivity) {
     /**
      * Cue ABA records for the live query, as ready-to-add views.
      *
-     * Returns an empty list in the `consumer` flavor — CueBridge.ENABLED is a
-     * compile-time false there, so this whole call folds away and no ABA code
-     * ships. In `cueAba` it returns cached results immediately and repaints
-     * when the network answers.
+     * Returns cached results immediately and repaints when the network answers;
+     * an empty list when nobody is signed in, which is the normal state until
+     * someone connects.
      *
      * These sit ABOVE the instant answer on purpose: if you typed something
      * that names a kiddo, an authorization or your own clinic, that record IS
      * the answer — a web result underneath it is the fallback, not the lede.
      */
     private fun cueSearchViews(): List<View> {
-        if (!CueBridge.ENABLED) return emptyList()
         val results = CueBridge.results(activity, activity.query) {
             if (activity.libraryOpen) activity.refreshLibraryContent() else activity.render()
         }
@@ -319,7 +317,7 @@ internal class SearchResultsHost(private val activity: MainActivity) {
             setPadding(0, dp(8), 0, dp(4))
 
             addView(unfoldedSearchScrollColumn {
-                // ZONE 0 — Cue ABA records. Empty in the consumer flavor.
+                // ZONE 0 — Cue ABA records. Empty until someone signs in.
                 // Each view already carries its own LayoutParams (including the
                 // bottom gap), so add it bare rather than overriding them.
                 cueSearchViews().forEach { addView(it) }
@@ -446,7 +444,7 @@ internal class SearchResultsHost(private val activity: MainActivity) {
                 })
             }
 
-            // ZONE 0 — Cue ABA records. Empty in the consumer flavor.
+            // ZONE 0 — Cue ABA records. Empty until someone signs in.
             // Each view already carries its own LayoutParams (including the bottom
             // gap), so add it bare rather than overriding them.
             cueSearchViews().forEach { addView(it) }

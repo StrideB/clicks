@@ -75,7 +75,7 @@ class SearchRouterTest {
         assertEquals(SearchRouter.Route.WEB, route("ok?"))
     }
 
-    // ── Cue ABA records (cueAba flavor) ──────────────────────────────────────
+    // ── Cue ABA records (cue-aba branch) ─────────────────────────────────────
 
     @Test fun `a claimed cue query never leaves the device`() {
         // These all carry a WEB signal on their own — "billing" is commercial-ish,
@@ -105,8 +105,8 @@ class SearchRouterTest {
     }
 
     @Test fun `an unclaimed query is routed exactly as before`() {
-        // The consumer flavor always passes cueClaimed=false, so the default must
-        // leave every existing verdict untouched.
+        // Branches without the Cue package never pass cueClaimed at all, so the
+        // default must leave every existing verdict untouched.
         listOf("why is the sky blue", "btc price", "pizza near me", "reddit best knife").forEach {
             assertEquals(
                 "'$it' verdict must not shift",
