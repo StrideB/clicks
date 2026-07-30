@@ -2122,10 +2122,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
                 // 3-button navigation: the full-bleed deck now stops above the button bar, and on
                 // Android 15+ window.navigationBarColor is ignored for edge-to-edge apps — so without
-                // this the band between the bottom key row and the buttons would show bare wallpaper.
-                // Carry the deck's own surface into it, so the keyboard still reads as one slab that
-                // simply ends where the buttons begin.
-                if (phoneDockedFullBleed && launcherNavBarInset() > 0) {
+                // this the band between the bottom key row and the buttons would show bare wallpaper —
+                // a visibly different colour from the keyboard right where the two meet. Carry the
+                // deck's bottom-edge colour into it in every placement that puts a keyboard at the
+                // bottom (docked full-bleed, the root dock, and the widget canvas), so the buttons
+                // always sit on keyboard surface and the whole thing reads as one slab.
+                val keyboardOwnsBottom = (showRootDock && !hideDockForPane) ||
+                    (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock())
+                if (keyboardOwnsBottom && launcherNavBarInset() > 0) {
                     addView(View(context).apply {
                         // Flat, not the deck's gradient: this band continues the deck's *bottom edge*,
                         // so it has to be the exact colour that edge ends on or the seam shows.
@@ -28934,10 +28938,14 @@ Question: $prompt"""
         } else {
             if (darkBars) Color.BLACK else activeNeuTokens.base
         }
+        // Whichever placement leaves a keyboard at the bottom edge — the nav bar's own colour (still
+        // honoured below Android 15) has to be the deck's, or the button strip reads as a different
+        // surface from the keys directly above it.
         val dockedKeyboardOwnsBottom =
-            keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED &&
+            (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) &&
                 !isUnfoldedInnerLayoutActive() &&
-                !widgetPaneUsesRootDock()
+                !widgetPaneUsesRootDock() &&
+                !(keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && widgetKeyboardHidden)
         window.navigationBarColor = when {
             dockedKeyboardOwnsBottom -> keyboardDeckBottomEdgeColor()
             darkBars -> Color.BLACK
