@@ -156,7 +156,10 @@ class DockedKeyboardService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.BOTTOM
-            y = DockedKeyboardMetrics.overlayBottomLiftPx(this@DockedKeyboardService)
+            // FLAG_LAYOUT_NO_LIMITS puts y=0 at the physical bottom edge, so with 3-button navigation
+            // the back/home/recents row landed straight on the deck's bottom key row. Sit above the
+            // button band; on gesture navigation the inset is 0 and the lift alone applies as before.
+            y = DockedKeyboardMetrics.overlayBottomLiftPx(this@DockedKeyboardService) + systemNavButtonsInset()
         }
         windowManager?.addView(root, lp)
         overlayParams = lp
