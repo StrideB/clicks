@@ -65,6 +65,9 @@ internal class CueSignInActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        // The scroll host is here so the form stays reachable with the keyboard up (see render),
+        // which only happens if the window actually resizes for it.
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
 
         val prefs = getSharedPreferences(TECLAS_PREFS, MODE_PRIVATE)
         // Same resolver the launcher and IME use, so this screen follows the

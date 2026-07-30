@@ -779,8 +779,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         if (!isLauncherEditorActive()) scheduleSuggestions()
     }
 
+    /**
+     * Whether the focused editor is one the launcher's docked deck types into itself.
+     *
+     * The package alone is not enough. Teclas ships several ordinary activities — Cue sign-in,
+     * keyboard settings, the skills editor — and they share this package while having no deck behind
+     * them. Matching on package alone made the IME stand down on all of them: the field took focus,
+     * no keyboard ever appeared, and there was no way to enter anything. So the launcher activity
+     * being in front is part of the test.
+     */
     private fun isLauncherEditorActive(): Boolean {
-        return currentEditorPackage == packageName
+        return currentEditorPackage == packageName && MainActivity.launcherInForeground
     }
 
     /**

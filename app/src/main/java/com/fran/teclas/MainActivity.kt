@@ -1175,6 +1175,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Demo spoof: if a demo location is set (and the mock-location op is granted), push it into
         // the system providers so Uber/Maps see the demo city too. No-op otherwise.
         MockLocationInjector.sync(this)
+        // The deck only owns typing while the launcher itself is the screen in front.
+        launcherInForeground = true
         // Buttons ↔ gestures is toggled in Settings, i.e. while we're in the background; pick up the
         // new bottom band before anything below re-measures against it.
         refreshNavBarInset()
@@ -1289,6 +1291,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onPause() {
+        // Another screen is taking over — including our own settings and Cue sign-in, which have no
+        // deck and need the real keyboard.
+        launcherInForeground = false
         cancelWidgetKeyboardSwap(resetTheme = true)
         widgetCoachAnimator?.cancel()
         // Halt periodic work while another app is in front: the 1 Hz music-progress tick, the
@@ -30101,6 +30106,18 @@ Question: $prompt"""
     // moved verbatim to LauncherModels.kt. Behaviour unchanged; referenced here by simple name.
 
     companion object {
+        /**
+         * True only while the launcher activity itself is in front.
+         *
+         * The IME stands down for the launcher's own editors, because the docked deck types into
+         * them directly. That rule was keyed on the *package*, which silenced every other Teclas
+         * screen too: on the Cue sign-in form, tapping a field focused it and no keyboard ever
+         * appeared, leaving nothing to type with. Those screens are plain activities with no deck
+         * behind them, so the IME has to do its normal job there.
+         */
+        @Volatile
+        internal var launcherInForeground = false
+
         private const val Screen = 0xFF0D0E11.toInt()
         private const val Panel = 0xFF16181D.toInt()
         internal const val Panel2 = 0xFF1D2027.toInt()
