@@ -1175,6 +1175,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Demo spoof: if a demo location is set (and the mock-location op is granted), push it into
         // the system providers so Uber/Maps see the demo city too. No-op otherwise.
         MockLocationInjector.sync(this)
+        // The deck only owns typing while the launcher itself is the screen in front.
+        launcherInForeground = true
         // Buttons ↔ gestures is toggled in Settings, i.e. while we're in the background; pick up the
         // new bottom band before anything below re-measures against it.
         refreshNavBarInset()
@@ -1289,6 +1291,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     override fun onPause() {
+        // Another screen is taking over — including our own settings and Cue sign-in, which have no
+        // deck and need the real keyboard.
+        launcherInForeground = false
         cancelWidgetKeyboardSwap(resetTheme = true)
         widgetCoachAnimator?.cancel()
         // Halt periodic work while another app is in front: the 1 Hz music-progress tick, the
@@ -28253,18 +28258,8 @@ Question: $prompt"""
         }
     }
 
-    private fun keyboardDeckBottomEdgeColor(): Int {
-        val dark = !keyboardLightMode()
-        return when {
-            keyboardTheme == KEYBOARD_THEME_BRUSHED -> if (dark) 0xFF101113.toInt() else 0xFFD4D8DF.toInt()
-            keyboardTheme == KEYBOARD_THEME_SEEME -> 0xFF050608.toInt()
-            keyboardTheme == KEYBOARD_THEME_HYPER3D_BLACK -> 0xFF050506.toInt()
-            keyboardTheme == KEYBOARD_THEME_HYPER3D || keyboardTheme == KEYBOARD_THEME_TECLAS -> if (dark) 0xFF08090C.toInt() else 0xFFC7CED9.toInt()
-            keyboardTheme == KEYBOARD_THEME_GOKEYS -> if (dark) 0xFF0B0C0F.toInt() else 0xFFC9D0DA.toInt()
-            KeyboardThemeDrawables.isAddedTheme(keyboardTheme) -> if (dark) 0xFF111318.toInt() else 0xFFDDE2E9.toInt()
-            else -> if (dark) 0xFF1B1D21.toInt() else 0xFFE3E7EE.toInt()
-        }
-    }
+    private fun keyboardDeckBottomEdgeColor(): Int =
+        keyboardDeckBottomEdgeColor(keyboardTheme, keyboardLightMode())
 
     private fun keyboardLightMode(): Boolean {
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
@@ -30101,6 +30096,18 @@ Question: $prompt"""
     // moved verbatim to LauncherModels.kt. Behaviour unchanged; referenced here by simple name.
 
     companion object {
+        /**
+         * True only while the launcher activity itself is in front.
+         *
+         * The IME stands down for the launcher's own editors, because the docked deck types into
+         * them directly. That rule was keyed on the *package*, which silenced every other Teclas
+         * screen too: on the Cue sign-in form, tapping a field focused it and no keyboard ever
+         * appeared, leaving nothing to type with. Those screens are plain activities with no deck
+         * behind them, so the IME has to do its normal job there.
+         */
+        @Volatile
+        internal var launcherInForeground = false
+
         private const val Screen = 0xFF0D0E11.toInt()
         private const val Panel = 0xFF16181D.toInt()
         internal const val Panel2 = 0xFF1D2027.toInt()

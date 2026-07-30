@@ -32,8 +32,8 @@ android {
         applicationId = "com.fran.teclas"
         minSdk = 31
         targetSdk = 37
-        versionCode = 44
-        versionName = "0.5.5-aba"
+        versionCode = 46
+        versionName = "0.5.7-aba"
 
         // Cue ABA endpoints. Baked in so `./gradlew installDebug` just works.
         buildConfigField("String", "CUE_API_BASE_URL", "\"${cueProperty("cue.api.base.url").ifEmpty { "https://app.cueaba.com" }}\"")
