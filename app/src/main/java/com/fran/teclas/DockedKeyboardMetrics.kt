@@ -13,7 +13,10 @@ internal object DockedKeyboardMetrics {
         val density = context.resources.displayMetrics.density
         val size = KeyboardSettings.keyboardSize(context)
         val deckHeight = ((238 + (size * 54 / 100)) * density).toInt()
-        return deckHeight + launcherSearchShelfPx(context) + overlayBottomLiftPx(context)
+        // The deck now sits above the 3-button navigation bar, so the band a pinned app must keep
+        // clear grows by that same amount (0 on gesture navigation).
+        return deckHeight + launcherSearchShelfPx(context) + overlayBottomLiftPx(context) +
+            context.systemNavButtonsInset()
     }
 
     fun freeformTargetNudgePx(context: Context): Int = context.dp(70)

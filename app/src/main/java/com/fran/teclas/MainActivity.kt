@@ -1174,6 +1174,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Demo spoof: if a demo location is set (and the mock-location op is granted), push it into
         // the system providers so Uber/Maps see the demo city too. No-op otherwise.
         MockLocationInjector.sync(this)
+        // Buttons ↔ gestures is toggled in Settings, i.e. while we're in the background; pick up the
+        // new bottom band before anything below re-measures against it.
+        refreshNavBarInset()
         // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
         DockedFreeform.externalAppInFront = false
         dockedForegroundDraft.clear()
@@ -1311,6 +1314,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // Rotation / fold moves the nav bar (a bottom band in portrait, side bars in landscape), so
+        // re-measure here — refreshSystemThemeIfNeeded below only renders on a system-theme change.
+        refreshNavBarInset()
         refreshSystemThemeIfNeeded(animated = true, forceRender = true)
     }
 
@@ -2009,7 +2015,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             setBackgroundColor(if (wallpaperCanvas) Color.TRANSPARENT else activeNeuTokens.base)
-            setPadding(0, launcherStatusBarInset(), 0, if (phoneDockedFullBleed || phoneWidgetCanvas) 0 else keyboardBottomLift())
+            // Bottom = the 3-button nav bar band (0 on gestures) plus the floating deck's own lift.
+            // Without the nav band the keyboard's bottom key row sat under the system buttons.
+            setPadding(
+                0,
+                launcherStatusBarInset(),
+                0,
+                launcherNavBarInset() + (if (phoneDockedFullBleed || phoneWidgetCanvas) 0 else keyboardBottomLift())
+            )
         }
         rootView = root
         contentFrame = FrameLayout(this).apply {
@@ -2076,7 +2089,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         // Docked: fit the wallpaper to the home area above the keyboard instead of
                         // full-screen — otherwise its lower half is buried behind the opaque keyboard
                         // and only the top of the image is ever visible.
-                        if (phoneDockedFullBleed) lp.bottomMargin = activeRootDockHeight() + keyboardBottomLift()
+                        if (phoneDockedFullBleed) {
+                            lp.bottomMargin = activeRootDockHeight() + keyboardBottomLift() + launcherNavBarInset()
+                        }
                         addView(it, lp)
                     }
                 }
@@ -2088,9 +2103,31 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         systemGestureReservedBottomInset() + dp(18),
                         Gravity.BOTTOM
-                    ))
+                    ).apply {
+                        // These deck fills are siblings of root inside the full-screen shell, so they
+                        // don't inherit root's nav-bar padding — offset them by hand or they slide
+                        // under the buttons while the keyboard above them sits correctly.
+                        bottomMargin = launcherNavBarInset()
+                    })
                 }
                 addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                // 3-button navigation: the full-bleed deck now stops above the button bar, and on
+                // Android 15+ window.navigationBarColor is ignored for edge-to-edge apps — so without
+                // this the band between the bottom key row and the buttons would show bare wallpaper.
+                // Carry the deck's own surface into it, so the keyboard still reads as one slab that
+                // simply ends where the buttons begin.
+                if (phoneDockedFullBleed && launcherNavBarInset() > 0) {
+                    addView(View(context).apply {
+                        // Flat, not the deck's gradient: this band continues the deck's *bottom edge*,
+                        // so it has to be the exact colour that edge ends on or the seam shows.
+                        setBackgroundColor(keyboardDeckBottomEdgeColor())
+                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                    }, FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        launcherNavBarInset(),
+                        Gravity.BOTTOM
+                    ))
+                }
                 if (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock()) {
                     addView(View(context).apply {
                         background = keyboardDeckBottomEdgeBackground()
@@ -2099,7 +2136,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         FrameLayout.LayoutParams.MATCH_PARENT,
                         dp(10),
                         Gravity.BOTTOM
-                    ))
+                    ).apply {
+                        bottomMargin = launcherNavBarInset()
+                    })
                 }
                 dockedFreeformBackdropView = View(context).apply {
                     background = dockedFreeformBackdropDrawable()
@@ -3234,7 +3273,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // The root keyboard dock already owns the bottom of the screen (it's a sibling below
         // the content frame), so only pad the content for the slice of the lower panel the
         // dock doesn't cover.
-        val dockReserved = activeRootDockHeight() + launcherDockedKeyboardBottomLift() + keyboardBottomLift()
+        val dockReserved = activeRootDockHeight() + launcherDockedKeyboardBottomLift() + keyboardBottomLift() +
+            launcherNavBarInset()
         return (screenHeight - posture.hinge.top - dockReserved).coerceIn(0, screenHeight / 2)
     }
 
@@ -11157,6 +11197,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val metrics = resources.displayMetrics
         val contentHeight = metrics.heightPixels -
             launcherStatusBarInset() -
+            launcherNavBarInset() -
             dp(34) -
             keyboardHeight()
         val reservedHomeChrome = dp(20) + dp(70) + dp(80) + dp(28)
@@ -11965,7 +12006,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.VERTICAL
                 clipChildren = false
                 clipToPadding = false
-                setPadding(dp(16), launcherStatusBarInset() + dp(12), dp(16), dp(18))
+                setPadding(dp(16), launcherStatusBarInset() + dp(12), dp(16), dp(18) + launcherNavBarInset())
                 addView(widgetBoardHeader(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(58)))
                 addView(widgetGridScroll(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
@@ -14079,7 +14120,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
         container.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), launcherStatusBarInset() + dp(12), dp(12), dp(14))
+            // Full-screen boards are addContentView'd siblings of the launcher root, so they get no
+            // nav-bar padding from it — reserve the button band here or the bottom widget row is
+            // covered by back/home/recents.
+            setPadding(dp(12), launcherStatusBarInset() + dp(12), dp(12), dp(14) + launcherNavBarInset())
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -14282,7 +14326,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         )
         container.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), launcherStatusBarInset() + dp(12), dp(12), dp(14))
+            // Full-screen boards are addContentView'd siblings of the launcher root, so they get no
+            // nav-bar padding from it — reserve the button band here or the bottom widget row is
+            // covered by back/home/recents.
+            setPadding(dp(12), launcherStatusBarInset() + dp(12), dp(12), dp(14) + launcherNavBarInset())
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -23798,7 +23845,8 @@ Question: $prompt"""
             keyboardDockView.getLocationOnScreen(loc)
             loc[1].takeIf { it > 0 && keyboardDockView.height > 0 }
         } else null
-        val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift()).takeIf { it in 1 until screenH }
+        val computed = (screenH - activeRootDockHeight() - launcherDockedKeyboardBottomLift() - launcherNavBarInset())
+            .takeIf { it in 1 until screenH }
         val keyboardTopPx = DockedFreeform.resolveKeyboardTop(this, measured, computed)
         // Share the top with the accessibility service so it can re-pin via Shizuku on window changes.
         keyboardTopPx?.let { DockedFreeform.lastKeyboardTopPx = it }
@@ -28790,6 +28838,35 @@ Question: $prompt"""
 
     private fun launcherStatusBarInset(): Int =
         if (hideStatusBarEnabled()) 0 else systemStatusBarHeight()
+
+    /** Cached [systemNavButtonsInset]; -1 until first measured. Re-measured on resume / config change. */
+    private var navBarInsetPx = -1
+
+    /**
+     * Bottom band the 3-button navigation bar owns, in px — 0 under gesture navigation.
+     *
+     * Every bottom-anchored launcher surface reserves it so the keyboard deck lands *above* the
+     * back/home/recents row instead of underneath it. Gesture navigation reserves nothing, so the
+     * full-bleed deck keeps reaching the physical bottom edge exactly as before.
+     */
+    internal fun launcherNavBarInset(): Int {
+        if (navBarInsetPx < 0) navBarInsetPx = systemNavButtonsInset()
+        return navBarInsetPx
+    }
+
+    /**
+     * Nav mode is a system setting that can change under a live launcher (Settings → gestures ↔
+     * buttons), and the reserved band is baked into the view tree in a dozen places, so re-measure
+     * whenever we come back to the front and rebuild once if it moved. Cheap: a metrics read, and the
+     * value is identical on every resume that didn't involve a nav-mode change.
+     */
+    private fun refreshNavBarInset() {
+        val measured = systemNavButtonsInset()
+        if (measured == navBarInsetPx) return
+        val hadValue = navBarInsetPx >= 0
+        navBarInsetPx = measured
+        if (hadValue && ::rootView.isInitialized) render()
+    }
 
     private fun selectedNeuTokens(): NeuTokens {
         val savedMode = prefs().getString(THEME_MODE_PREF, THEME_MODE_SYSTEM) ?: THEME_MODE_SYSTEM

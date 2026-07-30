@@ -12,6 +12,8 @@ import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
+import android.view.WindowInsets
+import android.view.WindowManager
 import android.widget.TextView
 import java.util.Locale
 
@@ -252,6 +254,39 @@ internal fun Context.goKeyBackground(fillColor: Int): GradientDrawable {
 internal fun Context.systemStatusBarHeight(): Int {
     val id = resources.getIdentifier("status_bar_height", "dimen", "android")
     return if (id > 0) resources.getDimensionPixelSize(id) else 0
+}
+
+/**
+ * Height (px) of the bottom band the 3-button navigation bar takes touches in — 0 on gesture
+ * navigation.
+ *
+ * Our windows draw to the physical bottom edge (the launcher pads the status bar in by hand; the
+ * docked deck window uses FLAG_LAYOUT_NO_LIMITS), so with buttons enabled the system's
+ * back/home/recents row landed on top of the keyboard's bottom key row. Bottom-anchored surfaces
+ * reserve this band so the keyboard sits above the buttons instead.
+ *
+ * Gesture navigation must NOT be lifted: the handle floats harmlessly over the deck, and reserving
+ * its ~24dp inset would open a dead strip beneath the full-bleed keyboard. `tappableElement` is what
+ * separates the two — it reports the region system UI actually consumes touches in, which is the
+ * whole button bar under 3-button nav and zero under gestures. `navigationBars` is intersected with
+ * it so a hidden bar still reads as 0.
+ */
+internal fun Context.systemNavButtonsInset(): Int {
+    val insets = runCatching {
+        getSystemService(WindowManager::class.java)?.currentWindowMetrics?.windowInsets
+    }.getOrNull()
+    if (insets != null) {
+        val bars = insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+        val tappable = insets.getInsets(WindowInsets.Type.tappableElement()).bottom
+        return minOf(bars, tappable)
+    }
+    // No window metrics (non-visual context on some OEM builds): fall back to the platform's own
+    // nav-mode flag. 0 = 3-button, 1 = 2-button, 2 = fully gestural.
+    val modeId = resources.getIdentifier("config_navBarInteractionMode", "integer", "android")
+    val mode = if (modeId > 0) runCatching { resources.getInteger(modeId) }.getOrNull() else null
+    if (mode == null || mode == 2) return 0
+    val heightId = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+    return if (heightId > 0) runCatching { resources.getDimensionPixelSize(heightId) }.getOrDefault(0) else 0
 }
 
 // ── Neu-token drawable factories (tokens passed explicitly) ─────────────────
