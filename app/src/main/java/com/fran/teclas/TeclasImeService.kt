@@ -741,12 +741,13 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // windows, its own nav-bar inset reads 0 and there is nothing for the deck to reserve.
             syncImeSystemBars()
             // The authoritative nav-band measurement needs an attached window, and the deck was built
-            // before one existed. Re-apply on every show, which also picks up a nav-mode change made
+            // before one existed. Re-measure on every show, which also picks up a nav-mode change made
             // while the keyboard was alive — onCreateInputView runs only once.
+            refreshImeNavBarInset()
             applyImeDeckHeight()
             // Handing the band over re-dispatches insets, which lands after this frame — measure
             // again once it has, or the first show keeps the pre-handover value of 0.
-            imeRoot?.post { applyImeDeckHeight() }
+            imeRoot?.post { refreshImeNavBarInset(); applyImeDeckHeight() }
         }
     }
 
@@ -1406,6 +1407,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        // Rotation moves the bar off the bottom edge, so the cached band is stale here.
+        refreshImeNavBarInset()
         if (themeMode() == THEME_MODE_SYSTEM && selectedNeuTokens().mode != lastBuiltMode) {
             rebuildDeck()
         }
@@ -2546,13 +2549,12 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     }
 
     private fun applyImeDeckHeight() {
-        val target = imeDeckTotalHeight()
-        // Re-applied on every show, not just at build: nav mode is a system setting the user can flip
-        // while the keyboard is alive, and onCreateInputView runs only once.
+        val band = imeNavBarInset()
+        val target = imeKeyboardHeight() + band
+        val wantBottom = dp(8) + band
         deckView?.let { deck ->
-            val band = imeNavBarInset()
-            if (deck.paddingBottom != dp(8) + band) {
-                deck.setPadding(deck.paddingLeft, deck.paddingTop, deck.paddingRight, dp(8) + band)
+            if (deck.paddingBottom != wantBottom) {
+                deck.setPadding(deck.paddingLeft, deck.paddingTop, deck.paddingRight, wantBottom)
             }
         }
         deckView?.minimumHeight = target
@@ -4755,7 +4757,25 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
      * out of it, so the deck's own background fills the strip and the buttons sit on keyboard-coloured
      * surface instead of a transparent gap.
      */
-    private fun imeNavBarInset(): Int = systemNavButtonsInset(imeRoot)
+    /**
+     * Cached band; -1 until first measured.
+     *
+     * [systemNavButtonsInset] reads Settings.Secure and allocates two WindowInsets objects, and
+     * applyImeDeckHeight runs on every suggestion-strip toggle — which is every keystroke. Measuring
+     * there put that work on the typing hot path. The value can only change when the user visits
+     * system settings, so measure on show and on configuration change, and read a field in between.
+     */
+    private var imeNavBandPx = -1
+
+    private fun imeNavBarInset(): Int {
+        if (imeNavBandPx < 0) imeNavBandPx = systemNavButtonsInset(imeRoot)
+        return imeNavBandPx
+    }
+
+    /** Re-measure: the window must exist and own the band first, and nav mode can change between shows. */
+    private fun refreshImeNavBarInset() {
+        imeNavBandPx = systemNavButtonsInset(imeRoot)
+    }
 
     /** The colour the deck's own background ends on — what the button strip has to be. */
     private fun imeDeckBottomColor(): Int =
