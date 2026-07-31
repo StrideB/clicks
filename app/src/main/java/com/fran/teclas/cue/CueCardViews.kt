@@ -50,6 +50,15 @@ import java.util.concurrent.Executors
  */
 internal object CueCardViews {
 
+    /**
+     * Every text size in a Cue card goes through here.
+     *
+     * The sizes are chosen for a record you transcribe rather than glance at, and they stay in that
+     * proportion — this only applies the launcher's search font slider on top, so a card scales with
+     * the results underneath it instead of being the one part of search the setting doesn't reach.
+     */
+    private fun MainActivity.cueText(size: Float): Float = size * searchFontScale()
+
     fun build(activity: MainActivity, results: CueResults, blurPhi: Boolean): List<View> {
         if (results.mode == "signin") return listOf(header(activity, results), connectCard(activity))
         if (results.mode == "account") return accountViews(activity)
@@ -96,7 +105,7 @@ internal object CueCardViews {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(mono(
                     "CUE" + (results.type?.let { " · ${CueTone.tagFor(it)}" } ?: ""),
-                    10f, accent,
+                    cueText(10f), accent,
                 ).apply { letterSpacing = 0.16f })
                 addView(View(context).apply {
                     setBackgroundColor(adjustAlpha(accent, 0.28f))
@@ -112,7 +121,7 @@ internal object CueCardViews {
                 addView(row, wrapRow())
                 // The active sort answers "why is this one first?" — so say it out loud.
                 results.sortedBy?.let { sort ->
-                    addView(mono("SORTED BY ${sort.uppercase()}", 9f, activeNeuTokens.inkFaint).apply {
+                    addView(mono("SORTED BY ${sort.uppercase()}", cueText(9f), activeNeuTokens.inkFaint).apply {
                         letterSpacing = 0.13f
                         setPadding(0, dp(5), 0, 0)
                     })
@@ -129,10 +138,10 @@ internal object CueCardViews {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(13), dp(12), dp(13), dp(12))
                 background = Neu.drawable(activeNeuTokens, dp(14).toFloat(), NeuLevel.PRESSED)
-                addView(mono(title.uppercase(), 10f, accent).apply { letterSpacing = 0.13f })
+                addView(mono(title.uppercase(), cueText(10f), accent).apply { letterSpacing = 0.13f })
                 addView(TextView(context).apply {
                     text = body
-                    textSize = 13.5f
+                    textSize = cueText(13.5f)
                     setTextColor(activeNeuTokens.inkDim)
                     setPadding(0, dp(6), 0, 0)
                     includeFontPadding = false
@@ -158,7 +167,7 @@ internal object CueCardViews {
                 addView(TextView(context).apply {
                     text = "◈"
                     gravity = Gravity.CENTER
-                    textSize = 15f
+                    textSize = cueText(15f)
                     setTextColor(accent)
                     background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.RAISED_SM)
                     includeFontPadding = false
@@ -168,12 +177,12 @@ internal object CueCardViews {
                     orientation = LinearLayout.VERTICAL
                     addView(TextView(context).apply {
                         text = "Connect to Cue"
-                        textSize = 16f
+                        textSize = cueText(16f)
                         typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                         setTextColor(activeNeuTokens.ink)
                         includeFontPadding = false
                     })
-                    addView(mono("SIGN IN TO SEARCH CLINIC RECORDS", 10f, accent).apply {
+                    addView(mono("SIGN IN TO SEARCH CLINIC RECORDS", cueText(10f), accent).apply {
                         letterSpacing = 0.08f
                         setPadding(0, dp(5), 0, 0)
                     })
@@ -204,7 +213,7 @@ internal object CueCardViews {
                 )
                 addView(TextView(context).apply {
                     text = identity?.displayName ?: "Signed in to Cue"
-                    textSize = 17f
+                    textSize = cueText(17f)
                     typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                     setTextColor(activeNeuTokens.ink)
                     includeFontPadding = false
@@ -213,7 +222,7 @@ internal object CueCardViews {
                     addView(mono(
                         listOf(it.role.uppercase(), "${it.permissions.size} GRANTS")
                             .filter { part -> part.isNotBlank() }.joinToString(" · "),
-                        9f, accent,
+                        cueText(9f), accent,
                     ).apply {
                         letterSpacing = 0.09f
                         setPadding(0, dp(5), 0, 0)
@@ -230,7 +239,7 @@ internal object CueCardViews {
                     orientation = LinearLayout.HORIZONTAL
                     addView(mono(
                         if (masking) "MASKING ON" else "MASKING OFF",
-                        8f, if (masking) Neu.GREEN else Neu.AMBER,
+                        cueText(8f), if (masking) Neu.GREEN else Neu.AMBER,
                     ).apply {
                         letterSpacing = 0.1f
                         gravity = Gravity.CENTER
@@ -247,7 +256,7 @@ internal object CueCardViews {
                     ).apply { marginEnd = dp(6) })
 
                     if ((identity?.organizations?.size ?: 0) > 1) {
-                        addView(mono("SWITCH CLINIC", 8f, accent).apply {
+                        addView(mono("SWITCH CLINIC", cueText(8f), accent).apply {
                             letterSpacing = 0.1f
                             gravity = Gravity.CENTER
                             setPadding(dp(9), dp(5), dp(9), dp(5))
@@ -262,7 +271,7 @@ internal object CueCardViews {
                         ).apply { marginEnd = dp(6) })
                     }
 
-                    addView(mono("SIGN OUT", 8f, Neu.ACCENT).apply {
+                    addView(mono("SIGN OUT", cueText(8f), Neu.ACCENT).apply {
                         letterSpacing = 0.1f
                         gravity = Gravity.CENTER
                         setPadding(dp(9), dp(5), dp(9), dp(5))
@@ -283,7 +292,7 @@ internal object CueCardViews {
             val heading = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(4), dp(4), dp(4), dp(8))
-                addView(mono("CUE · ACCOUNT", 8.5f, accent).apply { letterSpacing = 0.16f })
+                addView(mono("CUE · ACCOUNT", cueText(8.5f), accent).apply { letterSpacing = 0.16f })
             }
             heading.layoutParams = stacked(activity, 0)
             return listOf(heading, card)
@@ -302,7 +311,7 @@ internal object CueCardViews {
 
                 addView(TextView(context).apply {
                     text = summary.headline
-                    textSize = 13.5f
+                    textSize = cueText(13.5f)
                     setTextColor(activeNeuTokens.ink)
                     includeFontPadding = false
                 })
@@ -330,7 +339,7 @@ internal object CueCardViews {
                         summary.distribution.forEach { bucket ->
                             addView(mono(
                                 "${bucket.count} ${bucket.label.uppercase()}",
-                                9f, CueTone.forTone(bucket.tone),
+                                cueText(9f), CueTone.forTone(bucket.tone),
                             ).apply {
                                 letterSpacing = 0.1f
                                 setPadding(0, 0, dp(10), 0)
@@ -366,7 +375,7 @@ internal object CueCardViews {
                     orientation = LinearLayout.VERTICAL
                     addView(TextView(context).apply {
                         text = if (blur) mask(card.title) else card.title
-                        textSize = if (detail) 18f else 16f
+                        textSize = cueText(if (detail) 18f else 16f)
                         typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
                         setTextColor(activeNeuTokens.ink)
                         maxLines = if (detail) 2 else 1
@@ -374,7 +383,7 @@ internal object CueCardViews {
                         includeFontPadding = false
                     })
                     if (card.subtitle.isNotBlank()) {
-                        addView(mono(if (blur) mask(card.subtitle) else card.subtitle, 10.5f, spine).apply {
+                        addView(mono(if (blur) mask(card.subtitle) else card.subtitle, cueText(10.5f), spine).apply {
                             letterSpacing = 0.08f
                             maxLines = if (detail) 2 else 1
                             ellipsize = TextUtils.TruncateAt.END
@@ -383,7 +392,7 @@ internal object CueCardViews {
                     }
                 }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
-                addView(mono(CueTone.tagFor(card.type), 8.5f, activeNeuTokens.inkFaint).apply {
+                addView(mono(CueTone.tagFor(card.type), cueText(8.5f), activeNeuTokens.inkFaint).apply {
                     gravity = Gravity.CENTER
                     letterSpacing = 0.1f
                     setPadding(dp(7), 0, dp(7), 0)
@@ -405,7 +414,7 @@ internal object CueCardViews {
 
                 card.badgeText?.let { badge ->
                     val tone = CueTone.forTone(card.badgeTone)
-                    addView(mono(badge.uppercase(), 9.5f, tone).apply {
+                    addView(mono(badge.uppercase(), cueText(9.5f), tone).apply {
                         letterSpacing = 0.1f
                         setPadding(dp(7), dp(3), dp(7), dp(3))
                         background = GradientDrawable().apply {
@@ -469,7 +478,7 @@ internal object CueCardViews {
             return TextView(this).apply {
                 text = if (blur) "••" else card.glyph
                 gravity = Gravity.CENTER
-                textSize = if (detail) 17f else 15f
+                textSize = cueText(if (detail) 17f else 15f)
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(spine)
                 background = plate
@@ -488,10 +497,10 @@ internal object CueCardViews {
                 addView(LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     addView(
-                        mono(meter.label.uppercase(), 9.5f, activeNeuTokens.inkFaint).apply { letterSpacing = 0.12f },
+                        mono(meter.label.uppercase(), cueText(9.5f), activeNeuTokens.inkFaint).apply { letterSpacing = 0.12f },
                         LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
                     )
-                    addView(mono("${meter.used} / ${meter.total} · $percent%", 10.5f, activeNeuTokens.inkDim))
+                    addView(mono("${meter.used} / ${meter.total} · $percent%", cueText(10.5f), activeNeuTokens.inkDim))
                 }, wrapRow())
                 addView(
                     MeterBar(context, percent, tone, height, activeNeuTokens.baseLo),
@@ -521,12 +530,12 @@ internal object CueCardViews {
                         pair.forEach { field ->
                             addView(LinearLayout(context).apply {
                                 orientation = LinearLayout.VERTICAL
-                                addView(mono(field.label.uppercase(), 9.5f, activeNeuTokens.inkFaint).apply {
+                                addView(mono(field.label.uppercase(), cueText(9.5f), activeNeuTokens.inkFaint).apply {
                                     letterSpacing = 0.12f
                                 })
                                 addView(TextView(context).apply {
                                     text = if (blur) mask(field.value) else field.value
-                                    textSize = if (detail) 15f else 13.5f
+                                    textSize = cueText(if (detail) 15f else 13.5f)
                                     setTextColor(activeNeuTokens.ink)
                                     maxLines = 2
                                     ellipsize = TextUtils.TruncateAt.END
@@ -557,7 +566,7 @@ internal object CueCardViews {
                         action.primary -> CueTone.forType(card.type)
                         else -> activeNeuTokens.inkDim
                     }
-                    addView(mono(action.label.uppercase(), 9.5f, color).apply {
+                    addView(mono(action.label.uppercase(), cueText(9.5f), color).apply {
                         letterSpacing = 0.1f
                         gravity = Gravity.CENTER
                         setPadding(dp(9), dp(5), dp(9), dp(5))
