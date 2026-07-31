@@ -37,6 +37,7 @@ internal object CueVocabulary {
         nouns("claim", "claim", "claims", "billing", "invoice", "invoices")
         nouns("document", "doc", "docs", "document", "documents", "file", "files", "paperwork")
         nouns("incident", "incident", "incidents", "report", "reports")
+        nouns("lead", "lead", "leads", "inquiry", "inquiries", "prospect", "prospects", "referral", "referrals", "intake")
         nouns("candidate", "candidate", "candidates", "applicant", "applicants", "recruiting", "hiring")
         nouns("task", "task", "tasks", "todo", "todos", "queue")
     }

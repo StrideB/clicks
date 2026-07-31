@@ -153,6 +153,7 @@ internal object CueTone {
         "claim"        -> Neu.ORANGE
         "incident"     -> Neu.ACCENT
         "document"     -> Neu.PURPLE
+        "lead"         -> Neu.ORANGE
         "candidate"    -> Color.parseColor("#C9A7FF")
         "task"         -> Color.parseColor("#8FA3B8")
         else           -> Neu.BLUE
@@ -176,6 +177,7 @@ internal object CueTone {
         "claim"        -> "CLAIM"
         "incident"     -> "INCIDENT"
         "document"     -> "DOC"
+        "lead"         -> "LEAD"
         "candidate"    -> "RECRUIT"
         "task"         -> "TASK"
         else           -> type.uppercase()

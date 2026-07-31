@@ -49,6 +49,9 @@ internal object CueSession {
 
     @Volatile private var cachedPrefs: SharedPreferences? = null
 
+    /** Serializes token refresh across the search and sync threads. */
+    private val refreshLock = Any()
+
     /**
      * Keystore-backed storage, or null when it is unavailable.
      *
@@ -119,29 +122,67 @@ internal object CueSession {
     }
 
     /**
-     * A usable access token, refreshing if the cached one is spent. Returns null
-     * when signed out or when the refresh token was revoked — in which case the
-     * stored session is cleared so the UI falls back to sign-in.
+     * A usable access token, refreshing if the cached one is spent.
+     *
+     * SINGLE-FLIGHT, and that is the whole point of the lock. Supabase ROTATES
+     * refresh tokens: a successful refresh invalidates the token it was given.
+     * With searches on one thread and sync on another, both could reach this at
+     * once — the first would rotate the token, the second would present the
+     * now-dead one, and the user got signed out mid-session. That is exactly the
+     * "it keeps logging me out" bug.
+     *
+     * The second caller therefore waits on the lock and re-reads the token the
+     * first one just obtained, instead of racing it.
      */
     fun accessToken(context: Context): String? {
         if (!isConfigured) return null
-        accessToken?.takeIf { System.currentTimeMillis() < accessTokenExpiresAt - EXPIRY_SKEW_MS }?.let { return it }
+        fresh()?.let { return it }
 
-        val refresh = prefs(context)?.getString(KEY_REFRESH, null) ?: return null
-        val response = postAuth("token?grant_type=refresh_token", JSONObject().put("refresh_token", refresh))
-            ?: return null   // network blip: keep the stored session, retry next time
+        synchronized(refreshLock) {
+            // Someone may have refreshed while we waited for the lock.
+            fresh()?.let { return it }
 
-        val fresh = response.optString("access_token").takeIf { it.isNotBlank() }
-        if (fresh == null) {
-            // The server answered and rejected the token — it is genuinely dead.
-            signOut(context)
-            return null
+            val refresh = prefs(context)?.getString(KEY_REFRESH, null) ?: return null
+            val response = postAuth("token?grant_type=refresh_token", JSONObject().put("refresh_token", refresh))
+                ?: return null   // never completed: keep the session, retry later
+
+            val token = response.optString("access_token").takeIf { it.isNotBlank() }
+            if (token == null) {
+                // The server answered without a token. Only tear down the session
+                // if it said the REFRESH TOKEN is bad; a 429, a 5xx or a proxy
+                // error must not cost the user their sign-in.
+                if (isRefreshTokenRejected(response)) signOut(context)
+                return null
+            }
+
+            adoptAccessToken(response)
+            // Persist the rotated token immediately — if the process dies before
+            // this write, the stored token is already dead server-side.
+            response.optString("refresh_token").takeIf { it.isNotBlank() }?.let {
+                prefs(context)?.edit()?.putString(KEY_REFRESH, it)?.commit()
+            }
+            return accessToken
         }
-        adoptAccessToken(response)
-        response.optString("refresh_token").takeIf { it.isNotBlank() }?.let {
-            prefs(context)?.edit()?.putString(KEY_REFRESH, it)?.apply()
-        }
-        return accessToken
+    }
+
+    /** The cached access token while it is still comfortably valid. */
+    private fun fresh(): String? =
+        accessToken?.takeIf { System.currentTimeMillis() < accessTokenExpiresAt - EXPIRY_SKEW_MS }
+
+    /**
+     * Did Supabase say the refresh token itself is invalid?
+     *
+     * Only these mean "sign in again". Anything else — rate limits, gateway
+     * errors, a captive portal returning HTML — is transient, and treating it as
+     * a logout is how a flaky network turns into a lost session.
+     */
+    private fun isRefreshTokenRejected(response: JSONObject): Boolean {
+        val code = response.optString("error").lowercase()
+        val description = (response.optString("error_description") + " " + response.optString("msg")).lowercase()
+        return code == "invalid_grant" ||
+            description.contains("invalid refresh token") ||
+            description.contains("refresh token not found") ||
+            description.contains("already used")
     }
 
     // ── Keystore-backed storage for anything else that must not sit in the

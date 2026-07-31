@@ -155,6 +155,13 @@ internal object CueBridge {
             }
         }
 
+        // A repeat of something already answered — typing forward and back over
+        // the same stem does this constantly — costs nothing.
+        CueThrottle.cached(trimmed)?.let {
+            cached = it
+            return it
+        }
+
         val current = cached
         if (current.query == trimmed && !current.loading) return current
 
@@ -340,6 +347,7 @@ internal object CueBridge {
         val app = context.applicationContext
         // The index holds patient names. It goes with the session, not after it.
         CueIndex.clear(app)
+        CueThrottle.clear()
         CueSession.signOut(context)
         signedIn = false
         primed = false
@@ -365,6 +373,7 @@ internal object CueBridge {
         cached = CueResults.NONE
         briefItems = emptyList()
         briefFetchedAt = 0L
+        CueThrottle.clear()
         cancelPending()
     }
 
@@ -377,10 +386,21 @@ internal object CueBridge {
         val id = requestId.incrementAndGet()
         val app = context.applicationContext
         val task = Runnable {
+            // Checked here rather than at call time: by now the debounce has
+            // elapsed, so this reflects whether a request is warranted NOW.
+            if (!CueThrottle.allow()) {
+                val waiting = CueThrottle.backoffSecondsRemaining()
+                if (waiting > 0 && id == requestId.get()) {
+                    cached = CueResults.error(query, "Cue is not responding — retrying in ${waiting}s")
+                    onUpdate()
+                }
+                return@Runnable
+            }
             inFlightQuery = query
             worker.execute {
                 val results = runCatching { CueApi.search(app, query) }
                     .getOrElse { CueResults.error(query, "Cue search failed") }
+                if (results.error == null) CueThrottle.succeeded(query, results) else CueThrottle.failed()
                 main.post {
                     inFlightQuery = null
                     // A newer keystroke already superseded this request.
@@ -413,6 +433,8 @@ internal object CueBridge {
                 revealedUntil = 0L
                 cached = CueResults.NONE
                 briefItems = emptyList()
+                // Cached results hold patient names; they go when the screen does.
+                CueThrottle.clear()
             }
         }
         val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
