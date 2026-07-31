@@ -28,9 +28,16 @@ internal object CueThrottle {
     /** Cached queries. Small on purpose: these hold patient names. */
     private const val MAX_ENTRIES = 24
 
-    /** How long a cached result stays good. Long enough to cover typing, short
-     *  enough that a clock-in shows up in the set almost immediately. */
-    private const val TTL_MS = 60_000L
+    /**
+     * How long a cached result stays good.
+     *
+     * Five minutes, not one: a repeat search is overwhelmingly the same person
+     * looking at the same thing again, and the cost of a slightly stale card is
+     * far below the cost of a network round trip on a launcher. Anything that
+     * actually changes state — clocking in, switching clinic, signing out —
+     * clears this explicitly rather than waiting for it to age out.
+     */
+    private const val TTL_MS = 5 * 60_000L
 
     /** Floor between two network calls, whatever the caller asks for. */
     private const val MIN_GAP_MS = 250L
@@ -55,6 +62,46 @@ internal object CueThrottle {
     @Volatile private var lastCallAt = 0L
     @Volatile private var consecutiveFailures = 0
     @Volatile private var openUntil = 0L
+
+    /**
+     * True when a SHORTER query already proved there is nothing to find, so this
+     * longer one cannot find anything either.
+     *
+     * Typing is incremental: "j", "jo", "jos", "josh" is four queries for one
+     * intention. Matching is substring-based, so narrowing a query can only ever
+     * return fewer records — if "jos" found nothing, "josh" cannot find
+     * something. Those requests are pure waste and this skips them.
+     *
+     * [namesType] must be false. Type nouns break the rule outright: "aut" is
+     * free text that may well match nothing, while "auth" is a record type that
+     * returns the whole set.
+     */
+    @Synchronized
+    fun knownEmpty(query: String, namesType: Boolean): Boolean {
+        if (namesType || query.length < 2) return false
+        val now = System.currentTimeMillis()
+        return cache.entries.any { (cachedQuery, entry) ->
+            cachedQuery.length < query.length &&
+                query.startsWith(cachedQuery) &&
+                entry.results.cards.isEmpty() &&
+                entry.results.error == null &&
+                now - entry.storedAt <= TTL_MS
+        }
+    }
+
+    /**
+     * Drop everything volatile after a spell of inactivity.
+     *
+     * Not a cache eviction — the cached queries survive, because that is what
+     * makes a repeat search free. This releases the in-flight bookkeeping and
+     * lets the HTTP connection pool time out on its own, so an idle launcher
+     * holds no live connection to the clinic.
+     */
+    @Synchronized
+    fun idle() {
+        callTimestamps.clear()
+        lastCallAt = 0L
+    }
 
     /** A cached result for [query], or null when absent or stale. */
     @Synchronized

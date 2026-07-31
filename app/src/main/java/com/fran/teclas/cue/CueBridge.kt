@@ -39,8 +39,15 @@ internal object CueBridge {
     private const val MIN_FREE_TEXT_LENGTH = 3
     private const val DEBOUNCE_MS = 280L
 
-    /** How long a fetched brief stays good. Cue's own brief is a daily artifact. */
-    private const val BRIEF_TTL_MS = 15 * 60_000L
+    /**
+     * How long a fetched brief stays good. Cue's brief is a daily artifact, and
+     * it is only ever fetched when the Today surface actually asks for it —
+     * nothing polls, so a longer window simply means fewer wake-ups.
+     */
+    private const val BRIEF_TTL_MS = 30 * 60_000L
+
+    /** Quiet period after which the integration stops holding anything open. */
+    private const val IDLE_AFTER_MS = 90_000L
 
     private const val SETTINGS_PREFS = "cue_settings"
     private const val KEY_ENABLED = "cue_enabled"
@@ -100,6 +107,7 @@ internal object CueBridge {
     @Volatile private var windowSecured = false
 
     private var pending: Runnable? = null
+    private var idleTimer: Runnable? = null
 
     /**
      * The surface to repaint when results land — WEAKLY held.
@@ -249,6 +257,13 @@ internal object CueBridge {
         CueThrottle.cached(trimmed)?.let {
             cached = it
             return it
+        }
+
+        // A shorter query already proved there is nothing here. Narrowing cannot
+        // find more, so this costs nothing.
+        if (CueThrottle.knownEmpty(trimmed, namesType)) {
+            cancelPending()
+            return CueResults.NONE
         }
 
         val current = cached
@@ -442,6 +457,7 @@ internal object CueBridge {
         signedIn = false
         cached = CueResults.NONE
         cancelPending()
+        cancelIdleTimer()
     }
 
     /** Called after sign-in so the snapshot picks up the new session immediately. */
@@ -469,6 +485,7 @@ internal object CueBridge {
         briefFetchedAt = 0L
         CueThrottle.clear()
         cancelPending()
+        cancelIdleTimer()
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
@@ -500,6 +517,7 @@ internal object CueBridge {
                 if (results.error == null) CueThrottle.succeeded(query, results) else CueThrottle.failed()
                 main.post {
                     inFlightQuery = null
+                    armIdleTimer()
                     // A newer keystroke already superseded this request.
                     if (id != requestId.get()) return@post
                     cached = results
@@ -559,6 +577,33 @@ internal object CueBridge {
         runCatching {
             if (activity.libraryOpen) activity.refreshLibraryContent() else activity.render()
         }
+    }
+
+    /**
+     * Let the connection go to sleep once searching stops.
+     *
+     * Re-armed after every search, so it only fires when the user has genuinely
+     * moved on. Cached answers survive — a repeat search stays free — but
+     * nothing is left in flight and the connection pool is allowed to expire.
+     */
+    private fun armIdleTimer() {
+        cancelIdleTimer()
+        val task = Runnable {
+            idleTimer = null
+            inFlightQuery = null
+            CueThrottle.idle()
+        }
+        idleTimer = task
+        main.postDelayed(task, IDLE_AFTER_MS)
+    }
+
+    /**
+     * Teardown already clears everything the idle timer would clear, so leaving
+     * it queued would only wake the main thread 90 seconds later to do nothing.
+     */
+    private fun cancelIdleTimer() {
+        idleTimer?.let { main.removeCallbacks(it) }
+        idleTimer = null
     }
 
     private fun cancelPending() {
