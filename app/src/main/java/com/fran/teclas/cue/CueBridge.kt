@@ -43,6 +43,7 @@ internal object CueBridge {
     private const val BRIEF_TTL_MS = 15 * 60_000L
 
     private const val SETTINGS_PREFS = "cue_settings"
+    private const val KEY_ENABLED = "cue_enabled"
     private const val KEY_MASKING = "phi_masking"
 
     /** How long a tap-to-reveal lasts before masking closes over again. */
@@ -54,15 +55,19 @@ internal object CueBridge {
      * server-side, and when both shared one single-threaded executor a search
      * typed during startup queued behind that sync and appeared to hang forever.
      */
-    private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "cue-search").apply { isDaemon = true }
+    private val worker by lazy {
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "cue-search").apply { isDaemon = true }
+        }
     }
 
     /** Warm-up, vocabulary/index sync, brief refresh. Nothing here is awaited. */
-    private val background = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "cue-sync").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+    private val background by lazy {
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "cue-sync").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+        }
     }
-    private val main = Handler(Looper.getMainLooper())
+    private val main by lazy { Handler(Looper.getMainLooper()) }
     private val requestId = AtomicLong(0L)
 
     @Volatile private var cached: CueResults = CueResults.NONE
@@ -129,6 +134,7 @@ internal object CueBridge {
     @Volatile private var briefInFlight = false
 
     fun isSignedIn(context: Context): Boolean {
+        if (!isEnabled(context)) return false
         prime(context)
         return signedIn
     }
@@ -151,6 +157,7 @@ internal object CueBridge {
      * clinic query off the web — typing "auths" must never reach a search engine.
      */
     fun claimsQuery(context: Context, query: String): Boolean {
+        if (disabled || !isEnabled(context)) return false
         prime(context)
         if (!signedIn) return false
         return CueVocabulary.typeFor(query) != null
@@ -162,7 +169,39 @@ internal object CueBridge {
      * fetch when one is warranted. [onUpdate] fires on the main thread once new
      * results land.
      */
+    /**
+     * Master switch, OFF by default.
+     *
+     * This integration has crashed and leaked in the launcher process, which is
+     * the one process on the phone that must not fail — when the homescreen
+     * dies the device is unusable. Until it has earned trust it stays inert
+     * unless deliberately switched on, and switching it off must return the
+     * launcher to exactly its prior behaviour: no threads, no receiver, no
+     * allocation, no code path entered at all.
+     */
+    fun isEnabled(context: Context): Boolean = context.applicationContext
+        .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+        .getBoolean(KEY_ENABLED, false)
+
+    fun setEnabled(context: Context, enabled: Boolean) {
+        context.applicationContext
+            .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_ENABLED, enabled).apply()
+        if (!enabled) {
+            // Give everything back immediately rather than at next launch.
+            cached = CueResults.NONE
+            briefItems = emptyList()
+            briefFetchedAt = 0L
+            host = null
+            CueThrottle.clear()
+            CueIndex.clear(context)
+            cancelPending()
+        }
+    }
+
     fun results(activity: MainActivity, query: String): CueResults {
+        // Off by default: return before touching prefs, threads or the network.
+        if (!isEnabled(activity)) return CueResults.NONE
         // A launcher must survive its integrations. If this one keeps throwing,
         // it takes itself out of the search surface for the rest of the process
         // rather than letting the homescreen keep failing.
@@ -337,6 +376,7 @@ internal object CueBridge {
      * brief is assembled on the main thread and cannot wait on a network call.
      */
     fun briefItems(context: Context): List<CueBriefItem> {
+        if (disabled || !isEnabled(context)) return emptyList()
         prime(context)
         if (!signedIn) return emptyList()
 

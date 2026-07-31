@@ -24941,17 +24941,29 @@ Question: $prompt"""
         // noun, but the CONNECTION needs a home you can find without already
         // knowing the magic word — so it lives in settings search under the
         // words people actually reach for when an app isn't signed in yet.
+        val cueOn = CueBridge.isEnabled(this)
         entries.add(SettingSearchEntry(
             "Cue ABA",
-            CueBridge.identity(this)?.let { "Connected · ${it.organizationName}" }
-                ?: if (CueBridge.isConfigured()) "Not connected · sign in to search clinic records"
-                else "Not configured in this build",
+            if (!cueOn) "Off · tap to enable clinic record search"
+            else CueBridge.identity(this)?.let { "On · ${it.organizationName}" }
+                ?: "On · tap to sign in",
             listOf(
                 "cue", "cue aba", "aba", "clinic", "connect", "connect to cue",
                 "sign in", "signin", "log in", "login", "account", "clinic records",
+                "disable cue", "turn off cue", "enable cue",
             )
         ) {
-            CueBridge.openSignIn(this)
+            // Off by default. First tap arms it and opens sign-in; once on, the
+            // row is the way back out — a bad integration must be switchable off
+            // from the same place it was switched on, without a reinstall.
+            if (!cueOn) {
+                CueBridge.setEnabled(this, true)
+                CueBridge.openSignIn(this)
+            } else {
+                CueBridge.setEnabled(this, false)
+                Toast.makeText(this, "Cue turned off", Toast.LENGTH_SHORT).show()
+            }
+            refreshSearchSurfaces()
         })
         DefaultThemes.all.forEach { theme ->
             entries.add(SettingSearchEntry(
