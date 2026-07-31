@@ -282,10 +282,12 @@ internal class SearchResultsHost(private val activity: MainActivity) {
      * the answer — a web result underneath it is the fallback, not the lede.
      */
     private fun cueSearchViews(): List<View> {
-        val results = CueBridge.results(activity, activity.query) {
-            if (activity.libraryOpen) activity.refreshLibraryContent() else activity.render()
-        }
-        return CueBridge.views(activity, results)
+        // Guarded: nothing in the Cue integration may take down the homescreen.
+        // A launcher that crashes on a search result leaves the phone unusable.
+        return runCatching {
+            val results = CueBridge.results(activity, activity.query)
+            CueBridge.views(activity, results)
+        }.getOrDefault(emptyList())
     }
 
     private fun unfoldedSearchResultsDashboard(surface: String): View = with(activity) {

@@ -17,6 +17,7 @@ import com.fran.teclas.MainActivity
 import com.fran.teclas.brief.CueSignal
 import com.fran.teclas.brief.Launch
 import com.fran.teclas.brief.Signal
+import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
@@ -66,7 +67,14 @@ internal object CueBridge {
 
     @Volatile private var cached: CueResults = CueResults.NONE
     @Volatile private var inFlightQuery: String? = null
+    /** Process-lifetime: set once, never reset. Registration happens here. */
     @Volatile private var primed = false
+
+    /** In-flight warm-up guard, so keystrokes cannot stack index syncs. */
+    private val warmingUp = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Set once the screen-off receiver is registered; never unregistered. */
+    @Volatile private var receiverRegistered = false
 
     /**
      * Snapshot of whether a session exists.
@@ -88,6 +96,33 @@ internal object CueBridge {
 
     private var pending: Runnable? = null
 
+    /**
+     * The surface to repaint when results land — WEAKLY held.
+     *
+     * This object outlives every Activity in the process. It used to store the
+     * repaint callback as a lambda, which captured MainActivity, and one was
+     * retained per queued task, per in-flight request, and in `pending`. Every
+     * keystroke added another: leaked Activities, heap dumps, and eventually
+     * OutOfMemory. Nothing here may strongly reference an Activity.
+     */
+    @Volatile private var host: WeakReference<MainActivity>? = null
+
+    /** Unexpected failures this process. Past the threshold, Cue stands down. */
+    @Volatile private var faults = 0
+    @Volatile private var disabled = false
+
+    private const val MAX_FAULTS = 5
+
+    /** Record an unexpected throwable and disable the integration if it persists. */
+    private fun fault() {
+        faults += 1
+        if (faults >= MAX_FAULTS) {
+            disabled = true
+            cached = CueResults.NONE
+            CueThrottle.clear()
+        }
+    }
+
     /** Last fetched brief, and when. Refreshed in the background, never awaited. */
     @Volatile private var briefItems: List<CueBriefItem> = emptyList()
     @Volatile private var briefFetchedAt = 0L
@@ -100,7 +135,16 @@ internal object CueBridge {
 
     fun isConfigured(): Boolean = CueSession.isConfigured
 
-    fun identity(context: Context): CueIdentity? = CueSession.identity(context)
+    /**
+     * The signed-in identity, from memory only.
+     *
+     * Never touches disk. This is read while building settings-search results,
+     * i.e. on the main thread on every keystroke, and resolving it for real
+     * opens EncryptedSharedPreferences and unlocks a Keystore key. It is primed
+     * on the sync thread by prime(); until then it reads null and callers show
+     * a neutral state rather than blocking the UI.
+     */
+    fun identity(context: Context): CueIdentity? = CueSession.cachedIdentity()
 
     /**
      * True when this query names a Cue record type. The router uses it to keep a
@@ -118,7 +162,13 @@ internal object CueBridge {
      * fetch when one is warranted. [onUpdate] fires on the main thread once new
      * results land.
      */
-    fun results(context: Context, query: String, onUpdate: () -> Unit): CueResults {
+    fun results(activity: MainActivity, query: String): CueResults {
+        // A launcher must survive its integrations. If this one keeps throwing,
+        // it takes itself out of the search surface for the rest of the process
+        // rather than letting the homescreen keep failing.
+        if (disabled) return CueResults.NONE
+        host = WeakReference(activity)
+        val context: Context = activity
         val trimmed = query.trim()
         prime(context)
         if (trimmed.length < 2) {
@@ -165,7 +215,7 @@ internal object CueBridge {
         val current = cached
         if (current.query == trimmed && !current.loading) return current
 
-        schedule(context, trimmed, immediate = namesType, onUpdate = onUpdate)
+        schedule(context, trimmed, immediate = namesType)
 
         // Keep a refinement of the same query on screen while the sharper one
         // loads, rather than blanking the surface on every keystroke. Diverging
@@ -261,7 +311,7 @@ internal object CueBridge {
                             // The card that offered this is now stale — its EVV
                             // state changed, so drop it and re-query.
                             cached = CueResults.NONE
-                            activity.render()
+                            repaint()
                         } else {
                             Toast.makeText(app, failure, Toast.LENGTH_LONG).show()
                         }
@@ -350,7 +400,6 @@ internal object CueBridge {
         CueThrottle.clear()
         CueSession.signOut(context)
         signedIn = false
-        primed = false
         cached = CueResults.NONE
         cancelPending()
     }
@@ -358,13 +407,18 @@ internal object CueBridge {
     /** Called after sign-in so the snapshot picks up the new session immediately. */
     fun onSessionChanged(context: Context) {
         val app = context.applicationContext
+        if (!warmingUp.compareAndSet(false, true)) return
         background.execute {
-            signedIn = CueSession.isSignedIn(app)
-            CueSession.identity(app)
-            // A different clinic is a different caseload — re-index rather than
-            // matching the previous org's names.
-            CueIndex.clear(app)
-            if (signedIn) runCatching { CueIndex.sync(app) }
+            try {
+                signedIn = CueSession.isSignedIn(app)
+                CueSession.identity(app)
+                // A different clinic is a different caseload — re-index rather
+                // than matching the previous org's names.
+                CueIndex.clear(app)
+                if (signedIn) runCatching { CueIndex.sync(app) }
+            } finally {
+                warmingUp.set(false)
+            }
         }
     }
 
@@ -379,7 +433,7 @@ internal object CueBridge {
 
     // ── Internals ────────────────────────────────────────────────────────────
 
-    private fun schedule(context: Context, query: String, immediate: Boolean, onUpdate: () -> Unit) {
+    private fun schedule(context: Context, query: String, immediate: Boolean) {
         if (inFlightQuery == query) return
         cancelPending()
 
@@ -392,31 +446,34 @@ internal object CueBridge {
                 val waiting = CueThrottle.backoffSecondsRemaining()
                 if (waiting > 0 && id == requestId.get()) {
                     cached = CueResults.error(query, "Cue is not responding — retrying in ${waiting}s")
-                    onUpdate()
+                    main.post { repaint() }
                 }
                 return@Runnable
             }
             inFlightQuery = query
             worker.execute {
                 val results = runCatching { CueApi.search(app, query) }
-                    .getOrElse { CueResults.error(query, "Cue search failed") }
+                    .getOrElse {
+                        fault()
+                        CueResults.error(query, "Cue search failed")
+                    }
                 if (results.error == null) CueThrottle.succeeded(query, results) else CueThrottle.failed()
                 main.post {
                     inFlightQuery = null
                     // A newer keystroke already superseded this request.
                     if (id != requestId.get()) return@post
                     cached = results
-                    onUpdate()
+                    repaint()
                 }
             }
         }
 
-        if (immediate) {
-            task.run()
-        } else {
-            pending = task
-            main.postDelayed(task, DEBOUNCE_MS)
-        }
+        // ALWAYS posted, never run inline. results() is called from inside the
+        // launcher's render pass; running the task synchronously meant onUpdate
+        // could re-enter render() while the previous one was still building its
+        // view tree. "Immediate" means "no debounce", not "on this stack".
+        pending = task
+        main.postDelayed(task, if (immediate) 0L else DEBOUNCE_MS)
     }
 
     /**
@@ -428,6 +485,8 @@ internal object CueBridge {
      * broadcast, hence NOT_EXPORTED on API 33+.
      */
     private fun registerScreenOffTeardown(app: Context) {
+        if (receiverRegistered) return
+        receiverRegistered = true
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 revealedUntil = 0L
@@ -445,6 +504,20 @@ internal object CueBridge {
                 @Suppress("UnspecifiedRegisterReceiverFlag")
                 app.registerReceiver(receiver, filter)
             }
+        }
+    }
+
+    /**
+     * Repaint the search surface, if one is still alive.
+     *
+     * Silently does nothing when the Activity has gone — a result arriving
+     * after the user left is not worth reviving anything for.
+     */
+    private fun repaint() {
+        val activity = host?.get() ?: return
+        if (activity.isFinishing || activity.isDestroyed) return
+        runCatching {
+            if (activity.libraryOpen) activity.refreshLibraryContent() else activity.render()
         }
     }
 
@@ -469,15 +542,35 @@ internal object CueBridge {
         if (primed) return
         primed = true
         val app = context.applicationContext
-        CueVocabulary.load(app)
         registerScreenOffTeardown(app)
+        warmUp(app)
+    }
+
+    /**
+     * Resolve session state and refresh the synced tables, at most once at a time.
+     *
+     * The guard is not an optimisation. prime() is reached from results(), which
+     * runs on every keystroke; when sign-out used to reset `primed`, each
+     * character re-entered here and queued another full index fetch — several
+     * megabytes allocated, parsed and written, per letter typed. That is how the
+     * launcher ended up consuming the device's memory.
+     */
+    private fun warmUp(app: Context) {
+        if (!warmingUp.compareAndSet(false, true)) return
         background.execute {
-            signedIn = CueSession.isSignedIn(app)
-            if (signedIn) {
-                CueSession.identity(app)
-                CueIndex.load(app)
-                if (CueVocabulary.isStale(app)) runCatching { CueVocabulary.sync(app) }
-                if (CueIndex.isStale(app)) runCatching { CueIndex.sync(app) }
+            try {
+                CueVocabulary.load(app)
+                signedIn = CueSession.isSignedIn(app)
+                if (signedIn) {
+                    CueSession.identity(app)
+                    CueIndex.load(app)
+                    if (CueVocabulary.isStale(app)) runCatching { CueVocabulary.sync(app) }
+                    if (CueIndex.isStale(app)) runCatching { CueIndex.sync(app) }
+                }
+            } catch (throwable: Throwable) {
+                fault()
+            } finally {
+                warmingUp.set(false)
             }
         }
     }

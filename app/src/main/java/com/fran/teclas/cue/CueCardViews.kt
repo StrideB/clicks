@@ -32,8 +32,8 @@ import com.fran.teclas.Neu
 import com.fran.teclas.NeuLevel
 import com.fran.teclas.adjustAlpha
 import com.fran.teclas.mono
+import java.lang.ref.WeakReference
 import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
@@ -77,7 +77,7 @@ internal object CueCardViews {
                 activity,
                 "Out of scope",
                 "This record type needs ${results.gate}. You are signed in as " +
-                    (CueSession.identity(activity)?.role?.uppercase() ?: "an unknown role") + ".",
+                    (CueSession.cachedIdentity()?.role?.uppercase() ?: "an unknown role") + ".",
                 Neu.AMBER,
             )
             results.error != null -> views += notice(activity, "Cue unavailable", results.error, Neu.ACCENT)
@@ -201,7 +201,7 @@ internal object CueCardViews {
     /** Who you are signed in as, plus the two controls worth reaching quickly. */
     private fun accountViews(activity: MainActivity): List<View> {
         with(activity) {
-            val identity = CueSession.identity(activity)
+            val identity = CueSession.cachedIdentity()
             val accent = goKeyColor
             val masking = CueBridge.isMaskingEnabled(activity)
 
@@ -737,25 +737,70 @@ internal object CueCardViews {
  * launcher can see — in practice, one.
  */
 internal object CueImages {
-    private val cache = ConcurrentHashMap<String, Bitmap>()
+    /**
+     * Clinic logos. Bounded, and the views are held weakly.
+     *
+     * The previous version kept an unbounded map of Bitmaps and captured the
+     * target ImageView strongly in a background task — so every card render
+     * pinned a view, and through it the Activity, for the life of the request.
+     * With a card rebuilt on every keystroke that is a leak per character.
+     */
+    private const val MAX_BITMAPS = 4
+
+    /** Largest logo we will decode. A launcher card is ~40dp; anything bigger
+     *  is wasted heap, and a hostile URL should not be able to allocate freely. */
+    private const val MAX_DIMENSION = 256
+
+    private val cache = object : LinkedHashMap<String, Bitmap>(MAX_BITMAPS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean =
+            size > MAX_BITMAPS
+    }
+    private val inFlight = java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "cue-images").apply { isDaemon = true }
+        Thread(runnable, "cue-images").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
     }
     private val main = Handler(Looper.getMainLooper())
 
     fun into(target: ImageView, url: String) {
-        cache[url]?.let {
+        synchronized(cache) { cache[url] }?.let {
             target.setImageBitmap(it)
             return
         }
         target.tag = url
+        // Weak: a result arriving after the card is gone must not keep it — or
+        // the Activity behind it — alive.
+        val ref = WeakReference(target)
+        if (!inFlight.add(url)) return
+
         worker.execute {
-            val bitmap = runCatching {
-                URL(url).openStream().use { BitmapFactory.decodeStream(it) }
-            }.getOrNull() ?: return@execute
-            cache[url] = bitmap
-            // The view may have been recycled onto a different card by now.
-            main.post { if (target.tag == url) target.setImageBitmap(bitmap) }
+            val bitmap = runCatching { decodeBounded(url) }.getOrNull()
+            inFlight.remove(url)
+            if (bitmap == null) return@execute
+            synchronized(cache) { cache[url] = bitmap }
+            main.post {
+                val view = ref.get() ?: return@post
+                if (view.tag == url) view.setImageBitmap(bitmap)
+            }
         }
+    }
+
+    /** Decode with a sample size, so a large logo cannot blow the heap. */
+    private fun decodeBounded(url: String): Bitmap? {
+        val bytes = URL(url).openStream().use { it.readBytes() }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+
+        var sample = 1
+        while (bounds.outWidth / sample > MAX_DIMENSION || bounds.outHeight / sample > MAX_DIMENSION) {
+            sample *= 2
+        }
+        return BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        )
+    }
+
+    fun clear() {
+        synchronized(cache) { cache.clear() }
     }
 }

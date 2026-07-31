@@ -91,6 +91,14 @@ internal object CueSession {
         return accessToken != null && System.currentTimeMillis() < accessTokenExpiresAt
     }
 
+    /**
+     * Identity already in memory, with no disk access at all.
+     *
+     * The main thread must use this. identity() below may open the Keystore,
+     * which is fine on a worker and a visible stall on the UI thread.
+     */
+    fun cachedIdentity(): CueIdentity? = cachedIdentity
+
     fun identity(context: Context): CueIdentity? {
         cachedIdentity?.let { return it }
         val raw = prefs(context)?.getString(KEY_IDENTITY, null) ?: return null

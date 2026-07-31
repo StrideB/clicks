@@ -40,12 +40,38 @@ internal object CueApi {
                     setRequestProperty("X-Cue-Organization", it)
                 }
                 val ok = responseCode in 200..299
-                val text = (if (ok) inputStream else errorStream)
-                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val stream = if (ok) inputStream else errorStream
+                val text = stream?.let { readBounded(it) }.orEmpty()
                 disconnect()
                 if (text.isBlank()) null else JSONObject(text)
             }
         }.getOrNull()
+    }
+
+    /**
+     * Largest response we will hold in memory.
+     *
+     * A search payload is a few KB; the record index for a large clinic is the
+     * only thing that could approach this. Reading without a bound means the
+     * JSON string, the parsed tree and the stored copy all coexist on the heap
+     * at several times the wire size — an OutOfMemory on a phone, in a process
+     * that is also the launcher.
+     */
+    private const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+    /** Read at most [MAX_RESPONSE_BYTES], discarding anything beyond. */
+    private fun readBounded(stream: java.io.InputStream): String {
+        val buffer = ByteArray(16 * 1024)
+        val out = java.io.ByteArrayOutputStream()
+        stream.use {
+            while (true) {
+                val read = it.read(buffer)
+                if (read <= 0) break
+                if (out.size() + read > MAX_RESPONSE_BYTES) return ""
+                out.write(buffer, 0, read)
+            }
+        }
+        return out.toString("UTF-8")
     }
 
     /**
