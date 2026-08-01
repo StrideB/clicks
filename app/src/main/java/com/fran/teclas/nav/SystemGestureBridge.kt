@@ -131,6 +131,11 @@ internal object SystemGestureBridge {
         var needsShizuku = false
         var restartSuggested = false
 
+        // Take the computer out of the loop where we can. `pm grant` is exactly what the adb
+        // one-liner runs; adb was only ever supplying the shell uid, and Shizuku supplies it too.
+        // The grant lands in this process's permission state immediately, so the writes below see it.
+        val selfGranted = ensureGrantViaShizuku(context)
+        selfGranted?.let { applied += it }
         val granted = hasWriteSecureSettings(context)
         val hidePill = GestureNavPrefs.hidePillRequested(context)
 
@@ -235,6 +240,26 @@ internal object SystemGestureBridge {
             Vendor.AOSP_LIKE -> !alreadyGestural(context)
         }
         if (needsWork) applyGestures(context)
+    }
+
+    /**
+     * Grant this app WRITE_SECURE_SETTINGS through Shizuku when it doesn't already hold it.
+     *
+     * Returns a line for the report when a grant actually happened, null when there was nothing to
+     * do or nothing available to do it with. Public so the docked-window setup can reuse the same
+     * escape from "run this on a computer" — both features want the identical permission.
+     */
+    fun ensureGrantViaShizuku(context: Context): String? {
+        if (hasWriteSecureSettings(context)) return null
+        if (!ShizukuShell.isReady()) return null
+        val result = ShizukuShell.grantSelf(
+            context.packageName, Manifest.permission.WRITE_SECURE_SETTINGS
+        )
+        if (!result.ok) {
+            Log.w(TAG, "self-grant failed: ${result.message()}")
+            return null
+        }
+        return "Granted WRITE_SECURE_SETTINGS through Shizuku — no computer needed"
     }
 
     // ---------------------------------------------------------------- system-wide bar removal

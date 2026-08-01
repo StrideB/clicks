@@ -157,3 +157,23 @@ adb shell cmd statusbar disable-for-setup true
 | `MainActivity.syncSystemBars()` | Hides the navigation bar inside the launcher's own window. |
 
 Tests: `app/src/test/java/com/fran/teclas/nav/`.
+
+---
+
+## No computer at all: the Shizuku route
+
+Every command on this page is `pm grant` / `settings put` / `cmd …` run at **shell uid**. That is the
+only thing adb was ever contributing. Shizuku provides the same uid on-device, so when Shizuku is
+connected the launcher runs all of it itself:
+
+- **Settings → GESTURE NAVIGATION → GRANT IT NOW — NO COMPUTER NEEDED** grants
+  `WRITE_SECURE_SETTINGS` to the launcher via `pm grant`, then APPLY NOW does the rest.
+- The docked top-region setup dialog gains **Set up now**, which self-grants and arms freeform in
+  one tap.
+
+Shizuku itself still has to be started once — on Android 11+ that can be done entirely on-device
+through wireless debugging, no cable. If Shizuku is not running, everything falls back to the
+copyable adb commands, and nothing silently does less than it says.
+
+Privileged steps run off the main thread throughout: a shell round-trip has an 8-second ceiling, and
+on the main thread a wedged Shizuku would be an ANR rather than a slow button.

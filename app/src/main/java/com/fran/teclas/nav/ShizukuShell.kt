@@ -47,6 +47,18 @@ internal object ShizukuShell {
     fun isReady(): Boolean = ShizukuPinner.isReady()
 
     /**
+     * Grant the launcher one of its own manifest permissions at shell uid.
+     *
+     * This is what turns "run this adb command from a computer" into a button. `pm grant` is the
+     * exact same call the adb one-liner makes; the only thing adb was ever providing was the shell
+     * uid, and Shizuku provides that too. With Shizuku running, no computer is involved at any point.
+     *
+     * Idempotent — granting an already-granted permission succeeds silently.
+     */
+    fun grantSelf(packageName: String, permission: String): Result =
+        exec("pm grant $packageName $permission")
+
+    /**
      * Run [command] through `sh -c` and wait for it (bounded by [TIMEOUT_MS] — a hung privileged
      * process must never wedge the settings screen). Never throws.
      */

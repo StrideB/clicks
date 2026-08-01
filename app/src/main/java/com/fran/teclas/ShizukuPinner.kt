@@ -71,6 +71,23 @@ internal object ShizukuPinner {
         }.onFailure { Log.w(TAG, "pin failed", it) }.getOrDefault(false)
     }
 
+    /**
+     * The id of [packageName]'s foreground task, or null when the task list can't be read.
+     *
+     * Exposed because reading tasks and *mutating* them fail independently: MIUI will happily hand
+     * over the task list while refusing `setTaskWindowingMode` from anything that isn't its own
+     * launcher. [DockedWindowStrategy] needs the id to drive the same change through `am`, which
+     * runs as shell and is not subject to that check.
+     */
+    fun foregroundTaskId(packageName: String): Int? {
+        if (!isReady()) return null
+        return runCatching {
+            ensureExemptions()
+            val atm = activityTaskManager() ?: return null
+            focusedTaskId(atm, packageName)
+        }.onFailure { Log.w(TAG, "foregroundTaskId failed", it) }.getOrNull()
+    }
+
     private fun ensureExemptions() {
         if (exemptionsApplied) return
         runCatching { HiddenApiBypass.addHiddenApiExemptions("") }

@@ -84,6 +84,27 @@ class GestureNavSettingsActivity : ComponentActivity() {
         tick++
     }
 
+    /**
+     * Run a privileged step off the main thread, then hand the result back on it.
+     *
+     * Everything on this screen that touches Shizuku is a shell round-trip with an 8-second ceiling
+     * ([ShizukuShell]), and a settings write is a binder call. On the main thread a slow or wedged
+     * Shizuku is an ANR, not a spinner, so nothing here is allowed to run inline.
+     */
+    private fun <T> offMain(work: () -> T, then: (T) -> Unit) {
+        Thread({
+            val result = runCatching(work)
+            runOnUiThread {
+                // onSuccess, not getOrNull()?.let — a step whose result is legitimately null (the
+                // self-grant returns null when there was nothing to do) still has to report back.
+                result
+                    .onSuccess(then)
+                    .onFailure { toast("Failed: ${it.message ?: it.javaClass.simpleName}", long = true) }
+                refresh()
+            }
+        }, "gesture-nav-action").start()
+    }
+
     private fun toast(message: String, long: Boolean = false) =
         Toast.makeText(this@GestureNavSettingsActivity, message, if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
 
@@ -166,6 +187,15 @@ class GestureNavSettingsActivity : ComponentActivity() {
                 "adb settings grant", if (granted) "Granted" else "Not granted", good = granted
             )
             StatusRow("Shizuku", if (shizuku) "Connected" else "Not available", good = shizuku)
+            if (!granted && shizuku) {
+                // `pm grant` at shell uid is the same call the adb one-liner makes, so with Shizuku
+                // running there is nothing left for a computer to do.
+                ActionButton("GRANT IT NOW — NO COMPUTER NEEDED") {
+                    offMain({ SystemGestureBridge.ensureGrantViaShizuku(this@GestureNavSettingsActivity) }) {
+                        toast(it ?: "Shizuku refused the grant", long = true)
+                    }
+                }
+            }
             StatusRow(
                 "Launcher accessibility service",
                 if (a11y) "On" else "Off — gestures cannot fire",
@@ -202,8 +232,10 @@ class GestureNavSettingsActivity : ComponentActivity() {
             )
             ToggleRow("Keep system gestures forced on", requested) { next ->
                 GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_SYSTEM_GESTURES, next)
-                report = if (next) SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity) else SystemGestureBridge.revert(this@GestureNavSettingsActivity)
-                refresh()
+                offMain({
+                    if (next) SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity)
+                    else SystemGestureBridge.revert(this@GestureNavSettingsActivity)
+                }) { report = it }
             }
             ToggleRow(
                 "Also hide the ROM's gesture handle",
@@ -211,18 +243,19 @@ class GestureNavSettingsActivity : ComponentActivity() {
             ) { next ->
                 GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_HIDE_PILL, next)
                 if (GestureNavPrefs.systemGesturesRequested(this@GestureNavSettingsActivity)) {
-                    report = SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity)
+                    offMain({ SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity) }) { report = it }
+                } else {
+                    refresh()
                 }
-                refresh()
             }
             ActionButton("APPLY NOW") {
-                report = SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity)
-                refresh()
+                offMain({ SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity) }) { report = it }
             }
             if (ShizukuPinner.isReady()) {
                 ActionButton("RESTART SYSTEM UI") {
-                    val result = SystemGestureBridge.restartSystemUi()
-                    toast(if (result.ok) "SystemUI restarting" else "Failed: ${result.message()}", long = !result.ok)
+                    offMain({ SystemGestureBridge.restartSystemUi() }) {
+                        toast(if (it.ok) "SystemUI restarting" else "Failed: ${it.message()}", long = !it.ok)
+                    }
                 }
             }
             report?.let { ReportBlock(it) }
@@ -369,13 +402,15 @@ class GestureNavSettingsActivity : ComponentActivity() {
                     if (!overlayOn && !SystemGestureBridge.alreadyGestural(this@GestureNavSettingsActivity)) {
                         toast("Set up gestures first — otherwise there is no way to navigate", long = true)
                     } else {
-                        val result = SystemGestureBridge.setSystemBarsHidden(true)
-                        toast(if (result.ok) "Bars hidden until reboot" else "Failed: ${result.message()}", long = !result.ok)
+                        offMain({ SystemGestureBridge.setSystemBarsHidden(true) }) {
+                            toast(if (it.ok) "Bars hidden until reboot" else "Failed: ${it.message()}", long = !it.ok)
+                        }
                     }
                 }
                 ActionButton("BRING THEM BACK") {
-                    val result = SystemGestureBridge.setSystemBarsHidden(false)
-                    toast(if (result.ok) "Bars restored" else "Failed: ${result.message()}", long = !result.ok)
+                    offMain({ SystemGestureBridge.setSystemBarsHidden(false) }) {
+                        toast(if (it.ok) "Bars restored" else "Failed: ${it.message()}", long = !it.ok)
+                    }
                 }
             } else {
                 Label("Needs Shizuku, or the adb command below.", 12.5.sp, Color(WARN))

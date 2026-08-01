@@ -549,6 +549,7 @@ class InputInjectionService : AccessibilityService() {
     private fun updateFreeformState() {
         if (!dockedTopRegionAvailable()) {
             DockedFreeform.externalAppInFront = false
+            DockedFreeform.lastExternalAppBottomPx = null
             return
         }
         val displayHeight = resources.displayMetrics.heightPixels
@@ -558,9 +559,13 @@ class InputInjectionService : AccessibilityService() {
             .maxByOrNull { it.layer }
         if (topApp == null) {
             DockedFreeform.externalAppInFront = false
+            DockedFreeform.lastExternalAppBottomPx = null
             return
         }
         val bounds = Rect(); topApp.getBoundsInScreen(bounds)
+        // Ground truth for DockedWindowStrategy: the window's actual bottom edge, recorded before
+        // any of the interpretation below turns it into a boolean.
+        DockedFreeform.lastExternalAppBottomPx = bounds.bottom
         // Shizuku re-pin: if the app's window dips into the keyboard band (in-app navigation resized
         // it, or the OEM launched it fullscreen), force it back to the top region. Holds it pinned
         // across navigation and works even where freeform launchBounds are ignored.
