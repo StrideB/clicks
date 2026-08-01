@@ -112,6 +112,15 @@
             android:label="Spaces"
             android:theme="@style/AppTheme" />
 
+        <!-- Full-screen gesture navigation: the ROM-level bridge, the launcher's own gesture bar,
+             and the navigation-bar hiding options. Not exported — it writes secure settings and
+             runs privileged shell commands, so it is reachable only from the launcher's settings. -->
+        <activity
+            android:name=".nav.GestureNavSettingsActivity"
+            android:exported="false"
+            android:label="Gesture navigation"
+            android:theme="@style/AppTheme" />
+
         <activity
             android:name=".theme.ThemeStudioActivity"
             android:exported="true"

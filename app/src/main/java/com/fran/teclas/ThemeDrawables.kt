@@ -257,15 +257,19 @@ internal fun Context.systemStatusBarHeight(): Int {
 }
 
 /**
- * Height (px) of the bottom band the 3-button navigation bar occupies — 0 on gesture navigation.
+ * Height (px) of the bottom band no bottom-anchored surface may draw into: the 3-button navigation
+ * bar where there is one, plus the launcher's own gesture strip where that is switched on. 0 on a
+ * plain gesture-navigation device with the strip off.
  *
  * Our windows draw to the physical bottom edge (the launcher pads the status bar in by hand; the
  * docked deck window uses FLAG_LAYOUT_NO_LIMITS), so with buttons enabled the system's
  * back/home/recents row landed on top of the keyboard's bottom key row. Bottom-anchored surfaces
  * reserve this band so the keyboard sits above the buttons instead.
  *
- * Gesture navigation must NOT be lifted: the handle floats harmlessly over the deck, and reserving
- * its ~24dp inset would open a dead strip beneath the full-bleed keyboard.
+ * The *system's* gesture handle must NOT be lifted for: it floats harmlessly over the deck, and
+ * reserving its ~24dp inset would open a dead strip beneath the full-bleed keyboard. Our own strip
+ * is the opposite case — it is touchable, so it genuinely takes that band away from whatever is
+ * under it, and it is added below.
  *
  * *Which mode* and *how tall* are answered separately, because deriving the mode from insets alone
  * is not dependable. The first cut inferred it from `tappableElement` — 0 under gestures, the whole
@@ -296,12 +300,18 @@ internal fun Context.systemNavButtonsInset(fromView: android.view.View? = null):
         else -> if (tappable != null && bars != null) tappable < bars else null
     }
 
-    val measured = when {
+    val systemBand = when {
         gestural == true -> 0
         bars != null -> bars   // real inset: already 0 when the bar is on the side or hidden
         gestural == false -> resourceNavBarHeight()
         else -> 0
     }
+    // The launcher's own gesture strip eats the same band the buttons did, so bottom-anchored
+    // surfaces have to clear it for exactly the same reason. Without this the docked keyboard's
+    // bottom key row sits under the strip and every press on it arrives late, via tap passthrough,
+    // or not at all. Additive rather than a replacement: on a button ROM with the bar still shown,
+    // both are really there.
+    val measured = systemBand + gestureStripInset()
     // Only on change: this is called on every keyboard show and every deck-height sync, and a line
     // per call would bury the one transition worth reading.
     if (measured != lastLoggedNavInset) {
@@ -309,10 +319,18 @@ internal fun Context.systemNavButtonsInset(fromView: android.view.View? = null):
         android.util.Log.d(
             "TeclasNav",
             "navMode=${navigationModeSetting()} gestural=$gestural bars=$bars tappable=$tappable " +
-                "res=${resourceNavBarHeight()} -> $measured"
+                "res=${resourceNavBarHeight()} strip=${gestureStripInset()} -> $measured"
         )
     }
     return measured
+}
+
+/** Height of the launcher's own bottom gesture strip, or 0 when it isn't drawn. */
+private fun Context.gestureStripInset(): Int {
+    if (!com.fran.teclas.nav.GestureNavPrefs.overlayEnabled(this)) return 0
+    if (!com.fran.teclas.nav.GestureNavPrefs.bottomBarEnabled(this)) return 0
+    return (com.fran.teclas.nav.GestureNavPrefs.bottomHeightDp(this) * resources.displayMetrics.density)
+        .toInt()
 }
 
 private var lastLoggedNavInset = Int.MIN_VALUE

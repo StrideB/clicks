@@ -1189,6 +1189,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
+        // MIUI re-decides the "third-party launcher means buttons" rule whenever the default home
+        // changes, so the forced-gesture flag genuinely comes back off after a launcher switch or a
+        // system update. Re-assert it here rather than making the user revisit the settings screen.
+        com.fran.teclas.nav.SystemGestureBridge.ensureAppliedIfRequested(this)
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
@@ -21444,6 +21448,10 @@ Question: $prompt"""
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingAction("GESTURE NAVIGATION →") {
+            haptic(this)
+            startActivity(Intent(this@MainActivity, com.fran.teclas.nav.GestureNavSettingsActivity::class.java))
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingAction("SPACES →") {
             haptic(this)
             startActivity(Intent(this@MainActivity, SpacesSettingsActivity::class.java))
@@ -21609,6 +21617,10 @@ Question: $prompt"""
                 parent.addView(settingAction("   PIN APPS (SHIZUKU)   ${shizukuStatusLabel()}") {
                     haptic(this)
                     onShizukuRowTapped()
+                }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+                parent.addView(settingAction("   WHY IS IT FULLSCREEN? →") {
+                    haptic(this)
+                    showDockedWindowDiagnostics()
                 }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
             }
         }
@@ -23735,6 +23747,7 @@ Question: $prompt"""
 
     private fun finishDockedExternalLaunch(packageName: String) {
         DockedFreeform.externalAppInFront = true
+        if (packageName != this.packageName) lastLaunchedDockedPackage = packageName
         syncDockedSearchStatusBar()   // opaque status-bar strip so wallpaper doesn't bleed above the app
         requestDockedFreeformRepin(packageName)
     }
@@ -23745,7 +23758,12 @@ Question: $prompt"""
         sendBroadcast(Intent(InputInjectionService.ACTION_REPIN_FREEFORM).apply {
             setPackage(this@MainActivity.packageName)
         })
-        if (!DockedFreeform.isFeatureEnabled(this) || !ShizukuPinner.isReady()) return
+        if (!DockedFreeform.isFeatureEnabled(this)) return
+        // Verify and escalate even without Shizuku — the last rung is split screen, which needs only
+        // the accessibility service. Scheduled before the Shizuku-gated re-pin below precisely
+        // because that block returns early on the devices that need escalation most.
+        handler.postDelayed({ escalateDockedPlacement(packageName) }, DOCKED_PLACEMENT_VERIFY_MS)
+        if (!ShizukuPinner.isReady()) return
         listOf(240L, 900L).forEach { delayMs ->
             handler.postDelayed({
                 val bounds = DockedFreeform.pinBounds(this@MainActivity)
@@ -23788,13 +23806,58 @@ Question: $prompt"""
         return true
     }
 
+    /** The app most recently launched into the docked top region — what the diagnostics test against. */
+    private var lastLaunchedDockedPackage: String? = null
+
+    /**
+     * Last resort for the docked top region: put the device into split screen so the app takes the
+     * upper half and the keyboard keeps the lower one.
+     *
+     * Split screen is not freeform — the app gets a system-chosen half rather than our measured
+     * bounds — but it is the one multi-window mode every OEM implements properly, and on a ROM that
+     * refuses everything above it, half the screen beats fullscreen. Reached only from
+     * [escalateDockedPlacement], after the measured window bounds have shown that nothing else
+     * landed.
+     */
     private fun requestDockedSplitFallbackIfNeeded() {
-        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED || dockedFreeformLikelyEnabled()) return
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return
         handler.postDelayed({
             sendBroadcast(Intent(InputInjectionService.ACTION_TOGGLE_SPLIT_SCREEN).apply {
                 setPackage(this@MainActivity.packageName)
             })
         }, 650L)
+    }
+
+    /**
+     * Check whether the app we just launched actually reached the top region, and climb
+     * [DockedWindowStrategy]'s ladder if it did not.
+     *
+     * The check is against real measured window bounds from the accessibility service, because the
+     * failure this exists for is precisely the one where every API reports success and the app is
+     * fullscreen anyway — MIUI accepts `launchBounds` and `setTaskWindowingMode` and simply does not
+     * act on them. When the bounds cannot be measured at all (accessibility service off) we still
+     * escalate if Shizuku is available: an unnecessary resize costs one shell round-trip, whereas
+     * skipping it leaves the feature silently broken.
+     */
+    private fun escalateDockedPlacement(packageName: String) {
+        if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return
+        if (packageName == this.packageName) return
+        if (DockedFreeform.placedInTopRegion(this) == true) {
+            DockedWindowStrategy.recordRung(this, DockedWindowStrategy.RUNG_NATIVE)
+            return
+        }
+        val bounds = DockedFreeform.pinBounds(this)
+        Thread({
+            val rung = DockedWindowStrategy.escalate(this, packageName, bounds)
+            handler.post {
+                // Re-measure before giving up: the escalation may have worked, and split screen is
+                // disruptive enough that it must never fire on a screen that is already correct.
+                if (rung == null && DockedFreeform.placedInTopRegion(this) != true) {
+                    DockedWindowStrategy.recordRung(this, DockedWindowStrategy.RUNG_SPLIT)
+                    requestDockedSplitFallbackIfNeeded()
+                }
+            }
+        }, "docked-placement").start()
     }
 
     private fun dockedFreeformLikelyEnabled(): Boolean {
@@ -24187,9 +24250,66 @@ Question: $prompt"""
     }
 
     private fun dockedTopRegionStatusLabel(): String = when {
-        !DockedFreeform.hasWriteSecureSettings(this) -> "NEEDS ADB GRANT →"
+        !DockedFreeform.hasWriteSecureSettings(this) ->
+            if (ShizukuPinner.isReady()) "TAP TO SET UP (SHIZUKU) →" else "NEEDS ADB GRANT →"
         !DockedFreeform.isArmed(this) -> "TAP TO ARM →"
         else -> "READY ✓"
+    }
+
+    /**
+     * Run every rung of [DockedWindowStrategy] against the app that is (or was) in the top region and
+     * show what the device actually did.
+     *
+     * Placement on an OEM ROM cannot be reasoned about from feature flags — MIUI advertises nothing
+     * and refuses silently — so this reports observed behaviour instead: which calls were reachable,
+     * which were accepted, and where the window really ended up.
+     */
+    private fun showDockedWindowDiagnostics() {
+        val target = lastLaunchedDockedPackage
+        val bounds = DockedFreeform.pinBounds(this)
+        val progress = AlertDialog.Builder(this)
+            .setTitle("Docked half-screen")
+            .setMessage("Testing…")
+            .setCancelable(false)
+            .show()
+        Thread({
+            // Off the main thread: every rung is a binder call or a shell round-trip.
+            val attempts = DockedWindowStrategy.diagnose(this, target, bounds)
+            val measured = DockedFreeform.lastExternalAppBottomPx
+            val report = buildString {
+                append(DockedWindowStrategy.reportText(attempts))
+                append("\n\nWindow bottom measured: ")
+                append(measured?.let { "$it px (target ${bounds.bottom} px)" } ?: "not measured")
+                append("\nLast working route: ")
+                append(DockedWindowStrategy.rung(this@MainActivity) ?: "none yet")
+            }
+            handler.post {
+                runCatching { progress.dismiss() }
+                val builder = AlertDialog.Builder(this)
+                    .setTitle("Docked half-screen")
+                    .setMessage(report)
+                    .setPositiveButton("Copy") { _, _ ->
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("teclas-docked", report))
+                        Toast.makeText(this, "Report copied", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Close", null)
+                if (target != null && ShizukuPinner.isReady()) {
+                    // The one rung the automatic ladder will not take on its own: it relaunches the
+                    // app, which is visible, and it drops any deep link. Offered by hand because on
+                    // HyperOS it is the most likely thing to work, and finding that out is worth one
+                    // deliberate relaunch.
+                    builder.setNeutralButton("Try shell launch") { _, _ ->
+                        Thread({
+                            val attempts = DockedWindowStrategy.shellLaunchFreeform(this, target, bounds)
+                            val text = DockedWindowStrategy.reportText(attempts)
+                            handler.post { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
+                        }, "docked-shell-launch").start()
+                    }
+                }
+                builder.show()
+            }
+        }, "docked-diagnostics").start()
     }
 
     private fun showDockedTopRegionSetup() {
@@ -24199,9 +24319,11 @@ Question: $prompt"""
         val body = buildString {
             append("Opens every app in the top region while the keyboard is docked.\n\n")
             when {
+                !hasPerm && ShizukuPinner.isReady() ->
+                    append("Shizuku is connected, so no computer is needed — tap Set up now and the launcher grants itself the permission and arms freeform.")
                 !hasPerm -> {
                     append("One-time setup — run this from a computer with the phone connected:\n\n$cmd\n\n")
-                    append("Then reopen this dialog and tap Re-check.")
+                    append("Then reopen this dialog and tap Re-check. (With Shizuku running, this step disappears entirely.)")
                 }
                 !armed -> append("Permission granted. Tap Arm now to enable freeform windows.")
                 else -> append("Ready. Apps you launch from Teclas open in the top region above the docked keyboard. If any still open fullscreen, reboot once.")
@@ -24211,7 +24333,26 @@ Question: $prompt"""
             .setTitle("Apps in top region")
             .setMessage(body)
             .setNegativeButton("Close", null)
-        if (!hasPerm) {
+        if (!hasPerm && ShizukuPinner.isReady()) {
+            builder.setPositiveButton("Set up now") { _, _ ->
+                Thread({
+                    val granted = com.fran.teclas.nav.SystemGestureBridge.ensureGrantViaShizuku(this)
+                    val armed = DockedFreeform.arm(this)
+                    handler.post {
+                        Toast.makeText(
+                            this,
+                            when {
+                                armed -> "Top-region mode armed. If apps still open fullscreen, reboot once."
+                                granted != null -> "Permission granted, but arming failed — tap again."
+                                else -> "Shizuku refused the grant. Use the adb command instead."
+                            },
+                            Toast.LENGTH_LONG
+                        ).show()
+                        renderPaneContent(teclasSettingsTarget())
+                    }
+                }, "docked-selfgrant").start()
+            }
+        } else if (!hasPerm) {
             builder.setPositiveButton("Copy command") { _, _ ->
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
                 cm?.setPrimaryClip(android.content.ClipData.newPlainText("adb", cmd))
@@ -25033,6 +25174,17 @@ Question: $prompt"""
             prefs().edit().putBoolean(HIDE_STATUS_BAR_PREF, !hideStatusBarEnabled()).apply()
             render()
             refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Gesture navigation",
+            if (com.fran.teclas.nav.GestureNavPrefs.overlayEnabled(this)) "On · open settings" else "Off · open settings",
+            listOf(
+                "gestures", "gesture navigation", "full screen gestures", "fullscreen gestures",
+                "nav bar", "navigation bar", "hide nav bar", "hide navigation", "buttons",
+                "3 button", "three button", "swipe back", "back gesture", "miui", "xiaomi", "hyperos"
+            )
+        ) {
+            startActivity(Intent(this@MainActivity, com.fran.teclas.nav.GestureNavSettingsActivity::class.java))
         })
         entries.add(SettingSearchEntry(
             "Icon pack", "${themePaneHost.activeIconPackLabel()} · open settings",
@@ -28949,6 +29101,12 @@ Question: $prompt"""
     private fun syncSystemBars() {
         if (isFinishing) return
         val hideStatusBar = hideStatusBarEnabled()
+        // The one way to lose the navigation bar that needs no permission at all: hide it inside our
+        // own window. It only reaches the launcher — every other app still gets its bar — but on a
+        // ROM that refuses to hand gestures back, this is what makes the home screen itself clean.
+        // Gated on the gesture overlay being on (see GestureNavPrefs.hideNavBarOnHome) so hiding the
+        // buttons never leaves the screen without a way off it.
+        val hideNavBar = com.fran.teclas.nav.GestureNavPrefs.hideNavBarOnHome(this)
         val mediaDock = openPane?.usesMediaDock() == true
         val innerWallpaperCanvas = isUnfoldedInnerLayoutActive() && openPane == null && !libraryOpen
         val darkBars = mediaDock || activeNeuTokens.mode == NeuMode.DARK
@@ -28983,6 +29141,8 @@ Question: $prompt"""
             else flags and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
         flags = if (hideStatusBar) flags or View.SYSTEM_UI_FLAG_FULLSCREEN
             else flags and View.SYSTEM_UI_FLAG_FULLSCREEN.inv()
+        val legacyNavHide = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        flags = if (hideNavBar) flags or legacyNavHide else flags and legacyNavHide.inv()
         window.decorView.systemUiVisibility = flags
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -28997,7 +29157,7 @@ Question: $prompt"""
                 controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 if (hideStatusBar) controller.hide(WindowInsets.Type.statusBars())
                 else controller.show(WindowInsets.Type.statusBars())
-                if (mediaDock) controller.hide(WindowInsets.Type.navigationBars())
+                if (mediaDock || hideNavBar) controller.hide(WindowInsets.Type.navigationBars())
                 else controller.show(WindowInsets.Type.navigationBars())
             }
         }
@@ -30209,6 +30369,13 @@ Question: $prompt"""
         private const val HIDDEN_HOME_APPS_PREF = "hidden_home_apps"
         private const val DOCK_LABELS_PREF = "dock_labels"
         private const val HIDE_STATUS_BAR_PREF = "hide_status_bar"
+        /**
+         * How long after a docked launch to check where the app's window actually landed. Long
+         * enough for the app's first frame and for the OEM's own window animation to settle —
+         * measuring earlier reads the pre-animation bounds and escalates against a window that was
+         * about to be correct.
+         */
+        private const val DOCKED_PLACEMENT_VERIFY_MS = 1400L
         // Space id the user last swiped the dock back to Pinned in. While the active Space
         // still equals this, the pinned view is respected (no auto-flip to context). Cleared
         // when the Space changes, which re-arms the auto-switch-to-context behavior.

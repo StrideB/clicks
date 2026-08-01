@@ -390,6 +390,26 @@ Teclas includes a launcher photo experience:
 
 The ZEISS button appears only on Vivo devices.
 
+## Gesture Navigation
+
+Several ROMs force 3-button navigation the moment a third-party launcher is the default home —
+Xiaomi (MIUI 12+ / HyperOS) is the loudest case, because its full-screen gestures are driven by
+`com.miui.home`. The launcher handles this itself, no extra app installed, as a three-step ladder in
+**Settings → LAUNCHER → GESTURE NAVIGATION →**:
+
+1. **Ask the system.** `nav/SystemGestureBridge` writes the ROM's own escape hatch —
+   `force_fsg_nav_bar` on Xiaomi, the `navbar.gestural` runtime overlay on stock-shaped ROMs. Needs
+   the one-time `WRITE_SECURE_SETTINGS` adb grant (the same one docked freeform already uses), plus
+   Shizuku for the overlay. Best outcome by a distance: real system gestures, nothing intercepted.
+2. **The launcher's own gesture bar.** `nav/GestureNavOverlay` — three accessibility-overlay edge
+   strips hosted by `InputInjectionService`, because `performGlobalAction` is the only thing on the
+   device that can press a system Back. Edges → back, bottom → home / recents / shade / app switch.
+3. **Hide the navigation bar.** Free inside the launcher's own window; system-wide only via Shizuku
+   (`cmd statusbar disable-for-setup`), which also hides the status bar and clears at reboot.
+
+Bottom-anchored surfaces reserve the strip through `systemNavButtonsInset`, the same way they
+already reserve the button bar. Full write-up, including every adb command: `docs/GESTURE_NAVIGATION.md`.
+
 ## Native Integrations
 
 Current Android integrations include:
@@ -491,7 +511,7 @@ need "Install via USB" enabled in Developer options.
 - `TodayPaneHost`, `MusicPaneHost`, `TravelPaneHost` — pane hosting split out of MainActivity
 - `PaneModels`, `LauncherModels`, `ThemeDrawables` — types and pure drawing/geometry helpers
 - `TeclasImeService` — the system IME (shares the keyboard engine); `DockedKeyboardService` — overlay keyboard
-- Packages: `brief/` Today page · `predict/` Spaces · `semantic/` + `llm/` on-device search/AI · `theme/` Theme Studio · `weather/` weather styles/widget · `keyboard/` typing engine (+`neural/` glide) · `grid/` AOSP lab · `fold/` foldable posture · `galaxy/` Samsung/Now Bar integration · `db/` Room · `brand/` brand tokens · `glide/` statistical glide
+- Packages: `brief/` Today page · `predict/` Spaces · `semantic/` + `llm/` on-device search/AI · `theme/` Theme Studio · `weather/` weather styles/widget · `keyboard/` typing engine (+`neural/` glide) · `grid/` AOSP lab · `fold/` foldable posture · `galaxy/` Samsung/Now Bar integration · `db/` Room · `brand/` brand tokens · `glide/` statistical glide · `nav/` full-screen gesture navigation
 
 ## Design Rules For Future Agents
 
