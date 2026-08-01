@@ -85,8 +85,13 @@ direction with confidence.
 `DockedWindowStrategy.applyMiuiOptimizationOff()` writes `settings put global miui_optimization 0`,
 which stops MIUI substituting its own implementations for a number of AOSP paths, multi-window among
 them. It is deliberately never called during a normal launch: it is a broad, system-wide change that
-also relaxes MIUI's permission handling and can affect battery behaviour. Wire it to an explicit,
-warned action if the diagnostics show it is the missing piece.
+also relaxes MIUI's permission handling and can affect battery behaviour.
+
+It is reachable from **MIUI OPTIMIZATION   ON →**, which appears under the diagnosis row on Xiaomi
+devices where it is still on, behind a dialog that states the cost before the button. (It was dead
+code until the first real report flagged `miui_optimization: on` as a failing line with nothing to
+tap — the same shape of bug as the split-screen fallback that had no caller.) Needs a reboot; undo
+it in Developer options or with `settings put global miui_optimization 1`.
 
 ## No computer needed
 

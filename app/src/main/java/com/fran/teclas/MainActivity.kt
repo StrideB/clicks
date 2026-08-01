@@ -21617,6 +21617,14 @@ Question: $prompt"""
                     haptic(this)
                     showDockedWindowDiagnostics()
                 }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+                // Only where it is both applicable and not already done. The diagnosis reports this
+                // as a failing line, so there has to be something to tap when it does.
+                if (DockedWindowStrategy.isXiaomi() && !DockedWindowStrategy.miuiOptimizationOff(this)) {
+                    parent.addView(settingAction("   MIUI OPTIMIZATION   ON →") {
+                        haptic(this)
+                        showMiuiOptimizationDialog()
+                    }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+                }
             }
         }
         if (devExperimentsEnabled() && VivoDockedExperiment.isAvailable(this)) {
@@ -24327,6 +24335,45 @@ Question: $prompt"""
                 builder.show()
             }
         }, "docked-diagnostics").start()
+    }
+
+    /**
+     * Offer MIUI's master override switch, with the cost stated first.
+     *
+     * The diagnosis flags `miui_optimization` as active whenever the docked window will not place,
+     * because it is the switch that makes MIUI substitute its own implementations for AOSP paths —
+     * multi-window among them. Turning it off is a genuine system-wide change, not a launcher
+     * setting: it also relaxes MIUI's permission handling and can affect battery behaviour. So it is
+     * never written as part of a launch, and never without this dialog.
+     */
+    private fun showMiuiOptimizationDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Turn off MIUI optimization?")
+            .setMessage(
+                "This is a system-wide MIUI switch, not a Teclas setting.\n\n" +
+                    "With it off, MIUI stops substituting its own implementations for a number of " +
+                    "standard Android paths — multi-window among them, which is why the docked " +
+                    "half-screen may start working.\n\n" +
+                    "It also relaxes MIUI's own permission handling and can change battery " +
+                    "behaviour. Reboot afterwards. Reverse it in Developer options, or with:\n\n" +
+                    "adb shell settings put global miui_optimization 1"
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Turn it off") { _, _ ->
+                Thread({
+                    val attempt = DockedWindowStrategy.applyMiuiOptimizationOff(this)
+                    handler.post {
+                        Toast.makeText(
+                            this,
+                            if (attempt.ok) "MIUI optimization off — reboot to apply"
+                            else "Failed: ${attempt.detail}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        renderPaneContent(teclasSettingsTarget())
+                    }
+                }, "miui-optimization").start()
+            }
+            .show()
     }
 
     private fun showDockedTopRegionSetup() {
