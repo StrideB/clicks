@@ -2118,27 +2118,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 if (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock()) {
                     addView(View(context).apply {
-                        background = keyboardDeckBackground()
-                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                    }, FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        // Grown by the button band: the deck above now extends over it, and this fill
-                        // backs the deck, so it has to reach the bottom edge too.
-                        systemGestureReservedBottomInset() + dp(18) + launcherNavBarReserve(),
-                        Gravity.BOTTOM
-                    ))
-                }
-                addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
-                if (phoneWidgetCanvas && !widgetKeyboardHidden && !widgetPaneUsesRootDock()) {
-                    addView(View(context).apply {
                         background = keyboardDeckBottomEdgeBackground()
                         importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                     }, FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT,
-                        dp(10),
+                        // Widget mode's keyboard can be glass/translucent, but the area below the
+                        // bottom key row must still read as the physical deck, not wallpaper.
+                        widgetKeyboardBottomSealHeight(),
                         Gravity.BOTTOM
                     ))
                 }
+                addView(root, FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                // The bottom seal is intentionally drawn before root above. Drawing it after root
+                // masks the bottom key row in widget mode because the keyboard lives inside root.
                 dockedFreeformBackdropView = View(context).apply {
                     background = dockedFreeformBackdropDrawable()
                     visibility = if (dockedFreeformBackdropHeightPx() > 0) View.VISIBLE else View.GONE
@@ -11233,6 +11225,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val navHeight = if (navId > 0) runCatching { resources.getDimensionPixelSize(navId) }.getOrDefault(0) else 0
         return maxOf(navHeight, dp(44)).coerceAtMost(dp(96))
     }
+
+    private fun widgetKeyboardBottomSealHeight(): Int =
+        (systemGestureReservedBottomInset() + dp(10)).coerceIn(dp(52), dp(106))
 
     private fun isLibraryRightEdgeStart(rawX: Float, rawY: Float, contentLeft: Int, contentTop: Int): Boolean {
         if (!::contentFrame.isInitialized || contentFrame.width <= 0 || contentFrame.height <= 0) return false
