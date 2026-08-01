@@ -135,29 +135,55 @@ internal object DockedWindowStrategy {
             .putString(KEY_RUNG, rung).apply()
     }
 
+    /** How long to let a window settle after a rung before measuring whether it actually moved. */
+    private const val SETTLE_MS = 600L
+
     /**
-     * Try progressively harder to get [packageName] into [bounds], stopping at the first rung that
-     * takes. Returns the rung that worked, or null when the caller should fall back to split screen.
+     * Try progressively harder to get [packageName] into [bounds], stopping at the first rung whose
+     * effect can be *seen*. Returns the rung that worked, or null when the caller should fall back
+     * to split screen.
+     *
+     * [verify] re-reads the measured window bounds (true = placed, false = still wrong, null =
+     * cannot tell). It is the whole point of this function. An earlier version stopped as soon as a
+     * rung returned true, and on HyperOS that meant stopping at the binder pin — which MIUI accepts
+     * without acting on, leaving the app floating at the ROM's own default small-window geometry
+     * with the shell rung never tried. A rung's own boolean says "the call did not throw"; only the
+     * measurement says "the window moved".
+     *
+     * `null` from [verify] is accepted rather than treated as failure: with the accessibility
+     * service off there is no measurement to be had, and refusing to believe any rung would drop
+     * every launch to split screen. Only a positive "still wrong" keeps the ladder climbing.
      *
      * Binder-uid first because it is the cheapest and the least visible; shell second because it is
-     * the one that gets past MIUI's caller check. Call off the main thread — both do binder work.
+     * the one that gets past MIUI's caller check. Call off the main thread — both do binder work,
+     * and this sleeps between rungs.
      */
-    fun escalate(context: Context, packageName: String, bounds: Rect): String? {
+    fun escalate(
+        context: Context,
+        packageName: String,
+        bounds: Rect,
+        verify: () -> Boolean?,
+    ): String? {
         if (ShizukuPinner.pin(packageName, bounds)) {
-            // "pin succeeded" only means the calls did not throw — MIUI can accept and ignore them.
-            // Verification is the caller's job, from the measured window bounds; here we only report
-            // that the rung was reachable.
-            Log.i(TAG, "escalate: binder pin accepted for $packageName")
-            recordRung(context, RUNG_BINDER)
-            return RUNG_BINDER
+            if (settledInto(verify)) {
+                Log.i(TAG, "escalate: binder pin placed $packageName")
+                recordRung(context, RUNG_BINDER)
+                return RUNG_BINDER
+            }
+            Log.i(TAG, "escalate: binder pin was accepted but the window did not move — climbing")
         }
         val resize = shellResize(packageName, bounds)
         Log.i(TAG, "escalate: ${resize.name} ok=${resize.ok} ${resize.detail}")
-        if (resize.ok) {
+        if (resize.ok && settledInto(verify)) {
             recordRung(context, RUNG_SHELL)
             return RUNG_SHELL
         }
         return null
+    }
+
+    private fun settledInto(verify: () -> Boolean?): Boolean {
+        runCatching { Thread.sleep(SETTLE_MS) }
+        return verify() != false
     }
 
     // ---------------------------------------------------------------- MIUI arming

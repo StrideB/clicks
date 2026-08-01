@@ -397,13 +397,16 @@ Xiaomi (MIUI 12+ / HyperOS) is the loudest case, because its full-screen gesture
 `com.miui.home`. The launcher handles this itself, no extra app installed, as a three-step ladder in
 **Settings → LAUNCHER → GESTURE NAVIGATION →**:
 
-1. **Ask the system.** `nav/SystemGestureBridge` writes the ROM's own escape hatch —
-   `force_fsg_nav_bar` on Xiaomi, the `navbar.gestural` runtime overlay on stock-shaped ROMs. Needs
-   the one-time `WRITE_SECURE_SETTINGS` adb grant (the same one docked freeform already uses), plus
-   Shizuku for the overlay. Best outcome by a distance: real system gestures, nothing intercepted.
-2. **The launcher's own gesture bar.** `nav/GestureNavOverlay` — three accessibility-overlay edge
+1. **The launcher's own gesture bar.** `nav/GestureNavOverlay` — three accessibility-overlay edge
    strips hosted by `InputInjectionService`, because `performGlobalAction` is the only thing on the
    device that can press a system Back. Edges → back, bottom → home / recents / shade / app switch.
+   First because it is the only rung that cannot leave the phone un-navigable.
+2. **Ask the system.** `nav/SystemGestureBridge` writes the ROM's own escape hatch —
+   `force_fsg_nav_bar` on Xiaomi, the `navbar.gestural` runtime overlay on stock-shaped ROMs. Needs
+   the one-time `WRITE_SECURE_SETTINGS` adb grant (the same one docked freeform already uses), plus
+   Shizuku for the overlay. **On a Xiaomi 17 Ultra / HyperOS this took the buttons away and the ROM's
+   gesture handler never engaged** (it lives in `com.miui.home`), so it is gated on the gesture bar
+   being live and sits above an unconditional RESTORE THE BUTTONS action.
 3. **Hide the navigation bar.** Free inside the launcher's own window; system-wide only via Shizuku
    (`cmd statusbar disable-for-setup`), which also hides the status bar and clears at reboot.
 
