@@ -25175,6 +25175,20 @@ Question: $prompt"""
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Why is it fullscreen?",
+            "Docked half-screen · run the diagnosis",
+            listOf(
+                "fullscreen", "full screen", "why is it fullscreen", "half screen", "half-screen",
+                "docked window", "apps in top region", "top region", "freeform", "floating",
+                "small window", "split screen", "not centered", "diagnose", "diagnostics"
+            )
+        ) {
+            // Reachable by typing even when the settings row that normally hosts it is hidden — it
+            // only renders in docked placement with "apps in top region" on, which is exactly the
+            // state someone chasing this problem may not be in. The diagnosis is useful regardless.
+            showDockedWindowDiagnostics()
+        })
+        entries.add(SettingSearchEntry(
             "Gesture navigation",
             if (com.fran.teclas.nav.GestureNavPrefs.overlayEnabled(this)) "On · open settings" else "Off · open settings",
             listOf(

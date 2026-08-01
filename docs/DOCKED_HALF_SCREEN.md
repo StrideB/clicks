@@ -1,6 +1,11 @@
 # Docked half-screen on Xiaomi
 
-**Settings → KEYBOARD → APPS IN TOP REGION**, and the new **WHY IS IT FULLSCREEN? →** row under it.
+Settings → scroll to the **KEYBOARD** heading → **APPS IN TOP REGION**, with **WHY IS IT
+FULLSCREEN? →** indented underneath it.
+
+That row is triple-gated — docked placement, not the unfolded inner layout, and `APPS IN TOP REGION`
+already on — so on a phone where the feature looks broken it can be the one thing you cannot find.
+Searching settings for **"fullscreen"** opens the diagnosis directly, whatever those toggles say.
 
 Docked mode is supposed to open every app in the top half of the screen, above the keyboard. It does
 that on Galaxy and on Vivo/OriginOS. On Xiaomi (MIUI 12+ / HyperOS) apps open fullscreen instead.
