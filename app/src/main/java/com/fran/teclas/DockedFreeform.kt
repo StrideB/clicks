@@ -69,6 +69,22 @@ internal object DockedFreeform {
     @Volatile
     var lastExternalAppBounds: android.graphics.Rect? = null
 
+    /**
+     * The last external app window we ever measured, and which app it was — retained after that app
+     * stops being in front.
+     *
+     * [lastExternalAppBounds] has to be nulled the moment no external app is up, or placement
+     * verification would check stale geometry. But the diagnostics screen is reached by leaving the
+     * app and walking into launcher settings, which nulls it every single time: the report could
+     * only ever say "not measured", which is precisely the line it exists to fill in. So the
+     * measurement is also kept here, where nothing clears it.
+     */
+    @Volatile
+    var lastMeasuredAppBounds: android.graphics.Rect? = null
+
+    @Volatile
+    var lastMeasuredAppPackage: String? = null
+
     /** The rect an app should occupy in the docked top region, used for Shizuku pinning. */
     fun pinBounds(context: Context): Rect {
         val dm = context.resources.displayMetrics

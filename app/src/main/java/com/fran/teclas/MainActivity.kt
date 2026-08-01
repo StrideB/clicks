@@ -23850,8 +23850,20 @@ Question: $prompt"""
                 // Re-measure before giving up: the escalation may have worked, and split screen is
                 // disruptive enough that it must never fire on a screen that is already correct.
                 if (rung == null && DockedFreeform.placedInTopRegion(this) != true) {
-                    DockedWindowStrategy.recordRung(this, DockedWindowStrategy.RUNG_SPLIT)
                     requestDockedSplitFallbackIfNeeded()
+                    // Latch split only once a measurement agrees, exactly like every rung above it.
+                    // Recording it on the way in made "last working route: split" appear on a device
+                    // where split screen had done nothing at all.
+                    handler.postDelayed({
+                        DockedWindowStrategy.recordRung(
+                            this,
+                            if (DockedFreeform.placedInTopRegion(this) == true) {
+                                DockedWindowStrategy.RUNG_SPLIT
+                            } else {
+                                null
+                            }
+                        )
+                    }, DOCKED_SPLIT_VERIFY_MS)
                 }
             }
         }, "docked-placement").start()
@@ -24272,14 +24284,20 @@ Question: $prompt"""
         Thread({
             // Off the main thread: every rung is a binder call or a shell round-trip.
             val attempts = DockedWindowStrategy.diagnose(this, target, bounds)
-            val measured = DockedFreeform.lastExternalAppBounds
+            val measured = DockedFreeform.lastMeasuredAppBounds
+            val measuredApp = DockedFreeform.lastMeasuredAppPackage
             val report = buildString {
                 append(DockedWindowStrategy.reportText(attempts))
                 append("\n\nWindow measured: ")
-                append(measured?.let { "${it.width()}x${it.height()} at (${it.left},${it.top})" } ?: "not measured")
+                append(
+                    measured?.let {
+                        "${it.width()}x${it.height()} at (${it.left},${it.top})" +
+                            (measuredApp?.let { pkg -> "  [$pkg]" } ?: "")
+                    } ?: "never measured — is the Teclas accessibility service on?"
+                )
                 append("\nWindow wanted:   ")
                 append("${bounds.width()}x${bounds.height()} at (${bounds.left},${bounds.top})")
-                append("\nLast working route: ")
+                append("\nLast route that placed a window: ")
                 append(DockedWindowStrategy.rung(this@MainActivity) ?: "none yet")
             }
             handler.post {
@@ -30389,6 +30407,8 @@ Question: $prompt"""
          * about to be correct.
          */
         private const val DOCKED_PLACEMENT_VERIFY_MS = 1400L
+        /** Split screen animates, and the broadcast reaching the service adds to that. */
+        private const val DOCKED_SPLIT_VERIFY_MS = 2200L
         // Space id the user last swiped the dock back to Pinned in. While the active Space
         // still equals this, the pinned view is respected (no auto-flip to context). Cleared
         // when the Space changes, which re-arms the auto-switch-to-context behavior.

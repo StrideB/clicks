@@ -564,8 +564,12 @@ class InputInjectionService : AccessibilityService() {
         }
         val bounds = Rect(); topApp.getBoundsInScreen(bounds)
         // Ground truth for DockedWindowStrategy: the window's actual rect, recorded before any of
-        // the interpretation below turns it into a boolean.
+        // the interpretation below turns it into a boolean. The live field is cleared as soon as no
+        // external app is in front; the sticky pair survives, so the diagnostics screen — which you
+        // can only reach by leaving the app — still has something to report.
         DockedFreeform.lastExternalAppBounds = Rect(bounds)
+        DockedFreeform.lastMeasuredAppBounds = Rect(bounds)
+        DockedFreeform.lastMeasuredAppPackage = topApp.root?.packageName?.toString()
         // Shizuku re-pin: if the app's window dips into the keyboard band (in-app navigation resized
         // it, or the OEM launched it fullscreen), force it back to the top region. Holds it pinned
         // across navigation and works even where freeform launchBounds are ignored.

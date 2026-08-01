@@ -63,6 +63,23 @@ This exists because none of the above is verifiable without a Xiaomi in hand —
 from how MIUI gates these calls, not from a device. **The next change to `DockedWindowStrategy.kt`
 should be driven by that report rather than by another guess.**
 
+### What the first real report cost us
+
+A Xiaomi 25128PNA1G on Android 16 came back with three lines that were not true, all of them
+flattering:
+
+- `task lookup: no task found for <pkg>` — the task list is read through Shizuku, which was not
+  connected. We had not looked at all. It now says so instead of blaming the app.
+- `Window measured: not measured` — guaranteed, on every device, forever. The live measurement is
+  cleared the moment no external app is in front, and reaching this screen means leaving the app.
+  The measurement is now also kept in a sticky field that nothing clears, with the package name.
+- `Last working route: split` — split screen had not placed anything; the rung was latched on the
+  way *into* the fallback rather than after checking it. It is now latched only once a measurement
+  agrees, like every rung above it, and the line reads "last route that placed a window".
+
+A diagnostic that flatters itself is worse than none: it sends the next change in the wrong
+direction with confidence.
+
 ## MIUI optimization
 
 `DockedWindowStrategy.applyMiuiOptimizationOff()` writes `settings put global miui_optimization 0`,

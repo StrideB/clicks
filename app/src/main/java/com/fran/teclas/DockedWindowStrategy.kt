@@ -130,6 +130,11 @@ internal object DockedWindowStrategy {
     fun rung(context: Context): String? =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RUNG, null)
 
+    /**
+     * Record the rung that placed a window. Only ever called after a measurement confirmed it —
+     * writing it on "we tried this one" would make the report's headline a guess, and the report
+     * exists because guesses are what got this feature into trouble.
+     */
     fun recordRung(context: Context, rung: String?) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString(KEY_RUNG, rung).apply()
@@ -264,12 +269,18 @@ internal object DockedWindowStrategy {
             add(Attempt("live test", false, "launch an app from the dock first, then re-run"))
             return@buildList
         }
+        // Distinguish "we looked and there is no task" from "we cannot look". Both come back as a
+        // null task id, and reporting the second as the first blames the app for Shizuku being off.
         val taskId = ShizukuPinner.foregroundTaskId(packageName)
         add(
             Attempt(
                 "task lookup",
                 taskId != null,
-                taskId?.let { "task $it" } ?: "no task found for $packageName",
+                when {
+                    taskId != null -> "task $taskId"
+                    !ShizukuShell.isReady() -> "cannot look — the task list needs Shizuku"
+                    else -> "no task found for $packageName"
+                },
             )
         )
         if (taskId != null) {
