@@ -31,7 +31,18 @@ class InputInjectionService : AccessibilityService() {
     private val placementListener =
         android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == null || key == KeyboardSettings.KEY_PLACEMENT) handler.post { applyEventScope() }
+            if (key == null || key in com.fran.teclas.nav.GestureNavPrefs.OVERLAY_KEYS) {
+                handler.post { gestureNav?.sync() }
+            }
         }
+
+    /**
+     * The launcher's own full-screen gesture bar, hosted here because this is the only component
+     * that can perform a system Back — see [com.fran.teclas.nav.GestureNavOverlay]. Null until the
+     * framework connects us; the overlay's windows are accessibility overlays and cannot exist
+     * before that.
+     */
+    private var gestureNav: com.fran.teclas.nav.GestureNavOverlay? = null
 
     // Auto-open-search: when the docked keyboard types and no field is on screen, buffer the
     // characters and tap the app's search affordance once, then flush the buffer into the field
@@ -89,6 +100,21 @@ class InputInjectionService : AccessibilityService() {
         // attempt now — an earlier attempt from onCreate/the pref listener may have no-opped.
         eventScopeAttemptedFor = null
         applyEventScope()
+        com.fran.teclas.nav.NavActions.attach(this)
+        // Tear the previous one down first: the framework may connect us again without ever calling
+        // onDestroy, and a replaced overlay would leave its windows on screen with nothing holding a
+        // reference to remove them.
+        gestureNav?.teardown()
+        gestureNav = com.fran.teclas.nav.GestureNavOverlay(this).also { it.sync() }
+    }
+
+    /**
+     * Rebuild the gesture strips on rotation and on a fold/unfold: their geometry is derived from
+     * the current display bounds, so a stale layout leaves the back edges running off the screen.
+     */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        gestureNav?.sync()
     }
 
     /**
@@ -523,6 +549,7 @@ class InputInjectionService : AccessibilityService() {
     private fun updateFreeformState() {
         if (!dockedTopRegionAvailable()) {
             DockedFreeform.externalAppInFront = false
+            DockedFreeform.lastExternalAppBottomPx = null
             return
         }
         val displayHeight = resources.displayMetrics.heightPixels
@@ -532,9 +559,13 @@ class InputInjectionService : AccessibilityService() {
             .maxByOrNull { it.layer }
         if (topApp == null) {
             DockedFreeform.externalAppInFront = false
+            DockedFreeform.lastExternalAppBottomPx = null
             return
         }
         val bounds = Rect(); topApp.getBoundsInScreen(bounds)
+        // Ground truth for DockedWindowStrategy: the window's actual bottom edge, recorded before
+        // any of the interpretation below turns it into a boolean.
+        DockedFreeform.lastExternalAppBottomPx = bounds.bottom
         // Shizuku re-pin: if the app's window dips into the keyboard band (in-app navigation resized
         // it, or the OEM launched it fullscreen), force it back to the top region. Holds it pinned
         // across navigation and works even where freeform launchBounds are ignored.
@@ -612,6 +643,9 @@ class InputInjectionService : AccessibilityService() {
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
+        com.fran.teclas.nav.NavActions.detach(this)
+        gestureNav?.teardown()
+        gestureNav = null
         runCatching { unregisterReceiver(keystrokeReceiver) }
         runCatching { KeyboardSettings.prefs(this).unregisterOnSharedPreferenceChangeListener(placementListener) }
         handler.removeCallbacks(flushRunnable)

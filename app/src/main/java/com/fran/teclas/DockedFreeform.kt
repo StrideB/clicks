@@ -51,6 +51,20 @@ internal object DockedFreeform {
     @Volatile
     var lastKeyboardTopPx: Int = 0
 
+    /**
+     * The real, measured bottom edge of the foreground external app's window, from the accessibility
+     * service. Null when nothing has been measured — either no external app is up, or the service is
+     * off and we simply cannot know.
+     *
+     * Distinct from [externalAppInFront] on purpose. That flag is set optimistically the moment the
+     * launcher starts an app, so it answers "did we try", not "did it land"; on a ROM that ignores
+     * launch bounds it reads true while the app is plainly fullscreen. [DockedWindowStrategy] needs
+     * the second question answered honestly before it decides to escalate, and null has to mean
+     * "unknown" rather than "failed".
+     */
+    @Volatile
+    var lastExternalAppBottomPx: Int? = null
+
     /** The rect an app should occupy in the docked top region, used for Shizuku pinning. */
     fun pinBounds(context: Context): Rect {
         val dm = context.resources.displayMetrics
@@ -145,6 +159,18 @@ internal object DockedFreeform {
 
     fun adbGrantCommand(context: Context): String =
         "adb shell pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS"
+
+    /**
+     * Did the app actually end up in the top region? Measured, not assumed — see
+     * [lastExternalAppBottomPx]. Null means we cannot tell (nothing measured yet, or the
+     * accessibility service is off), which callers must treat as "unknown", never as "yes".
+     */
+    fun placedInTopRegion(context: Context): Boolean? {
+        val bottom = lastExternalAppBottomPx ?: return null
+        val target = pinBounds(context).bottom
+        val slop = (24 * context.resources.displayMetrics.density).toInt()
+        return kotlin.math.abs(bottom - target) <= slop
+    }
 
     /**
      * Resolve the bottom edge for docked freeform apps from launcher-owned measurements.
