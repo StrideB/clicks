@@ -1189,6 +1189,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
+        // MIUI re-decides the "third-party launcher means buttons" rule whenever the default home
+        // changes, so the forced-gesture flag genuinely comes back off after a launcher switch or a
+        // system update. Re-assert it here rather than making the user revisit the settings screen.
+        com.fran.teclas.nav.SystemGestureBridge.ensureAppliedIfRequested(this)
         stopService(Intent(this, DockedKeyboardService::class.java))
         syncVivoDockedExperiment()
         updateLauncherTheme(animated = true)
@@ -21444,6 +21448,10 @@ Question: $prompt"""
             render()
             openHere(teclasSettingsTarget())
         }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
+        parent.addView(settingAction("GESTURE NAVIGATION →") {
+            haptic(this)
+            startActivity(Intent(this@MainActivity, com.fran.teclas.nav.GestureNavSettingsActivity::class.java))
+        }, LinearLayout.LayoutParams.MATCH_PARENT, dp(32))
         parent.addView(settingAction("SPACES →") {
             haptic(this)
             startActivity(Intent(this@MainActivity, SpacesSettingsActivity::class.java))
@@ -25033,6 +25041,17 @@ Question: $prompt"""
             prefs().edit().putBoolean(HIDE_STATUS_BAR_PREF, !hideStatusBarEnabled()).apply()
             render()
             refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Gesture navigation",
+            if (com.fran.teclas.nav.GestureNavPrefs.overlayEnabled(this)) "On · open settings" else "Off · open settings",
+            listOf(
+                "gestures", "gesture navigation", "full screen gestures", "fullscreen gestures",
+                "nav bar", "navigation bar", "hide nav bar", "hide navigation", "buttons",
+                "3 button", "three button", "swipe back", "back gesture", "miui", "xiaomi", "hyperos"
+            )
+        ) {
+            startActivity(Intent(this@MainActivity, com.fran.teclas.nav.GestureNavSettingsActivity::class.java))
         })
         entries.add(SettingSearchEntry(
             "Icon pack", "${themePaneHost.activeIconPackLabel()} · open settings",
@@ -28949,6 +28968,12 @@ Question: $prompt"""
     private fun syncSystemBars() {
         if (isFinishing) return
         val hideStatusBar = hideStatusBarEnabled()
+        // The one way to lose the navigation bar that needs no permission at all: hide it inside our
+        // own window. It only reaches the launcher — every other app still gets its bar — but on a
+        // ROM that refuses to hand gestures back, this is what makes the home screen itself clean.
+        // Gated on the gesture overlay being on (see GestureNavPrefs.hideNavBarOnHome) so hiding the
+        // buttons never leaves the screen without a way off it.
+        val hideNavBar = com.fran.teclas.nav.GestureNavPrefs.hideNavBarOnHome(this)
         val mediaDock = openPane?.usesMediaDock() == true
         val innerWallpaperCanvas = isUnfoldedInnerLayoutActive() && openPane == null && !libraryOpen
         val darkBars = mediaDock || activeNeuTokens.mode == NeuMode.DARK
@@ -28983,6 +29008,8 @@ Question: $prompt"""
             else flags and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
         flags = if (hideStatusBar) flags or View.SYSTEM_UI_FLAG_FULLSCREEN
             else flags and View.SYSTEM_UI_FLAG_FULLSCREEN.inv()
+        val legacyNavHide = View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        flags = if (hideNavBar) flags or legacyNavHide else flags and legacyNavHide.inv()
         window.decorView.systemUiVisibility = flags
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -28997,7 +29024,7 @@ Question: $prompt"""
                 controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 if (hideStatusBar) controller.hide(WindowInsets.Type.statusBars())
                 else controller.show(WindowInsets.Type.statusBars())
-                if (mediaDock) controller.hide(WindowInsets.Type.navigationBars())
+                if (mediaDock || hideNavBar) controller.hide(WindowInsets.Type.navigationBars())
                 else controller.show(WindowInsets.Type.navigationBars())
             }
         }
