@@ -24,7 +24,7 @@ caller — the last resort had never once run. That is now wired up.
 
 After a docked launch the launcher waits ~1.4s (first frame plus the OEM's window animation), then
 **measures where the window actually is** — the accessibility service records the real
-`getBoundsInScreen` bottom edge into `DockedFreeform.lastExternalAppBottomPx`. That measurement, not
+`getBoundsInScreen` rect into `DockedFreeform.lastExternalAppBounds`. That measurement, not
 an API return value, decides what happens next:
 
 | Rung | What it does | Needs |
@@ -36,6 +36,13 @@ an API return value, decides what happens next:
 
 The winning rung is latched in prefs (`docked_window_rung`), so this ladder is walked once per
 device, not once per app launch. A rung that stops working escalates again from where it is.
+
+**Each rung is verified before it is believed.** A rung returning true only means the call did not
+throw, and MIUI accepts `setTaskWindowingMode` / `resizeTask` without acting on them — observed on
+HyperOS as a window that *is* freeform but sits at the ROM's own default small-window geometry, not
+filling the top region. So after each rung the ladder waits ~600ms and re-measures; only a window
+that actually moved stops the climb. Width is checked as well as the bottom edge, because a default
+small window can land at roughly the right height while covering only the middle of the screen.
 
 One rung is deliberately *not* automatic: `am start --windowingMode 5`, a shell-uid launch, which is
 the most likely thing to work on HyperOS but relaunches the app visibly and drops any deep link.
@@ -70,7 +77,7 @@ See the Shizuku section of `docs/GESTURE_NAVIGATION.md`.
 | File | Role |
 | --- | --- |
 | `DockedWindowStrategy.kt` | The extra rungs, the latch, and the diagnosis. |
-| `DockedFreeform.kt` | `lastExternalAppBottomPx` / `placedInTopRegion` — measured ground truth, distinct from the optimistic `externalAppInFront`. |
+| `DockedFreeform.kt` | `lastExternalAppBounds` / `placedInTopRegion` — measured ground truth, distinct from the optimistic `externalAppInFront`. |
 | `ShizukuPinner.kt` | `foregroundTaskId` — reading tasks and mutating them fail independently on MIUI. |
 | `InputInjectionService.updateFreeformState()` | Records the real window bottom. |
 | `MainActivity.escalateDockedPlacement()` | Verifies, escalates, and falls back to split screen. |

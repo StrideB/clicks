@@ -52,9 +52,13 @@ internal object DockedFreeform {
     var lastKeyboardTopPx: Int = 0
 
     /**
-     * The real, measured bottom edge of the foreground external app's window, from the accessibility
+     * The real, measured bounds of the foreground external app's window, from the accessibility
      * service. Null when nothing has been measured — either no external app is up, or the service is
      * off and we simply cannot know.
+     *
+     * The whole rect rather than just the bottom edge: on MIUI the observed failure is a window that
+     * *is* freeform but sits at the ROM's own default small-window geometry, so "how wrong is it"
+     * needs width and position, not only how far down it reaches.
      *
      * Distinct from [externalAppInFront] on purpose. That flag is set optimistically the moment the
      * launcher starts an app, so it answers "did we try", not "did it land"; on a ROM that ignores
@@ -63,7 +67,7 @@ internal object DockedFreeform {
      * "unknown" rather than "failed".
      */
     @Volatile
-    var lastExternalAppBottomPx: Int? = null
+    var lastExternalAppBounds: android.graphics.Rect? = null
 
     /** The rect an app should occupy in the docked top region, used for Shizuku pinning. */
     fun pinBounds(context: Context): Rect {
@@ -162,14 +166,18 @@ internal object DockedFreeform {
 
     /**
      * Did the app actually end up in the top region? Measured, not assumed — see
-     * [lastExternalAppBottomPx]. Null means we cannot tell (nothing measured yet, or the
+     * [lastExternalAppBounds]. Null means we cannot tell (nothing measured yet, or the
      * accessibility service is off), which callers must treat as "unknown", never as "yes".
      */
     fun placedInTopRegion(context: Context): Boolean? {
-        val bottom = lastExternalAppBottomPx ?: return null
-        val target = pinBounds(context).bottom
+        val actual = lastExternalAppBounds ?: return null
+        val target = pinBounds(context)
         val slop = (24 * context.resources.displayMetrics.density).toInt()
-        return kotlin.math.abs(bottom - target) <= slop
+        // Width matters as much as the bottom edge. A MIUI default small window can happen to end
+        // near the right height while covering only the middle of the screen, and calling that
+        // "placed" is what stops the ladder climbing to a rung that would actually fix it.
+        return kotlin.math.abs(actual.bottom - target.bottom) <= slop &&
+            kotlin.math.abs(actual.width() - target.width()) <= slop
     }
 
     /**

@@ -23848,7 +23848,9 @@ Question: $prompt"""
         }
         val bounds = DockedFreeform.pinBounds(this)
         Thread({
-            val rung = DockedWindowStrategy.escalate(this, packageName, bounds)
+            val rung = DockedWindowStrategy.escalate(this, packageName, bounds) {
+                DockedFreeform.placedInTopRegion(this)
+            }
             handler.post {
                 // Re-measure before giving up: the escalation may have worked, and split screen is
                 // disruptive enough that it must never fire on a screen that is already correct.
@@ -24275,11 +24277,13 @@ Question: $prompt"""
         Thread({
             // Off the main thread: every rung is a binder call or a shell round-trip.
             val attempts = DockedWindowStrategy.diagnose(this, target, bounds)
-            val measured = DockedFreeform.lastExternalAppBottomPx
+            val measured = DockedFreeform.lastExternalAppBounds
             val report = buildString {
                 append(DockedWindowStrategy.reportText(attempts))
-                append("\n\nWindow bottom measured: ")
-                append(measured?.let { "$it px (target ${bounds.bottom} px)" } ?: "not measured")
+                append("\n\nWindow measured: ")
+                append(measured?.let { "${it.width()}x${it.height()} at (${it.left},${it.top})" } ?: "not measured")
+                append("\nWindow wanted:   ")
+                append("${bounds.width()}x${bounds.height()} at (${bounds.left},${bounds.top})")
                 append("\nLast working route: ")
                 append(DockedWindowStrategy.rung(this@MainActivity) ?: "none yet")
             }
