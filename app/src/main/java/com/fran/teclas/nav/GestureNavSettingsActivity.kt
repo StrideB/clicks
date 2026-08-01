@@ -60,15 +60,27 @@ import kotlin.math.roundToInt
  * Presented as a ladder rather than a pile of switches, because the right answer is genuinely
  * device-dependent and the user cannot be expected to know which rung theirs lands on:
  *
- *  1. **Ask the system.** [SystemGestureBridge] tries to make the ROM hand its own gestures back.
- *     Best outcome by a distance when it works — real animations, real quick-switch, nothing
- *     intercepting touches. On Xiaomi this is the documented escape hatch from "third-party launcher
- *     means 3-button navigation"; on stock-shaped ROMs it is the navbar overlay.
- *  2. **Draw our own.** [GestureNavOverlay] — edge strips dispatched through the launcher's
+ *  1. **Draw our own.** [GestureNavOverlay] — edge strips dispatched through the launcher's
  *     accessibility service. Works everywhere, at the cost of eating touches in a few millimetres
  *     along each edge.
+ *  2. **Ask the system.** [SystemGestureBridge] tries to make the ROM hand its own gestures back.
+ *     On Xiaomi this is the documented escape hatch from "third-party launcher means 3-button
+ *     navigation"; on stock-shaped ROMs it is the navbar overlay.
  *  3. **Take the bar away.** Free inside the launcher's own window; system-wide only with Shizuku,
  *     and only until the next reboot.
+ *
+ * ### Why step 2 is second, and gated
+ *
+ * It was first, on the reasoning that real ROM gestures beat anything we can draw. That shipped, and
+ * on a Xiaomi 17 Ultra running HyperOS it left the device with no navigation at all:
+ * `force_fsg_nav_bar` stopped the ROM drawing the buttons, and the gesture handler it hands over to
+ * lives in `com.miui.home`, so with this launcher as default it never engaged. Buttons gone, gestures
+ * absent, no way back or home.
+ *
+ * So the order is now the order of *risk*, not of quality. Step 1 cannot strand anyone — worst case
+ * the strips draw and do nothing. Step 2 can, so it refuses to run unless the accessibility service
+ * is live, switches step 1 on as a safety net when it does run, and sits above an unconditional
+ * RESTORE THE BUTTONS action that is never gated on what the toggles believe.
  *
  * Every rung reports back what actually happened, including the failures — the alternative is a
  * toggle that flips and changes nothing, which is exactly the experience this screen exists to
@@ -151,8 +163,8 @@ class GestureNavSettingsActivity : ComponentActivity() {
             )
 
             StatusSection()
-            SystemGesturesSection()
             OverlaySection()
+            SystemGesturesSection()
             HideBarSection()
             ManualSection()
         }
@@ -217,7 +229,7 @@ class GestureNavSettingsActivity : ComponentActivity() {
         val requested = remember(tick) { GestureNavPrefs.systemGesturesRequested(this@GestureNavSettingsActivity) }
         val vendor = remember(tick) { SystemGestureBridge.vendor() }
 
-        Section("1 · ASK THE SYSTEM FOR ITS OWN GESTURES") {
+        Section("2 · ASK THE SYSTEM FOR ITS OWN GESTURES") {
             Label(
                 if (vendor == SystemGestureBridge.Vendor.XIAOMI) {
                     "MIUI and HyperOS drop back to 3-button navigation whenever the default home is " +
@@ -230,12 +242,44 @@ class GestureNavSettingsActivity : ComponentActivity() {
                 },
                 12.5.sp, t.inkDimCompose, topPad = 2.dp, bottomPad = 10.dp
             )
+            Label(
+                "Verified on a Xiaomi 17 Ultra running HyperOS: this flag stops the ROM drawing the " +
+                    "buttons and its gesture handler never takes over, leaving no way to go back or " +
+                    "home. So the launcher's own gesture bar below is switched on first, as a safety " +
+                    "net, and this step will not run without it.",
+                12.sp, Color(WARN), bottomPad = 10.dp
+            )
             ToggleRow("Keep system gestures forced on", requested) { next ->
-                GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_SYSTEM_GESTURES, next)
+                if (!next) {
+                    GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_SYSTEM_GESTURES, false)
+                    offMain({ SystemGestureBridge.revert(this@GestureNavSettingsActivity) }) { report = it }
+                    return@ToggleRow
+                }
+                // Refuse rather than strand the device. Removing the buttons is only survivable if
+                // something else can already press Back, and the only thing that can is the
+                // accessibility service — so that is a hard precondition, not a warning.
+                if (!accessibilityServiceEnabled()) {
+                    toast("Turn on the Teclas accessibility service first — without it this would leave you with no way back", long = true)
+                    runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                    return@ToggleRow
+                }
+                GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_OVERLAY, true)
+                GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_SYSTEM_GESTURES, true)
+                offMain({ SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity) }) { report = it }
+            }
+            // Always reachable, never conditional on what the toggles believe. Whatever state the
+            // ROM has been left in, this is the way back to a navigable phone.
+            ActionButton("RESTORE THE BUTTONS") {
+                GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_SYSTEM_GESTURES, false)
+                GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_HIDE_PILL, false)
                 offMain({
-                    if (next) SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity)
-                    else SystemGestureBridge.revert(this@GestureNavSettingsActivity)
-                }) { report = it }
+                    val reverted = SystemGestureBridge.revert(this@GestureNavSettingsActivity)
+                    SystemGestureBridge.setSystemBarsHidden(false)
+                    reverted
+                }) {
+                    report = it
+                    toast("Buttons restored. Reboot if they do not come straight back.", long = true)
+                }
             }
             ToggleRow(
                 "Also hide the ROM's gesture handle",
@@ -249,7 +293,13 @@ class GestureNavSettingsActivity : ComponentActivity() {
                 }
             }
             ActionButton("APPLY NOW") {
-                offMain({ SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity) }) { report = it }
+                if (!accessibilityServiceEnabled()) {
+                    toast("Turn on the Teclas accessibility service first — without it this would leave you with no way back", long = true)
+                    runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                } else {
+                    GestureNavPrefs.setBoolean(this@GestureNavSettingsActivity, GestureNavPrefs.KEY_OVERLAY, true)
+                    offMain({ SystemGestureBridge.applyGestures(this@GestureNavSettingsActivity) }) { report = it }
+                }
             }
             if (ShizukuPinner.isReady()) {
                 ActionButton("RESTART SYSTEM UI") {
@@ -300,7 +350,7 @@ class GestureNavSettingsActivity : ComponentActivity() {
     private fun OverlaySection() {
         val enabled = remember(tick) { GestureNavPrefs.overlayEnabled(this@GestureNavSettingsActivity) }
 
-        Section("2 · THE LAUNCHER'S OWN GESTURE BAR") {
+        Section("1 · THE LAUNCHER'S OWN GESTURE BAR") {
             Label(
                 "Three invisible strips — left and right edges for back, the bottom for home, " +
                     "recents and the notification shade. Works on any ROM, including one that will " +
@@ -382,7 +432,7 @@ class GestureNavSettingsActivity : ComponentActivity() {
                     "Costs nothing and needs no permission — the launcher simply hides the bar in " +
                         "its own window. Other apps keep theirs."
                 } else {
-                    "Turn the gesture bar on first. Hiding the buttons without a replacement would " +
+                    "Turn the gesture bar on first (step 1). Hiding the buttons without a replacement would " +
                         "leave the home screen with no way back."
                 },
                 12.5.sp, t.inkDimCompose, topPad = 2.dp, bottomPad = 10.dp
