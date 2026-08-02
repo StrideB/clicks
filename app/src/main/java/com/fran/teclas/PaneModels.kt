@@ -58,7 +58,9 @@ internal data class HomeDockItem(
     /** Usage-predicted filler occupying an otherwise-empty dock slot (drawn with a hint marker). */
     val predicted: Boolean = false,
     /** Key of the live activity (ongoing notification) this slot represents; tap opens the pip. */
-    val liveKey: String? = null
+    val liveKey: String? = null,
+    /** This app owns the actively-playing media session; tap opens the now-playing pane. */
+    val mediaLive: Boolean = false
 )
 
 internal data class SettingSearchEntry(

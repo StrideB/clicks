@@ -116,7 +116,16 @@ class TeclasNotificationListener : NotificationListenerService() {
             // byte-identical repost never wakes the launcher.
             val snap = liveSnapshot(sbn)
             if (snap != null) {
-                val prev = synchronized(liveActivities) { liveActivities.put(sbn.key, snap) }
+                val prev = synchronized(liveActivities) {
+                    val existing = liveActivities[sbn.key]
+                    // Byte-identical repost: keep the original change time. Passive status pins
+                    // (car "connected" notifications, VPN badges) heartbeat-repost the same
+                    // content forever — carrying lastChangeMs forward lets them age into
+                    // staleness instead of renewing their dock claim on every repost.
+                    liveActivities[sbn.key] = if (existing != null && existing.contentHash == snap.contentHash)
+                        snap.copy(lastChangeMs = existing.lastChangeMs) else snap
+                    existing
+                }
                 if (prev == null || prev.contentHash != snap.contentHash) changed = true
             } else if (synchronized(liveActivities) { liveActivities.remove(sbn.key) } != null) {
                 changed = true
@@ -195,6 +204,10 @@ class TeclasNotificationListener : NotificationListenerService() {
             contentIntent = n.contentIntent,
             actions = actions,
             contentHash = hash,
+            // postTime, not now: on a listener reconnect replay this is the notification's real
+            // last-post moment, so an hours-old static pin is already stale instead of getting a
+            // fresh grace window every time our process restarts.
+            lastChangeMs = sbn.postTime,
         )
     }
 
@@ -429,7 +442,23 @@ class TeclasNotificationListener : NotificationListenerService() {
         val contentIntent: PendingIntent?,
         val actions: List<LiveAction>,
         val contentHash: Int,
-    )
+        /** Wall-clock time the content last actually changed (identical reposts don't reset it). */
+        val lastChangeMs: Long,
+    ) {
+        /**
+         * When this snapshot stops counting as live, or null if it never expires on its own.
+         * Only passive "other" notifications (rank 2, no chronometer, no progress) age out —
+         * that shape is how status pins look (car connected, VPN on), and a non-clearable pin
+         * would otherwise hold the dock slot forever with no way to dismiss it. Calls, nav,
+         * timers, media, and anything showing progress or a chronometer are exempt; genuine
+         * ride/delivery activities survive by updating their text well within the window.
+         */
+        fun staleDeadlineMs(): Long? =
+            if (kindRank == 2 && !usesChronometer && progressMax <= 0 && !indeterminate)
+                lastChangeMs + LIVE_STALE_MS else null
+
+        fun isStale(nowMs: Long): Boolean = staleDeadlineMs()?.let { nowMs > it } == true
+    }
 
     companion object {
         private const val PREFS_NAME = "teclas"
@@ -525,6 +554,9 @@ class TeclasNotificationListener : NotificationListenerService() {
             synchronized(liveActivities) { liveActivities[key] }
 
         private val LIVE_EXCLUDED_PACKAGES = setOf("android", "com.android.systemui")
+
+        /** How long a passive status pin stays live without a content change (see staleDeadlineMs). */
+        private const val LIVE_STALE_MS = 5 * 60_000L
 
         @Volatile
         private var instance: TeclasNotificationListener? = null
