@@ -40,6 +40,10 @@ class TeclasNotificationListener : NotificationListenerService() {
         notificationIntents.clear()
         replyActions.clear()
         synchronized(briefRecords) { briefRecords.clear() }
+        synchronized(dockBadgeKeys) { dockBadgeKeys.clear() }
+        ongoingCallPackage = null
+        ongoingTimerPackage = null
+        onDockStateChanged?.invoke()
         onBriefChanged?.invoke()
     }
 
@@ -48,6 +52,7 @@ class TeclasNotificationListener : NotificationListenerService() {
         // can surface any of them with all their inline actions. This is independent of the hub
         // widget-stack path below, which keeps its existing narrower filtering.
         captureBriefRecord(sbn)
+        updateDockLiveState(sbn, posted = true)
 
         if (!sbn.isHubCandidate()) return
 
@@ -89,6 +94,44 @@ class TeclasNotificationListener : NotificationListenerService() {
         prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
     }
 
+    /**
+     * Track the three live-dock signals off the notification stream: per-package badge dots
+     * (clearable, content-bearing notifications), an ongoing call, and an ongoing
+     * alarm/timer/stopwatch. Fires [onDockStateChanged] only on real transitions.
+     */
+    private fun updateDockLiveState(sbn: StatusBarNotification, posted: Boolean) {
+        val n = sbn.notification
+        if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
+        if (sbn.packageName == packageName) return
+        var changed = false
+        val ongoing = !sbn.isClearable || (n.flags and Notification.FLAG_ONGOING_EVENT) != 0
+        if (ongoing) {
+            when {
+                n.category == Notification.CATEGORY_CALL -> {
+                    val next = if (posted) sbn.packageName else null
+                    if (ongoingCallPackage != next) { ongoingCallPackage = next; changed = true }
+                }
+                n.category == Notification.CATEGORY_ALARM || n.category == "stopwatch" ||
+                    sbn.packageName in CLOCK_PACKAGES -> {
+                    val next = if (posted) sbn.packageName else null
+                    if (ongoingTimerPackage != next) { ongoingTimerPackage = next; changed = true }
+                }
+            }
+        } else if (posted) {
+            val extras = n.extras
+            val hasContent = !extras.getCharSequence(Notification.EXTRA_TITLE).isNullOrBlank() ||
+                !extras.getCharSequence(Notification.EXTRA_TEXT).isNullOrBlank()
+            val badgeable = hasContent && n.category != Notification.CATEGORY_TRANSPORT &&
+                n.category != Notification.CATEGORY_SERVICE && n.category != Notification.CATEGORY_SYSTEM
+            if (badgeable) {
+                changed = synchronized(dockBadgeKeys) { dockBadgeKeys.put(sbn.key, sbn.packageName) == null }
+            }
+        } else {
+            changed = synchronized(dockBadgeKeys) { dockBadgeKeys.remove(sbn.key) != null }
+        }
+        if (changed) onDockStateChanged?.invoke()
+    }
+
     // Find a direct-reply action (RemoteInput) on this notification and remember it, so the launcher
     // can reply to a message (Telegram, WhatsApp, …) inline without opening the app.
     private fun captureReplyAction(sbn: StatusBarNotification) {
@@ -102,6 +145,7 @@ class TeclasNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        updateDockLiveState(sbn, posted = false)
         notificationIntents.remove(sbn.key)
         replyActions.remove(sbn.key)
         // Reply PendingIntents die with the notification, so the brief must drop this record and
@@ -350,6 +394,30 @@ class TeclasNotificationListener : NotificationListenerService() {
         /** Set by MainActivity to refresh the brief on notification post/remove. Debounce downstream. */
         @Volatile
         var onBriefChanged: (() -> Unit)? = null
+
+        // ── Live-dock state ──────────────────────────────────────────────────
+        // Everything below is written by the listener on events the system already delivers and
+        // read by the launcher to paint dock badges — no polling anywhere. onDockStateChanged only
+        // fires when the visible state actually changed (first badge for a package, last one gone,
+        // a call/timer starting or ending), so a chatty app reposting the same notification never
+        // wakes the launcher.
+
+        /** notification key → package, for active clearable notifications worth a dock dot. */
+        private val dockBadgeKeys: MutableMap<String, String> = Collections.synchronizedMap(LinkedHashMap())
+
+        /** Package with an ongoing call notification, or null. */
+        @Volatile var ongoingCallPackage: String? = null
+
+        /** Package with an ongoing alarm/timer/stopwatch notification, or null. */
+        @Volatile var ongoingTimerPackage: String? = null
+
+        /** Set by MainActivity; invoked (on the listener thread) when dock badge state changes. */
+        @Volatile var onDockStateChanged: (() -> Unit)? = null
+
+        /** Packages that currently deserve a dock badge dot. Safe from any thread. */
+        fun dockBadgePackages(): Set<String> = synchronized(dockBadgeKeys) { dockBadgeKeys.values.toSet() }
+
+        private val CLOCK_PACKAGES = setOf("com.google.android.deskclock", "com.sec.android.app.clockpackage")
 
         @Volatile
         private var instance: TeclasNotificationListener? = null

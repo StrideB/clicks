@@ -54,7 +54,9 @@ internal data class HomeDockItem(
     val app: AppEntry?,
     val target: PaneTarget,
     val label: String,
-    val accent: Int
+    val accent: Int,
+    /** Usage-predicted filler occupying an otherwise-empty dock slot (drawn with a hint marker). */
+    val predicted: Boolean = false
 )
 
 internal data class SettingSearchEntry(

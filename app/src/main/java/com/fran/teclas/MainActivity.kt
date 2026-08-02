@@ -985,6 +985,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
             }
         }
+        // Live-dock badges: fires only on real transitions (first badge for a package, last one
+        // cleared, call/timer start-stop); each is a handful of invalidates on tiny views.
+        TeclasNotificationListener.onDockStateChanged = {
+            runOnUiThread { refreshDockLiveBadges() }
+        }
         if (todayEnabled) {
             briefRepository.startPeriodic()
             briefRepository.refreshDebounced(300)
@@ -1196,6 +1201,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
         DockedFreeform.externalAppInFront = false
         dockedForegroundDraft.clear()
+        // Live-dock signals (charging, hour tint) only listen while we're the visible screen.
+        registerDockLiveReceivers()
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
@@ -1327,6 +1334,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // The mic must not keep recording behind another app: stop an in-flight dictation when the
         // launcher leaves the foreground.
         voiceEngine?.let { if (it.isListening) { it.stop(); setMicVisual(false); clearVoicePartial() } }
+        unregisterDockLiveReceivers()
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
@@ -1397,6 +1405,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
         TeclasNotificationListener.onBriefChanged = null
+        TeclasNotificationListener.onDockStateChanged = null
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         mediaUiScope.cancel()
@@ -22924,9 +22933,87 @@ Question: $prompt"""
 
     private fun refreshCleanSpacesDockAccent(animate: Boolean) {
         val active = cleanSpacesBriefActive()
-        val target = if (active) currentCleanSpacesAccent() else goKeyColor
-        favoritesDockAccentChromeView?.setAccent(target, active, animate)
+        if (!active) {
+            // Clean Spaces isn't claiming the chrome — the live power/time accent owns it instead.
+            refreshDockPowerAccent(animate)
+            return
+        }
+        val target = currentCleanSpacesAccent()
+        favoritesDockAccentChromeView?.setAccent(target, true, animate)
         lastCleanSpaceDockAccent = target
+    }
+
+    // ── Live dock chrome: charging + time-of-day accent ──────────────────────
+    // Receivers live only between onResume and onPause — the screen is on and the launcher is in
+    // front, so listening costs nothing extra. ACTION_BATTERY_CHANGED is sticky (registration
+    // delivers current state immediately); TIME_TICK fires once a minute and we only repaint when
+    // the hour bucket actually changes.
+
+    private var dockChargingState = 0   // 0 = unplugged, 1 = charging, 2 = full
+    private var dockAccentHourBucket = -1
+
+    private val dockPowerReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val status = intent?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val next = when (status) {
+                android.os.BatteryManager.BATTERY_STATUS_FULL -> 2
+                android.os.BatteryManager.BATTERY_STATUS_CHARGING -> 1
+                else -> 0
+            }
+            if (next != dockChargingState) {
+                dockChargingState = next
+                refreshDockPowerAccent(animate = true)
+            }
+        }
+    }
+
+    private val dockTimeTickReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val bucket = dockHourBucket()
+            if (bucket != dockAccentHourBucket) {
+                dockAccentHourBucket = bucket
+                refreshDockPowerAccent(animate = true)
+            }
+        }
+    }
+
+    private fun dockHourBucket(): Int = when (java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)) {
+        in 5..7 -> 0    // dawn
+        in 8..16 -> 1   // day
+        in 17..20 -> 2  // dusk
+        else -> 3       // night
+    }
+
+    private fun dockHourAccentColor(): Int = when (dockHourBucket()) {
+        0 -> 0xFFFFB36B.toInt()   // dawn: soft amber
+        1 -> 0xFF9BB8D3.toInt()   // day: cool neutral
+        2 -> 0xFFB58CFF.toInt()   // dusk: violet
+        else -> 0xFF5E7BD8.toInt() // night: deep blue
+    }
+
+    /** Charging beats time-of-day; Clean Spaces (checked by the caller chain) beats both. */
+    private fun refreshDockPowerAccent(animate: Boolean) {
+        if (cleanSpacesBriefActive()) return
+        val chrome = favoritesDockAccentChromeView ?: return
+        val color = when (dockChargingState) {
+            2 -> 0xFF45E7A4.toInt()                       // full: green
+            1 -> 0xFFF5C451.toInt()                       // charging: amber
+            else -> adjustAlpha(dockHourAccentColor(), 0.55f) // ambient hour tint, kept faint
+        }
+        chrome.setAccent(color, true, animate)
+    }
+
+    private fun registerDockLiveReceivers() {
+        runCatching {
+            registerReceiver(dockPowerReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            registerReceiver(dockTimeTickReceiver, IntentFilter(Intent.ACTION_TIME_TICK))
+        }
+        dockAccentHourBucket = dockHourBucket()
+    }
+
+    private fun unregisterDockLiveReceivers() {
+        runCatching { unregisterReceiver(dockPowerReceiver) }
+        runCatching { unregisterReceiver(dockTimeTickReceiver) }
     }
 
     internal fun renderFavoritesDock() {
@@ -23406,7 +23493,18 @@ Question: $prompt"""
         val appItems = homeDockApps()
             .filterNot { it.packageName == packageName }
             .map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) }
-        return (listOfNotNull(music) + appItems).take(DOCK_APP_LIMIT)
+        val pinned = (listOfNotNull(music) + appItems).take(DOCK_APP_LIMIT)
+        if (pinned.size >= DOCK_APP_LIMIT) return pinned
+        // Free slot → usage-predicted filler. Computed once per render (which already happens on
+        // every home return), from counts the launcher already tracks — zero extra cost.
+        val taken = pinned.mapNotNull { it.target.packageName }.toSet()
+        val usage = appUsageCounts()
+        val predicted = apps.asSequence()
+            .filter { it.packageName !in taken && it.packageName !in hidden && it.packageName != packageName }
+            .filter { (usage[it.packageName] ?: 0) > 0 }
+            .maxByOrNull { usage[it.packageName] ?: 0 }
+            ?.let { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor, predicted = true) }
+        return pinned + listOfNotNull(predicted)
     }
 
     private fun dockItemButton(item: HomeDockItem, index: Int): View {
@@ -23463,6 +23561,9 @@ Question: $prompt"""
                     }, FrameLayout.LayoutParams((iconFrame * 1.45f).toInt(), (iconFrame * 1.95f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
                         bottomMargin = -dp(10)
                     })
+                addView(DockLiveBadgeView(context, target.packageName, item.accent, item.predicted).apply {
+                    refresh()
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             if (showLabel) {
                 addView(TextView(context).apply {
@@ -23673,6 +23774,93 @@ Question: $prompt"""
             // once the burst ends there is nothing to poll for — the static frame just sits there.
             if (isShown && animating) postInvalidateDelayed(DOCK_NOTES_FRAME_MS)
         }
+    }
+
+    // ── Live dock badges ─────────────────────────────────────────────────────
+    // Entirely event-driven: the notification listener invokes onDockStateChanged only on real
+    // transitions, and each badge view repaints once per transition. Nothing here polls, ticks,
+    // or animates continuously.
+
+    /**
+     * Per-icon live overlay: a small dot when the app has an active notification, a ring while it
+     * owns an ongoing call (green) or a running alarm/timer (amber). One static frame per state
+     * change — never animated.
+     */
+    private inner class DockLiveBadgeView(
+        context: Context,
+        private val pkg: String?,
+        private val accent: Int,
+        private val predicted: Boolean,
+    ) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var hasDot = false
+        private var ringColor = 0
+
+        init {
+            // Start hidden unless the predicted tick needs drawing; refresh() reveals on real state.
+            if (!predicted) visibility = View.GONE
+        }
+
+        fun refresh() {
+            val p = pkg
+            val nextDot: Boolean
+            val nextRing: Int
+            if (p == null) {
+                nextDot = false; nextRing = 0
+            } else {
+                nextRing = when (p) {
+                    TeclasNotificationListener.ongoingCallPackage -> 0xFF45E7A4.toInt()
+                    TeclasNotificationListener.ongoingTimerPackage -> 0xFFF5C451.toInt()
+                    else -> 0
+                }
+                nextDot = p in TeclasNotificationListener.dockBadgePackages()
+            }
+            if (nextDot == hasDot && nextRing == ringColor) return
+            hasDot = nextDot
+            ringColor = nextRing
+            visibility = if (hasDot || ringColor != 0 || predicted) View.VISIBLE else View.GONE
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (ringColor != 0) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = dp(2).toFloat()
+                val inset = dp(2).toFloat()
+                paint.color = adjustAlpha(ringColor, 0.85f)
+                canvas.drawRoundRect(inset, inset, w - inset, h - inset, dp(14).toFloat(), dp(14).toFloat(), paint)
+            }
+            if (hasDot) {
+                val r = dp(4).toFloat()
+                val cx = w - r - dp(3)
+                val cy = r + dp(3)
+                paint.style = Paint.Style.FILL
+                paint.color = adjustAlpha(Color.BLACK, 0.45f)
+                canvas.drawCircle(cx, cy, r + dp(1), paint)
+                paint.color = accent
+                canvas.drawCircle(cx, cy, r, paint)
+            }
+            if (predicted) {
+                // Usage-predicted filler: a faint centered tick under the icon, so the slot reads
+                // as a suggestion rather than a pinned favorite.
+                paint.style = Paint.Style.FILL
+                paint.color = adjustAlpha(accent, 0.55f)
+                val bw = dp(12).toFloat()
+                canvas.drawRoundRect((w - bw) / 2f, h - dp(3).toFloat(), (w + bw) / 2f, h - dp(1).toFloat(), dp(1).toFloat(), dp(1).toFloat(), paint)
+            }
+        }
+    }
+
+    private fun refreshDockLiveBadges() {
+        fun walk(v: View) {
+            if (v is DockLiveBadgeView) v.refresh()
+            if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+        }
+        if (::favoritesDockFrameView.isInitialized) walk(favoritesDockFrameView)
+        else if (::favoritesDockView.isInitialized) walk(favoritesDockView)
     }
 
     private fun showDockPeekMenu(anchor: View, item: HomeDockItem) {
