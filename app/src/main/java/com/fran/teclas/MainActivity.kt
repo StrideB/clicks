@@ -20233,7 +20233,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             }
         }
         aiInlineDebounce = r
-        handler.postDelayed(r, 700L)
+        // A trailing '?' means the question is finished — no point sitting out the full settle
+        // window. Anything else keeps the long debounce: this path costs a model generation, so it
+        // must only fire on a settled query.
+        handler.postDelayed(r, if (raw.endsWith("?")) 250L else 700L)
     }
 
     private class InlineAnswer(val text: String, val needsWeb: Boolean)
@@ -20257,9 +20260,12 @@ availability, or anything that changes over time) — or if you are not confiden
 exactly: NEEDS_WEB
 
 Question: $prompt"""
+        // allowLocal=false: same reasoning as the suggestion path — the in-process llama.cpp tier
+        // takes seconds of pinned CPU per call, which is both the slowest and hottest way to fill
+        // a search-band card. Nano and cloud only; without either, the web row is the answer.
         val text = GeminiClient.generate(
             GeminiClient.apiKey(prefs()), GeminiClient.model(prefs()), p,
-            maxTokens = 160, temperature = 0.2,
+            maxTokens = 160, temperature = 0.2, allowLocal = false,
         )?.trim().orEmpty()
         if (text.isBlank()) return InlineAnswer("", needsWeb = true)
         if (text.uppercase(Locale.US).contains("NEEDS_WEB")) return InlineAnswer("", needsWeb = true)
