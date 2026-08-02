@@ -11384,6 +11384,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // While Today is open, don't let home swipes (library/widgets) fire underneath it. Sniff for
         // a decisive swipe-left to close; return false so taps/scroll still reach the Today page.
         if (todayOpen) {
+            // Space Today owns its own close gesture. The legacy Today-pane close path below sees
+            // every horizontal drag before Compose does, including Space tab scrolling, so it must
+            // stand down while the Space Today host is mounted.
+            if (::spaceTodayHost.isInitialized && spaceTodayHost.isOpen()) return false
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     librarySwipeStartX = event.rawX

@@ -153,7 +153,11 @@ internal class SpaceTodayHost(private val activity: MainActivity) {
                         // Left edge strip only — proportional so it scales with the panel, clamped
                         // so it is neither a hairline nor half the screen on a tablet/fold.
                         val edge = (width * 0.12f).coerceIn(activity.dp(20).toFloat(), activity.dp(56).toFloat())
-                        gestureFromEdge = ev.x <= edge
+                        // The Space switcher lives in the top band and scrolls horizontally. Even
+                        // when its first chip starts near the edge, that gesture is content browsing,
+                        // not panel dismissal.
+                        val belowInteractiveHeader = ev.y > activity.dp(112)
+                        gestureFromEdge = ev.x <= edge && belowInteractiveHeader
                     }
                     MotionEvent.ACTION_CANCEL -> {
                         gestureStartedHere = false
