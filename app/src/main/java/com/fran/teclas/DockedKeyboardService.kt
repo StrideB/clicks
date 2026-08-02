@@ -1506,6 +1506,10 @@ class DockedKeyboardService : Service() {
         deckView = null
         keyboardDeck = null
         overlayParams = null
+        slideSettleAnim?.cancel()
+        slideSettleAnim = null
+        bgHandler.removeCallbacksAndMessages(null)
+        predictor = null
         VivoDockedExperiment.clearViewportTruncation(this)
         super.onDestroy()
     }

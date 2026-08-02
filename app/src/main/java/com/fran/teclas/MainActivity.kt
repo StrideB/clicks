@@ -1309,6 +1309,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         // Safety net: never leave the glass resync frozen if a slide animation was interrupted.
         glassSlideInProgress = false
+        // The mic must not keep recording behind another app: stop an in-flight dictation when the
+        // launcher leaves the foreground.
+        voiceEngine?.let { if (it.isListening) { it.stop(); setMicVisual(false); clearVoicePartial() } }
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
@@ -1386,6 +1389,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spellChecker?.close()
         runCatching { launcherPredictExecutor.shutdownNow() }
         handler.removeCallbacksAndMessages(null)
+        widgetKeyboardDockHeightAnimator?.cancel()
+        widgetKeyboardHostHeightAnimator?.cancel()
+        widgetKeyboardSettleAnimator?.cancel()
+        widgetCoachAnimator?.cancel()
+        themeSplashAnimator?.cancel()
+        // stop() also destroys the retained SpeechRecognizer, releasing its bound service connection.
+        runCatching { voiceEngine?.stop() }
+        voiceEngine = null
         billingClient?.endConnection()
         billingClient = null
     }
@@ -9188,8 +9199,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         var startY = 0f
         var fired = false
         var armed: Runnable? = null
+        val TAG_ARMED_RUNNABLE = "weather_long_press_armed"
         fun cancelHold(v: View) {
             armed?.let { v.removeCallbacks(it) }
+            (v.getTag(TAG_ARMED_RUNNABLE.hashCode()) as? Runnable)?.let { v.removeCallbacks(it) }
+            v.setTag(TAG_ARMED_RUNNABLE.hashCode(), null)
             armed = null
         }
         setOnTouchListener { view, event ->
@@ -9207,6 +9221,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         showWeatherWidgetManageMenu(view)
                     }
                     armed = r
+                    view.setTag(TAG_ARMED_RUNNABLE.hashCode(), r)
                     view.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
                     false
                 }
@@ -9589,6 +9604,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             return super.dispatchTouchEvent(event)
         }
+
+        override fun onDetachedFromWindow() {
+            longPressRunnable?.let { handler.removeCallbacks(it) }
+            singleTapRunnable?.let { handler.removeCallbacks(it) }
+            autoLockRunnable?.let { handler.removeCallbacks(it) }
+            longPressRunnable = null
+            singleTapRunnable = null
+            autoLockRunnable = null
+            super.onDetachedFromWindow()
+        }
     }
 
     // Drag/long-press host for the weather widget. Same dispatchTouchEvent pattern as
@@ -9616,6 +9641,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         override fun lockedLongPressDelayMs(): Long = android.view.ViewConfiguration.getLongPressTimeout().toLong()
         override fun lockedLongPressCancelSlopPx(): Int = maxOf(dp(18), android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop * 2)
         override fun onLongPress() = showWeatherWidgetManageMenu(this)
+
+        override fun onDetachedFromWindow() {
+            super.onDetachedFromWindow()
+            fun clearWeatherLongPress(v: View) {
+                (v.getTag("weather_long_press_armed".hashCode()) as? Runnable)?.let { v.removeCallbacks(it) }
+                v.setTag("weather_long_press_armed".hashCode(), null)
+                if (v is ViewGroup) for (i in 0 until v.childCount) clearWeatherLongPress(v.getChildAt(i))
+            }
+            clearWeatherLongPress(this)
+        }
     }
 
     // ── Daily brief widget ───────────────────────────────────────────────────
@@ -10259,7 +10294,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else {
             null
         }
-        content.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         if (!briefTheme.isBoxed && briefTheme.id in setOf(10, 17, 19)) {
             fun applyShadow(v: View) {
                 when (v) {
@@ -10277,6 +10311,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun View.installBriefManageLongPress(frame: BriefWidgetFrame) {
+        val frameRef = java.lang.ref.WeakReference(frame)
         var startX = 0f
         var startY = 0f
         var fired = false
@@ -10288,6 +10323,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         setOnTouchListener { view, event ->
+            val frameAlive = frameRef.get() ?: return@setOnTouchListener false
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startX = event.rawX
@@ -10299,7 +10335,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         fired = true
                         view.parent?.requestDisallowInterceptTouchEvent(true)
                         if (hapticsEnabled) view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        showBriefWidgetManageMenu(frame)
+                        frameRef.get()?.let { showBriefWidgetManageMenu(it) }
                     }
                     armed = r
                     view.postDelayed(r, android.view.ViewConfiguration.getLongPressTimeout().toLong())
@@ -19920,7 +19956,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             }
         }
         aiInlineDebounce = r
-        handler.postDelayed(r, 700L)
+        // A trailing '?' means the question is finished — no point sitting out the full settle
+        // window. Anything else keeps the long debounce: this path costs a model generation, so it
+        // must only fire on a settled query.
+        handler.postDelayed(r, if (raw.endsWith("?")) 250L else 700L)
     }
 
     private class InlineAnswer(val text: String, val needsWeb: Boolean)
@@ -19944,9 +19983,12 @@ availability, or anything that changes over time) — or if you are not confiden
 exactly: NEEDS_WEB
 
 Question: $prompt"""
+        // allowLocal=false: same reasoning as the suggestion path — the in-process llama.cpp tier
+        // takes seconds of pinned CPU per call, which is both the slowest and hottest way to fill
+        // a search-band card. Nano and cloud only; without either, the web row is the answer.
         val text = GeminiClient.generate(
             GeminiClient.apiKey(prefs()), GeminiClient.model(prefs()), p,
-            maxTokens = 160, temperature = 0.2,
+            maxTokens = 160, temperature = 0.2, allowLocal = false,
         )?.trim().orEmpty()
         if (text.isBlank()) return InlineAnswer("", needsWeb = true)
         if (text.uppercase(Locale.US).contains("NEEDS_WEB")) return InlineAnswer("", needsWeb = true)

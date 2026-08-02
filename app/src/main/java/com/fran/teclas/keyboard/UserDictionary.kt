@@ -19,13 +19,24 @@ class UserDictionary(private val prefs: SharedPreferences) {
     fun noteTyped(word: String) {
         val w = word.lowercase()
         if (w.length < 2 || !w.all { it.isLetter() } || contains(w)) return
-        val counts = JSONObject(prefs.getString(COUNTS, "{}") ?: "{}")
+        var counts = JSONObject(prefs.getString(COUNTS, "{}") ?: "{}")
         val n = counts.optInt(w, 0) + 1
         if (n >= PROMOTE_AT) {
             add(w)
             counts.remove(w)
         } else {
             counts.put(w, n)
+        }
+        // The store only ever removed words on promotion, so every one-off typo ever typed stayed
+        // in it forever — an unbounded JSON re-parsed and re-serialized on each word. Past the cap,
+        // drop the count-1 tail (typos); losing a count only delays promotion by one use.
+        if (counts.length() > MAX_TRACKED) {
+            val keep = JSONObject()
+            for (k in counts.keys()) {
+                val c = counts.optInt(k, 0)
+                if (c >= 2) keep.put(k, c)
+            }
+            counts = keep
         }
         prefs.edit().putString(COUNTS, counts.toString()).apply()
     }
@@ -45,5 +56,7 @@ class UserDictionary(private val prefs: SharedPreferences) {
         const val APPROVED = "user_dict_words"
         const val COUNTS = "user_dict_counts"
         const val PROMOTE_AT = 3
+        /** Cap on tracked not-yet-promoted words; past it the count-1 tail is dropped. */
+        const val MAX_TRACKED = 400
     }
 }

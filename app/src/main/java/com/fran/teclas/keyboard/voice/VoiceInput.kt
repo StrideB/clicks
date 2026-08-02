@@ -65,6 +65,9 @@ class AndroidVoiceInputEngine(private val context: Context) : VoiceInputEngine {
             if (onDevice) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
             else SpeechRecognizer.createSpeechRecognizer(context)
         }.getOrNull() ?: run { cb.onError("Couldn't start voice"); return }
+        // A recognizer left over from a session that ended on its own would otherwise be orphaned
+        // here still holding its bound connection to the recognition service.
+        recognizer?.let { runCatching { it.destroy() } }
         recognizer = rec
         rec.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
@@ -74,6 +77,7 @@ class AndroidVoiceInputEngine(private val context: Context) : VoiceInputEngine {
             override fun onEndOfSpeech() {}
             override fun onError(error: Int) {
                 isListening = false; cb.onStateChanged(false)
+                endSession(rec)
                 // NO_MATCH / SPEECH_TIMEOUT are the normal "you stopped talking" endings — not errors.
                 if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                     cb.onError(errorText(error))
@@ -82,6 +86,7 @@ class AndroidVoiceInputEngine(private val context: Context) : VoiceInputEngine {
             override fun onResults(results: Bundle?) {
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
                 isListening = false; cb.onStateChanged(false)
+                endSession(rec)
                 if (text.isNotBlank()) cb.onFinal(text)
             }
             override fun onPartialResults(partialResults: Bundle?) {
@@ -98,8 +103,18 @@ class AndroidVoiceInputEngine(private val context: Context) : VoiceInputEngine {
         }
         isListening = true; cb.onStateChanged(true)
         runCatching { rec.startListening(intent) }.onFailure {
-            isListening = false; cb.onStateChanged(false); cb.onError("Couldn't start voice")
+            isListening = false; cb.onStateChanged(false)
+            endSession(rec)
+            cb.onError("Couldn't start voice")
         }
+    }
+
+    /** Terminal end of a session: destroy the recognizer (releases its bound service connection).
+     *  Only nulls the field if it still points at this session's recognizer, so a newer session
+     *  started before an old callback lands is never torn down by mistake. */
+    private fun endSession(rec: SpeechRecognizer) {
+        runCatching { rec.destroy() }
+        if (recognizer === rec) recognizer = null
     }
 
     override fun stop() {
