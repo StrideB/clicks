@@ -8563,6 +8563,126 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         visit(root)
     }
 
+    private data class CleanSpacesBriefPalette(
+        val backgroundLight: Boolean,
+        val ink: Int,
+        val dim: Int,
+        val shadow: Int,
+        val veilTop: Int,
+        val veilMid: Int,
+        val veilBottom: Int,
+        val rowFill: Int,
+        val rowStroke: Int,
+        val actionFill: Int,
+        val tileFill: Int,
+        val tileStroke: Int
+    )
+
+    private fun cleanSpacesBriefPalette(backgroundLight: Boolean, accent: Int): CleanSpacesBriefPalette {
+        val ink = adaptiveWidgetInk(backgroundLight, 1f)
+        val dim = adaptiveWidgetInk(backgroundLight, 0.70f)
+        return if (backgroundLight) {
+            CleanSpacesBriefPalette(
+                backgroundLight = true,
+                ink = ink,
+                dim = dim,
+                shadow = adjustAlpha(Color.WHITE, 0.34f),
+                veilTop = adjustAlpha(Color.WHITE, 0.30f),
+                veilMid = adjustAlpha(Color.WHITE, 0.18f),
+                veilBottom = adjustAlpha(Color.WHITE, 0.02f),
+                rowFill = adjustAlpha(Color.WHITE, 0.38f),
+                rowStroke = adjustAlpha(Color.WHITE, 0.42f),
+                actionFill = adjustAlpha(accent, 0.12f),
+                tileFill = adjustAlpha(accent, 0.14f),
+                tileStroke = adjustAlpha(accent, 0.30f)
+            )
+        } else {
+            CleanSpacesBriefPalette(
+                backgroundLight = false,
+                ink = ink,
+                dim = dim,
+                shadow = adjustAlpha(Color.BLACK, 0.48f),
+                veilTop = adjustAlpha(Color.BLACK, 0.34f),
+                veilMid = adjustAlpha(Color.BLACK, 0.24f),
+                veilBottom = adjustAlpha(Color.BLACK, 0.04f),
+                rowFill = adjustAlpha(Color.BLACK, 0.36f),
+                rowStroke = adjustAlpha(Color.WHITE, 0.12f),
+                actionFill = adjustAlpha(accent, 0.16f),
+                tileFill = adjustAlpha(accent, 0.20f),
+                tileStroke = adjustAlpha(accent, 0.36f)
+            )
+        }
+    }
+
+    private fun cleanSpacesVeilDrawable(palette: CleanSpacesBriefPalette): Drawable =
+        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+            palette.veilTop,
+            palette.veilMid,
+            palette.veilBottom
+        )).apply {
+            cornerRadius = dp(22).toFloat()
+        }
+
+    private fun cleanSpacesRowDrawable(palette: CleanSpacesBriefPalette): Drawable =
+        LayerDrawable(arrayOf(
+            GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(
+                palette.rowFill,
+                adjustAlpha(if (palette.backgroundLight) Color.WHITE else Color.BLACK, if (palette.backgroundLight) 0.22f else 0.24f)
+            )).apply {
+                cornerRadius = dp(14).toFloat()
+            },
+            GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(1), palette.rowStroke)
+            }
+        ))
+
+    private fun cleanSpacesTileDrawable(palette: CleanSpacesBriefPalette): Drawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(10).toFloat()
+            setColor(palette.tileFill)
+            setStroke(dp(1), palette.tileStroke)
+        }
+
+    private fun cleanSpacesActionDrawable(palette: CleanSpacesBriefPalette): Drawable =
+        GradientDrawable().apply {
+            cornerRadius = dp(7).toFloat()
+            setColor(palette.actionFill)
+        }
+
+    private fun applyCleanSpacesBriefLegibility(root: View, accent: Int) {
+        val palette = cleanSpacesBriefPalette(widgetBackgroundLooksLight(root), accent)
+        fun closeToAccent(color: Int): Boolean {
+            val dr = Color.red(color) - Color.red(accent)
+            val dg = Color.green(color) - Color.green(accent)
+            val db = Color.blue(color) - Color.blue(accent)
+            return dr * dr + dg * dg + db * db < 52 * 52
+        }
+        fun visit(view: View) {
+            when (view.tag) {
+                "cleanSpacesVeil" -> view.background = cleanSpacesVeilDrawable(palette)
+                "cleanSpacesRow" -> view.background = cleanSpacesRowDrawable(palette)
+                "cleanSpacesTile" -> view.background = cleanSpacesTileDrawable(palette)
+                "cleanSpacesAction" -> view.background = cleanSpacesActionDrawable(palette)
+            }
+            if (view is TextView && !closeToAccent(view.currentTextColor)) {
+                val alpha = (Color.alpha(view.currentTextColor) / 255f).coerceIn(0.64f, 1f)
+                view.setTextColor(if (alpha >= 0.92f) palette.ink else adjustAlpha(palette.ink, alpha))
+                view.setShadowLayer(
+                    dp(if (palette.backgroundLight) 1 else 3).toFloat(),
+                    0f,
+                    dp(1).toFloat(),
+                    palette.shadow
+                )
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) visit(view.getChildAt(i))
+            }
+        }
+        visit(root)
+    }
+
     private fun baseClockWidgetHeight(styleId: String = clockWidgetStyleId()): Int = when (styleId) {
         "compact_chip" -> dp(76)
         "analog_glass", "ring" -> dp(152)
@@ -10272,7 +10392,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val edition = com.fran.teclas.brief.DailyBrief.current(prefs()) ?: return null
         val briefTheme = com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId())
         if (briefTheme.id == BriefThemes.CLEAN_SPACES_ID) {
-            return buildCleanSpacesBriefWidgetFrame(context, edition, briefTheme)
+            return buildCleanSpacesBriefWidgetFrame(context, edition)
         }
         val dotTheme = briefTheme.id == com.fran.teclas.brief.BRIEF_THEME_DOT_ID.toInt()
         val frame = BriefWidgetFrame(context)
@@ -10433,15 +10553,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun buildCleanSpacesBriefWidgetFrame(
         context: Context,
-        edition: com.fran.teclas.brief.DailyBrief.Edition,
-        briefTheme: BriefTheme
+        edition: com.fran.teclas.brief.DailyBrief.Edition
     ): View {
         val frame = BriefWidgetFrame(context)
         briefWidgetFrameView = frame
         val space = activeSpaceForUi()
         val accent = currentCleanSpacesAccent(space)
-        val ink = briefTheme.textColorInt()
-        val dim = briefTheme.mutedColorInt()
+        val initialPalette = cleanSpacesBriefPalette(activeNeuTokens.mode == NeuMode.LIGHT, accent)
+        val ink = initialPalette.ink
+        val dim = initialPalette.dim
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -10476,17 +10596,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setPadding(0, dp(8), 0, if (edition.rows.isEmpty()) 0 else dp(10))
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.42f))
+                setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), initialPalette.shadow)
             })
 
             if (edition.rows.isEmpty()) {
                 addView(mono("No actions waiting", 10f, dim).apply {
                     setPadding(0, dp(6), 0, 0)
-                    setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.30f))
+                    setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), initialPalette.shadow)
                 })
             } else {
                 edition.rows.take(3).forEachIndexed { index, row ->
-                    addView(cleanSpaceBriefRow(context, row, accent, ink, dim), LinearLayout.LayoutParams(
+                    addView(cleanSpaceBriefRow(context, row, accent, initialPalette), LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
                     ).apply {
@@ -10497,8 +10617,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         frame.background = ColorDrawable(Color.TRANSPARENT)
-        content.installBriefManageLongPress(frame)
-        frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        val shell = FrameLayout(context).apply {
+            clipChildren = false
+            clipToPadding = false
+            tag = "cleanSpacesVeil"
+            background = cleanSpacesVeilDrawable(initialPalette)
+            addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        }
+        shell.installBriefManageLongPress(frame)
+        frame.addView(shell, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
         frame.elevation = dp(8).toFloat()
         frame.alpha = 0f
         frame.translationY = dp(9).toFloat()
@@ -10508,7 +10635,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             .setDuration(220L)
             .setInterpolator(DecelerateInterpolator())
             .start()
-        frame.post { applyAdaptiveWidgetTextContrast(frame, accent) }
+        frame.post { applyCleanSpacesBriefLegibility(frame, accent) }
         return frame
     }
 
@@ -10516,34 +10643,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         context: Context,
         row: com.fran.teclas.brief.DailyBrief.Row,
         accent: Int,
-        ink: Int,
-        dim: Int
+        palette: CleanSpacesBriefPalette
     ): View = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
+        tag = "cleanSpacesRow"
         setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = LayerDrawable(arrayOf(
-            GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(adjustAlpha(Color.BLACK, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.22f else 0.32f))
-            },
-            GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(Color.TRANSPARENT)
-                setStroke(dp(1), adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.18f else 0.10f))
-            }
-        ))
+        background = cleanSpacesRowDrawable(palette)
         if (row.actionable) {
             isClickable = true
             foreground = briefRowRipple(14)
             setOnClickListener { haptic(this); openBriefRow(row) }
         }
         addView(FrameLayout(context).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dp(10).toFloat()
-                setColor(adjustAlpha(accent, 0.18f))
-                setStroke(dp(1), adjustAlpha(accent, 0.34f))
-            }
+            tag = "cleanSpacesTile"
+            background = cleanSpacesTileDrawable(palette)
             addView(TextView(context).apply {
                 text = row.glyph
                 gravity = Gravity.CENTER
@@ -10559,28 +10673,26 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 text = row.title
                 textSize = 14f
                 typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-                setTextColor(ink)
+                setTextColor(palette.ink)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.30f))
+                setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), palette.shadow)
             })
             if (row.sub.isNotBlank()) addView(TextView(context).apply {
                 text = row.sub
                 textSize = 11.5f
-                setTextColor(dim)
+                setTextColor(palette.dim)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.24f))
+                setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), palette.shadow)
             })
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         addView(mono(if (row.actionable) "OPEN" else "INFO", 8f, accent).apply {
             gravity = Gravity.CENTER
             letterSpacing = 0.08f
             typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
-            background = GradientDrawable().apply {
-                cornerRadius = dp(7).toFloat()
-                setColor(adjustAlpha(accent, 0.14f))
-            }
+            tag = "cleanSpacesAction"
+            background = cleanSpacesActionDrawable(palette)
             setPadding(dp(7), dp(3), dp(7), dp(4))
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             marginStart = dp(8)
