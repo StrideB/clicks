@@ -23520,12 +23520,15 @@ Question: $prompt"""
      *  - Live app already docked → light that slot in place (liveKey set), nothing moves.
      *  - Else → the live tile borrows the leading slot and the first favorite app steps aside.
      *  - The dock never exceeds its cap; only one live activity occupies a slot at a time
-     *    (highest priority wins: call > navigation > ride/delivery > timer; media is served by the
-     *    Music tile, which is MediaController-backed).
+     *    (highest priority wins: call > navigation > ride/delivery > timer > media). Media defers
+     *    to the MediaController-backed Music tile while that tile is docked; when it isn't
+     *    (no session detected, tile hidden), the playing app's own media notification claims the
+     *    slot instead, so playback always shows somewhere.
      */
     private fun resolveLiveDock(pinned: List<HomeDockItem>, hidden: Set<String>): List<HomeDockItem> {
+        val mediaServed = pinned.any { it.target.kind == PaneKind.MUSIC }
         val live = TeclasNotificationListener.liveActivitySnapshots()
-            .filter { !it.isMedia && it.pkg !in hidden }
+            .filter { it.pkg !in hidden && (!it.isMedia || !mediaServed) }
             .minWithOrNull(compareBy({ it.kindRank }, { -it.postTime }))
             ?: return pinned
         val docked = pinned.indexOfFirst { it.target.packageName == live.pkg }
@@ -23924,10 +23927,12 @@ Question: $prompt"""
             if (snap == null) dismissLiveActivityPip(animate = true) else updateLiveActivityPip(snap)
         }
         // Dock composition only changes when the slot-1 occupant changes — rebuilding five small
-        // views then, and only then. Everything else is in-place invalidates.
+        // views then, and only then. Everything else is in-place invalidates. The media filter
+        // must mirror resolveLiveDock's: media counts only when the Music tile isn't docked.
         val hidden = hiddenHomePackages()
+        val mediaServed = musicTarget().id !in hidden && musicDockTileActive()
         val livePkg = TeclasNotificationListener.liveActivitySnapshots()
-            .filter { !it.isMedia && it.pkg !in hidden }
+            .filter { it.pkg !in hidden && (!it.isMedia || !mediaServed) }
             .minWithOrNull(compareBy({ it.kindRank }, { -it.postTime }))?.pkg
         if (livePkg != lastResolvedLivePkg) {
             lastResolvedLivePkg = livePkg
@@ -23962,7 +23967,13 @@ Question: $prompt"""
             background = Neu.drawable(activeNeuTokens, dp(20).toFloat(), NeuLevel.RAISED)
             elevation = dp(14).toFloat()
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            isClickable = true   // eat taps so they don't fall through to the scrim
+            // Body tap = go: one tap straight into the live screen, no detour through the
+            // native shade. Also keeps taps from falling through to the scrim.
+            isClickable = true
+            setOnClickListener {
+                haptic(this)
+                openLiveActivitySource()
+            }
             (item.app?.toLibraryApp())?.let { app ->
                 addView(ImageView(context).apply {
                     setImageDrawable(iconFor(app))
@@ -24047,6 +24058,23 @@ Question: $prompt"""
         pip.alpha = 0f
         pip.translationY = dp(14).toFloat()
         pip.animate().alpha(1f).translationY(0f).setDuration(200L).setInterpolator(DecelerateInterpolator(1.4f)).start()
+    }
+
+    /**
+     * Open the live activity's own screen: fire the notification's contentIntent — the exact
+     * target a shade tap would open — falling back to a plain package launch when the intent is
+     * missing or has expired. Reads the snapshot fresh so an app that swapped its contentIntent
+     * mid-activity (navigation apps do) still deep-links correctly.
+     */
+    private fun openLiveActivitySource() {
+        val snap = liveActivityPipKey?.let { TeclasNotificationListener.liveActivitySnapshot(it) }
+        dismissLiveActivityPip(animate = false)
+        if (snap == null) return
+        pendingLaunchSource = LaunchSource.DOCK
+        val sent = snap.contentIntent?.let { pi -> runCatching { pi.send() }.isSuccess } == true
+        if (!sent) {
+            packageManager.getLaunchIntentForPackage(snap.pkg)?.let { runCatching { startActivity(it) } }
+        }
     }
 
     private fun updateLiveActivityPip(snap: TeclasNotificationListener.LiveActivitySnapshot) {

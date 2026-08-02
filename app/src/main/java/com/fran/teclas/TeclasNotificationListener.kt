@@ -106,40 +106,41 @@ class TeclasNotificationListener : NotificationListenerService() {
         if (sbn.packageName == packageName) return
         var changed = false
         val ongoing = !sbn.isClearable || (n.flags and Notification.FLAG_ONGOING_EVENT) != 0
-        if (ongoing) {
-            when {
-                n.category == Notification.CATEGORY_CALL -> {
-                    val next = if (posted) sbn.packageName else null
-                    if (ongoingCallPackage != next) { ongoingCallPackage = next; changed = true }
-                }
-                n.category == Notification.CATEGORY_ALARM || n.category == "stopwatch" ||
-                    sbn.packageName in CLOCK_PACKAGES -> {
-                    val next = if (posted) sbn.packageName else null
-                    if (ongoingTimerPackage != next) { ongoingTimerPackage = next; changed = true }
-                }
-            }
+        val isCall = n.category == Notification.CATEGORY_CALL
+        val isTimer = n.category == Notification.CATEGORY_ALARM || n.category == "stopwatch" ||
+            sbn.packageName in CLOCK_PACKAGES
+        if (posted && ongoing) {
+            if (isCall && ongoingCallPackage != sbn.packageName) { ongoingCallPackage = sbn.packageName; changed = true }
+            if (isTimer && ongoingTimerPackage != sbn.packageName) { ongoingTimerPackage = sbn.packageName; changed = true }
             // Live-activity snapshot: read once per event, then idle. Content-hash gating means a
             // byte-identical repost never wakes the launcher.
-            if (posted) {
-                val snap = liveSnapshot(sbn)
-                if (snap != null) {
-                    val prev = synchronized(liveActivities) { liveActivities.put(sbn.key, snap) }
-                    if (prev == null || prev.contentHash != snap.contentHash) changed = true
-                }
-            } else {
-                if (synchronized(liveActivities) { liveActivities.remove(sbn.key) } != null) changed = true
+            val snap = liveSnapshot(sbn)
+            if (snap != null) {
+                val prev = synchronized(liveActivities) { liveActivities.put(sbn.key, snap) }
+                if (prev == null || prev.contentHash != snap.contentHash) changed = true
+            } else if (synchronized(liveActivities) { liveActivities.remove(sbn.key) } != null) {
+                changed = true
             }
-        } else if (posted) {
+        } else {
+            // Removal — or an in-place update that downgraded the notification to clearable
+            // (media players do this on pause, downloads on completion). Either way this key must
+            // leave the live dock now: pruning only ongoing-flagged removals left a
+            // downgraded-then-dismissed notification holding its dock slot forever.
+            if (synchronized(liveActivities) { liveActivities.remove(sbn.key) } != null) changed = true
+            if (isCall && ongoingCallPackage == sbn.packageName) { ongoingCallPackage = null; changed = true }
+            if (isTimer && ongoingTimerPackage == sbn.packageName) { ongoingTimerPackage = null; changed = true }
+        }
+        if (posted && !ongoing) {
             val extras = n.extras
             val hasContent = !extras.getCharSequence(Notification.EXTRA_TITLE).isNullOrBlank() ||
                 !extras.getCharSequence(Notification.EXTRA_TEXT).isNullOrBlank()
             val badgeable = hasContent && n.category != Notification.CATEGORY_TRANSPORT &&
                 n.category != Notification.CATEGORY_SERVICE && n.category != Notification.CATEGORY_SYSTEM
-            if (badgeable) {
-                changed = synchronized(dockBadgeKeys) { dockBadgeKeys.put(sbn.key, sbn.packageName) == null }
+            if (badgeable && synchronized(dockBadgeKeys) { dockBadgeKeys.put(sbn.key, sbn.packageName) == null }) {
+                changed = true
             }
-        } else {
-            changed = synchronized(dockBadgeKeys) { dockBadgeKeys.remove(sbn.key) != null }
+        } else if (!posted) {
+            if (synchronized(dockBadgeKeys) { dockBadgeKeys.remove(sbn.key) != null }) changed = true
         }
         if (changed) onDockStateChanged?.invoke()
     }
