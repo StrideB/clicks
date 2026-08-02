@@ -23845,6 +23845,7 @@ Question: $prompt"""
     private fun escalateDockedPlacement(packageName: String) {
         if (keyboardPlacement != KEYBOARD_PLACEMENT_DOCKED) return
         if (packageName == this.packageName) return
+        if (!DockedFreeform.isActive(this)) return
         if (DockedFreeform.placedInTopRegion(this) == true) {
             DockedWindowStrategy.recordRung(this, DockedWindowStrategy.RUNG_NATIVE)
             return
