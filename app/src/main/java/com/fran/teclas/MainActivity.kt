@@ -1302,8 +1302,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // nothing needs them while backgrounded.
         musicProgressRunnable?.let { musicProgressHandler?.removeCallbacks(it) }
         contextDockRefreshRunnable?.let { handler.removeCallbacks(it) }
-        // Living drift is the one continuous animation — never let it run while backgrounded.
-        cancelWallpaperDrift()
         // The fluid-hours wallpaper otherwise keeps reloading + rebuilding the whole view tree
         // every phase boundary while backgrounded; re-armed in onResume. Also drop the media
         // session listener so it isn't firing album-art work behind another app.
@@ -4255,14 +4253,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { widgets += Floating(it, agendaWidgetFrameLayoutParams(), "agenda") }
         if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { widgets += Floating(it, briefWidgetFrameLayoutParams(), "brief") }
 
-        val cutout = wallpaperSubjectCutoutLayer()
-        if (cutout == null) {
-            widgets.forEach { addView(it.view, it.params) }
-            return
-        }
-        widgets.filter { widgetDepthEnabled(it.id) }.forEach { addView(it.view, it.params) }
-        addView(cutout, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        widgets.filter { !widgetDepthEnabled(it.id) }.forEach { addView(it.view, it.params) }
+        widgets.forEach { addView(it.view, it.params) }
     }
 
     private fun home(): View {
@@ -8630,11 +8621,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         onRemove: () -> Unit,
         depthId: String? = null
     ) {
-        // The depth row appears only once the depth wallpaper is on — it's the per-widget control
-        // the user asked for: long-press a widget, tuck it behind (or lift it off) the subject.
-        val showDepthRow = depthId != null && wallpaperDepthEnabled()
-        val depthOn = depthId != null && widgetDepthEnabled(depthId)
-        val depthLabel = if (depthOn) "Remove depth" else "Add depth"
         var depthRow: View? = null
         val menu = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -8677,11 +8663,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             popup.dismiss()
             haptic(anchor)
             onCustom?.invoke()
-        }
-        depthRow?.setOnClickListener {
-            popup.dismiss()
-            haptic(anchor)
-            depthId?.let { toggleWidgetDepth(it) }
         }
         removeRow.setOnClickListener {
             popup.dismiss()
@@ -25120,24 +25101,6 @@ Question: $prompt"""
             prefs().edit().putBoolean(homeScopedKey(HOME_LOCK_WALLPAPER_PREF), !useLockscreenWallpaperOnHome()).apply()
             homeWallpaperDrawable = loadHomeWallpaperDrawable()
             render()
-            refreshSearchSurfaces()
-        })
-        entries.add(SettingSearchEntry(
-            "Wallpaper depth",
-            if (wallpaperDepthEnabled()) "On · subject pops in front · long-press a widget to tuck it"
-            else "Tap to lift the wallpaper's subject in front of your widgets",
-            listOf("depth", "wallpaper depth", "depth effect", "3d wallpaper", "parallax", "foreground", "subject", "cutout")
-        ) {
-            setWallpaperDepthEnabled(!wallpaperDepthEnabled())
-            refreshSearchSurfaces()
-        })
-        entries.add(SettingSearchEntry(
-            "Living drift",
-            if (wallpaperDriftEnabled()) "On · continuous motion · uses more battery"
-            else "Off · gentle always-on depth drift (uses more battery)",
-            listOf("living drift", "drift", "living universe", "wallpaper motion", "animated wallpaper", "moving wallpaper")
-        ) {
-            setWallpaperDriftEnabled(!wallpaperDriftEnabled())
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
