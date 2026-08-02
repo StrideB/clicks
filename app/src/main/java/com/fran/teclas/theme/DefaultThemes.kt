@@ -1,6 +1,7 @@
 package com.fran.teclas.theme
 
 import android.graphics.Color
+import com.fran.teclas.brief.BRIEF_THEME_CLEAN_SPACES_ID
 
 object DefaultThemes {
     val all: List<LauncherTheme> = listOf(
@@ -8,7 +9,7 @@ object DefaultThemes {
             id = "midnight",
             name = "Midnight",
             briefStyle = BriefStyle.AGENDA,
-            briefThemeId = "1",
+            briefThemeId = BRIEF_THEME_CLEAN_SPACES_ID,
             briefVisible = true,
             weatherStyle = WeatherStyle.HEADER,
             weatherStyleId = "header",

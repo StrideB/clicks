@@ -3,6 +3,7 @@ package com.fran.teclas.theme
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Color
+import com.fran.teclas.brief.BRIEF_THEME_CLEAN_SPACES_ID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
@@ -84,7 +85,7 @@ class ThemeRepository(private val context: Context) {
     private fun themeFromCurrentPrefs(): LauncherTheme {
         val keyboard = prefs.getString(KEYBOARD_THEME_PREF, "default") ?: "default"
         val accent = prefs.getInt(GO_KEY_COLOR_PREF, Color.parseColor("#C9A7FF"))
-        val briefId = prefs.getString(BRIEF_THEME_PREF, "1") ?: "1"
+        val briefId = prefs.getString(BRIEF_THEME_PREF, BRIEF_THEME_CLEAN_SPACES_ID) ?: BRIEF_THEME_CLEAN_SPACES_ID
         val weatherId = prefs.getString(WEATHER_WIDGET_STYLE_PREF, WEATHER_HEADER_ID) ?: WEATHER_HEADER_ID
         val wallpaperDefault = if (hasManualWallpaperChoice()) {
             WallpaperRegistry.SYSTEM_WALLPAPER_ID
@@ -264,7 +265,7 @@ class ThemeRepository(private val context: Context) {
         private const val WEATHER_HEADER_ID = "header"
 
         fun briefPrefForStyle(style: BriefStyle): String = when (style) {
-            BriefStyle.AGENDA -> "1"
+            BriefStyle.AGENDA -> BRIEF_THEME_CLEAN_SPACES_ID
             BriefStyle.FLIP -> "3"
             BriefStyle.MINIMAL -> "10"
             BriefStyle.COMMITMENTS -> "5"

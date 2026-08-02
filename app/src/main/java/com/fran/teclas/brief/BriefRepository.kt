@@ -1,6 +1,8 @@
 package com.fran.teclas.brief
 
 import android.content.SharedPreferences
+import com.fran.teclas.predict.AppCategory
+import com.fran.teclas.predict.Space
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,6 +46,9 @@ class BriefRepository(
         debounceJob?.cancel()
         debounceJob = scope.launch { refreshNow() }
     }
+
+    /** Space-aware read view: no extra collectors, no duplicated alerts, and no fabricated copy. */
+    fun briefFor(space: Space?): Brief = _brief.value.forSpace(space)
 
     /** Coalesce a burst of triggers into one refresh. */
     fun refreshDebounced(delayMs: Long = DEBOUNCE_MS) {
@@ -234,4 +239,20 @@ class BriefRepository(
         is MediaSignal -> "${signal.title}|${signal.artist}".hashCode().toString(16)
         is CueSignal -> "${signal.title}|${signal.body}|${signal.dueAtMillis}".hashCode().toString(16)
     }
+}
+
+fun Brief.forSpace(space: Space?): Brief {
+    if (space == null || items.isEmpty()) return this
+    val preferred = space.categoryAffinity.flatMap { it.briefCategories() }.toSet()
+    if (preferred.isEmpty()) return this
+    val scoped = items.filter { it.category in preferred }
+    return if (scoped.isEmpty()) this else copy(items = scoped)
+}
+
+private fun AppCategory.briefCategories(): Set<BriefCategory> = when (this) {
+    AppCategory.COMMUNICATION, AppCategory.SOCIAL -> setOf(BriefCategory.MESSAGE, BriefCategory.CALL)
+    AppCategory.PRODUCTIVITY, AppCategory.FINANCE, AppCategory.TOOLS -> setOf(BriefCategory.EMAIL, BriefCategory.CALENDAR)
+    AppCategory.MUSIC -> setOf(BriefCategory.MUSIC)
+    AppCategory.MAPS, AppCategory.TRAVEL, AppCategory.HEALTH -> setOf(BriefCategory.CALENDAR, BriefCategory.WEATHER)
+    AppCategory.NEWS, AppCategory.READING, AppCategory.SHOPPING, AppCategory.VIDEO, AppCategory.GAMES, AppCategory.PHOTOS, AppCategory.OTHER -> setOf(BriefCategory.OTHER)
 }

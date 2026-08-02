@@ -126,6 +126,7 @@ dependencies {
     // Installs bundled baseline profiles (Compose ships them) for AOT-compiled hot paths;
     // also enables Play cloud profiles after a store release.
     implementation(libs.profileinstaller)
+    implementation(libs.palette.ktx)
     implementation(libs.coroutines.android)
     implementation(libs.coroutines.guava)
     implementation(libs.browser)

@@ -5,6 +5,10 @@ import android.graphics.Color as AndroidColor
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,7 +35,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -76,9 +84,11 @@ typealias BriefData = Brief
 
 const val BRIEF_THEME_GLASS_ID = "1"
 const val BRIEF_THEME_DOT_ID = "12"
+const val BRIEF_THEME_CLEAN_SPACES_ID = "21"
 
 object BriefThemes {
-    const val DEFAULT_ID = 1
+    const val CLEAN_SPACES_ID = 21
+    const val DEFAULT_ID = CLEAN_SPACES_ID
 
     val all: List<BriefTheme> = listOf(
         BriefTheme(1, "Sunset Glass", true, "gradient(160deg, #f7b26b@0%, #e77a5a@45%, #3a4a63@100%)", "#ffffff", "#b3ffffff", "#e8602c", "#ffffff", Font.SANS, "rgba(28,26,32,.55) blur", "1px solid #ffffff24", 14, TitleTreatment.PLAIN, "blur", "sunset_glass"),
@@ -100,12 +110,14 @@ object BriefThemes {
         BriefTheme(17, "Vapor", false, "gradient(160deg, #8ee3ff, #c79bff@55%, #ff9ecb)", "#241b3a", "#b3241b3a", "#ffffff", "#ffffff", Font.SANS, null, null, 0, TitleTreatment.PLAIN, "heavy-shadow", "vapor"),
         BriefTheme(18, "Newsprint", true, "#e6e2d6", "#1a1a1a", "#b31a1a1a", "#1a1a1a", "#1a1a1a", Font.SERIF, "#f4f1e8", "1px solid #1a1a1a", 0, TitleTreatment.PLAIN, "header-underline"),
         BriefTheme(19, "Ocean Line", false, "gradient(180deg, #0a5c7a, #063245)", "#d6f0f8", "#b3d6f0f8", "#4fd0e8", "#d6f0f8", Font.SANS, null, null, 0, TitleTreatment.UNDERLINE, "underline:#4fd0e8", "ocean_line"),
-        BriefTheme(20, "Punchcard", true, "#1c1c1c", "#f5e6c8", "#b3f5e6c8", "#ff8a5c", "#f5e6c8", Font.MONO, "#242424", "2px solid #f5e6c8", 0, TitleTreatment.PLAIN, "offset-shadow")
+        BriefTheme(20, "Punchcard", true, "#1c1c1c", "#f5e6c8", "#b3f5e6c8", "#ff8a5c", "#f5e6c8", Font.MONO, "#242424", "2px solid #f5e6c8", 0, TitleTreatment.PLAIN, "offset-shadow"),
+        BriefTheme(21, "Clean Spaces", false, "wallpaper", "#F3F0E7", "#B3F3F0E7", "#C9A7FF", "#F3F0E7", Font.SANS, null, null, 0, TitleTreatment.PLAIN, "clean-spaces")
     )
 
     fun themeForPref(raw: String?): BriefTheme {
         val normalized = when (raw?.trim()?.lowercase()) {
-            null, "", "glass" -> DEFAULT_ID
+            null, "", "clean", "clean_spaces", "clean-spaces" -> DEFAULT_ID
+            "glass" -> 1
             "dot", "dotmatrix" -> 12
             else -> raw.toIntOrNull()
         }
@@ -221,7 +233,23 @@ fun BriefThemePickerSheet(
 }
 
 @Composable
-fun DailyBriefCard(theme: BriefTheme, brief: BriefData, modifier: Modifier = Modifier) {
+fun DailyBriefCard(
+    theme: BriefTheme,
+    brief: BriefData,
+    modifier: Modifier = Modifier,
+    spaceName: String = "Home",
+    spaceAccent: Color? = null
+) {
+    if (theme.id == BriefThemes.CLEAN_SPACES_ID) {
+        CleanSpacesBriefCard(
+            theme = theme,
+            brief = brief,
+            modifier = modifier,
+            spaceName = spaceName,
+            spaceAccent = spaceAccent ?: theme.composeAccent()
+        )
+        return
+    }
     val visibleItems = remember(brief.items) { brief.items.filterNot { it.category == BriefCategory.WEATHER }.take(3) }
     val title = visibleItems.firstOrNull()?.title ?: "You're all caught up."
     val shape = RoundedCornerShape(theme.cornerRadius.dp)
@@ -266,6 +294,116 @@ fun DailyBriefCard(theme: BriefTheme, brief: BriefData, modifier: Modifier = Mod
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CleanSpacesBriefCard(
+    theme: BriefTheme,
+    brief: BriefData,
+    modifier: Modifier,
+    spaceName: String,
+    spaceAccent: Color
+) {
+    val visibleItems = remember(brief.items) { brief.items.filterNot { it.category == BriefCategory.WEATHER }.take(3) }
+    val lede = visibleItems.firstOrNull()?.title ?: "You're all caught up."
+    var visible by remember(theme.id, brief.generatedAt, spaceName) { mutableStateOf(false) }
+    LaunchedEffect(theme.id, brief.generatedAt, spaceName) { visible = true }
+    val ink = Color(0xFFF3F0E7)
+    val dim = Color(0xB3F3F0E7)
+    Column(
+        modifier
+            .fillMaxWidth()
+            .drawBehind {
+                drawRoundRect(Color.Black.copy(alpha = 0.18f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx()))
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        listOf(Color.White.copy(alpha = 0.08f), Color.Black.copy(alpha = 0.20f))
+                    ),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx())
+                )
+            }
+            .padding(14.dp)
+    ) {
+        Text(
+            "${spaceName.uppercase()} · BRIEFING",
+            color = spaceAccent,
+            fontSize = 9.sp,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 3.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            lede,
+            color = ink,
+            fontSize = 17.sp,
+            lineHeight = 21.sp,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.height(10.dp))
+        if (visibleItems.isEmpty()) {
+            Text("No actions waiting", color = dim, fontSize = 10.sp, fontFamily = FontFamily.SansSerif)
+        } else {
+            visibleItems.forEachIndexed { index, item ->
+                AnimatedVisibility(
+                    visible = visible,
+                    enter = fadeIn(tween(durationMillis = 220, delayMillis = 70 * index)) +
+                        slideInVertically(tween(durationMillis = 220, delayMillis = 70 * index)) { 9.dp.value.toInt() }
+                ) {
+                    CleanSpaceBriefItem(item, spaceAccent, ink, dim)
+                }
+                if (index != visibleItems.lastIndex) Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CleanSpaceBriefItem(item: BriefItem, accent: Color, ink: Color, dim: Color) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.Black.copy(alpha = 0.32f))
+            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(accent.copy(alpha = 0.20f))
+                .border(1.dp, accent.copy(alpha = 0.34f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(item.category.name.first().toString(), color = accent, fontSize = 13.sp, fontWeight = FontWeight.Black)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(item.title, color = ink, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (item.subtitle.isNotBlank()) {
+                Text(item.subtitle, color = dim, fontSize = 11.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            item.primaryActionLabel.uppercase().take(8),
+            color = accent,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 0.8.sp,
+            modifier = Modifier
+                .clip(RoundedCornerShape(7.dp))
+                .background(accent.copy(alpha = 0.14f))
+                .padding(horizontal = 7.dp, vertical = 4.dp)
+        )
     }
 }
 

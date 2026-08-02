@@ -65,6 +65,7 @@ import com.fran.teclas.NeuMode
 import com.fran.teclas.brief.Brief
 import com.fran.teclas.brief.BriefCategory
 import com.fran.teclas.brief.BriefItem
+import com.fran.teclas.brief.BRIEF_THEME_CLEAN_SPACES_ID
 import com.fran.teclas.brief.BriefThemes
 import com.fran.teclas.brief.DailyBriefCard
 import com.fran.teclas.resolveTeclasNeuTokens
@@ -944,7 +945,7 @@ class ThemeStudioActivity : ComponentActivity() {
             id = "preview",
             name = "Preview",
             briefStyle = BriefStyle.AGENDA,
-            briefThemeId = "1",
+            briefThemeId = BRIEF_THEME_CLEAN_SPACES_ID,
             briefVisible = true,
             weatherStyle = WeatherStyle.HEADER,
             weatherStyleId = WEATHER_STYLE_CLASSIC_ID,

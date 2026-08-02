@@ -117,6 +117,7 @@ import com.fran.teclas.predict.ContextSnapshot
 import com.fran.teclas.fold.FoldPosture
 import com.fran.teclas.fold.observeFoldPosture
 import com.fran.teclas.galaxy.NowBarLiveUpdate
+import com.fran.teclas.predict.AppCategory
 import com.fran.teclas.predict.LaunchSource
 import com.fran.teclas.predict.Predictor
 import com.fran.teclas.predict.Space
@@ -152,6 +153,9 @@ import com.fran.teclas.theme.WallpaperRegistry
 import com.fran.teclas.brief.Brief
 import com.fran.teclas.brief.BriefAction
 import com.fran.teclas.brief.BriefCategory
+import com.fran.teclas.brief.BriefTheme
+import com.fran.teclas.brief.BriefThemes
+import com.fran.teclas.brief.BRIEF_THEME_CLEAN_SPACES_ID
 import com.fran.teclas.brief.BriefClassifier
 import com.fran.teclas.brief.BriefCollector
 import com.fran.teclas.brief.BriefGenerator
@@ -165,6 +169,7 @@ import com.fran.teclas.brief.glassTintColorInt
 import com.fran.teclas.brief.mutedColorInt
 import com.fran.teclas.brief.textColorInt
 import com.fran.teclas.brief.typeface
+import com.fran.teclas.brief.forSpace
 import com.fran.teclas.spacetoday.SpaceTodayHost
 import com.fran.teclas.clock.ClockContainer
 import com.fran.teclas.clock.ClockState
@@ -172,6 +177,7 @@ import com.fran.teclas.clock.ClockTextTone
 import com.fran.teclas.clock.ClockThemes
 import com.fran.teclas.clock.ClockWidgetView
 import androidx.compose.ui.platform.ComposeView
+import androidx.palette.graphics.Palette
 import org.json.JSONArray
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
@@ -748,8 +754,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var favoritesDockView: LinearLayout
     private lateinit var favoritesDockContextView: LinearLayout
     private var favoritesDockContextStampView: TextView? = null
+    private var favoritesDockAccentChromeView: SpaceDockAccentChrome? = null
+    private var lastCleanSpaceDockAccent = Accent
     private var favoritesDockContextShowing = false
     private var favoritesDockContextPreferred = false
+    private var spaceAccentWallpaperSig: String? = null
+    private val spaceAccentCache = mutableMapOf<String, Int>()
     private lateinit var homeGridView: FrameLayout
     private lateinit var rootView: LinearLayout
     internal lateinit var contentFrame: FrameLayout
@@ -3523,9 +3533,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         homeWallpaperLoading = true
         mediaUiScope.launch(Dispatchers.IO) {
             val loaded = runCatching { loadHomeWallpaperDrawable() }.getOrNull()
+            val spaceAccents = runCatching { rebuildSpaceAccentCache(loaded) }.getOrDefault(emptyMap())
             withContext(Dispatchers.Main) {
                 homeWallpaperLoading = false
                 if (homeWallpaperSourceSig == sig) {
+                    applySpaceAccentCache(sig, spaceAccents)
                     if (loaded != null) {
                         homeWallpaperDrawable = loaded
                         lastGoodHomeWallpaperDrawable = loaded.constantState?.newDrawable(resources)?.mutate() ?: loaded
@@ -4487,6 +4499,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 NativeFoldGlassPanel(context, radiusDp = 19, compactDockGlass = true)
             else foldAwareGlassPlate(context, radiusDp = 19)
         frame.addView(dockGlass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        favoritesDockAccentChromeView = SpaceDockAccentChrome(context).apply {
+            setAccent(currentCleanSpacesAccent(), cleanSpacesBriefActive(), animate = false)
+        }
+        frame.addView(favoritesDockAccentChromeView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         frame.addView(favoritesDockContextView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         if (showAffordance) {
@@ -5223,7 +5239,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         addView(ComposeView(context).apply {
             setBackgroundColor(Color.TRANSPARENT)
             setContent {
-                val brief by briefRepository.brief.collectAsState()
+                val rawBrief by briefRepository.brief.collectAsState()
+                val brief = rawBrief.forSpace(activeSpaceForUi())
                 TodayPage(
                     tokens = activeNeuTokens,
                     brief = brief,
@@ -6384,6 +6401,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             setPadding(dp(6), dp(9), dp(6), dp(9))
         }
         favoritesDockFrameView.addView(foldAwareGlassPlate(context, radiusDp = 19), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        favoritesDockAccentChromeView = SpaceDockAccentChrome(context).apply {
+            setAccent(currentCleanSpacesAccent(), cleanSpacesBriefActive(), animate = false)
+        }
+        favoritesDockFrameView.addView(favoritesDockAccentChromeView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         favoritesDockFrameView.addView(favoritesDockView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
 
@@ -8410,6 +8431,104 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return 0.2126f * channel(Color.red(color)) + 0.7152f * channel(Color.green(color)) + 0.0722f * channel(Color.blue(color))
     }
 
+    private fun rebuildSpaceAccentCache(drawable: Drawable?): Map<String, Int> {
+        val bitmap = (drawable as? BitmapDrawable)?.bitmap?.takeUnless { it.isRecycled }
+        val paletteBase = bitmap?.let { wallpaperPaletteColor(it) } ?: goKeyColor
+        val contrastBase = Color.rgb(14, 16, 20)
+        return SpaceManager.spaces(this).associate { space ->
+            space.id to contrastAdjustedSpaceAccent(paletteBase, space.id, contrastBase)
+        }
+    }
+
+    private fun applySpaceAccentCache(signature: String?, accents: Map<String, Int>) {
+        spaceAccentWallpaperSig = signature
+        spaceAccentCache.clear()
+        spaceAccentCache.putAll(accents)
+        refreshCleanSpacesDockAccent(animate = false)
+    }
+
+    private fun wallpaperPaletteColor(bitmap: Bitmap): Int {
+        val crop = runCatching {
+            val w = (bitmap.width * 0.76f).toInt().coerceAtLeast(1)
+            val h = (bitmap.height * 0.44f).toInt().coerceAtLeast(1)
+            val x = ((bitmap.width - w) * 0.5f).toInt().coerceIn(0, bitmap.width - w)
+            val y = (bitmap.height * 0.16f).toInt().coerceIn(0, bitmap.height - h)
+            Bitmap.createBitmap(bitmap, x, y, w, h)
+        }.getOrNull()
+        val source = crop ?: bitmap
+        return try {
+            val palette = Palette.from(source)
+                .maximumColorCount(12)
+                .clearFilters()
+                .generate()
+            palette.getVibrantColor(
+                palette.getLightVibrantColor(
+                    palette.getMutedColor(
+                        palette.getDominantColor(goKeyColor)
+                    )
+                )
+            )
+        } finally {
+            if (crop != null && crop !== bitmap && !crop.isRecycled) crop.recycle()
+        }
+    }
+
+    private fun currentCleanSpacesAccent(space: Space? = activeSpaceForUi()): Int {
+        val resolvedSpace = space ?: return goKeyColor
+        manualSpaceAccentOverride(resolvedSpace)?.let { return ensureAccentContrast(it, Color.rgb(14, 16, 20)) }
+        val sig = homeWallpaperDrawableSig ?: homeWallpaperSourceSig
+        val cached = spaceAccentCache[resolvedSpace.id]
+        if (cached != null && spaceAccentWallpaperSig == sig) return cached
+        return contrastAdjustedSpaceAccent(goKeyColor, resolvedSpace.id, Color.rgb(14, 16, 20))
+    }
+
+    private fun manualSpaceAccentOverride(space: Space): Int? {
+        val all = prefs().all
+        val candidates = listOf(
+            "space_accent_${space.id}",
+            "space_${space.id}_accent",
+            "spaces_accent_${space.id}",
+            "space:${space.id}:accent"
+        )
+        for (key in candidates) {
+            when (val value = all[key]) {
+                is Int -> return value
+                is Long -> return value.toInt()
+                is String -> runCatching { Color.parseColor(value) }.getOrNull()?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun contrastAdjustedSpaceAccent(baseColor: Int, spaceId: String, background: Int): Int {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(baseColor, hsv)
+        val offset = ((abs(spaceId.hashCode()) % 68) - 34).toFloat()
+        hsv[0] = (hsv[0] + offset + 360f) % 360f
+        hsv[1] = hsv[1].coerceIn(0.44f, 0.78f)
+        hsv[2] = hsv[2].coerceIn(0.52f, 0.92f)
+        return ensureAccentContrast(Color.HSVToColor(hsv), background)
+    }
+
+    private fun ensureAccentContrast(color: Int, background: Int): Int {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(color, hsv)
+        val backgroundIsDark = colorLuminance(background) < 0.5f
+        var candidate = color
+        repeat(14) {
+            if (contrastRatio(candidate, background) >= 4.5f) return candidate
+            hsv[2] = if (backgroundIsDark) (hsv[2] + 0.045f).coerceAtMost(1f) else (hsv[2] - 0.045f).coerceAtLeast(0f)
+            candidate = Color.HSVToColor(hsv)
+        }
+        return candidate
+    }
+
+    private fun contrastRatio(foreground: Int, background: Int): Float {
+        val l1 = colorLuminance(foreground) + 0.05f
+        val l2 = colorLuminance(background) + 0.05f
+        return if (l1 > l2) l1 / l2 else l2 / l1
+    }
+
     private fun adaptiveWidgetInk(backgroundIsLight: Boolean, alpha: Float = 1f): Int {
         val base = if (backgroundIsLight) Color.rgb(20, 23, 29) else Color.rgb(246, 243, 236)
         return adjustAlpha(base, alpha)
@@ -9276,24 +9395,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return (liveWidth.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels).coerceAtLeast(dp(220))
     }
 
+    private fun homeWidgetRailInset(): Int =
+        if (isUnfoldedInnerLayoutActive()) dp(24) else dp(16)
+
+    private fun homeWidgetRailWidth(): Int {
+        val canvasWidth = homeFreeformCanvasWidth()
+        return (canvasWidth - homeWidgetRailInset() * 2).coerceAtLeast(dp(220))
+    }
+
     private fun defaultFreeformWidgetLeft(width: Int): Int =
         ((homeFreeformCanvasWidth() - width) / 2).coerceAtLeast(0)
 
-    private fun freeformWidgetWidth(maxDp: Int, minDp: Int, widthFraction: Float): Int {
-        val canvasWidth = homeFreeformCanvasWidth()
-        val maxByCanvas = (canvasWidth - dp(28)).coerceAtLeast(dp(180))
-        val maxByFraction = (canvasWidth * widthFraction).toInt().coerceAtLeast(dp(180))
-        val target = minOf(dp(maxDp), maxByFraction, maxByCanvas)
-        val minWidth = minOf(dp(minDp), maxByCanvas)
-        return target.coerceAtLeast(minWidth)
-    }
-
     private fun weatherWidgetFreeformWidth(): Int {
-        return freeformWidgetWidth(maxDp = 360, minDp = 248, widthFraction = 0.82f)
+        return homeWidgetRailWidth()
     }
 
     private fun weatherWidgetStyledWidth(): Int {
-        return freeformWidgetWidth(maxDp = 340, minDp = 232, widthFraction = 0.78f)
+        return homeWidgetRailWidth()
     }
 
     private fun weatherWidgetStyledHeight(styleId: String): Int {
@@ -9662,8 +9780,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     internal fun briefThemeId(): String =
-        com.fran.teclas.brief.BriefThemes
-            .themeForPref(prefs().getString(homeScopedKey(BRIEF_THEME_PREF), BRIEF_THEME_GLASS))
+        BriefThemes
+            .themeForPref(prefs().getString(homeScopedKey(BRIEF_THEME_PREF), BRIEF_THEME_CLEAN_SPACES))
             .id
             .toString()
 
@@ -10153,6 +10271,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun buildBriefWidgetFrame(context: Context): View? {
         val edition = com.fran.teclas.brief.DailyBrief.current(prefs()) ?: return null
         val briefTheme = com.fran.teclas.brief.BriefThemes.themeForPref(briefThemeId())
+        if (briefTheme.id == BriefThemes.CLEAN_SPACES_ID) {
+            return buildCleanSpacesBriefWidgetFrame(context, edition, briefTheme)
+        }
         val dotTheme = briefTheme.id == com.fran.teclas.brief.BRIEF_THEME_DOT_ID.toInt()
         val frame = BriefWidgetFrame(context)
         briefWidgetFrameView = frame
@@ -10308,6 +10429,162 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         frame.elevation = if (briefTheme.isBoxed) dp(8).toFloat() else 0f
         frame.post { applyAdaptiveWidgetTextContrast(frame, accent) }
         return frame
+    }
+
+    private fun buildCleanSpacesBriefWidgetFrame(
+        context: Context,
+        edition: com.fran.teclas.brief.DailyBrief.Edition,
+        briefTheme: BriefTheme
+    ): View {
+        val frame = BriefWidgetFrame(context)
+        briefWidgetFrameView = frame
+        val space = activeSpaceForUi()
+        val accent = currentCleanSpacesAccent(space)
+        val ink = briefTheme.textColorInt()
+        val dim = briefTheme.mutedColorInt()
+        val content = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(15), dp(13), dp(15), dp(14))
+
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(mono("${(space?.name ?: "Home").uppercase(Locale.US)} · BRIEFING", 9f, accent).apply {
+                    letterSpacing = 0.28f
+                    typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+                    setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.26f))
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                addView(mono("✕", 12f, adjustAlpha(ink, 0.64f)).apply {
+                    setPadding(dp(8), dp(2), dp(2), dp(6))
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        com.fran.teclas.brief.DailyBrief.dismiss(prefs())
+                        (frame.parent as? ViewGroup)?.removeView(frame)
+                    }
+                })
+            })
+
+            addView(TextView(context).apply {
+                text = edition.lede
+                textSize = 17f
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextColor(ink)
+                setLineSpacing(0f, 1.16f)
+                setPadding(0, dp(8), 0, if (edition.rows.isEmpty()) 0 else dp(10))
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.42f))
+            })
+
+            if (edition.rows.isEmpty()) {
+                addView(mono("No actions waiting", 10f, dim).apply {
+                    setPadding(0, dp(6), 0, 0)
+                    setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.30f))
+                })
+            } else {
+                edition.rows.take(3).forEachIndexed { index, row ->
+                    addView(cleanSpaceBriefRow(context, row, accent, ink, dim), LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        if (index > 0) topMargin = dp(8)
+                    })
+                }
+            }
+        }
+
+        frame.background = ColorDrawable(Color.TRANSPARENT)
+        content.installBriefManageLongPress(frame)
+        frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        frame.elevation = dp(8).toFloat()
+        frame.alpha = 0f
+        frame.translationY = dp(9).toFloat()
+        frame.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(220L)
+            .setInterpolator(DecelerateInterpolator())
+            .start()
+        frame.post { applyAdaptiveWidgetTextContrast(frame, accent) }
+        return frame
+    }
+
+    private fun cleanSpaceBriefRow(
+        context: Context,
+        row: com.fran.teclas.brief.DailyBrief.Row,
+        accent: Int,
+        ink: Int,
+        dim: Int
+    ): View = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        background = LayerDrawable(arrayOf(
+            GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(adjustAlpha(Color.BLACK, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.22f else 0.32f))
+            },
+            GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.TRANSPARENT)
+                setStroke(dp(1), adjustAlpha(Color.WHITE, if (activeNeuTokens.mode == NeuMode.LIGHT) 0.18f else 0.10f))
+            }
+        ))
+        if (row.actionable) {
+            isClickable = true
+            foreground = briefRowRipple(14)
+            setOnClickListener { haptic(this); openBriefRow(row) }
+        }
+        addView(FrameLayout(context).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(adjustAlpha(accent, 0.18f))
+                setStroke(dp(1), adjustAlpha(accent, 0.34f))
+            }
+            addView(TextView(context).apply {
+                text = row.glyph
+                gravity = Gravity.CENTER
+                textSize = 14f
+                typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+                setTextColor(accent)
+                includeFontPadding = false
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }, LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(10) })
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(TextView(context).apply {
+                text = row.title
+                textSize = 14f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(ink)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.30f))
+            })
+            if (row.sub.isNotBlank()) addView(TextView(context).apply {
+                text = row.sub
+                textSize = 11.5f
+                setTextColor(dim)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setShadowLayer(dp(2).toFloat(), 0f, dp(1).toFloat(), adjustAlpha(Color.BLACK, 0.24f))
+            })
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        addView(mono(if (row.actionable) "OPEN" else "INFO", 8f, accent).apply {
+            gravity = Gravity.CENTER
+            letterSpacing = 0.08f
+            typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(7).toFloat()
+                setColor(adjustAlpha(accent, 0.14f))
+            }
+            setPadding(dp(7), dp(3), dp(7), dp(4))
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = dp(8)
+        })
     }
 
     private fun View.installBriefManageLongPress(frame: BriefWidgetFrame) {
@@ -22514,8 +22791,19 @@ Question: $prompt"""
         }
     }
 
+    private fun cleanSpacesBriefActive(): Boolean =
+        BriefThemes.themeForPref(briefThemeId()).id == BriefThemes.CLEAN_SPACES_ID
+
+    private fun refreshCleanSpacesDockAccent(animate: Boolean) {
+        val active = cleanSpacesBriefActive()
+        val target = if (active) currentCleanSpacesAccent() else goKeyColor
+        favoritesDockAccentChromeView?.setAccent(target, active, animate)
+        lastCleanSpaceDockAccent = target
+    }
+
     internal fun renderFavoritesDock() {
         if (!::favoritesDockView.isInitialized) return
+        refreshCleanSpacesDockAccent(animate = true)
         favoritesDockView.removeAllViews()
         val dockItems = homeDockItems()
         if (dockItems.isEmpty()) {
@@ -22539,6 +22827,73 @@ Question: $prompt"""
         }
         renderFavoritesDockContext()
         normalizeFavoritesDockFaceState()
+    }
+
+    private inner class SpaceDockAccentChrome(context: Context) : View(context) {
+        private val rect = RectF()
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var accent = goKeyColor
+        private var accentAnimator: ValueAnimator? = null
+        private var active = false
+
+        init {
+            setWillNotDraw(false)
+            setLayerType(LAYER_TYPE_SOFTWARE, null)
+            alpha = 0f
+        }
+
+        fun setAccent(target: Int, enabled: Boolean, animate: Boolean) {
+            accentAnimator?.cancel()
+            active = enabled
+            if (!enabled) {
+                if (animate) animate().alpha(0f).setDuration(180L).setInterpolator(DecelerateInterpolator()).start()
+                else alpha = 0f
+                invalidate()
+                return
+            }
+            if (!animate) {
+                accent = target
+                alpha = 1f
+                invalidate()
+                return
+            }
+            animate().alpha(1f).setDuration(180L).setInterpolator(DecelerateInterpolator()).start()
+            accentAnimator = ValueAnimator.ofArgb(accent, target).apply {
+                duration = 420L
+                interpolator = DecelerateInterpolator()
+                addUpdateListener {
+                    accent = it.animatedValue as Int
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            if (!active || alpha <= 0f) return
+            val inset = dp(2).toFloat()
+            rect.set(inset, inset, width - inset, height - inset)
+            val radius = dp(19).toFloat()
+            paint.shader = null
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(2).toFloat()
+            paint.color = adjustAlpha(accent, 0.38f)
+            paint.setShadowLayer(dp(18).toFloat(), 0f, dp(6).toFloat(), adjustAlpha(accent, 0.36f))
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            paint.clearShadowLayer()
+            paint.strokeWidth = dp(1).toFloat()
+            paint.color = adjustAlpha(accent, 0.70f)
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            paint.style = Paint.Style.FILL
+            paint.shader = LinearGradient(
+                0f, rect.top, 0f, rect.bottom,
+                intArrayOf(adjustAlpha(accent, 0.22f), Color.TRANSPARENT),
+                floatArrayOf(0f, 0.58f),
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRoundRect(rect, radius, radius, paint)
+            paint.shader = null
+        }
     }
 
     private fun normalizeFavoritesDockFaceState() {
@@ -22745,6 +23100,7 @@ Question: $prompt"""
         if (dockPinnedOverrideSpace() != decision.override) setDockPinnedOverrideSpace(decision.override)
         // Only animate the face on a genuine Space change; between changes the dock stays put.
         if (contextChanged) {
+            refreshCleanSpacesDockAccent(animate = true)
             favoritesDockContextPreferred = decision.showContext
             favoritesDockContextView.post {
                 setFavoritesDockContextShowing(decision.showContext, preferContext = decision.showContext)
@@ -30365,8 +30721,7 @@ Question: $prompt"""
         private const val BRIEF_POS_X_PREF = "brief_widget_x"
         private const val BRIEF_POS_Y_PREF = "brief_widget_y"
         internal const val BRIEF_THEME_PREF = "brief_theme"
-        private const val BRIEF_THEME_GLASS = "glass"
-        private const val BRIEF_THEME_DOT = "dotmatrix"
+        private const val BRIEF_THEME_CLEAN_SPACES = BRIEF_THEME_CLEAN_SPACES_ID
         internal const val GEMINI_API_KEY_PREF = "gemini_api_key"
         internal const val GEMINI_MODEL_PREF = "gemini_model"
         internal const val GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
