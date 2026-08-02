@@ -1386,6 +1386,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         spellChecker?.close()
         runCatching { launcherPredictExecutor.shutdownNow() }
         handler.removeCallbacksAndMessages(null)
+        widgetKeyboardDockHeightAnimator?.cancel()
+        widgetKeyboardHostHeightAnimator?.cancel()
+        widgetKeyboardSettleAnimator?.cancel()
+        widgetCoachAnimator?.cancel()
+        themeSplashAnimator?.cancel()
         billingClient?.endConnection()
         billingClient = null
     }
