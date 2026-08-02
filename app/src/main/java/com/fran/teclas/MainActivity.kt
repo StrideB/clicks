@@ -8636,10 +8636,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (customLabel != null && onCustom != null) {
                 addView(widgetQuickMenuItem(customLabel, 0xFFC9A7FF.toInt()), LinearLayout.LayoutParams(dp(190), dp(44)))
             }
-            if (showDepthRow) {
-                depthRow = widgetQuickMenuItem(depthLabel, 0xFFC9A7FF.toInt())
-                addView(depthRow, LinearLayout.LayoutParams(dp(190), dp(44)))
-            }
             addView(widgetQuickMenuDivider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
                 leftMargin = dp(10); rightMargin = dp(10)
             })
@@ -8672,7 +8668,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         haptic(anchor)
         val loc = IntArray(2)
         anchor.getLocationOnScreen(loc)
-        val menuHeight = dp(26) + dp(44) * (1 + (if (customRow != null) 1 else 0) + (if (showDepthRow) 1 else 0) + 1) + dp(1) + dp(16)
+        val menuHeight = dp(26) + dp(44) * (1 + (if (customRow != null) 1 else 0) + 1) + dp(1) + dp(16)
         val spaceBelow = resources.displayMetrics.heightPixels - (loc[1] + anchor.height)
         val yoff = if (spaceBelow > menuHeight + dp(12)) dp(8) else -anchor.height - menuHeight - dp(8)
         popup.showAsDropDown(anchor, dp(8), yoff, Gravity.TOP or Gravity.START)
