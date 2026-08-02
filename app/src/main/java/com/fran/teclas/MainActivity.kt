@@ -10259,7 +10259,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         } else {
             null
         }
-        content.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         if (!briefTheme.isBoxed && briefTheme.id in setOf(10, 17, 19)) {
             fun applyShadow(v: View) {
                 when (v) {
