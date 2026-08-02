@@ -1057,6 +1057,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lastMusicSourcePackage = src
                 lastMusicPlaying = info?.isPlaying == true
                 if (sourceChanged || playChanged) refreshDockMusicNotes()
+                // The Music tile only exists in the dock while playing, so a play/pause flip
+                // changes dock composition — rebuild the home surface when it's the one showing.
+                // render() self-defers under full-window overlays; skip panes/library/search where
+                // the home dock isn't on screen anyway.
+                if (playChanged && openPane == null && !libraryOpen && query.isBlank()) render()
                 maybeScrobble(info)
                 if (openPane?.kind == PaneKind.MUSIC) {
                     // Source change can flip wheel↔simple; play-state change updates the
@@ -13974,6 +13979,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Fave dock = Music + favorites only (no often-used filler — those live in the row below).
         val music = HomeDockItem(null, musicTarget(), "Music", 0xFF57C98A.toInt())
             .takeUnless { it.target.id in hidden }
+            ?.takeIf { musicDockTileActive() }
         val favItems = (listOfNotNull(music) + favApps.map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) })
             .take(DOCK_APP_LIMIT)
         if (favItems.isEmpty() && oftenApps.isEmpty()) return null
@@ -23383,10 +23389,20 @@ Question: $prompt"""
         setOnLongClickListener { haptic(this); showOpenMenu(this, app.target); true }
     }
 
+    /**
+     * The dock's Music tile earns its slot only while something is actually playing — an idle
+     * player row is dead weight. The nowPlaying collector re-renders on play-state flips, so the
+     * tile appears with the first note and gives the slot back when playback stops.
+     */
+    private fun musicDockTileActive(): Boolean =
+        (if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value?.isPlaying == true else false) ||
+            demoNowPlayingForScene() != null
+
     private fun homeDockItems(): List<HomeDockItem> {
         val hidden = hiddenHomePackages()
         val music = HomeDockItem(null, musicTarget(), "Music", 0xFF57C98A.toInt())
             .takeUnless { it.target.id in hidden }
+            ?.takeIf { musicDockTileActive() }
         val appItems = homeDockApps()
             .filterNot { it.packageName == packageName }
             .map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) }
@@ -23555,17 +23571,21 @@ Question: $prompt"""
 
     // ── Menus ────────────────────────────────────────────────────────────────
 
+    /**
+     * Strict attribution: the notes belong ONLY to the app that is actually playing. The teclas
+     * Music tile animates only when the session is our own player; an external app's tile animates
+     * only when the session's package/name matches it. The old audible-audio fallback ("some sound
+     * is on, light up every known music app") is gone — it painted Spotify's playback onto YouTube,
+     * the teclas player, and every other music-ish icon at once, and it needed a 2.5s poll to know
+     * when to stop.
+     */
     private fun dockMusicNotesActive(target: PaneTarget): Boolean {
-        val targetPackage = target.packageName?.takeIf { it.isNotBlank() }
         val info = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
-        if (info?.isPlaying == true) {
-            if (target.kind == PaneKind.MUSIC) return true
-            if (targetPackage == null) return false
-            return sameMusicSourcePackage(targetPackage, info.sourcePackage) ||
-                target.name.equals(info.sourceApp, ignoreCase = true) ||
-                (target.name.contains("spotify", ignoreCase = true) && info.sourcePackage.contains("spotify", ignoreCase = true))
-        }
-        return isMusicAudiblyActive() && isKnownMusicTarget(target)
+        if (info?.isPlaying != true) return false
+        if (target.kind == PaneKind.MUSIC) return info.sourcePackage.equals(packageName, ignoreCase = true)
+        val targetPackage = target.packageName?.takeIf { it.isNotBlank() } ?: return false
+        return sameMusicSourcePackage(targetPackage, info.sourcePackage) ||
+            target.name.equals(info.sourceApp, ignoreCase = true)
     }
 
     private fun sameMusicSourcePackage(left: String, right: String): Boolean {
@@ -23573,15 +23593,6 @@ Question: $prompt"""
         val l = left.lowercase(Locale.US)
         val r = right.lowercase(Locale.US)
         return l.contains(r) || r.contains(l)
-    }
-
-    private fun isMusicAudiblyActive(): Boolean =
-        runCatching { getSystemService(AudioManager::class.java)?.isMusicActive == true }.getOrDefault(false)
-
-    private fun isKnownMusicTarget(target: PaneTarget): Boolean {
-        if (target.kind == PaneKind.MUSIC) return true
-        val text = "${target.name} ${target.packageName.orEmpty()}".lowercase(Locale.US)
-        return listOf("spotify", "music", "youtube", "tidal", "deezer", "pandora", "soundcloud", "amazon.mp3").any { text.contains(it) }
     }
 
     private fun refreshDockMusicNotes() {
@@ -23658,10 +23669,9 @@ Question: $prompt"""
                 paint.color = adjustAlpha(accent, alpha)
                 canvas.drawText(notes[i % notes.size].toString(), x, y, paint)
             }
-            // Media-session changes re-trigger refreshDockMusicNotes, but AudioManager-only
-            // sources (no session) have no callback — poll slowly while frozen so the notes
-            // still hide when that audio stops.
-            if (isShown) postInvalidateDelayed(if (animating) DOCK_NOTES_FRAME_MS else 2_500L)
+            // Session changes re-trigger refreshDockMusicNotes via the nowPlaying collector, so
+            // once the burst ends there is nothing to poll for — the static frame just sits there.
+            if (isShown && animating) postInvalidateDelayed(DOCK_NOTES_FRAME_MS)
         }
     }
 
@@ -23710,6 +23720,12 @@ Question: $prompt"""
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         }
 
+        // Actions first: "Change icon", open, dock membership — the things people long-press for.
+        // The widget preview + provider rows used to sit above them, and with a pinned widget
+        // (150dp preview) plus up to four 44dp provider rows they pushed every action below the
+        // scroll fold — "Change icon" looked gone rather than merely lower down.
+        addDockActionRows(menu, popup, anchor, target)
+
         if (existingWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
             val info = runCatching { appWidgetManager.getAppWidgetInfo(existingWidgetId) }.getOrNull()
             val hostView = if (info != null) runCatching {
@@ -23750,7 +23766,6 @@ Question: $prompt"""
                 removeDockWidget(dockKey)
             })
         }
-        addDockActionRows(menu, popup, anchor, target)
         showSmartDockPopup(anchor, popup, scroller, popupWidth)
     }
 
