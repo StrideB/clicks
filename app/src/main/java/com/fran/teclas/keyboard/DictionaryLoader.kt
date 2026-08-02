@@ -81,11 +81,20 @@ object DictionaryLoader {
         return out.toList()
     }
 
+    // Process-wide cache (Gboard model: parse once, keep resident). MainActivity, the IME and the
+    // docked service share one process, so without this the same wordlists were re-parsed from
+    // assets on every activity recreation and every docked-service start. Keyed by the enabled
+    // language list, so an in-app language change naturally misses and reloads. Consumers never
+    // mutate the returned maps (they copy before merging personal frequencies), so sharing is safe.
+    @Volatile private var cachedLoaded: Pair<List<String>, Loaded>? = null
+    @Volatile private var cachedAdaptive: Pair<List<String>, Adaptive>? = null
+
     /** Load + merge the enabled languages into one union dictionary. Call off the main thread. */
     fun load(context: Context): Loaded {
         val langs = enabledLanguages(context)
+        cachedLoaded?.let { (key, value) -> if (key == langs) return value }
         val freqs = merge(context, langs)
-        return Loaded(capWords(freqs), freqs, langs)
+        return Loaded(capWords(freqs), freqs, langs).also { cachedLoaded = langs to it }
     }
 
     /**
@@ -132,10 +141,12 @@ object DictionaryLoader {
         // To type bilingually, enable both languages in the picker — then they're both in [active]
         // and share one dictionary, with no flipping. Single language stays a single dictionary.
         val active = enabledLanguages(context)
+        cachedAdaptive?.let { (key, value) -> if (key == active) return value }
         val primaryFreqs = merge(context, active)
         // Only pay for per-language membership when the user is actually multilingual.
         val perLang = if (active.size > 1) perLanguageWords(context, active) else emptyMap()
         return Adaptive(primaryFreqs, primaryFreqs, capWords(primaryFreqs), active, emptyList(), perLang)
+            .also { cachedAdaptive = active to it }
     }
 
     /** Every bundled language present in the phone's locale list, primary first. */
