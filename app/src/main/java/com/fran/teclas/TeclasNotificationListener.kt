@@ -41,6 +41,7 @@ class TeclasNotificationListener : NotificationListenerService() {
         replyActions.clear()
         synchronized(briefRecords) { briefRecords.clear() }
         synchronized(dockBadgeKeys) { dockBadgeKeys.clear() }
+        synchronized(liveActivities) { liveActivities.clear() }
         ongoingCallPackage = null
         ongoingTimerPackage = null
         onDockStateChanged?.invoke()
@@ -117,6 +118,17 @@ class TeclasNotificationListener : NotificationListenerService() {
                     if (ongoingTimerPackage != next) { ongoingTimerPackage = next; changed = true }
                 }
             }
+            // Live-activity snapshot: read once per event, then idle. Content-hash gating means a
+            // byte-identical repost never wakes the launcher.
+            if (posted) {
+                val snap = liveSnapshot(sbn)
+                if (snap != null) {
+                    val prev = synchronized(liveActivities) { liveActivities.put(sbn.key, snap) }
+                    if (prev == null || prev.contentHash != snap.contentHash) changed = true
+                }
+            } else {
+                if (synchronized(liveActivities) { liveActivities.remove(sbn.key) } != null) changed = true
+            }
         } else if (posted) {
             val extras = n.extras
             val hasContent = !extras.getCharSequence(Notification.EXTRA_TITLE).isNullOrBlank() ||
@@ -130,6 +142,59 @@ class TeclasNotificationListener : NotificationListenerService() {
             changed = synchronized(dockBadgeKeys) { dockBadgeKeys.remove(sbn.key) != null }
         }
         if (changed) onDockStateChanged?.invoke()
+    }
+
+    /** Build the one-shot immutable snapshot of an ongoing notification, or null if not pip-worthy. */
+    private fun liveSnapshot(sbn: StatusBarNotification): LiveActivitySnapshot? {
+        if (sbn.packageName in LIVE_EXCLUDED_PACKAGES) return null
+        val n = sbn.notification
+        val extras = n.extras
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
+        val line = (extras.getCharSequence(Notification.EXTRA_TEXT)
+            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT))?.toString()?.trim().orEmpty()
+        if (title.isBlank() && line.isBlank()) return null
+        val isMedia = extras.containsKey(Notification.EXTRA_MEDIA_SESSION) ||
+            n.category == Notification.CATEGORY_TRANSPORT
+        // Plain fire-and-forget actions only — reply actions need a RemoteInput UI the pip doesn't have.
+        val actions = n.actions.orEmpty().mapNotNull { a ->
+            val pi = a.actionIntent ?: return@mapNotNull null
+            if (a.remoteInputs?.isNotEmpty() == true) return@mapNotNull null
+            val label = a.title?.toString()?.trim().orEmpty()
+            if (label.isBlank()) null else LiveAction(label, pi)
+        }.take(3)
+        val progress = extras.getInt(Notification.EXTRA_PROGRESS, 0)
+        val progressMax = extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0)
+        val kindRank = when {
+            n.category == Notification.CATEGORY_CALL -> 0
+            n.category == Notification.CATEGORY_NAVIGATION -> 1
+            n.category == Notification.CATEGORY_ALARM || n.category == "stopwatch" ||
+                sbn.packageName in CLOCK_PACKAGES -> 3
+            isMedia -> 4
+            else -> 2
+        }
+        val hash = buildString {
+            append(title).append('|').append(line).append('|')
+            append(progress).append('/').append(progressMax).append('|')
+            actions.forEach { append(it.label).append(',') }
+        }.hashCode()
+        return LiveActivitySnapshot(
+            key = sbn.key,
+            pkg = sbn.packageName,
+            title = title,
+            line = line,
+            progress = progress,
+            progressMax = progressMax,
+            indeterminate = extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false),
+            kindRank = kindRank,
+            whenMs = n.`when`,
+            usesChronometer = extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false),
+            accent = n.color,
+            isMedia = isMedia,
+            postTime = sbn.postTime,
+            contentIntent = n.contentIntent,
+            actions = actions,
+            contentHash = hash,
+        )
     }
 
     // Find a direct-reply action (RemoteInput) on this notification and remember it, so the launcher
@@ -341,6 +406,30 @@ class TeclasNotificationListener : NotificationListenerService() {
 
     data class IncomingMessage(val sender: String, val preview: String, val key: String, val whenMs: Long)
 
+    /** A notification action the live-activity pip can fire. */
+    data class LiveAction(val label: String, val intent: PendingIntent)
+
+    /** Immutable one-shot read of an ongoing notification for the live dock. */
+    data class LiveActivitySnapshot(
+        val key: String,
+        val pkg: String,
+        val title: String,
+        val line: String,
+        val progress: Int,
+        val progressMax: Int,
+        val indeterminate: Boolean,
+        /** Priority rank: 0 call, 1 navigation, 2 ride/delivery/other, 3 timer, 4 media. */
+        val kindRank: Int,
+        val whenMs: Long,
+        val usesChronometer: Boolean,
+        val accent: Int,
+        val isMedia: Boolean,
+        val postTime: Long,
+        val contentIntent: PendingIntent?,
+        val actions: List<LiveAction>,
+        val contentHash: Int,
+    )
+
     companion object {
         private const val PREFS_NAME = "teclas"
         private const val HUB_MESSAGES_PREF = "hub_messages"
@@ -418,6 +507,23 @@ class TeclasNotificationListener : NotificationListenerService() {
         fun dockBadgePackages(): Set<String> = synchronized(dockBadgeKeys) { dockBadgeKeys.values.toSet() }
 
         private val CLOCK_PACKAGES = setOf("com.google.android.deskclock", "com.sec.android.app.clockpackage")
+
+        // ── Live activities (ongoing notifications → dock takeover + pip) ────
+        // One immutable snapshot per ongoing notification, read once at post time. Holds only
+        // strings, ints, and PendingIntents (process-lifetime handles, same contract as
+        // briefRecords) — never the Notification, its Bundle, or any Bitmap.
+
+        private val liveActivities: MutableMap<String, LiveActivitySnapshot> =
+            Collections.synchronizedMap(LinkedHashMap())
+
+        /** Snapshot list of current live activities. Safe from any thread. */
+        fun liveActivitySnapshots(): List<LiveActivitySnapshot> =
+            synchronized(liveActivities) { liveActivities.values.toList() }
+
+        fun liveActivitySnapshot(key: String): LiveActivitySnapshot? =
+            synchronized(liveActivities) { liveActivities[key] }
+
+        private val LIVE_EXCLUDED_PACKAGES = setOf("android", "com.android.systemui")
 
         @Volatile
         private var instance: TeclasNotificationListener? = null
