@@ -985,6 +985,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
             }
         }
+        // Live-dock state: fires only on real transitions (badge membership, call/timer start-stop,
+        // live-activity begin/end/content-change); the handler does in-place invalidates and only
+        // rebuilds the dock row when the slot-1 occupant actually changes.
+        TeclasNotificationListener.onDockStateChanged = {
+            runOnUiThread { onDockLiveStateChanged() }
+        }
         if (todayEnabled) {
             briefRepository.startPeriodic()
             briefRepository.refreshDebounced(300)
@@ -1057,6 +1063,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lastMusicSourcePackage = src
                 lastMusicPlaying = info?.isPlaying == true
                 if (sourceChanged || playChanged) refreshDockMusicNotes()
+                // The Music tile only exists in the dock while playing, so a play/pause flip
+                // changes dock composition — rebuild the home surface when it's the one showing.
+                // render() self-defers under full-window overlays; skip panes/library/search where
+                // the home dock isn't on screen anyway.
+                if (playChanged && openPane == null && !libraryOpen && query.isBlank()) render()
                 maybeScrobble(info)
                 if (openPane?.kind == PaneKind.MUSIC) {
                     // Source change can flip wheel↔simple; play-state change updates the
@@ -1191,6 +1202,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // The launcher is back in front, so keystrokes belong to launcher search again, not the app.
         DockedFreeform.externalAppInFront = false
         dockedForegroundDraft.clear()
+        // Live-dock signals (charging, hour tint) only listen while we're the visible screen.
+        registerDockLiveReceivers()
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
@@ -1322,6 +1335,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // The mic must not keep recording behind another app: stop an in-flight dictation when the
         // launcher leaves the foreground.
         voiceEngine?.let { if (it.isListening) { it.stop(); setMicVisual(false); clearVoicePartial() } }
+        unregisterDockLiveReceivers()
+        // Backgrounded → the pip (and its device-ticking chronometer, if any) must not outlive us.
+        dismissLiveActivityPip(animate = false)
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
@@ -1392,6 +1408,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
         TeclasNotificationListener.onBriefChanged = null
+        TeclasNotificationListener.onDockStateChanged = null
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         mediaUiScope.cancel()
@@ -2200,6 +2217,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun clearTransientHomeOverlaysForRender() {
+        // render() rebuilds contentFrame, which would orphan the pip's views and stale its refs.
+        dismissLiveActivityPip(animate = false)
         homeAddMenuView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         homeAddMenuView = null
         homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
@@ -13974,6 +13993,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Fave dock = Music + favorites only (no often-used filler — those live in the row below).
         val music = HomeDockItem(null, musicTarget(), "Music", 0xFF57C98A.toInt())
             .takeUnless { it.target.id in hidden }
+            ?.takeIf { musicDockTileActive() }
         val favItems = (listOfNotNull(music) + favApps.map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) })
             .take(DOCK_APP_LIMIT)
         if (favItems.isEmpty() && oftenApps.isEmpty()) return null
@@ -22918,9 +22938,87 @@ Question: $prompt"""
 
     private fun refreshCleanSpacesDockAccent(animate: Boolean) {
         val active = cleanSpacesBriefActive()
-        val target = if (active) currentCleanSpacesAccent() else goKeyColor
-        favoritesDockAccentChromeView?.setAccent(target, active, animate)
+        if (!active) {
+            // Clean Spaces isn't claiming the chrome — the live power/time accent owns it instead.
+            refreshDockPowerAccent(animate)
+            return
+        }
+        val target = currentCleanSpacesAccent()
+        favoritesDockAccentChromeView?.setAccent(target, true, animate)
         lastCleanSpaceDockAccent = target
+    }
+
+    // ── Live dock chrome: charging + time-of-day accent ──────────────────────
+    // Receivers live only between onResume and onPause — the screen is on and the launcher is in
+    // front, so listening costs nothing extra. ACTION_BATTERY_CHANGED is sticky (registration
+    // delivers current state immediately); TIME_TICK fires once a minute and we only repaint when
+    // the hour bucket actually changes.
+
+    private var dockChargingState = 0   // 0 = unplugged, 1 = charging, 2 = full
+    private var dockAccentHourBucket = -1
+
+    private val dockPowerReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val status = intent?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1) ?: -1
+            val next = when (status) {
+                android.os.BatteryManager.BATTERY_STATUS_FULL -> 2
+                android.os.BatteryManager.BATTERY_STATUS_CHARGING -> 1
+                else -> 0
+            }
+            if (next != dockChargingState) {
+                dockChargingState = next
+                refreshDockPowerAccent(animate = true)
+            }
+        }
+    }
+
+    private val dockTimeTickReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val bucket = dockHourBucket()
+            if (bucket != dockAccentHourBucket) {
+                dockAccentHourBucket = bucket
+                refreshDockPowerAccent(animate = true)
+            }
+        }
+    }
+
+    private fun dockHourBucket(): Int = when (java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)) {
+        in 5..7 -> 0    // dawn
+        in 8..16 -> 1   // day
+        in 17..20 -> 2  // dusk
+        else -> 3       // night
+    }
+
+    private fun dockHourAccentColor(): Int = when (dockHourBucket()) {
+        0 -> 0xFFFFB36B.toInt()   // dawn: soft amber
+        1 -> 0xFF9BB8D3.toInt()   // day: cool neutral
+        2 -> 0xFFB58CFF.toInt()   // dusk: violet
+        else -> 0xFF5E7BD8.toInt() // night: deep blue
+    }
+
+    /** Charging beats time-of-day; Clean Spaces (checked by the caller chain) beats both. */
+    private fun refreshDockPowerAccent(animate: Boolean) {
+        if (cleanSpacesBriefActive()) return
+        val chrome = favoritesDockAccentChromeView ?: return
+        val color = when (dockChargingState) {
+            2 -> 0xFF45E7A4.toInt()                       // full: green
+            1 -> 0xFFF5C451.toInt()                       // charging: amber
+            else -> adjustAlpha(dockHourAccentColor(), 0.55f) // ambient hour tint, kept faint
+        }
+        chrome.setAccent(color, true, animate)
+    }
+
+    private fun registerDockLiveReceivers() {
+        runCatching {
+            registerReceiver(dockPowerReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            registerReceiver(dockTimeTickReceiver, IntentFilter(Intent.ACTION_TIME_TICK))
+        }
+        dockAccentHourBucket = dockHourBucket()
+    }
+
+    private fun unregisterDockLiveReceivers() {
+        runCatching { unregisterReceiver(dockPowerReceiver) }
+        runCatching { unregisterReceiver(dockTimeTickReceiver) }
     }
 
     internal fun renderFavoritesDock() {
@@ -23383,14 +23481,64 @@ Question: $prompt"""
         setOnLongClickListener { haptic(this); showOpenMenu(this, app.target); true }
     }
 
+    /**
+     * The dock's Music tile earns its slot only while something is actually playing — an idle
+     * player row is dead weight. The nowPlaying collector re-renders on play-state flips, so the
+     * tile appears with the first note and gives the slot back when playback stops.
+     */
+    private fun musicDockTileActive(): Boolean =
+        (if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value?.isPlaying == true else false) ||
+            demoNowPlayingForScene() != null
+
     private fun homeDockItems(): List<HomeDockItem> {
         val hidden = hiddenHomePackages()
         val music = HomeDockItem(null, musicTarget(), "Music", 0xFF57C98A.toInt())
             .takeUnless { it.target.id in hidden }
+            ?.takeIf { musicDockTileActive() }
         val appItems = homeDockApps()
             .filterNot { it.packageName == packageName }
             .map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) }
-        return (listOfNotNull(music) + appItems).take(DOCK_APP_LIMIT)
+        val pinned = (listOfNotNull(music) + appItems).take(DOCK_APP_LIMIT)
+        val withLive = resolveLiveDock(pinned, hidden)
+        if (withLive.size >= DOCK_APP_LIMIT) return withLive.take(DOCK_APP_LIMIT)
+        // Free slot → usage-predicted filler. Computed once per render (which already happens on
+        // every home return), from counts the launcher already tracks — zero extra cost.
+        val taken = withLive.mapNotNull { it.target.packageName }.toSet()
+        val usage = appUsageCounts()
+        val predicted = apps.asSequence()
+            .filter { it.packageName !in taken && it.packageName !in hidden && it.packageName != packageName }
+            .filter { (usage[it.packageName] ?: 0) > 0 }
+            .maxByOrNull { usage[it.packageName] ?: 0 }
+            ?.let { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor, predicted = true) }
+        return withLive + listOfNotNull(predicted)
+    }
+
+    /**
+     * Live-activity occupancy, as a pure function of (favorites, live snapshot) so restoration is
+     * automatic: the dock is re-derived on every transition, and when the activity ends the
+     * displaced favorite is simply back where the favorites list puts it.
+     *  - Live app already docked → light that slot in place (liveKey set), nothing moves.
+     *  - Else → the live tile borrows the leading slot and the first favorite app steps aside.
+     *  - The dock never exceeds its cap; only one live activity occupies a slot at a time
+     *    (highest priority wins: call > navigation > ride/delivery > timer; media is served by the
+     *    Music tile, which is MediaController-backed).
+     */
+    private fun resolveLiveDock(pinned: List<HomeDockItem>, hidden: Set<String>): List<HomeDockItem> {
+        val live = TeclasNotificationListener.liveActivitySnapshots()
+            .filter { !it.isMedia && it.pkg !in hidden }
+            .minWithOrNull(compareBy({ it.kindRank }, { -it.postTime }))
+            ?: return pinned
+        val docked = pinned.indexOfFirst { it.target.packageName == live.pkg }
+        if (docked >= 0) {
+            return pinned.mapIndexed { i, item -> if (i == docked) item.copy(liveKey = live.key) else item }
+        }
+        val app = apps.firstOrNull { it.packageName == live.pkg } ?: return pinned
+        val liveItem = HomeDockItem(app, app.toPaneTarget(), app.shortName, app.brandColor, liveKey = live.key)
+        // Borrow the first app slot (the Music tile, when present, is itself a live surface and
+        // keeps its place). With no displaceable favorite the live tile just leads the list.
+        val displaced = pinned.indexOfFirst { it.app != null }
+        return if (displaced < 0) listOf(liveItem) + pinned
+        else listOf(liveItem) + pinned.filterIndexed { i, _ -> i != displaced }
     }
 
     private fun dockItemButton(item: HomeDockItem, index: Int): View {
@@ -23447,6 +23595,9 @@ Question: $prompt"""
                     }, FrameLayout.LayoutParams((iconFrame * 1.45f).toInt(), (iconFrame * 1.95f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
                         bottomMargin = -dp(10)
                     })
+                addView(DockLiveBadgeView(context, target.packageName, item.accent, item.predicted, liveRing = item.liveKey != null).apply {
+                    refresh()
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }, LinearLayout.LayoutParams(iconFrame, iconFrame))
             if (showLabel) {
                 addView(TextView(context).apply {
@@ -23469,8 +23620,11 @@ Question: $prompt"""
             }
             setOnClickListener {
                 haptic(this)
-                if (target.kind == PaneKind.MUSIC || target.packageName == null) openHere(target)
-                else { pendingLaunchSource = LaunchSource.DOCK; openExternal(target) }
+                when {
+                    item.liveKey != null -> toggleLiveActivityPip(item)
+                    target.kind == PaneKind.MUSIC || target.packageName == null -> openHere(target)
+                    else -> { pendingLaunchSource = LaunchSource.DOCK; openExternal(target) }
+                }
             }
             setOnLongClickListener { haptic(this); showDockPeekMenu(this, item); true }
         }
@@ -23555,17 +23709,21 @@ Question: $prompt"""
 
     // ── Menus ────────────────────────────────────────────────────────────────
 
+    /**
+     * Strict attribution: the notes belong ONLY to the app that is actually playing. The teclas
+     * Music tile animates only when the session is our own player; an external app's tile animates
+     * only when the session's package/name matches it. The old audible-audio fallback ("some sound
+     * is on, light up every known music app") is gone — it painted Spotify's playback onto YouTube,
+     * the teclas player, and every other music-ish icon at once, and it needed a 2.5s poll to know
+     * when to stop.
+     */
     private fun dockMusicNotesActive(target: PaneTarget): Boolean {
-        val targetPackage = target.packageName?.takeIf { it.isNotBlank() }
         val info = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
-        if (info?.isPlaying == true) {
-            if (target.kind == PaneKind.MUSIC) return true
-            if (targetPackage == null) return false
-            return sameMusicSourcePackage(targetPackage, info.sourcePackage) ||
-                target.name.equals(info.sourceApp, ignoreCase = true) ||
-                (target.name.contains("spotify", ignoreCase = true) && info.sourcePackage.contains("spotify", ignoreCase = true))
-        }
-        return isMusicAudiblyActive() && isKnownMusicTarget(target)
+        if (info?.isPlaying != true) return false
+        if (target.kind == PaneKind.MUSIC) return info.sourcePackage.equals(packageName, ignoreCase = true)
+        val targetPackage = target.packageName?.takeIf { it.isNotBlank() } ?: return false
+        return sameMusicSourcePackage(targetPackage, info.sourcePackage) ||
+            target.name.equals(info.sourceApp, ignoreCase = true)
     }
 
     private fun sameMusicSourcePackage(left: String, right: String): Boolean {
@@ -23573,15 +23731,6 @@ Question: $prompt"""
         val l = left.lowercase(Locale.US)
         val r = right.lowercase(Locale.US)
         return l.contains(r) || r.contains(l)
-    }
-
-    private fun isMusicAudiblyActive(): Boolean =
-        runCatching { getSystemService(AudioManager::class.java)?.isMusicActive == true }.getOrDefault(false)
-
-    private fun isKnownMusicTarget(target: PaneTarget): Boolean {
-        if (target.kind == PaneKind.MUSIC) return true
-        val text = "${target.name} ${target.packageName.orEmpty()}".lowercase(Locale.US)
-        return listOf("spotify", "music", "youtube", "tidal", "deezer", "pandora", "soundcloud", "amazon.mp3").any { text.contains(it) }
     }
 
     private fun refreshDockMusicNotes() {
@@ -23658,11 +23807,281 @@ Question: $prompt"""
                 paint.color = adjustAlpha(accent, alpha)
                 canvas.drawText(notes[i % notes.size].toString(), x, y, paint)
             }
-            // Media-session changes re-trigger refreshDockMusicNotes, but AudioManager-only
-            // sources (no session) have no callback — poll slowly while frozen so the notes
-            // still hide when that audio stops.
-            if (isShown) postInvalidateDelayed(if (animating) DOCK_NOTES_FRAME_MS else 2_500L)
+            // Session changes re-trigger refreshDockMusicNotes via the nowPlaying collector, so
+            // once the burst ends there is nothing to poll for — the static frame just sits there.
+            if (isShown && animating) postInvalidateDelayed(DOCK_NOTES_FRAME_MS)
         }
+    }
+
+    // ── Live dock badges ─────────────────────────────────────────────────────
+    // Entirely event-driven: the notification listener invokes onDockStateChanged only on real
+    // transitions, and each badge view repaints once per transition. Nothing here polls, ticks,
+    // or animates continuously.
+
+    /**
+     * Per-icon live overlay: a small dot when the app has an active notification, a ring while it
+     * owns an ongoing call (green) or a running alarm/timer (amber). One static frame per state
+     * change — never animated.
+     */
+    private inner class DockLiveBadgeView(
+        context: Context,
+        private val pkg: String?,
+        private val accent: Int,
+        private val predicted: Boolean,
+        private val liveRing: Boolean = false,
+    ) : View(context) {
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private var hasDot = false
+        private var ringColor = 0
+
+        init {
+            // Start hidden unless the predicted tick needs drawing; refresh() reveals on real state.
+            if (!predicted && !liveRing) visibility = View.GONE
+        }
+
+        fun refresh() {
+            val p = pkg
+            val nextDot: Boolean
+            val nextRing: Int
+            if (p == null) {
+                nextDot = false; nextRing = if (liveRing) accent else 0
+            } else {
+                nextRing = when {
+                    liveRing -> accent
+                    p == TeclasNotificationListener.ongoingCallPackage -> 0xFF45E7A4.toInt()
+                    p == TeclasNotificationListener.ongoingTimerPackage -> 0xFFF5C451.toInt()
+                    else -> 0
+                }
+                nextDot = p in TeclasNotificationListener.dockBadgePackages()
+            }
+            if (nextDot == hasDot && nextRing == ringColor) return
+            hasDot = nextDot
+            ringColor = nextRing
+            visibility = if (hasDot || ringColor != 0 || predicted) View.VISIBLE else View.GONE
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (ringColor != 0) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = dp(2).toFloat()
+                val inset = dp(2).toFloat()
+                paint.color = adjustAlpha(ringColor, 0.85f)
+                canvas.drawRoundRect(inset, inset, w - inset, h - inset, dp(14).toFloat(), dp(14).toFloat(), paint)
+            }
+            if (hasDot) {
+                val r = dp(4).toFloat()
+                val cx = w - r - dp(3)
+                val cy = r + dp(3)
+                paint.style = Paint.Style.FILL
+                paint.color = adjustAlpha(Color.BLACK, 0.45f)
+                canvas.drawCircle(cx, cy, r + dp(1), paint)
+                paint.color = accent
+                canvas.drawCircle(cx, cy, r, paint)
+            }
+            if (predicted) {
+                // Usage-predicted filler: a faint centered tick under the icon, so the slot reads
+                // as a suggestion rather than a pinned favorite.
+                paint.style = Paint.Style.FILL
+                paint.color = adjustAlpha(accent, 0.55f)
+                val bw = dp(12).toFloat()
+                canvas.drawRoundRect((w - bw) / 2f, h - dp(3).toFloat(), (w + bw) / 2f, h - dp(1).toFloat(), dp(1).toFloat(), dp(1).toFloat(), paint)
+            }
+        }
+    }
+
+    private fun refreshDockLiveBadges() {
+        fun walk(v: View) {
+            if (v is DockLiveBadgeView) v.refresh()
+            if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+        }
+        if (::favoritesDockFrameView.isInitialized) walk(favoritesDockFrameView)
+        else if (::favoritesDockView.isInitialized) walk(favoritesDockView)
+    }
+
+    // ── Live activity pip ────────────────────────────────────────────────────
+    // A dock-footprint layer that slides up above the dock, built from the ongoing notification's
+    // snapshot. Everything is torn down on dismiss/end/pause; the only thing that ever ticks is an
+    // android.widget.Chronometer, which is device-driven and stops itself on detach.
+
+    private var liveActivityPipView: View? = null
+    private var liveActivityPipScrim: View? = null
+    private var liveActivityPipKey: String? = null
+    private var liveActivityPipTitle: TextView? = null
+    private var liveActivityPipLine: TextView? = null
+    private var liveActivityPipProgress: android.widget.ProgressBar? = null
+    private var lastResolvedLivePkg: String? = null
+
+    /** Every notification-listener transition lands here (already on the main thread). */
+    private fun onDockLiveStateChanged() {
+        refreshDockLiveBadges()
+        // Pip follows its notification: update in place on content changes, tear down on end.
+        liveActivityPipKey?.let { key ->
+            val snap = TeclasNotificationListener.liveActivitySnapshot(key)
+            if (snap == null) dismissLiveActivityPip(animate = true) else updateLiveActivityPip(snap)
+        }
+        // Dock composition only changes when the slot-1 occupant changes — rebuilding five small
+        // views then, and only then. Everything else is in-place invalidates.
+        val hidden = hiddenHomePackages()
+        val livePkg = TeclasNotificationListener.liveActivitySnapshots()
+            .filter { !it.isMedia && it.pkg !in hidden }
+            .minWithOrNull(compareBy({ it.kindRank }, { -it.postTime }))?.pkg
+        if (livePkg != lastResolvedLivePkg) {
+            lastResolvedLivePkg = livePkg
+            renderFavoritesDock()
+        }
+    }
+
+    private fun toggleLiveActivityPip(item: HomeDockItem) {
+        val key = item.liveKey ?: return
+        if (liveActivityPipKey == key) { dismissLiveActivityPip(animate = true); return }
+        showLiveActivityPip(item, key)
+    }
+
+    private fun showLiveActivityPip(item: HomeDockItem, key: String) {
+        dismissLiveActivityPip(animate = false)
+        val snap = TeclasNotificationListener.liveActivitySnapshot(key) ?: return
+        if (!::contentFrame.isInitialized || !::favoritesDockFrameView.isInitialized) return
+        val root = contentFrame
+        val dock = favoritesDockFrameView
+        if (dock.width <= 0) return
+        val accent = snap.accent.takeIf { it != 0 } ?: item.accent
+
+        val scrim = View(this).apply {
+            isClickable = true
+            setOnClickListener { dismissLiveActivityPip(animate = true) }
+        }
+        root.addView(scrim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        val pip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Neu.drawable(activeNeuTokens, dp(20).toFloat(), NeuLevel.RAISED)
+            elevation = dp(14).toFloat()
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            isClickable = true   // eat taps so they don't fall through to the scrim
+            (item.app?.toLibraryApp())?.let { app ->
+                addView(ImageView(context).apply {
+                    setImageDrawable(iconFor(app))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }, LinearLayout.LayoutParams(dp(30), dp(30)).apply { marginEnd = dp(10) })
+            }
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(context).apply {
+                    liveActivityPipTitle = this
+                    text = snap.title.ifBlank { item.label }
+                    textSize = 12.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(activeNeuTokens.ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                if (snap.usesChronometer && snap.whenMs > 0) {
+                    // The notification's own chronometer contract: the widget ticks device-side
+                    // while visible and stops itself the moment it detaches. We never run a timer.
+                    addView(android.widget.Chronometer(context).apply {
+                        base = android.os.SystemClock.elapsedRealtime() - (System.currentTimeMillis() - snap.whenMs)
+                        textSize = 10.5f
+                        setTextColor(activeNeuTokens.inkDim)
+                        start()
+                    })
+                } else {
+                    addView(TextView(context).apply {
+                        liveActivityPipLine = this
+                        text = snap.line
+                        textSize = 10.5f
+                        setTextColor(activeNeuTokens.inkDim)
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                        visibility = if (snap.line.isBlank()) View.GONE else View.VISIBLE
+                    })
+                }
+                if (snap.progressMax > 0 || snap.indeterminate) {
+                    addView(android.widget.ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                        liveActivityPipProgress = this
+                        isIndeterminate = snap.indeterminate
+                        if (!snap.indeterminate) { max = snap.progressMax; progress = snap.progress }
+                        progressTintList = android.content.res.ColorStateList.valueOf(accent)
+                    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(3)).apply { topMargin = dp(4) })
+                }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            snap.actions.forEach { action ->
+                addView(TextView(context).apply {
+                    text = action.label.uppercase(Locale.US)
+                    textSize = 9.5f
+                    typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                    letterSpacing = 0.08f
+                    setTextColor(accent)
+                    gravity = Gravity.CENTER
+                    setPadding(dp(10), dp(7), dp(10), dp(7))
+                    background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.PRESSED_SM)
+                    isClickable = true
+                    setOnClickListener {
+                        haptic(this)
+                        // The action's outcome comes back as a notification update/removal, which
+                        // updates or tears down this pip via the listener callback.
+                        runCatching { action.intent.send() }
+                    }
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    marginStart = dp(6)
+                })
+            }
+        }
+
+        // Same footprint as the dock, floating just above it.
+        val rootLoc = IntArray(2); root.getLocationOnScreen(rootLoc)
+        val dockLoc = IntArray(2); dock.getLocationOnScreen(dockLoc)
+        val pipHeight = dock.height.coerceAtLeast(dp(56))
+        root.addView(pip, FrameLayout.LayoutParams(dock.width, pipHeight).apply {
+            leftMargin = dockLoc[0] - rootLoc[0]
+            topMargin = (dockLoc[1] - rootLoc[1]) - pipHeight - dp(10)
+        })
+        liveActivityPipView = pip
+        liveActivityPipScrim = scrim
+        liveActivityPipKey = key
+        // One-shot entry, matching the repo's settle discipline: runs once, ends, releases.
+        pip.alpha = 0f
+        pip.translationY = dp(14).toFloat()
+        pip.animate().alpha(1f).translationY(0f).setDuration(200L).setInterpolator(DecelerateInterpolator(1.4f)).start()
+    }
+
+    private fun updateLiveActivityPip(snap: TeclasNotificationListener.LiveActivitySnapshot) {
+        liveActivityPipTitle?.text = snap.title
+        liveActivityPipLine?.let { line ->
+            line.text = snap.line
+            line.visibility = if (snap.line.isBlank()) View.GONE else View.VISIBLE
+        }
+        liveActivityPipProgress?.let { bar ->
+            if (!snap.indeterminate && snap.progressMax > 0) {
+                bar.isIndeterminate = false
+                bar.max = snap.progressMax
+                bar.progress = snap.progress
+            }
+        }
+    }
+
+    private fun dismissLiveActivityPip(animate: Boolean) {
+        val pip = liveActivityPipView
+        val scrim = liveActivityPipScrim
+        liveActivityPipView = null
+        liveActivityPipScrim = null
+        liveActivityPipKey = null
+        liveActivityPipTitle = null
+        liveActivityPipLine = null
+        liveActivityPipProgress = null
+        scrim?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        if (pip == null) return
+        if (!animate) {
+            (pip.parent as? ViewGroup)?.removeView(pip)
+            return
+        }
+        pip.animate().alpha(0f).translationY(dp(14).toFloat()).setDuration(160L)
+            .withEndAction { (pip.parent as? ViewGroup)?.removeView(pip) }
+            .start()
     }
 
     private fun showDockPeekMenu(anchor: View, item: HomeDockItem) {
@@ -23710,6 +24129,12 @@ Question: $prompt"""
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         }
 
+        // Actions first: "Change icon", open, dock membership — the things people long-press for.
+        // The widget preview + provider rows used to sit above them, and with a pinned widget
+        // (150dp preview) plus up to four 44dp provider rows they pushed every action below the
+        // scroll fold — "Change icon" looked gone rather than merely lower down.
+        addDockActionRows(menu, popup, anchor, target)
+
         if (existingWidgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
             val info = runCatching { appWidgetManager.getAppWidgetInfo(existingWidgetId) }.getOrNull()
             val hostView = if (info != null) runCatching {
@@ -23750,7 +24175,6 @@ Question: $prompt"""
                 removeDockWidget(dockKey)
             })
         }
-        addDockActionRows(menu, popup, anchor, target)
         showSmartDockPopup(anchor, popup, scroller, popupWidth)
     }
 

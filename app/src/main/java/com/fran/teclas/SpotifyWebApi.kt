@@ -52,6 +52,13 @@ data class SpotifyPlaybackState(
     val repeatMode: String
 )
 
+data class SpotifyDevice(
+    val id: String,
+    val name: String,
+    val type: String,
+    val isActive: Boolean
+)
+
 class SpotifyWebApi(private val auth: SpotifyAuth) {
 
     // ── Playback state ───────────────────────────────────────────────────────
@@ -101,16 +108,76 @@ class SpotifyWebApi(private val auth: SpotifyAuth) {
     suspend fun skipToNext() = command("POST", "https://api.spotify.com/v1/me/player/next")
     suspend fun skipToPrevious() = command("POST", "https://api.spotify.com/v1/me/player/previous")
 
-    suspend fun playTrack(trackUri: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun playTrack(trackUri: String): Boolean =
+        startPlayback("{\"uris\":[\"$trackUri\"]}")
+
+    suspend fun playContext(contextUri: String, offsetIndex: Int = 0): Boolean =
+        startPlayback("{\"context_uri\":\"$contextUri\",\"offset\":{\"position\":$offsetIndex}}")
+
+    /**
+     * Start playback without requiring the user to open Spotify first.
+     *
+     * A bare PUT /me/player/play only works when Spotify already has an ACTIVE device — i.e. the
+     * user recently played something in the Spotify app. Fresh from the launcher that's exactly
+     * what hasn't happened, Spotify answers 404 NO_ACTIVE_DEVICE, and the tap does nothing. So:
+     *   1. try the bare play (covers the already-active case in one request);
+     *   2. on failure, list Connect devices and target this phone's Spotify by device_id — that
+     *      transfers playback to it AND starts the track in one call;
+     *   3. if no device is listed at all (Spotify's process is dead), nudge it awake with a
+     *      background media-button broadcast (no UI appears) and poll briefly for its Connect
+     *      device to register, then play on it.
+     */
+    private suspend fun startPlayback(body: String): Boolean = withContext(Dispatchers.IO) {
         val token = auth.getValidToken() ?: return@withContext false
-        commandWithBody("PUT", "https://api.spotify.com/v1/me/player/play", token,
-            "{\"uris\":[\"$trackUri\"]}")
+        val playUrl = "https://api.spotify.com/v1/me/player/play"
+        if (commandWithBody("PUT", playUrl, token, body)) return@withContext true
+        var device = pickPlaybackDevice(token)
+        if (device == null) {
+            wakeSpotifyApp()
+            var waited = 0L
+            while (device == null && waited < 6_000L) {
+                kotlinx.coroutines.delay(1_000L)
+                waited += 1_000L
+                device = pickPlaybackDevice(token)
+            }
+        }
+        val id = device?.id ?: return@withContext false
+        commandWithBody("PUT", "$playUrl?device_id=${URLEncoder.encode(id, "UTF-8")}", token, body)
     }
 
-    suspend fun playContext(contextUri: String, offsetIndex: Int = 0): Boolean = withContext(Dispatchers.IO) {
-        val token = auth.getValidToken() ?: return@withContext false
-        commandWithBody("PUT", "https://api.spotify.com/v1/me/player/play", token,
-            "{\"context_uri\":\"$contextUri\",\"offset\":{\"position\":$offsetIndex}}")
+    private fun pickPlaybackDevice(token: String): SpotifyDevice? {
+        val devices = fetchDevices(token)
+        return devices.firstOrNull { it.isActive }
+            ?: devices.firstOrNull { it.type.equals("Smartphone", ignoreCase = true) }
+            ?: devices.firstOrNull()
+    }
+
+    private fun fetchDevices(token: String): List<SpotifyDevice> = runCatching {
+        val conn = get("https://api.spotify.com/v1/me/player/devices", token) ?: return emptyList()
+        val body = conn.readBody().also { conn.disconnect() }
+        JSONObject(body).optJSONArray("devices").toList().mapNotNull { d ->
+            val id = d.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            SpotifyDevice(id, d.optString("name"), d.optString("type"), d.optBoolean("is_active"))
+        }
+    }.getOrDefault(emptyList())
+
+    /**
+     * Wake Spotify's playback service without showing its UI: a targeted media-button PLAY
+     * broadcast spins up the service, which registers the phone as a Connect device within a few
+     * seconds. It may momentarily resume the previous track; the device-targeted play that follows
+     * replaces it with the selected one.
+     */
+    private fun wakeSpotifyApp() {
+        runCatching {
+            val ctx = auth.appContext
+            for (action in intArrayOf(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.ACTION_UP)) {
+                ctx.sendBroadcast(android.content.Intent(android.content.Intent.ACTION_MEDIA_BUTTON).apply {
+                    setPackage("com.spotify.music")
+                    putExtra(android.content.Intent.EXTRA_KEY_EVENT,
+                        android.view.KeyEvent(action, android.view.KeyEvent.KEYCODE_MEDIA_PLAY))
+                })
+            }
+        }
     }
 
     suspend fun seekTo(positionMs: Long) = withContext(Dispatchers.IO) {

@@ -54,7 +54,11 @@ internal data class HomeDockItem(
     val app: AppEntry?,
     val target: PaneTarget,
     val label: String,
-    val accent: Int
+    val accent: Int,
+    /** Usage-predicted filler occupying an otherwise-empty dock slot (drawn with a hint marker). */
+    val predicted: Boolean = false,
+    /** Key of the live activity (ongoing notification) this slot represents; tap opens the pip. */
+    val liveKey: String? = null
 )
 
 internal data class SettingSearchEntry(

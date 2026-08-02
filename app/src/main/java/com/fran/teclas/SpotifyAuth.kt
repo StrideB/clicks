@@ -33,6 +33,9 @@ enum class SpotifyConnectState { DISCONNECTED, CONNECTING, CONNECTED }
 class SpotifyAuth(private val context: Context) {
     private val prefs = context.getSharedPreferences("spotify_auth", Context.MODE_PRIVATE)
 
+    /** For SpotifyWebApi's device-wake broadcast — the only non-HTTP thing the API layer does. */
+    internal val appContext: Context get() = context.applicationContext
+
     private val _connectState = MutableStateFlow(loadPersistedState())
     val connectState: StateFlow<SpotifyConnectState> = _connectState
 
