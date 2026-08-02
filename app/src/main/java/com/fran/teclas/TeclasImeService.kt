@@ -5388,7 +5388,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // placement, and Brushed's engraved hints / optical offsets from the same per-theme logic the
         // view keyboard uses (keyTypeface, canvasLetterSpec, canvasOpticalOffset). Validated on Teclas;
         // other themes render through the same faithful path.
-        private const val CANVAS_KB = true
+        private const val CANVAS_KB = false
         private const val KEYBOARD_THEME_SKEUO = "skeuo"
         private const val KEYBOARD_THEME_GOKEYS = "gokeys"
         private const val KEYBOARD_THEME_HYPER3D = "hyper3d"

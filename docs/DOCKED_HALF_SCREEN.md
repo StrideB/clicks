@@ -1,6 +1,11 @@
 # Docked half-screen on Xiaomi
 
-**Settings → KEYBOARD → APPS IN TOP REGION**, and the new **WHY IS IT FULLSCREEN? →** row under it.
+Settings → scroll to the **KEYBOARD** heading → **APPS IN TOP REGION**, with **WHY IS IT
+FULLSCREEN? →** indented underneath it.
+
+That row is triple-gated — docked placement, not the unfolded inner layout, and `APPS IN TOP REGION`
+already on — so on a phone where the feature looks broken it can be the one thing you cannot find.
+Searching settings for **"fullscreen"** opens the diagnosis directly, whatever those toggles say.
 
 Docked mode is supposed to open every app in the top half of the screen, above the keyboard. It does
 that on Galaxy and on Vivo/OriginOS. On Xiaomi (MIUI 12+ / HyperOS) apps open fullscreen instead.
@@ -58,13 +63,35 @@ This exists because none of the above is verifiable without a Xiaomi in hand —
 from how MIUI gates these calls, not from a device. **The next change to `DockedWindowStrategy.kt`
 should be driven by that report rather than by another guess.**
 
+### What the first real report cost us
+
+A Xiaomi 25128PNA1G on Android 16 came back with three lines that were not true, all of them
+flattering:
+
+- `task lookup: no task found for <pkg>` — the task list is read through Shizuku, which was not
+  connected. We had not looked at all. It now says so instead of blaming the app.
+- `Window measured: not measured` — guaranteed, on every device, forever. The live measurement is
+  cleared the moment no external app is in front, and reaching this screen means leaving the app.
+  The measurement is now also kept in a sticky field that nothing clears, with the package name.
+- `Last working route: split` — split screen had not placed anything; the rung was latched on the
+  way *into* the fallback rather than after checking it. It is now latched only once a measurement
+  agrees, like every rung above it, and the line reads "last route that placed a window".
+
+A diagnostic that flatters itself is worse than none: it sends the next change in the wrong
+direction with confidence.
+
 ## MIUI optimization
 
 `DockedWindowStrategy.applyMiuiOptimizationOff()` writes `settings put global miui_optimization 0`,
 which stops MIUI substituting its own implementations for a number of AOSP paths, multi-window among
 them. It is deliberately never called during a normal launch: it is a broad, system-wide change that
-also relaxes MIUI's permission handling and can affect battery behaviour. Wire it to an explicit,
-warned action if the diagnostics show it is the missing piece.
+also relaxes MIUI's permission handling and can affect battery behaviour.
+
+It is reachable from **MIUI OPTIMIZATION   ON →**, which appears under the diagnosis row on Xiaomi
+devices where it is still on, behind a dialog that states the cost before the button. (It was dead
+code until the first real report flagged `miui_optimization: on` as a failing line with nothing to
+tap — the same shape of bug as the split-screen fallback that had no caller.) Needs a reboot; undo
+it in Developer options or with `settings put global miui_optimization 1`.
 
 ## No computer needed
 
