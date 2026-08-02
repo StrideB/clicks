@@ -718,6 +718,14 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Don't let the attach sheet or a share card linger across fields or when the keyboard hides.
         hideAttachPicker()
         hideShareCard()
+        // The mic must die with the keyboard: without this, dictation started with the mic button
+        // kept recording after the user switched apps or locked the screen, until the recognizer's
+        // own speech timeout — an open microphone with no keyboard on screen.
+        imeVoice?.let { if (it.isListening) { it.stop(); setImeMicVisual(false) } }
+        // A queued auto-proofread would otherwise fire Nano inference against a field the user has
+        // already left — background LLM work, and a silent rewrite of text nobody is looking at.
+        autoProofreadRunnable?.let { handler.removeCallbacks(it) }
+        autoProofreadRunnable = null
     }
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
@@ -783,7 +791,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             autocorrect.clearPending()
             clearPostCommitChips()
         }
-        if (!isLauncherEditorActive()) scheduleSuggestions()
+        // isInputViewShown gate: a still-focused editor keeps sending selection updates after the
+        // keyboard hides (app-driven text changes, restored state), and each one was running the
+        // full prediction pipeline — dictionary scans with no strip on screen to show the results.
+        if (!isLauncherEditorActive() && isInputViewShown) scheduleSuggestions()
     }
 
     /**
@@ -835,6 +846,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         runCatching { thumbExecutor.shutdownNow() }
         runCatching { predictExecutor.shutdownNow() }
         if (diagOn) runCatching { diagExecutor.shutdownNow() }
+        // stop() also destroys the retained SpeechRecognizer, releasing its bound connection to the
+        // system recognition service.
+        runCatching { imeVoice?.stop() }
+        imeVoice = null
         AttachBridge.pending = null
         super.onDestroy()
     }

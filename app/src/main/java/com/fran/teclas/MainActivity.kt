@@ -1309,6 +1309,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
         // Safety net: never leave the glass resync frozen if a slide animation was interrupted.
         glassSlideInProgress = false
+        // The mic must not keep recording behind another app: stop an in-flight dictation when the
+        // launcher leaves the foreground.
+        voiceEngine?.let { if (it.isListening) { it.stop(); setMicVisual(false); clearVoicePartial() } }
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
@@ -1391,6 +1394,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetKeyboardSettleAnimator?.cancel()
         widgetCoachAnimator?.cancel()
         themeSplashAnimator?.cancel()
+        // stop() also destroys the retained SpeechRecognizer, releasing its bound service connection.
+        runCatching { voiceEngine?.stop() }
+        voiceEngine = null
         billingClient?.endConnection()
         billingClient = null
     }
