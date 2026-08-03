@@ -1064,10 +1064,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lastMusicPlaying = info?.isPlaying == true
                 if (sourceChanged || playChanged) refreshDockMusicNotes()
                 // The Music tile only exists in the dock while playing, so a play/pause flip
-                // changes dock composition — rebuild the home surface when it's the one showing.
+                // changes dock composition — and a source switch moves the media-live ring to a
+                // different dock icon. Rebuild the home surface when it's the one showing.
                 // render() self-defers under full-window overlays; skip panes/library/search where
                 // the home dock isn't on screen anyway.
-                if (playChanged && openPane == null && !libraryOpen && query.isBlank()) render()
+                if ((playChanged || sourceChanged) && openPane == null && !libraryOpen && query.isBlank()) render()
                 maybeScrobble(info)
                 if (openPane?.kind == PaneKind.MUSIC) {
                     // Source change can flip wheel↔simple; play-state change updates the
@@ -23500,18 +23501,29 @@ Question: $prompt"""
             .map { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor) }
         val pinned = (listOfNotNull(music) + appItems).take(DOCK_APP_LIMIT)
         val withLive = resolveLiveDock(pinned, hidden)
-        if (withLive.size >= DOCK_APP_LIMIT) return withLive.take(DOCK_APP_LIMIT)
-        // Free slot → usage-predicted filler. Computed once per render (which already happens on
-        // every home return), from counts the launcher already tracks — zero extra cost.
-        val taken = withLive.mapNotNull { it.target.packageName }.toSet()
-        val usage = appUsageCounts()
-        val predicted = apps.asSequence()
-            .filter { it.packageName !in taken && it.packageName !in hidden && it.packageName != packageName }
-            .filter { (usage[it.packageName] ?: 0) > 0 }
-            .maxByOrNull { usage[it.packageName] ?: 0 }
-            ?.let { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor, predicted = true) }
-        return withLive + listOfNotNull(predicted)
+        val items = if (withLive.size >= DOCK_APP_LIMIT) withLive.take(DOCK_APP_LIMIT) else {
+            // Free slot → usage-predicted filler. Computed once per render (which already happens
+            // on every home return), from counts the launcher already tracks — zero extra cost.
+            val taken = withLive.mapNotNull { it.target.packageName }.toSet()
+            val usage = appUsageCounts()
+            val predicted = apps.asSequence()
+                .filter { it.packageName !in taken && it.packageName !in hidden && it.packageName != packageName }
+                .filter { (usage[it.packageName] ?: 0) > 0 }
+                .maxByOrNull { usage[it.packageName] ?: 0 }
+                ?.let { HomeDockItem(it, it.toPaneTarget(), it.shortName, it.brandColor, predicted = true) }
+            withLive + listOfNotNull(predicted)
+        }
+        // Session-backed media liveness: while this app is actually playing, its icon rings and
+        // taps route to the now-playing pane (which itself deep-links into the app). The state
+        // reverts on pause/stop via the nowPlaying collector's home re-render — no polling.
+        val mediaPkg = activeMediaLivePackage() ?: return items
+        return items.map { if (it.app != null && it.target.packageName == mediaPkg) it.copy(mediaLive = true) else it }
     }
+
+    /** Package of the MediaController session that is actively playing, or null. */
+    private fun activeMediaLivePackage(): String? =
+        if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value?.takeIf { it.isPlaying }?.sourcePackage
+        else null
 
     /**
      * Live-activity occupancy, as a pure function of (favorites, live snapshot) so restoration is
@@ -23524,11 +23536,18 @@ Question: $prompt"""
      *    to the MediaController-backed Music tile while that tile is docked; when it isn't
      *    (no session detected, tile hidden), the playing app's own media notification claims the
      *    slot instead, so playback always shows somewhere.
+     *  - Passive status pins age out: a rank-2 snapshot with no chronometer/progress whose
+     *    content hasn't changed within the stale window stops counting (see staleDeadlineMs) —
+     *    non-clearable "connected" pins can't be dismissed, so they must expire on their own.
      */
     private fun resolveLiveDock(pinned: List<HomeDockItem>, hidden: Set<String>): List<HomeDockItem> {
         val mediaServed = pinned.any { it.target.kind == PaneKind.MUSIC }
-        val live = TeclasNotificationListener.liveActivitySnapshots()
-            .filter { it.pkg !in hidden && (!it.isMedia || !mediaServed) }
+        val now = System.currentTimeMillis()
+        val fresh = TeclasNotificationListener.liveActivitySnapshots()
+            .filter { it.pkg !in hidden && !it.isStale(now) }
+        scheduleLiveStaleRecheck(fresh, now)
+        val live = fresh
+            .filter { !it.isMedia || !mediaServed }
             .minWithOrNull(compareBy({ it.kindRank }, { -it.postTime }))
             ?: return pinned
         val docked = pinned.indexOfFirst { it.target.packageName == live.pkg }
@@ -23598,7 +23617,7 @@ Question: $prompt"""
                     }, FrameLayout.LayoutParams((iconFrame * 1.45f).toInt(), (iconFrame * 1.95f).toInt(), Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
                         bottomMargin = -dp(10)
                     })
-                addView(DockLiveBadgeView(context, target.packageName, item.accent, item.predicted, liveRing = item.liveKey != null).apply {
+                addView(DockLiveBadgeView(context, target.packageName, item.accent, item.predicted, liveRing = item.liveKey != null || item.mediaLive).apply {
                     refresh()
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }, LinearLayout.LayoutParams(iconFrame, iconFrame))
@@ -23624,6 +23643,10 @@ Question: $prompt"""
             setOnClickListener {
                 haptic(this)
                 when {
+                    // Session-backed playback outranks the notification pip: the now-playing pane
+                    // has full transport + a deep link into the app, so a playing app's icon goes
+                    // there. The pip stays the path when only a media notification exists.
+                    item.mediaLive -> openHere(musicTarget())
                     item.liveKey != null -> toggleLiveActivityPip(item)
                     target.kind == PaneKind.MUSIC || target.packageName == null -> openHere(target)
                     else -> { pendingLaunchSource = LaunchSource.DOCK; openExternal(target) }
@@ -23927,17 +23950,40 @@ Question: $prompt"""
             if (snap == null) dismissLiveActivityPip(animate = true) else updateLiveActivityPip(snap)
         }
         // Dock composition only changes when the slot-1 occupant changes — rebuilding five small
-        // views then, and only then. Everything else is in-place invalidates. The media filter
-        // must mirror resolveLiveDock's: media counts only when the Music tile isn't docked.
+        // views then, and only then. Everything else is in-place invalidates. The filters must
+        // mirror resolveLiveDock's: media counts only when the Music tile isn't docked, and
+        // stale passive pins don't count at all.
         val hidden = hiddenHomePackages()
         val mediaServed = musicTarget().id !in hidden && musicDockTileActive()
+        val now = System.currentTimeMillis()
         val livePkg = TeclasNotificationListener.liveActivitySnapshots()
-            .filter { it.pkg !in hidden && (!it.isMedia || !mediaServed) }
+            .filter { it.pkg !in hidden && !it.isStale(now) && (!it.isMedia || !mediaServed) }
             .minWithOrNull(compareBy({ it.kindRank }, { -it.postTime }))?.pkg
         if (livePkg != lastResolvedLivePkg) {
             lastResolvedLivePkg = livePkg
             renderFavoritesDock()
         }
+    }
+
+    private var liveStaleRecheckRunnable: Runnable? = null
+
+    /**
+     * Staleness is the one live-dock transition the notification stream never delivers: a passive
+     * pin expires by time passing, not by an event. Arm a single one-shot re-derive at the
+     * earliest upcoming deadline among the still-fresh snapshots; every dock render re-arms it,
+     * and onDockLiveStateChanged's occupant compare turns the firing into a rebuild only when the
+     * expiry actually changes who owns the slot.
+     */
+    private fun scheduleLiveStaleRecheck(fresh: List<TeclasNotificationListener.LiveActivitySnapshot>, nowMs: Long) {
+        liveStaleRecheckRunnable?.let { handler.removeCallbacks(it) }
+        liveStaleRecheckRunnable = null
+        val nextDeadline = fresh.mapNotNull { it.staleDeadlineMs() }.minOrNull() ?: return
+        val r = Runnable {
+            liveStaleRecheckRunnable = null
+            onDockLiveStateChanged()
+        }
+        liveStaleRecheckRunnable = r
+        handler.postDelayed(r, (nextDeadline - nowMs).coerceAtLeast(1_000L))
     }
 
     private fun toggleLiveActivityPip(item: HomeDockItem) {
