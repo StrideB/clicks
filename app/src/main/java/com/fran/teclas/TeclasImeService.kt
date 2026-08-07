@@ -4401,6 +4401,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // (worst case) fires quick-left-delete, eating the last word, or flashes the glide trail,
         // instead of the key doing its job. This is the gate that fixes "pressing 123 deletes my text".
         private var downOnLetterKey = false
+        // True once a second finger joined this touch — rollover typing (e.g. fast "haha"), never
+        // a glide. When the first finger lifts, the move stream's coordinates jump to the second
+        // finger, which read as a big fast movement and activated the glide gate — ghost swipes.
+        private var glideMultiTouch = false
         private val traced = mutableListOf<String>()
         private val trailLocal = mutableListOf<Pair<Float, Float>>()
         // Event timestamps parallel to trailLocal — needed for the neural decoder's velocity/accel
@@ -4591,10 +4595,16 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     // Gate the whole glide/flick/delete state machine on the down-key being a letter.
                     val downKey = keyAtPoint(startRawX, startRawY, letterOnly = false)
                     downOnLetterKey = downKey != null && downKey.length == 1 && downKey[0].isLetter()
+                    glideMultiTouch = false
+                    return false
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // Rollover typing: a second finger means these touches are taps, never a glide.
+                    glideMultiTouch = true
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!tracking && downOnLetterKey &&
+                    if (!tracking && downOnLetterKey && !glideMultiTouch && ev.pointerCount == 1 &&
                         com.fran.teclas.keyboard.GlideGate.shouldActivate(
                             ev.rawX - startRawX, ev.rawY - startRawY,
                             ev.eventTime - ev.downTime, glideActivationSlop)) {
@@ -4602,6 +4612,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                         glideStoleDownCommit = true
                         if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
                         parent?.requestDisallowInterceptTouchEvent(true)
+                        // A glide always starts from an empty buffer: leftover points from any
+                        // earlier aborted path would otherwise decode into the new gesture.
+                        glideClassifier?.clear()
                         keyAtPoint(startRawX, startRawY, letterOnly = true)?.let { traced.add(it) }
                         trailLocal.add(startRawX - screenX to startRawY - screenY)
                         trailTimes.add(ev.eventTime)
