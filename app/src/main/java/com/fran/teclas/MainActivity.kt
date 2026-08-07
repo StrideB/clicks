@@ -3448,7 +3448,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         prefs().getBoolean(APP_LIBRARY_DEFAULT_HOME_PREF, false)
 
     internal fun isUnfoldedInnerLayoutActive(): Boolean =
-        (foldPosture is FoldPosture.Inner || foldPosture is FoldPosture.HalfOpen) &&
+        // Posture OR raw size: several foldables (Fold 8 class) report NO folding feature once
+        // fully flat, so posture alone left the phone layout stretched across a ~700dp inner
+        // display with the keyboard deck clipping off the right edge. smallestScreenWidthDp
+        // (orientation-independent) catches those and tablets; a landscape phone stays ~411sw
+        // and keeps the phone layout.
+        (foldPosture is FoldPosture.Inner || foldPosture is FoldPosture.HalfOpen ||
+            resources.configuration.smallestScreenWidthDp >= 600) &&
             resources.configuration.screenWidthDp >= 600
 
     /** Lower-panel height (px) in tabletop Flex Mode (half-open, horizontal hinge), else 0.
