@@ -18,9 +18,23 @@ import java.util.Collections
 import kotlin.math.abs
 
 class TeclasNotificationListener : NotificationListenerService() {
+    // Connect-replay coalescing: with ~30 active notifications, per-item callbacks meant that many
+    // dock re-derivations and brief-refresh kicks synchronously on the main thread at every
+    // listener (re)connect — a visible stall in the launcher's first seconds. During the replay
+    // the callbacks are parked and each fires once at the end.
+    private var replayBatching = false
+    private var replayDockChanged = false
+    private var replayBriefChanged = false
+
     override fun onListenerConnected() {
         instance = this
+        replayBatching = true
+        replayDockChanged = false
+        replayBriefChanged = false
         activeNotifications.orEmpty().forEach { onNotificationPosted(it) }
+        replayBatching = false
+        if (replayDockChanged) onDockStateChanged?.invoke()
+        if (replayBriefChanged) onBriefChanged?.invoke()
     }
 
     /** Cancel a live notification by key (used by Today's long-press dismiss). Instance-scoped. */
@@ -163,7 +177,9 @@ class TeclasNotificationListener : NotificationListenerService() {
         } else if (!posted) {
             if (synchronized(dockBadgeKeys) { dockBadgeKeys.remove(sbn.key) != null }) changed = true
         }
-        if (changed) onDockStateChanged?.invoke()
+        if (changed) {
+            if (replayBatching) replayDockChanged = true else onDockStateChanged?.invoke()
+        }
     }
 
     /** Build the one-shot immutable snapshot of an ongoing notification, or null if not pip-worthy. */
@@ -319,7 +335,9 @@ class TeclasNotificationListener : NotificationListenerService() {
         // The record itself is still replaced above — its PendingIntents are fresh handles and the
         // old ones die with the notification. Only the downstream refresh is skipped, and only when
         // the content hash says nothing a ranker could see has changed.
-        if (!unchanged) onBriefChanged?.invoke()
+        if (!unchanged) {
+            if (replayBatching) replayBriefChanged = true else onBriefChanged?.invoke()
+        }
     }
 
     private fun briefCategory(sbn: StatusBarNotification): String {
