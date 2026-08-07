@@ -19236,6 +19236,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // touch and (worst case) fire the left-swipe word delete. Mirrors the IME's downOnLetterKey
         // gate — the fix for "dragging 123 deletes my text" on the docked keyboard.
         private var downOnLetterKey = false
+        // Second finger seen this touch → rollover typing, never a glide (see IME twin).
+        private var glideMultiTouch = false
         private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -19347,19 +19349,27 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     trackpadActive = false
                     val downKey = keyAtPoint(startRawX, startRawY)
                     downOnLetterKey = downKey != null && downKey.length == 1 && downKey[0].isLetter()
+                    glideMultiTouch = false
+                    return false
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // Rollover typing: a second finger means these touches are taps, never a glide.
+                    glideMultiTouch = true
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (glideBlockedByTypingStrip) return false
                     if (trackpadActive) return true
                     if (!tracking) {
-                        if (downOnLetterKey &&
+                        if (downOnLetterKey && !glideMultiTouch && ev.pointerCount == 1 &&
                             com.fran.teclas.keyboard.GlideGate.shouldActivate(
                                 ev.rawX - startRawX, ev.rawY - startRawY,
                                 ev.eventTime - ev.downTime, glideStart.toFloat())) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
+                            // A glide always starts from an empty buffer (see IME twin).
+                            glideClassifier?.clear()
                             keyAtPoint(startRawX, startRawY)?.let { k -> if (k.length == 1) traced.add(k) }
                             trailLocal.add(startRawX - screenX to startRawY - screenY)
                             trailTimes.add(ev.eventTime)
