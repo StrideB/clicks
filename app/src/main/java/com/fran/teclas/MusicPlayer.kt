@@ -244,7 +244,10 @@ fun MusicPlayer(
         return
     }
 
-    val tick by produceState(SystemClock.elapsedRealtime(), current.isPlaying, current.positionMs, current.lastUpdateElapsedMs) {
+    // Keyed on isPlaying only: position fields as keys cancelled and relaunched this producer on
+    // every nowPlaying emission. The 500ms tick recomposes position from the latest snapshot
+    // anyway, so a seek needs no restart — only a play/pause flip does.
+    val tick by produceState(SystemClock.elapsedRealtime(), current.isPlaying) {
         value = SystemClock.elapsedRealtime()
         while (current.isPlaying) {
             delay(500)

@@ -18,6 +18,10 @@ object ItunesMetadata {
             val q = java.net.URLEncoder.encode("$title $artist", "UTF-8")
             val url = URL("https://itunes.apple.com/search?term=$q&media=music&limit=1&entity=song")
             val conn = url.openConnection() as HttpURLConnection
+            // Without timeouts a stalled connection blocked the calling thread (and the share
+            // flow's runBlocking) indefinitely — the hung "Finding song…" state.
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
             conn.setRequestProperty("User-Agent", "Teclas-Launcher/1.0")
             if (conn.responseCode != 200) return@withContext null
             val json = JSONObject(conn.inputStream.bufferedReader().readText())
@@ -39,6 +43,8 @@ object ItunesMetadata {
     suspend fun fetchArtwork(url: String): Bitmap? = withContext(Dispatchers.IO) {
         runCatching {
             val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
             conn.connect()
             BitmapFactory.decodeStream(conn.inputStream).also { conn.disconnect() }
         }.getOrNull()

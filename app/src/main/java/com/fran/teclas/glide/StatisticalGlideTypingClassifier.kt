@@ -85,20 +85,35 @@ class StatisticalGlideTypingClassifier {
      *   word (n-gram store). A word in context gets its language prior amplified, so the shape
      *   model and context agree on the answer — the core reliability win over shape+frequency alone.
      */
-    fun getSuggestions(maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> {
-        val cacheKey = (gesture.hashCode() * 31 + maxCount) * 31 + contextBoost.hashCode()
-        return suggestionCache.get(cacheKey) ?: run {
-            val r = computeSuggestions(maxCount, contextBoost)
-            suggestionCache.put(cacheKey, r)
-            r
-        }
+    fun getSuggestions(maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> =
+        computeSuggestions(gesture, maxCount, contextBoost)
+
+    /**
+     * Copy the live gesture and reset the buffer, on the caller's (main) thread. Decode the copy.
+     *
+     * The live [gesture] used to be read directly by the decode running on Dispatchers.Default and
+     * cleared only *after* the decode finished — so a second swipe started during a slow decode
+     * (the neural walk takes 100ms+) appended into the buffer mid-read, and the deferred clear then
+     * wiped the second swipe's collected points. Both swipes decoded wrong during fast glide
+     * typing. Snapshotting at gesture end makes the decode input immutable and frees the buffer
+     * for the next swipe immediately.
+     */
+    fun snapshotAndClear(): Gesture {
+        val copy = gesture.copyOf()
+        gesture.clear()
+        suggestionCache.evictAll()
+        return copy
     }
+
+    /** Decode a detached gesture snapshot (see [snapshotAndClear]); safe off the main thread. */
+    fun getSuggestionsFor(snapshot: Gesture, maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> =
+        computeSuggestions(snapshot, maxCount, contextBoost)
 
     /** Scored variant: (word, confidenceMargin) where margin>0 means the top pick clearly beats #2. */
     fun getScoredSuggestions(maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> =
-        computeSuggestions(maxCount, contextBoost)
+        computeSuggestions(gesture, maxCount, contextBoost)
 
-    private fun computeSuggestions(maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> {
+    private fun computeSuggestions(gesture: Gesture, maxCount: Int, contextBoost: Map<String, Float> = emptyMap()): List<String> {
         val p = pruner ?: return emptyList()
         if (gesture.size < 2) return emptyList()
 
@@ -240,7 +255,7 @@ class StatisticalGlideTypingClassifier {
             fun generateIdealGestures(word: String, keys: HashMap<Int, KeyInfo>): List<Gesture> {
                 val straight = Gesture()
                 val loops = Gesture()
-                var prev = ' '
+                var prev = '\u0000'
                 var hasLoops = false
 
                 for (c in word) {
@@ -273,6 +288,14 @@ class StatisticalGlideTypingClassifier {
         val isEmpty get() = size == 0
 
         fun addPoint(x: Float, y: Float) { if (size < MAX_SIZE) { xs[size] = x; ys[size] = y; size++ } }
+
+        fun copyOf(): Gesture {
+            val out = Gesture()
+            System.arraycopy(xs, 0, out.xs, 0, size)
+            System.arraycopy(ys, 0, out.ys, 0, size)
+            out.size = size
+            return out
+        }
         fun x(i: Int) = if (i < size) xs[i] else xs[size - 1]
         fun y(i: Int) = if (i < size) ys[i] else ys[size - 1]
         fun firstX() = xs[0]; fun firstY() = ys[0]

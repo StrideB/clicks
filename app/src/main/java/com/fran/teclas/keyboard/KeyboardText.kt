@@ -42,7 +42,12 @@ fun KeyboardHost.shouldAutoCapitalize(): Boolean {
 
 /** Double-space → ". ": if the char before the cursor is a space, rewrite it to a period + space. */
 fun KeyboardHost.applyDoubleSpacePeriod(): Boolean {
-    if (textBeforeCursor(1) != " ") return false
+    val before = textBeforeCursor(2)
+    if (before.lastOrNull() != ' ') return false
+    // Only after an actual word: without this, "Hi!" + two spaces gave "Hi!. ", two quick spaces
+    // in an empty field gave ". ", and "word, " became "word,. ".
+    val prev = if (before.length >= 2) before[before.length - 2] else return false
+    if (!prev.isLetterOrDigit()) return false
     deleteBeforeCursor(1)
     commitText(". ")
     return true

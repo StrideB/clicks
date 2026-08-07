@@ -801,9 +801,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val homeTileViews = mutableMapOf<String, FrameLayout>()
     private lateinit var sizeValueView: TextView
     private lateinit var suggestionBarView: LinearLayout
+    // Notification-driven refreshes owed from while the launcher was backgrounded; consumed once
+    // in onResume. See the onBriefChanged / prefsListener foreground gates.
+    private var pendingBriefRefresh = false
+    private var pendingHubRefresh = false
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == HUB_MESSAGES_PREF) {
-            runOnUiThread { refreshHubMessagesFromPrefs() }
+            // Backgrounded, this was a JSON parse + hub row rebuild + widget-stack recompose +
+            // semantic re-embed per notification event. One catch-up on resume covers it.
+            runOnUiThread { if (launcherInForeground) refreshHubMessagesFromPrefs() else pendingHubRefresh = true }
         } else if (key == ThemeRepository.ACTIVE_THEME_ID_PREF ||
             key == ThemeRepository.THEME_WALLPAPER_ID_PREF ||
             key == ThemeRepository.THEME_APPLY_VERSION_PREF
@@ -909,7 +915,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         semanticModelPickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
-        appWidgetHost.startListening()
+        // Listening is visibility-scoped in onStart/onStop (Launcher3-style): a default launcher's
+        // activity is effectively never destroyed, so listening from here meant every hosted
+        // widget's RemoteViews refresh woke and inflated in this process even after hours in the
+        // background.
         spaceBoardController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
         homeLeftController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
         // One-time reset: earlier builds auto-seeded boards with predicted apps; the board now
@@ -979,10 +988,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // refreshDebounced mutates its Job field.
         TeclasNotificationListener.onBriefChanged = {
             runOnUiThread {
-                if (todayEnabled) briefRepository.refreshDebounced()
-                if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
-                // Informational notifications feed the widget stack — refresh it too.
-                if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                // The tail here is heavy — a brief LLM generation plus a per-Space rank generation
+                // and a widget-stack recomposition — and this fires for every changed notification
+                // all day, launcher visible or not (the listener lives in our process, so the
+                // process never dies). Backgrounded, that was continuous inference the user reads
+                // as "the phone runs warm". Defer to a single catch-up refresh on resume instead.
+                if (!launcherInForeground) {
+                    pendingBriefRefresh = true
+                } else {
+                    if (todayEnabled) briefRepository.refreshDebounced()
+                    if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
+                    // Informational notifications feed the widget stack — refresh it too.
+                    if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                }
             }
         }
         // Live-dock state: fires only on real transitions (badge membership, call/timer start-stop,
@@ -1054,7 +1072,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaUiScope.launch {
             mediaSessionSource.nowPlaying.collect { info ->
                 syncNowPlayingCardVisibility()
-                refreshNowPlayingCard()
+                // No refreshNowPlayingCard() here: the card's composition observes this same flow
+                // via collectAsState, so recomposition already covers media changes — the manual
+                // setContent was a second full rebuild of the widget stack per emission.
                 // If the active source app changed while the music pane is open, rebuild the
                 // dock so it can switch between the click wheel and simple transport controls.
                 val src = info?.sourcePackage
@@ -1190,6 +1210,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return false
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Hosted widget updates only matter while we're on screen; see the note at host creation.
+        if (::appWidgetHost.isInitialized) runCatching { appWidgetHost.startListening() }
+    }
+
+    override fun onStop() {
+        if (::appWidgetHost.isInitialized) runCatching { appWidgetHost.stopListening() }
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         // Demo spoof: if a demo location is set (and the mock-location op is granted), push it into
@@ -1235,6 +1266,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // drift owns the motion, since the two would fight.
         ensureBillingConnected()
         val now = System.currentTimeMillis()
+        // Catch up on notification-driven work deferred while backgrounded (the per-notification
+        // pipeline is foreground-gated): one hub reload and one brief refresh, however many
+        // notifications arrived in the meantime.
+        if (pendingHubRefresh) {
+            pendingHubRefresh = false
+            refreshHubMessagesFromPrefs()
+            lastHubLoadMs = now
+        }
+        if (pendingBriefRefresh) {
+            pendingBriefRefresh = false
+            if (todayEnabled && ::briefRepository.isInitialized) briefRepository.refreshDebounced()
+            if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
+            if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+        }
         if (demoModeEnabled()) {
             applyDemoShowcaseData(loadVisualStage = false)
         } else {
@@ -1407,7 +1452,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         runCatching { unregisterReceiver(packageChangeReceiver) }
         runCatching { unregisterReceiver(configurationChangeReceiver) }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
-        if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
+        // Widget-host listening is stopped in onStop, which always precedes destruction.
         TeclasNotificationListener.onBriefChanged = null
         TeclasNotificationListener.onDockStateChanged = null
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
@@ -2003,6 +2048,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     /** Set when a render was suppressed because an overlay owned the screen; replayed on close. */
     private var pendingRenderAfterOverlay = false
 
+    // Two-tier render state: the home content region currently mounted in contentFrame, and the
+    // structural signature the current scaffold was built for (see render()).
+    private var homeContentView: View? = null
+    private var renderedScaffoldSignature: String? = null
+
     /**
      * Run a render that was deferred while a full-window overlay was up. Called when one closes.
      */
@@ -2031,11 +2081,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         weatherWidgetDragging = false   // the widget is rebuilt below; never carry a stuck drag lock
         clearTransientHomeOverlaysForRender()
         ensureDockedHomeSeed()   // one-time: copy the shared home setup into the docked namespace
-        keyViews.clear()
-        keyBounds.clear()
-        dockedStatusShieldView = null
-        dockedFreeformBackdropView = null
-        unfoldedKeyboardSearchOverlayText = null
         applyTheme()
         syncSystemBars()
         val unfolded = isUnfoldedInnerLayoutActive()
@@ -2055,6 +2100,63 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
         val hideDockForPane = !unfolded && openPane?.kind == PaneKind.SETTINGS
         val showRootDock = unfolded || keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED || widgetPaneUsesRootDock()
+        // ── Two-tier render ──────────────────────────────────────────────────
+        // The scaffold — window content view, wallpaper layer, keyboard deck, root paddings — only
+        // changes when one of the structural inputs below changes. Everything else (~95 render()
+        // call sites: play/pause flips, notification-driven refreshes, every onResume) only needs
+        // the home *content* rebuilt. The light tier replaces the home region inside the existing
+        // contentFrame and skips setContentView (a full-window decor swap + relayout), the
+        // wallpaper newDrawable().mutate() re-instantiation, and the entire keyboard-deck rebuild —
+        // which together were most of render()'s cost and all of its visible flash.
+        // Unfolded and widget-keyboard canvases keep the full path unconditionally: their keyboard
+        // lives inside the home content, so a partial rebuild would orphan live key views.
+        val scaffoldSignature = buildString {
+            append(unfolded).append('|').append(phoneWidgetCanvas).append('|')
+            append(wallpaperCanvas).append('|').append(phoneDockedFullBleed).append('|')
+            append(hideDockForPane).append('|').append(showRootDock).append('|')
+            append(useSystemWallpaperOnHome()).append('|')
+            append(activeNeuTokens.mode).append('|').append(activeNeuTokens.base).append('|')
+            append(launcherStatusBarInset()).append('|').append(launcherNavBarReserve()).append('|')
+            append(keyboardBottomLift()).append('|').append(activeRootDockHeight()).append('|')
+            append(launcherDockedKeyboardBottomLift()).append('|')
+            append(System.identityHashCode(homeWallpaperDrawable)).append('|')
+            append(System.identityHashCode(lastGoodHomeWallpaperDrawable)).append('|')
+            append(dockedFreeformBackdropHeightPx()).append('|').append(dockedStatusShieldHeightPx()).append('|')
+            append(innerWallpaperEditMode).append('|')
+            append(widgetKeyboardHidden).append('|').append(widgetPaneUsesRootDock())
+        }
+        val oldHome = homeContentView
+        if (!unfolded && !phoneWidgetCanvas &&
+            scaffoldSignature == renderedScaffoldSignature &&
+            ::contentFrame.isInitialized && contentFrame.isAttachedToWindow &&
+            oldHome != null && oldHome.parent === contentFrame
+        ) {
+            android.util.Log.d("TeclasRender", "render() light (scaffold reused)")
+            val idx = contentFrame.indexOfChild(oldHome)
+            contentFrame.removeViewAt(idx)
+            val fresh = home()
+            homeContentView = fresh
+            contentFrame.addView(
+                fresh, idx,
+                FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+            )
+            contentFrame.post { applyLibraryEdgeGestureExclusion() }
+            updateClock()
+            renderHub()
+            renderFavoritesDock()
+            renderRibbon()
+            // Panes/library stay attached above the home region on this tier — no re-show needed.
+            syncNowPlayingCardVisibility()
+            refreshNowPlayingCard()
+            syncDockedSearchStatusBar()
+            return
+        }
+        renderedScaffoldSignature = scaffoldSignature
+        keyViews.clear()
+        keyBounds.clear()
+        dockedStatusShieldView = null
+        dockedFreeformBackdropView = null
+        unfoldedKeyboardSearchOverlayText = null
         // When a keyboard reaches the bottom edge it reserves the nav-button band inside itself (see
         // keyboardBottomPadding), so the root must not reserve it a second time. Only when there is no
         // keyboard down there does the root take the band, to keep home content off the buttons.
@@ -2082,13 +2184,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshNavBarInset()
             insets
         }
+        val homeChild = when {
+            unfolded -> unfoldedHome()
+            phoneWidgetCanvas -> phoneWidgetHome()
+            else -> home()
+        }
+        homeContentView = homeChild
         contentFrame = FrameLayout(this).apply {
             addView(
-                when {
-                    unfolded -> unfoldedHome()
-                    phoneWidgetCanvas -> phoneWidgetHome()
-                    else -> home()
-                },
+                homeChild,
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
@@ -11353,11 +11457,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     preview = r.title.ifBlank { r.text },
                     packageName = r.packageName,
                     color = Neu.PURPLE,
-                    avatar = r.avatar ?: appIconBitmap(r.packageName),
+                    // Cached: this runs inside the widget-stack composition, so an uncached icon
+                    // meant a binder call + Bitmap allocation + Canvas draw per recomposition,
+                    // times up to six alert rows.
+                    avatar = r.avatar ?: alertIconCache.getOrPut(r.packageName) { appIconBitmap(r.packageName) },
                     lastUpdated = r.whenMs
                 )
             }
     }
+
+    private val alertIconCache = HashMap<String, Bitmap?>()
 
     private fun appIconBitmap(pkg: String): Bitmap? = runCatching {
         val d = packageManager.getApplicationIcon(pkg)
@@ -14011,7 +14120,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 setPadding(dp(14), dp(9), dp(14), dp(9))
                 background = recessedDockBackground()
                 favItems.forEachIndexed { index, item ->
-                    addView(dockItemButton(item, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                    addView(dockItemButton(item, index, animateEntrance = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
                         if (index > 0) marginStart = dp(6)
                     })
                 }
@@ -14035,7 +14144,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                         clipToPadding = false
                         oftenApps.forEachIndexed { index, app ->
                             val item = HomeDockItem(app, app.toPaneTarget(), app.shortName, app.brandColor)
-                            addView(dockItemButton(item, index), LinearLayout.LayoutParams(dp(66), dp(64)).apply {
+                            addView(dockItemButton(item, index, animateEntrance = true), LinearLayout.LayoutParams(dp(66), dp(64)).apply {
                                 if (index > 0) marginStart = dp(4)
                             })
                         }
@@ -18827,7 +18936,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // Engines index the dictionary in their constructor — build them here on IO,
                 // publish on Main (constructing them on the main thread stalled the first frame).
                 val engineUnion = PredictionEngine(freqs)
-                val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                // With no personal boosts, freqs IS adaptive.primaryFreqs (loadAdaptive returns one
+                // map for primary/extended) — skip building a second identical index.
+                val enginePrimary = if (adaptive.primaryFreqs === freqs) engineUnion else PredictionEngine(adaptive.primaryFreqs)
                 // Contextual language detection (bilingual users): bias toward the language being written.
                 val langBias = com.fran.teclas.keyboard.unified.LanguageBias(adaptive.perLangWords)
                 // Gboard-style decode-at-space: a trie beam-searcher that reads the whole tap trail.
@@ -18869,6 +18980,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 }
                 launch(Dispatchers.Main) {
                     neuralSwipe = neural.takeIf { it.isReady }
+                    // Close the previous engine before replacing it: each one holds two ORT
+                    // sessions over ~32 MB of models, and a language toggle re-runs this load —
+                    // the overwrite leaked that native memory per toggle.
+                    if (neuralGlideV2 !== neuralV2) neuralGlideV2?.let { runCatching { it.close() } }
                     neuralGlideV2 = neuralV2
                     hybridDecoderV2 = com.fran.teclas.keyboard.neural.HybridGlideDecoder(neuralV2)
                 }
@@ -19308,6 +19423,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                         val bounds = letterKeyBounds()
                         val centers = letterKeyCenters()
                         val freqs = wordlistFrequencies
+                        // Detach the gesture on the main thread: the decode reads it on Default and
+                        // the next swipe may start before it finishes (see snapshotAndClear).
+                        val gestureSnapshot = clf.snapshotAndClear()
                         // One coroutine on the UI scope; heavy work runs off-main. try/finally guarantees
                         // the trail is always cleaned up even if a decoder throws.
                         mediaUiScope.launch {
@@ -19315,7 +19433,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                             try {
                                 val statistical: suspend () -> List<String> = {
                                     kotlinx.coroutines.withContext(Dispatchers.Default) {
-                                        try { clf.getSuggestions(3, contextBoost) } catch (_: Throwable) { emptyList() }
+                                        try { clf.getSuggestionsFor(gestureSnapshot, 3, contextBoost) } catch (_: Throwable) { emptyList() }
                                     }
                                 }
                                 res = if (hybrid != null) {
@@ -19329,7 +19447,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                                     )
                                 }
                             } finally {
-                                runCatching { clf.clear() }
+                                // Buffer already reset by snapshotAndClear — a deferred clear here
+                                // used to wipe the points of a swipe started mid-decode.
                                 fadeGlideTrail()   // schedule the clear FIRST so a later throw can't strand the trail
                                 val results = res?.words ?: emptyList()
                                 if (results.isNotEmpty()) {
@@ -19338,7 +19457,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                                     handleGlideResult(results, neuralPick)
                                     glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
                                     invalidate()
-                                    res?.let { glideLearning.recordAcceptance(top, pathV2, bounds, it.source, it.agreed) }
+                                    // Off-main: JSON parse + file append; on-main it hitched every glide commit.
+                                    res?.let { r ->
+                                        launcherPredictExecutor.execute {
+                                            runCatching { glideLearning.recordAcceptance(top, pathV2, bounds, r.source, r.agreed) }
+                                        }
+                                    }
                                 } else if (t.size >= 3) handleSwipeFallback(t)
                             }
                         }
@@ -20297,8 +20421,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             if (libraryOpen) refreshLibraryContent()
         }
         libraryRefreshDebounce = r
-        // Instant refresh for ≤2 chars (first letters feel snappy), debounce longer queries
-        handler.postDelayed(r, if (query.length <= 2) 0L else 120L)
+        // Short queries get a ~3-frame debounce: 0ms meant the first two keystrokes each paid a
+        // full synchronous results rebuild on the same main-loop turn as key handling — exactly
+        // where typing latency is judged. 45ms still reads as instant but lets a fast typist's
+        // consecutive keys coalesce into one rebuild.
+        handler.postDelayed(r, if (query.length <= 2) 45L else 120L)
         scheduleQuickSearches()
     }
 
@@ -20441,7 +20568,7 @@ Question: $prompt"""
         val refinement = placesRefinement
         // A chip narrows the base subject: "Sushi" + restaurants → "sushi restaurants".
         val subject = refinement?.let { "${it.lowercase(Locale.US)} ${intent.subject}" } ?: intent.subject
-        val fetchKey = "$q ${refinement.orEmpty()}"
+        val fetchKey = "$q\u0000${refinement.orEmpty()}"
         if (fetchKey == placesQuery) return
         val r = Runnable {
             placesDebounce = null
@@ -21279,6 +21406,10 @@ Question: $prompt"""
 
     private fun showMusicProgressInHintBar() {
         if (!::hintBar.isInitialized) return
+        // Idempotent: a re-show without this left the previous overlay's 1 Hz runnable alive
+        // (it self-reschedules as long as musicProgressBar != null) — a duplicate permanent
+        // ticker per re-entry.
+        hideMusicProgressFromHintBar()
         for (i in 0 until hintBar.childCount) hintBar.getChildAt(i).visibility = View.GONE
 
         val trackNameView = TextView(this).apply {
@@ -23022,11 +23153,39 @@ Question: $prompt"""
         runCatching { unregisterReceiver(dockTimeTickReceiver) }
     }
 
+    // What the dock currently shows: full signature (identity + badges + style) decides whether a
+    // standalone rebuild can be skipped outright; the id list alone decides whether a rebuild
+    // replays the staggered entrance animation. Splitting the two stops the dock from re-blinking
+    // on every render — the fade/scale-in only runs when the *apps in the dock* actually changed,
+    // not when a ring lit up or an unrelated surface triggered a re-render.
+    private var renderedDockSignature: String? = null
+    private var renderedDockIds: String? = null
+
     internal fun renderFavoritesDock() {
         if (!::favoritesDockView.isInitialized) return
         refreshCleanSpacesDockAccent(animate = true)
-        favoritesDockView.removeAllViews()
         val dockItems = homeDockItems()
+        val ids = dockItems.joinToString(",") { it.target.id }
+        val signature = buildString {
+            append(showDockLabels()).append('|').append(isUnfoldedInnerLayoutActive()).append('\n')
+            dockItems.forEach {
+                append(it.target.id).append('|').append(it.label).append('|').append(it.accent)
+                    .append('|').append(it.predicted).append('|').append(it.liveKey)
+                    .append('|').append(it.mediaLive).append('\n')
+            }
+        }
+        // Same items already on screen → skip the rebuild (a full render() recreates the dock view
+        // empty, so that path never lands here). Badges and the context face refresh in place.
+        if (signature == renderedDockSignature && favoritesDockView.childCount > 0) {
+            refreshDockLiveBadges()
+            renderFavoritesDockContext()
+            normalizeFavoritesDockFaceState()
+            return
+        }
+        val animateEntrance = ids != renderedDockIds
+        renderedDockSignature = signature
+        renderedDockIds = ids
+        favoritesDockView.removeAllViews()
         if (dockItems.isEmpty()) {
             favoritesDockView.addView(mono("LONG-PRESS APPS IN THE LIBRARY TO ADD FAVORITES", 8.5f, InkDim).apply {
                 gravity = Gravity.CENTER
@@ -23037,7 +23196,7 @@ Question: $prompt"""
             return
         }
         dockItems.take(DOCK_APP_LIMIT).forEachIndexed { index, item ->
-            favoritesDockView.addView(dockItemButton(item, index), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+            favoritesDockView.addView(dockItemButton(item, index, animateEntrance), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
                 if (index > 0) marginStart = dp(6)
             })
         }
@@ -23563,7 +23722,7 @@ Question: $prompt"""
         else listOf(liveItem) + pinned.filterIndexed { i, _ -> i != displaced }
     }
 
-    private fun dockItemButton(item: HomeDockItem, index: Int): View {
+    private fun dockItemButton(item: HomeDockItem, index: Int, animateEntrance: Boolean): View {
         val target = item.target
         val showLabel = showDockLabels()
         val libraryApp = item.app?.toLibraryApp() ?: if (target.kind == PaneKind.MUSIC) musicLibraryApp() else null
@@ -23574,18 +23733,20 @@ Question: $prompt"""
             clipToPadding = false
             isClickable = true
             setPadding(dp(2), 0, dp(2), 0)
-            alpha = 0f
-            scaleX = 0.92f
-            scaleY = 0.92f
-            postDelayed({
-                animate()
-                    .alpha(1f)
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setDuration(180)
-                    .setInterpolator(DecelerateInterpolator())
-                    .start()
-            }, (index * 24L).coerceAtMost(120L))
+            if (animateEntrance) {
+                alpha = 0f
+                scaleX = 0.92f
+                scaleY = 0.92f
+                postDelayed({
+                    animate()
+                        .alpha(1f)
+                        .scaleX(1f)
+                        .scaleY(1f)
+                        .setDuration(180)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }, (index * 24L).coerceAtMost(120L))
+            }
             val iconFrame = if (isUnfoldedInnerLayoutActive()) dp(58) else dockIconFrameSize(showLabel)
             addView(FrameLayout(context).apply {
                 clipChildren = false
@@ -25263,6 +25424,7 @@ Question: $prompt"""
             .putString(APP_USAGE_PREF, counts.toString())
             .putString(APP_LAST_LAUNCH_PREF, launches.toString())
             .apply()
+        appUsageCountsCache = null
         MostUsedAppsWidget.refreshAll(this)
         val source = pendingLaunchSource
         pendingLaunchSource = LaunchSource.OTHER
@@ -25321,7 +25483,13 @@ Question: $prompt"""
         return runCatching { Predictor.topApps(this, n, candidates, snap) }.getOrNull()
     }
 
+    // Parsed once and kept: this was re-parsed from the prefs JSON blob on every dock rebuild
+    // (twice, via homeDockApps and the predicted-filler pass) — a main-thread parse of every app
+    // ever launched, per render. Invalidated on the one write path (recordAppLaunch).
+    private var appUsageCountsCache: Map<String, Int>? = null
+
     private fun appUsageCounts(): Map<String, Int> {
+        appUsageCountsCache?.let { return it }
         val raw = prefs().getString(APP_USAGE_PREF, "{}") ?: "{}"
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return emptyMap()
         return buildMap {
@@ -25330,7 +25498,7 @@ Question: $prompt"""
                 val key = keys.next()
                 put(key, json.optInt(key, 0))
             }
-        }
+        }.also { appUsageCountsCache = it }
     }
 
     private fun appLastLaunches(): Map<String, Long> {

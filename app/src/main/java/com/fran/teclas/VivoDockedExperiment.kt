@@ -161,7 +161,12 @@ internal object VivoDockedExperiment {
         }
     }
 
-    fun injectInput(value: String) {
+    fun injectInput(context: android.content.Context, value: String) {
+        // Experiment-only: the `input` binary needs INJECT_EVENTS, which an app uid doesn't have,
+        // so outside the experiment this fork ALWAYS failed — silently (nothing checked the exit
+        // code), one forked process per keystroke, exactly in the connection-loss window where
+        // typing already felt flaky.
+        if (!isEnabled(context)) return
         val cmd = when (value) {
             "⌫" -> "input keyevent 67"
             "⏎" -> "input keyevent 66"

@@ -93,6 +93,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     // full reseed (two getText* IPC round-trips) on EVERY keystroke. Recognizing a stale position as
     // "one of our own recent edits" lets us keep the already-correct mirror instead of re-reading it.
     private val selfCaretRing = IntArray(32)
+    private val selfCaretTimes = LongArray(32)
     private var selfCaretIdx = 0
 
     // ── Temporary keystroke-path instrumentation ───────────────────────────────────────────────
@@ -173,12 +174,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun recordSelfCaret() {
         selfCaretRing[selfCaretIdx % selfCaretRing.size] = shadowCaret
+        selfCaretTimes[selfCaretIdx % selfCaretTimes.size] = android.os.SystemClock.uptimeMillis()
         selfCaretIdx++
     }
 
     private fun caretIsRecentlyOurs(caret: Int): Boolean {
+        // Time-bounded: a positional match alone misclassified the most common editing gesture
+        // there is. Tapping back into text you just typed lands exactly on a ring position (every
+        // caret the last 32 commits produced is in here), so the stale mirror was kept, and the
+        // next autocorrect deleted characters at the wrong offset. A genuine self-echo selection
+        // callback arrives within a few hundred ms of its commit; anything older is a user move.
+        val now = android.os.SystemClock.uptimeMillis()
         val n = minOf(selfCaretIdx, selfCaretRing.size)
-        for (i in 0 until n) if (selfCaretRing[i] == caret) return true
+        for (i in 0 until n) {
+            if (selfCaretRing[i] == caret && now - selfCaretTimes[i] <= SELF_CARET_ECHO_MS) return true
+        }
         return false
     }
 
@@ -291,6 +301,24 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             (cls == android.text.InputType.TYPE_CLASS_NUMBER &&
                 variation == android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD)
     }
+    /**
+     * Fields whose content must never be corrected, suggested from, or learned: passwords first
+     * (isPasswordField was implemented but never consulted — visible-password fields were being
+     * autocorrected, and letter-only passwords typed three times got PROMOTED into the shared
+     * personal dictionary and resurfaced as suggestions in other apps), plus email/URI fields
+     * where "corrections" mangle addresses.
+     */
+    private fun isSensitiveFieldActive(): Boolean {
+        if (isPasswordField()) return true
+        val t = currentInputEditorInfo?.inputType ?: return false
+        val cls = t and android.text.InputType.TYPE_MASK_CLASS
+        val variation = t and android.text.InputType.TYPE_MASK_VARIATION
+        return cls == android.text.InputType.TYPE_CLASS_TEXT &&
+            (variation == android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS ||
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS ||
+                variation == android.text.InputType.TYPE_TEXT_VARIATION_URI)
+    }
+
     override val hostHapticsEnabled: Boolean get() = imePrefs().getBoolean(HAPTICS_PREF, true)
     override fun onAgenticCommand(text: String) { runAgenticCommand() }
     override fun openHostKeyboardSettings() = openImeSettings()
@@ -730,6 +758,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        // Standard IME hygiene: finalize any composing region a previous IME (or the editor) left
+        // active — this keyboard never composes, and the first commitText would otherwise REPLACE
+        // the leftover composing word instead of inserting after it.
+        if (!restarting) currentInputConnection?.finishComposingText()
         currentEditorPackage = attribute?.packageName?.toString()
         if (shouldDeferToDeck()) {
             hideImeSurface()
@@ -845,6 +877,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         runCatching { spellChecker?.close() }
         runCatching { thumbExecutor.shutdownNow() }
         runCatching { predictExecutor.shutdownNow() }
+        runCatching { geminiExecutor.shutdownNow() }
         if (diagOn) runCatching { diagExecutor.shutdownNow() }
         // stop() also destroys the retained SpeechRecognizer, releasing its bound connection to the
         // system recognition service.
@@ -1698,11 +1731,21 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 if (input != null && autocorrect.undoOnBackspace()) { tapTraceClear(); onTextChanged(); return }
                 tapTracePop()
                 if (input == null) {
-                    VivoDockedExperiment.injectInput("⌫")
-                } else if (input.deleteSurroundingText(1, 0)) {
-                    shadowOnDeleteBefore(1)
+                    VivoDockedExperiment.injectInput(this, "⌫")
                 } else {
-                    keyEvent(KeyEvent.KEYCODE_DEL)
+                    // Delete whole code points: deleteSurroundingText counts UTF-16 units, so one
+                    // unit of an emoji split its surrogate pair, leaving an unpaired high
+                    // surrogate (renders as �) in the field.
+                    val tail = shadowBeforeCursor(2)
+                    val units = if (tail.length >= 2 &&
+                        Character.isLowSurrogate(tail[tail.length - 1]) &&
+                        Character.isHighSurrogate(tail[tail.length - 2])
+                    ) 2 else 1
+                    if (input.deleteSurroundingText(units, 0)) {
+                        shadowOnDeleteBefore(units)
+                    } else {
+                        keyEvent(KeyEvent.KEYCODE_DEL)
+                    }
                 }
                 onTextChanged()
             }
@@ -1712,6 +1755,17 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 keyEvent(KeyEvent.KEYCODE_ENTER)
             }
             "space" -> {
+                // Sensitive fields: no AI commands, no double-space period, no autocorrect, no
+                // sentence fixes, no learning — a space is just a space.
+                val sensitiveField = isSensitiveFieldActive()
+                if (sensitiveField) {
+                    commitValue(" ")
+                    tapTraceClear()
+                    lastSpaceMs = 0L
+                    currentWordEdited = false
+                    pendingCorrection = null
+                    return
+                }
                 if (maybeRunAiCommand()) return
                 // Double-space → ". " via the shared core.
                 val now = System.currentTimeMillis()
@@ -1819,7 +1873,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun commitValue(value: String) {
         val input = currentInputConnection
         if (input != null) { input.commitText(value, 1); shadowOnCommit(value) }
-        else VivoDockedExperiment.injectInput(value)
+        else VivoDockedExperiment.injectInput(this, value)
     }
 
     private fun keyEvent(code: Int) {
@@ -1828,7 +1882,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             input.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, code))
             input.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, code))
         } else {
-            VivoDockedExperiment.injectInput(if (code == KeyEvent.KEYCODE_ENTER) "⏎" else "")
+            VivoDockedExperiment.injectInput(this, if (code == KeyEvent.KEYCODE_ENTER) "⏎" else "")
         }
         // Raw key events move/edit the caret in ways we don't model (ENTER, DEL, DPAD) — drop the
         // mirror; onUpdateSelection reseeds it.
@@ -2003,7 +2057,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 // Engines index the dictionary in their constructor — build them here (off main),
                 // publish on main.
                 val enginePrimary = PredictionEngine(primaryFreqs)
-                val engineExtended = PredictionEngine(extendedFreqs)
+                // loadAdaptive returns the same map for primary and extended today — don't build a
+                // second identical first-letter index (one Entry per word + a full bucket sort).
+                val engineExtended = if (extendedFreqs === primaryFreqs) enginePrimary else PredictionEngine(extendedFreqs)
                 handler.post {
                     glideClassifier = clf
                     glideFreqs = freqs
@@ -2113,22 +2169,35 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         // Third-party apps only. Typing into the launcher's own editor is command/search text, not
         // prose — no AI next-word suggestions there.
         if (isLauncherEditorActive()) return
+        // Never ship a sensitive field's content to a remote model for next-word predictions.
+        if (isSensitiveFieldActive()) return
         if (!ProManager.isUnlocked(this) || !GeminiClient.configured(imePrefs())) return
         val ctx = shadowBeforeCursor(80).trim()
         if (ctx.length < 2) return
         val key = GeminiClient.apiKey(imePrefs())
         val model = GeminiClient.model(imePrefs())
         val r = Runnable {
-            Thread {
+            // Single reused worker, not a Thread per fire — and NOT predictExecutor: a slow
+            // network call must never queue behind (or block) the local prediction pipeline.
+            geminiExecutor.execute {
                 val g = GeminiClient.fetchSuggestions(key, model, ctx)
                 if (g.isNotEmpty()) handler.post {
+                    // Staleness guard: the reply can land seconds later, after the user typed on.
+                    // Without it, the strip's head was replaced with suggestions for old context
+                    // mid-typing (plus an extra layout pass). Only apply if the context still holds.
+                    if (shadowBeforeCursor(80).trim() != ctx) return@post
                     suggestions = (g + suggestions).distinct().take(3)
                     updateStrip()
                 }
-            }.start()
+            }
         }
         geminiDebounce = r
         handler.postDelayed(r, 260L)
+    }
+
+    // Dedicated single thread for Gemini strip suggestions (see scheduleGemini).
+    private val geminiExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "teclas-gemini").apply { isDaemon = true }
     }
 
     private fun scheduleSuggestions() {
@@ -2136,6 +2205,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         chipsDebounce?.let { handler.removeCallbacks(it) }
         // No strip to populate (view not built / not shown) → skip all per-keystroke prediction work.
         if (suggestionStrip == null) return
+        // Password/email/URI fields: no predictions, no precomputed corrections, nothing learned.
+        if (isSensitiveFieldActive()) return
         // Base prediction strip. The debounce only coalesces bursts; the dictionary work itself runs
         // on the prediction thread (never the UI thread), off a text snapshot taken from the shadow
         // mirror on main. While it's at it, the same pass precomputes the space-bar autocorrect
@@ -2333,6 +2404,8 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     /** Debounced trigger fired when a sentence completes; all the real guards live in [runAutoProofread]. */
     private fun scheduleAutoProofread() {
         if (!autoProofreadEnabled() || !nanoSupported || proofreadEnabled()) return
+        // Never run an LLM over a password/email/URI field's content.
+        if (isSensitiveFieldActive()) return
         autoProofreadRunnable?.let { handler.removeCallbacks(it) }
         val r = Runnable { runAutoProofread() }
         autoProofreadRunnable = r
@@ -2370,6 +2443,10 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                     ic2.commitText(corrected, 1)
                     ic2.endBatchEdit()
                     autoProofreadUndo = snapshot to corrected
+                    // Length-preserving rewrites (teh→the) leave the caret index unchanged, so the
+                    // reconciliation in onUpdateSelection kept the PRE-rewrite mirror forever —
+                    // every later correction then edited real text using stale offsets/content.
+                    invalidateShadow()
                     onTextChanged()
                     flashStatus("Grammar fixed · ⌫ to undo", 2600)
                 } else {
@@ -2387,6 +2464,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val before = ic.getTextBeforeCursor(corr.length + 2, 0)?.toString() ?: return false
         if (!before.endsWith(corr)) return false                           // text moved on — normal delete
         ic.beginBatchEdit(); ic.deleteSurroundingText(corr.length, 0); ic.commitText(orig, 1); ic.endBatchEdit()
+        invalidateShadow()   // length-preserving restore would otherwise keep a stale mirror
         lastAutoProofreadText = ""                                          // allow a later re-check
         return true
     }
@@ -2546,41 +2624,63 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
 
     private fun setSuggestionStripExpanded(expanded: Boolean) {
         val strip = suggestionStrip ?: return
+        // Change-gated: this runs on every strip repaint (≈ every keystroke), and the
+        // unconditional requestLayout + applyImeDeckHeight here invalidated layout for the ENTIRE
+        // IME tree — a whole-deck measure/layout pass per key press, undoing the recycled-slot
+        // strip fast path. Only a real expansion/height/visibility change pays for layout now.
+        var changed = false
         if (suggestionStripExpanded != expanded) {
             suggestionStripExpanded = expanded
-            applyImeDeckHeight()
+            changed = true
         }
         val targetHeight = if (expanded) imeSuggestionStripHeight() else 0
         (strip.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
             if (lp.height != targetHeight) {
                 lp.height = targetHeight
                 strip.layoutParams = lp
+                changed = true
             }
         }
-        strip.visibility = if (expanded) View.VISIBLE else View.GONE
-        if (!expanded) strip.background = null
-        strip.requestLayout()
-        applyImeDeckHeight()
+        val targetVisibility = if (expanded) View.VISIBLE else View.GONE
+        if (strip.visibility != targetVisibility) {
+            strip.visibility = targetVisibility
+            changed = true
+        }
+        if (!expanded && strip.background != null) strip.background = null
+        if (changed) {
+            strip.requestLayout()
+            applyImeDeckHeight()
+        }
     }
 
     private fun applyImeDeckHeight() {
         val band = imeNavBarInset()
         val target = imeKeyboardHeight() + band
         val wantBottom = dp(8) + band
+        var changed = false
         deckView?.let { deck ->
             if (deck.paddingBottom != wantBottom) {
                 deck.setPadding(deck.paddingLeft, deck.paddingTop, deck.paddingRight, wantBottom)
+                changed = true
+            }
+            if (deck.minimumHeight != target) {
+                deck.minimumHeight = target
+                changed = true
+            }
+            deck.layoutParams?.let { lp ->
+                if (lp.height != target) {
+                    lp.height = target
+                    deck.layoutParams = lp
+                    changed = true
+                }
             }
         }
-        deckView?.minimumHeight = target
-        deckView?.layoutParams?.let { lp ->
-            if (lp.height != target) {
-                lp.height = target
-                deckView?.layoutParams = lp
-            }
+        // setPadding/layoutParams already schedule their own layout; the explicit whole-tree
+        // requestLayout only runs when something actually moved.
+        if (changed) {
+            deckView?.requestLayout()
+            imeRoot?.requestLayout()
         }
-        deckView?.requestLayout()
-        imeRoot?.requestLayout()
     }
 
     private var stripWellCache: Drawable? = null
@@ -2863,6 +2963,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
         val prefix = if (before.isEmpty() || before.endsWith(" ")) "" else " "
         val cased = if (before.isEmpty() || before.trimEnd().endsWith(".")) t.replaceFirstChar { it.titlecase(java.util.Locale.US) } else t
         ic.commitText("$prefix$cased ", 1)
+        invalidateShadow()   // raw-IC commit bypasses shadowOnCommit; drop the mirror so it reseeds
         keyHaptic("space")
     }
 
@@ -3275,7 +3376,7 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
     private fun polishAvailable(): Boolean =
         ProManager.isUnlocked(this) && GeminiClient.configured(imePrefs()) &&
             shadowBeforeCursor(200)
-                .trim().split(Regex("\\s+")).count { it.isNotEmpty() } >= 3
+                .trim().split(whitespaceRe).count { it.isNotEmpty() } >= 3
 
     private fun updateStrip() {
         perfIpcReads = 0
@@ -3995,20 +4096,25 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         val key = GeminiClient.apiKey(imePrefs()); val model = GeminiClient.model(imePrefs())
         agenticStatus = "🤖 Working…"
         updateStrip()
-        Thread {
+        geminiExecutor.execute {
             val result = GeminiClient.fetchTransform(key, model, text, instruction)
             handler.post {
                 agenticStatus = null
-                if (result != null && result != text) {
-                    ic.beginBatchEdit()
-                    ic.deleteSurroundingText(text.length, 0)
-                    ic.commitText(result, 1)
-                    ic.endBatchEdit()
+                // Same guard as runAutoProofread: only rewrite if the snapshot still sits before
+                // the cursor — the user may have typed on or moved while the LLM ran.
+                val ic2 = currentInputConnection
+                val cur = ic2?.getTextBeforeCursor(text.length + 4, 0)?.toString()
+                if (result != null && result != text && ic2 != null && cur != null && cur.endsWith(text)) {
+                    ic2.beginBatchEdit()
+                    ic2.deleteSurroundingText(text.length, 0)
+                    ic2.commitText(result, 1)
+                    ic2.endBatchEdit()
+                    invalidateShadow()
                 }
                 onTextChanged()
                 updateStrip()
             }
-        }.start()
+        }
     }
 
     // Hold the space bar for Gemini writing assist: continue / draft from what's already in the
@@ -4066,22 +4172,34 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun runAiTransform(deleteLen: Int, content: String, instruction: String) {
         val ic = currentInputConnection ?: return
+        // Snapshot what will be deleted: the LLM takes seconds, and the user may keep typing (or
+        // tap elsewhere) meanwhile. Blindly deleting deleteLen chars before wherever the cursor is
+        // when the reply lands spliced the transform mid-text and ate freshly typed characters.
+        val expected = ic.getTextBeforeCursor(deleteLen, 0)?.toString() ?: return
         val key = GeminiClient.apiKey(imePrefs())
         val model = GeminiClient.model(imePrefs())
         polishing = true
         keyHaptic("enter")
         updateStrip()
-        Thread {
+        geminiExecutor.execute {
             val result = GeminiClient.fetchTransform(key, model, content, instruction)
             handler.post {
                 polishing = false
-                ic.beginBatchEdit()
-                ic.deleteSurroundingText(deleteLen, 0)
-                ic.commitText((result ?: content) + " ", 1)
-                ic.endBatchEdit()
+                val ic2 = currentInputConnection
+                val cur = ic2?.getTextBeforeCursor(deleteLen + 4, 0)?.toString()
+                if (ic2 == null || cur == null || !cur.endsWith(expected)) {
+                    flashStatus("Field changed — AI edit skipped", 2200)
+                    updateStrip()
+                    return@post
+                }
+                ic2.beginBatchEdit()
+                ic2.deleteSurroundingText(deleteLen, 0)
+                ic2.commitText((result ?: content) + " ", 1)
+                ic2.endBatchEdit()
+                invalidateShadow()
                 onTextChanged()
             }
-        }.start()
+        }
     }
 
     // AI Polish: rewrite the whole field with Gemini (Pro + API key), shown as a sparkle in the strip.
@@ -4137,10 +4255,19 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 polishing = false
                 when {
                     result != null && result != text -> {
-                        ic.beginBatchEdit()
-                        ic.deleteSurroundingText(text.length, 0)
-                        ic.commitText(result, 1)
-                        ic.endBatchEdit()
+                        // Only rewrite if the polished snapshot still sits before the cursor —
+                        // the user may have typed on or repositioned while the model ran.
+                        val ic2 = currentInputConnection
+                        val cur = ic2?.getTextBeforeCursor(text.length + 4, 0)?.toString()
+                        if (ic2 != null && cur != null && cur.endsWith(text)) {
+                            ic2.beginBatchEdit()
+                            ic2.deleteSurroundingText(text.length, 0)
+                            ic2.commitText(result, 1)
+                            ic2.endBatchEdit()
+                            invalidateShadow()
+                        } else {
+                            flashStatus("Field changed — polish skipped", 2200)
+                        }
                         onTextChanged()
                     }
                     result == text -> { flashStatus("Looks good ✓"); onTextChanged() }
@@ -4555,6 +4682,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                         val bounds = letterKeyBounds()
                         val centers = letterKeyCenters()
                         val freqs = glideFreqs
+                        // Detach the gesture on the main thread: the decode below reads it on
+                        // Dispatchers.Default, and the next swipe may start before it finishes.
+                        val gestureSnapshot = clf.snapshotAndClear()
                         glideScope.launch {
                             // Hybrid fuses neural + statistical (falls back to statistical-only when
                             // the neural model isn't present); geometric trace stays the last resort.
@@ -4562,7 +4692,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                             // in the pool for languagePreferredOrder to promote.
                             val statistical: suspend () -> List<String> = {
                                 withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    try { clf.getSuggestions(6, contextBoost) }
+                                    try { clf.getSuggestionsFor(gestureSnapshot, 6, contextBoost) }
                                     catch (e: Throwable) { emptyList() }
                                 }
                             }
@@ -4576,7 +4706,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                                     else com.fran.teclas.keyboard.neural.GlideSource.STATISTICAL
                                 )
                             }
-                            runCatching { clf.clear() }
+                            // No clear() here: the buffer was reset at snapshotAndClear above, and a
+                            // deferred clear used to wipe the points of a swipe started mid-decode.
                             val results = languagePreferredOrder(res.words)
                             if (results.isNotEmpty()) {
                                 if (hapticsOn()) haptics().glideCommit()
@@ -4589,7 +4720,11 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                                 glideCore.commitWord(top)
                                 recordCommittedWordContext()
                                 // Online-learning: record the accepted glide for personal frequency + corpus.
-                                glideLearning.recordAcceptance(top, neuralPath, bounds, res.source, res.agreed)
+                                // Off-main: it parses/re-serializes a JSON blob and appends to the
+                                // sample file — a hitch exactly at glide-commit time when run here.
+                                predictExecutor.execute {
+                                    runCatching { glideLearning.recordAcceptance(top, neuralPath, bounds, res.source, res.agreed) }
+                                }
                                 // Remember it so a follow-up correction can re-label the swipe.
                                 lastGlidePath = neuralPath; lastGlideBounds = bounds; lastGlideWord = top
                                 // Show the swipe's other decodings as tap-to-correct alternatives
@@ -5385,6 +5520,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         internal var instance: TeclasImeService? = null
 
         private const val PREFS_NAME = "teclas"
+        /** How long a self-produced caret position counts as "our echo" (see caretIsRecentlyOurs). */
+        private const val SELF_CARET_ECHO_MS = 900L
         // "_ime" suffix: the IME and the docked launcher keyboard have different geometries — a
         // shared key made each one restore the other's per-key offsets against the wrong layout.
         private const val TOUCH_MODEL_PREF = "touch_model_ime_v2"

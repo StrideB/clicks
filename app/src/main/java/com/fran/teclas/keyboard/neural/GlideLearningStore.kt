@@ -62,8 +62,19 @@ class GlideLearningStore(context: Context) {
 
     private fun bumpFrequency(word: String) {
         val raw = prefs.getString(KEY_COUNTS, null)
-        val counts = if (raw != null) JSONObject(raw) else JSONObject()
+        var counts = if (raw != null) JSONObject(raw) else JSONObject()
         counts.put(word, counts.optInt(word, 0) + 1)
+        // Cap like UserDictionary.MAX_TRACKED: this blob held every word ever glided and was
+        // re-parsed/re-serialized per glide, growing without bound. Past the cap, drop the
+        // count-1 tail — losing a count only delays a word's personal boost by one accept.
+        if (counts.length() > MAX_TRACKED) {
+            val keep = JSONObject()
+            for (k in counts.keys()) {
+                val c = counts.optInt(k, 0)
+                if (c >= 2) keep.put(k, c)
+            }
+            counts = keep
+        }
         prefs.edit().putString(KEY_COUNTS, counts.toString()).apply()
     }
 
@@ -130,5 +141,7 @@ class GlideLearningStore(context: Context) {
         const val CORPUS_FILE = "glide_corpus.jsonl"
         const val MAX_BYTES = 4L * 1024 * 1024   // 4 MB cap
         const val MAX_BOOST = 0.35f
+        /** Cap on tracked personal-frequency words; past it the count-1 tail is dropped. */
+        const val MAX_TRACKED = 400
     }
 }

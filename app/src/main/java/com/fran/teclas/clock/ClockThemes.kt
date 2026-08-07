@@ -225,9 +225,21 @@ class ClockWidgetView(context: Context) : View(context) {
         super.onDetachedFromWindow()
     }
 
+    // A stopped activity keeps its window, so the home clock stays *attached* the whole time the
+    // launcher sits backgrounded — detach alone never fired, and the ticker kept waking the main
+    // thread (once per second on the seconds themes) behind whatever app was in front. Visibility
+    // aggregation is the signal that actually tracks screen presence.
+    private var windowVisible = true
+
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        windowVisible = isVisible
+        if (isVisible) rescheduleTicker() else removeCallbacks(ticker)
+    }
+
     private fun rescheduleTicker() {
         removeCallbacks(ticker)
-        if (isAttachedToWindow && previewState == null) post(ticker)
+        if (isAttachedToWindow && windowVisible && previewState == null) post(ticker)
     }
 
     private fun nextMinuteDelay(): Long {
