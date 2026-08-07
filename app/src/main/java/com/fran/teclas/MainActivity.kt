@@ -18936,7 +18936,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 // Engines index the dictionary in their constructor — build them here on IO,
                 // publish on Main (constructing them on the main thread stalled the first frame).
                 val engineUnion = PredictionEngine(freqs)
-                val enginePrimary = PredictionEngine(adaptive.primaryFreqs)
+                // With no personal boosts, freqs IS adaptive.primaryFreqs (loadAdaptive returns one
+                // map for primary/extended) — skip building a second identical index.
+                val enginePrimary = if (adaptive.primaryFreqs === freqs) engineUnion else PredictionEngine(adaptive.primaryFreqs)
                 // Contextual language detection (bilingual users): bias toward the language being written.
                 val langBias = com.fran.teclas.keyboard.unified.LanguageBias(adaptive.perLangWords)
                 // Gboard-style decode-at-space: a trie beam-searcher that reads the whole tap trail.
@@ -18978,6 +18980,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                 }
                 launch(Dispatchers.Main) {
                     neuralSwipe = neural.takeIf { it.isReady }
+                    // Close the previous engine before replacing it: each one holds two ORT
+                    // sessions over ~32 MB of models, and a language toggle re-runs this load —
+                    // the overwrite leaked that native memory per toggle.
+                    if (neuralGlideV2 !== neuralV2) neuralGlideV2?.let { runCatching { it.close() } }
                     neuralGlideV2 = neuralV2
                     hybridDecoderV2 = com.fran.teclas.keyboard.neural.HybridGlideDecoder(neuralV2)
                 }
@@ -19417,6 +19423,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                         val bounds = letterKeyBounds()
                         val centers = letterKeyCenters()
                         val freqs = wordlistFrequencies
+                        // Detach the gesture on the main thread: the decode reads it on Default and
+                        // the next swipe may start before it finishes (see snapshotAndClear).
+                        val gestureSnapshot = clf.snapshotAndClear()
                         // One coroutine on the UI scope; heavy work runs off-main. try/finally guarantees
                         // the trail is always cleaned up even if a decoder throws.
                         mediaUiScope.launch {
@@ -19424,7 +19433,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                             try {
                                 val statistical: suspend () -> List<String> = {
                                     kotlinx.coroutines.withContext(Dispatchers.Default) {
-                                        try { clf.getSuggestions(3, contextBoost) } catch (_: Throwable) { emptyList() }
+                                        try { clf.getSuggestionsFor(gestureSnapshot, 3, contextBoost) } catch (_: Throwable) { emptyList() }
                                     }
                                 }
                                 res = if (hybrid != null) {
@@ -19438,7 +19447,8 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                                     )
                                 }
                             } finally {
-                                runCatching { clf.clear() }
+                                // Buffer already reset by snapshotAndClear — a deferred clear here
+                                // used to wipe the points of a swipe started mid-decode.
                                 fadeGlideTrail()   // schedule the clear FIRST so a later throw can't strand the trail
                                 val results = res?.words ?: emptyList()
                                 if (results.isNotEmpty()) {
@@ -19447,7 +19457,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                                     handleGlideResult(results, neuralPick)
                                     glideRecognizedColor = suggestionStripAppColor(results)  // tint trail to app
                                     invalidate()
-                                    res?.let { glideLearning.recordAcceptance(top, pathV2, bounds, it.source, it.agreed) }
+                                    // Off-main: JSON parse + file append; on-main it hitched every glide commit.
+                                    res?.let { r ->
+                                        launcherPredictExecutor.execute {
+                                            runCatching { glideLearning.recordAcceptance(top, pathV2, bounds, r.source, r.agreed) }
+                                        }
+                                    }
                                 } else if (t.size >= 3) handleSwipeFallback(t)
                             }
                         }

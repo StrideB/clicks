@@ -862,12 +862,38 @@ class DockedKeyboardService : Service() {
     }
 
     /** Repaint the suggestion strip from the current in-progress word. */
+    private var suggestDebounce: Runnable? = null
+    private val suggestExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "docked-suggest").apply { isDaemon = true }
+    }
+
     private fun refreshSuggestions() {
+        // Debounced + off-main: this used to run a synchronous ~400-candidate weighted
+        // edit-distance scan plus a full strip rebuild on the main thread on EVERY key — the
+        // docked-over-app typing lag the launcher-side strip already fixed with exactly this
+        // debounce-and-background shape. Stale results are dropped if the word moved on.
+        suggestDebounce?.let { bgHandler.removeCallbacks(it) }
+        val r = Runnable {
+            suggestDebounce = null
+            val p = predictor
+            val word = currentDraftWord()
+            if (p == null || word.isEmpty()) {
+                renderSuggestions(emptyList())
+                return@Runnable
+            }
+            suggestExecutor.execute {
+                val sugg = runCatching {
+                    p.getSuggestions(word, 3).filterNot { it.equals(word, ignoreCase = true) }
+                }.getOrDefault(emptyList())
+                bgHandler.post { if (currentDraftWord() == word) renderSuggestions(sugg) }
+            }
+        }
+        suggestDebounce = r
+        bgHandler.postDelayed(r, 60L)
+    }
+
+    private fun renderSuggestions(sugg: List<String>) {
         val strip = suggestionStrip ?: return
-        val p = predictor
-        val word = currentDraftWord()
-        val sugg = if (p != null && word.length >= 1)
-            p.getSuggestions(word, 3).filterNot { it.equals(word, ignoreCase = true) } else emptyList()
         strip.removeAllViews()
         if (sugg.isEmpty()) { strip.visibility = View.GONE; return }
         strip.visibility = View.VISIBLE
@@ -1509,6 +1535,7 @@ class DockedKeyboardService : Service() {
         slideSettleAnim?.cancel()
         slideSettleAnim = null
         bgHandler.removeCallbacksAndMessages(null)
+        runCatching { suggestExecutor.shutdownNow() }
         predictor = null
         VivoDockedExperiment.clearViewportTruncation(this)
         super.onDestroy()
