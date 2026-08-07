@@ -240,7 +240,7 @@ class StatisticalGlideTypingClassifier {
             fun generateIdealGestures(word: String, keys: HashMap<Int, KeyInfo>): List<Gesture> {
                 val straight = Gesture()
                 val loops = Gesture()
-                var prev = ' '
+                var prev = '\u0000'
                 var hasLoops = false
 
                 for (c in word) {

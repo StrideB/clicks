@@ -801,9 +801,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val homeTileViews = mutableMapOf<String, FrameLayout>()
     private lateinit var sizeValueView: TextView
     private lateinit var suggestionBarView: LinearLayout
+    // Notification-driven refreshes owed from while the launcher was backgrounded; consumed once
+    // in onResume. See the onBriefChanged / prefsListener foreground gates.
+    private var pendingBriefRefresh = false
+    private var pendingHubRefresh = false
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == HUB_MESSAGES_PREF) {
-            runOnUiThread { refreshHubMessagesFromPrefs() }
+            // Backgrounded, this was a JSON parse + hub row rebuild + widget-stack recompose +
+            // semantic re-embed per notification event. One catch-up on resume covers it.
+            runOnUiThread { if (launcherInForeground) refreshHubMessagesFromPrefs() else pendingHubRefresh = true }
         } else if (key == ThemeRepository.ACTIVE_THEME_ID_PREF ||
             key == ThemeRepository.THEME_WALLPAPER_ID_PREF ||
             key == ThemeRepository.THEME_APPLY_VERSION_PREF
@@ -909,7 +915,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         semanticModelPickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
         appWidgetManager = AppWidgetManager.getInstance(this)
         appWidgetHost = AppWidgetHost(this, WIDGET_HOST_ID)
-        appWidgetHost.startListening()
+        // Listening is visibility-scoped in onStart/onStop (Launcher3-style): a default launcher's
+        // activity is effectively never destroyed, so listening from here meant every hosted
+        // widget's RemoteViews refresh woke and inflated in this process even after hours in the
+        // background.
         spaceBoardController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
         homeLeftController = com.fran.teclas.grid.SpaceBoardController(this, SpaceBoardCallbacks())
         // One-time reset: earlier builds auto-seeded boards with predicted apps; the board now
@@ -979,10 +988,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // refreshDebounced mutates its Job field.
         TeclasNotificationListener.onBriefChanged = {
             runOnUiThread {
-                if (todayEnabled) briefRepository.refreshDebounced()
-                if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
-                // Informational notifications feed the widget stack — refresh it too.
-                if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                // The tail here is heavy — a brief LLM generation plus a per-Space rank generation
+                // and a widget-stack recomposition — and this fires for every changed notification
+                // all day, launcher visible or not (the listener lives in our process, so the
+                // process never dies). Backgrounded, that was continuous inference the user reads
+                // as "the phone runs warm". Defer to a single catch-up refresh on resume instead.
+                if (!launcherInForeground) {
+                    pendingBriefRefresh = true
+                } else {
+                    if (todayEnabled) briefRepository.refreshDebounced()
+                    if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
+                    // Informational notifications feed the widget stack — refresh it too.
+                    if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                }
             }
         }
         // Live-dock state: fires only on real transitions (badge membership, call/timer start-stop,
@@ -1054,7 +1072,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         mediaUiScope.launch {
             mediaSessionSource.nowPlaying.collect { info ->
                 syncNowPlayingCardVisibility()
-                refreshNowPlayingCard()
+                // No refreshNowPlayingCard() here: the card's composition observes this same flow
+                // via collectAsState, so recomposition already covers media changes — the manual
+                // setContent was a second full rebuild of the widget stack per emission.
                 // If the active source app changed while the music pane is open, rebuild the
                 // dock so it can switch between the click wheel and simple transport controls.
                 val src = info?.sourcePackage
@@ -1190,6 +1210,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return false
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Hosted widget updates only matter while we're on screen; see the note at host creation.
+        if (::appWidgetHost.isInitialized) runCatching { appWidgetHost.startListening() }
+    }
+
+    override fun onStop() {
+        if (::appWidgetHost.isInitialized) runCatching { appWidgetHost.stopListening() }
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         // Demo spoof: if a demo location is set (and the mock-location op is granted), push it into
@@ -1235,6 +1266,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // drift owns the motion, since the two would fight.
         ensureBillingConnected()
         val now = System.currentTimeMillis()
+        // Catch up on notification-driven work deferred while backgrounded (the per-notification
+        // pipeline is foreground-gated): one hub reload and one brief refresh, however many
+        // notifications arrived in the meantime.
+        if (pendingHubRefresh) {
+            pendingHubRefresh = false
+            refreshHubMessagesFromPrefs()
+            lastHubLoadMs = now
+        }
+        if (pendingBriefRefresh) {
+            pendingBriefRefresh = false
+            if (todayEnabled && ::briefRepository.isInitialized) briefRepository.refreshDebounced()
+            if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
+            if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+        }
         if (demoModeEnabled()) {
             applyDemoShowcaseData(loadVisualStage = false)
         } else {
@@ -1407,7 +1452,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         runCatching { unregisterReceiver(packageChangeReceiver) }
         runCatching { unregisterReceiver(configurationChangeReceiver) }
         if (::mediaSessionSource.isInitialized) mediaSessionSource.stop()
-        if (::appWidgetHost.isInitialized) appWidgetHost.stopListening()
+        // Widget-host listening is stopped in onStop, which always precedes destruction.
         TeclasNotificationListener.onBriefChanged = null
         TeclasNotificationListener.onDockStateChanged = null
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
@@ -11353,11 +11398,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     preview = r.title.ifBlank { r.text },
                     packageName = r.packageName,
                     color = Neu.PURPLE,
-                    avatar = r.avatar ?: appIconBitmap(r.packageName),
+                    // Cached: this runs inside the widget-stack composition, so an uncached icon
+                    // meant a binder call + Bitmap allocation + Canvas draw per recomposition,
+                    // times up to six alert rows.
+                    avatar = r.avatar ?: alertIconCache.getOrPut(r.packageName) { appIconBitmap(r.packageName) },
                     lastUpdated = r.whenMs
                 )
             }
     }
+
+    private val alertIconCache = HashMap<String, Bitmap?>()
 
     private fun appIconBitmap(pkg: String): Bitmap? = runCatching {
         val d = packageManager.getApplicationIcon(pkg)
@@ -20441,7 +20491,7 @@ Question: $prompt"""
         val refinement = placesRefinement
         // A chip narrows the base subject: "Sushi" + restaurants → "sushi restaurants".
         val subject = refinement?.let { "${it.lowercase(Locale.US)} ${intent.subject}" } ?: intent.subject
-        val fetchKey = "$q ${refinement.orEmpty()}"
+        val fetchKey = "$q\u0000${refinement.orEmpty()}"
         if (fetchKey == placesQuery) return
         val r = Runnable {
             placesDebounce = null
@@ -21279,6 +21329,10 @@ Question: $prompt"""
 
     private fun showMusicProgressInHintBar() {
         if (!::hintBar.isInitialized) return
+        // Idempotent: a re-show without this left the previous overlay's 1 Hz runnable alive
+        // (it self-reschedules as long as musicProgressBar != null) — a duplicate permanent
+        // ticker per re-entry.
+        hideMusicProgressFromHintBar()
         for (i in 0 until hintBar.childCount) hintBar.getChildAt(i).visibility = View.GONE
 
         val trackNameView = TextView(this).apply {

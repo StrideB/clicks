@@ -31,12 +31,11 @@ class TeclasNotificationListener : NotificationListenerService() {
     override fun onListenerDisconnected() {
         super.onListenerDisconnected()
         if (instance === this) instance = null
-        // Iterating a synchronizedMap needs the lock held for the whole sweep, else a concurrent
-        // post could mutate it mid-iteration and throw ConcurrentModificationException.
-        synchronized(notificationAvatars) {
-            notificationAvatars.values.forEach { runCatching { it.recycle() } }
-            notificationAvatars.clear()
-        }
+        // Never recycle: these bitmaps are shared with briefRecords and live Compose UI (the
+        // alerts widget and Today cards draw them), so recycle() here crashed the launcher with
+        // "trying to use a recycled bitmap" on the next redraw. They're ~36 KB each and
+        // size-capped — dropping the reference and letting GC own them is the correct teardown.
+        synchronized(notificationAvatars) { notificationAvatars.clear() }
         notificationIntents.clear()
         replyActions.clear()
         synchronized(briefRecords) { briefRecords.clear() }
@@ -70,14 +69,27 @@ class TeclasNotificationListener : NotificationListenerService() {
         notificationAvatar(sbn.notification)?.let { newBitmap ->
             // Atomic size-check + FIFO evict + put: without the lock, two posts could each see
             // size < MAX, both put, and overflow the cap — or evict the same key twice.
+            // Evicted bitmaps are NOT recycled: briefRecords caps at 40 while this map caps at 20,
+            // so an evicted key's record routinely still holds (and Compose still draws) the same
+            // Bitmap — recycling it crashed the launcher. GC owns them.
             synchronized(notificationAvatars) {
                 if (notificationAvatars.size >= MAX_AVATARS) {
                     val evict = notificationAvatars.keys.firstOrNull()
-                    if (evict != null) notificationAvatars.remove(evict)?.let { runCatching { it.recycle() } }
+                    if (evict != null) notificationAvatars.remove(evict)
                 }
                 notificationAvatars[sbn.key] = newBitmap
             }
         }
+
+        // Identical repost already at the head → skip the write entirely. The lastUpdated stamp
+        // below makes every serialization unique, so an unconditional write defeated
+        // SharedPreferences' equal-value suppression and re-rendered the hub + widget stack for
+        // every heartbeat repost of an unchanged summary notification.
+        val all = readMessages()
+        val head = all.firstOrNull()
+        if (head != null && head.optString("key") == sbn.key &&
+            head.optString("sender") == sender.trim() && head.optString("preview") == preview
+        ) return
 
         val item = JSONObject()
             .put("key", sbn.key)
@@ -88,7 +100,7 @@ class TeclasNotificationListener : NotificationListenerService() {
             .put("color", colorForPackage(sbn.packageName))
             .put("lastUpdated", System.currentTimeMillis())
 
-        val current = readMessages().filterNot { it.optString("key") == sbn.key }
+        val current = all.filterNot { it.optString("key") == sbn.key }
         val next = JSONArray()
         next.put(item)
         current.take(MAX_MESSAGES - 1).forEach { next.put(it) }
@@ -228,14 +240,20 @@ class TeclasNotificationListener : NotificationListenerService() {
         notificationIntents.remove(sbn.key)
         replyActions.remove(sbn.key)
         // Reply PendingIntents die with the notification, so the brief must drop this record and
-        // re-collect. Do NOT recycle the avatar here — it is shared with notificationAvatars below.
+        // re-collect. The avatar is dropped but never recycled — other brief records and live
+        // Compose UI may still hold the same Bitmap; GC owns it.
         val removedBrief = briefRecords.remove(sbn.key) != null
-        notificationAvatars.remove(sbn.key)?.let { runCatching { it.recycle() } }
-        val next = JSONArray()
-        readMessages()
-            .filterNot { it.optString("key") == sbn.key }
-            .forEach { next.put(it) }
-        prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
+        notificationAvatars.remove(sbn.key)
+        // Only write (and wake the launcher's prefs listener) when this key was actually a hub
+        // message: this path runs for EVERY notification removed system-wide, and the
+        // unconditional rewrite re-rendered the hub for removals it never showed.
+        val all = readMessages()
+        val remaining = all.filterNot { it.optString("key") == sbn.key }
+        if (remaining.size != all.size) {
+            val next = JSONArray()
+            remaining.forEach { next.put(it) }
+            prefs().edit().putString(HUB_MESSAGES_PREF, next.toString()).apply()
+        }
         if (removedBrief) onBriefChanged?.invoke()
     }
 
@@ -403,12 +421,11 @@ class TeclasNotificationListener : NotificationListenerService() {
 
     private fun Drawable.toBitmap(width: Int, height: Int): Bitmap {
         // Deliberately no BitmapDrawable shortcut. Returning the drawable's own bitmap handed back
-        // memory owned by the notification's Icon, which is still live in the system UI — and both
-        // eviction paths here call recycle() on whatever they stored, so we were recycling someone
-        // else's bitmap ("trying to use a recycled bitmap" later, far from this code). It also
+        // memory owned by the notification's Icon, which is still live in the system UI. It also
         // ignored the requested size, so a sender's full-resolution avatar was cached at whatever
         // dimensions it arrived with, up to MAX_AVATARS of them. Drawing into our own 96x96 costs
-        // ~36 KB and makes ownership unambiguous.
+        // ~36 KB and makes ownership unambiguous. (These copies are still never recycle()d — they
+        // get shared onward into briefRecords and Compose UI; GC owns them.)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         setBounds(0, 0, canvas.width, canvas.height)
@@ -608,7 +625,8 @@ class TeclasNotificationListener : NotificationListenerService() {
             notificationIntents.remove(key)
             replyActions.remove(key)
             synchronized(briefRecords) { briefRecords.remove(key) }
-            notificationAvatars.remove(key)?.let { runCatching { it.recycle() } }
+            // Dropped, never recycled — the bitmap may still be referenced by records/UI.
+            notificationAvatars.remove(key)
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val raw = prefs.getString(HUB_MESSAGES_PREF, "[]") ?: "[]"
             val array = runCatching { JSONArray(raw) }.getOrDefault(JSONArray())

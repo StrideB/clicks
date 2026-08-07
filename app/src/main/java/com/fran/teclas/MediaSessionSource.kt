@@ -37,6 +37,13 @@ class MediaSessionSource(private val context: Context) {
     private val listenerComponent = ComponentName(context, TeclasNotificationListener::class.java)
     private var controller: MediaController? = null
 
+    // publish() runs on the main thread for every session callback. Uncached, each call cost two
+    // PackageManager binder round trips plus a fresh Bitmap allocation + Canvas draw for the app
+    // icon (adaptive icons never take the BitmapDrawable shortcut) — a steady GC/binder drip for
+    // the whole listening session. One entry per media app the user actually plays.
+    private val labelCache = HashMap<String, String>()
+    private val iconCache = HashMap<String, Bitmap?>()
+
     private val _nowPlaying = MutableStateFlow<NowPlayingInfo?>(null)
     val nowPlaying: StateFlow<NowPlayingInfo?> = _nowPlaying
 
@@ -146,7 +153,7 @@ class MediaSessionSource(private val context: Context) {
         }
 
         val packageName = current.packageName
-        _nowPlaying.value = NowPlayingInfo(
+        val next = NowPlayingInfo(
             title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)?.ifBlank { null } ?: "Untitled",
             artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST)?.ifBlank { null } ?: "Unknown artist",
             album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM)?.ifBlank { null } ?: "",
@@ -156,15 +163,36 @@ class MediaSessionSource(private val context: Context) {
             appIcon = appIconBitmap(packageName),
             albumArt = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
                 ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART),
-            isPlaying = state?.state == PlaybackState.STATE_PLAYING,
+            // Skip/buffer transitions still mean "music is going": counting them as not-playing
+            // made a track skip flip isPlaying false→true, and each flip rebuilds the home surface
+            // downstream — two full view-tree rebuilds per skip.
+            isPlaying = state?.state in playingLikeStates,
             positionMs = state?.position?.coerceAtLeast(0L) ?: 0L,
             durationMs = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.coerceAtLeast(0L) ?: 0L,
             lastUpdateElapsedMs = state?.lastPositionUpdateTime ?: SystemClock.elapsedRealtime()
         )
+        // StateFlow dedups by equals(), but NowPlayingInfo carries Bitmaps (reference equality) and
+        // an ever-advancing position, so without this gate every session callback became a distinct
+        // emission — and each emission recomposes the home widget stack. Emit only when something
+        // user-visible changed, or the position left the extrapolation track (a seek): progress UIs
+        // extrapolate from (positionMs, lastUpdateElapsedMs), so steady ticks carry no information.
+        val prev = _nowPlaying.value
+        if (prev == null || shouldEmit(prev, next)) _nowPlaying.value = next
     }
 
-    private fun appLabel(packageName: String): String {
-        return runCatching {
+    private fun shouldEmit(prev: NowPlayingInfo, next: NowPlayingInfo): Boolean {
+        if (prev.title != next.title || prev.artist != next.artist || prev.album != next.album ||
+            prev.sourcePackage != next.sourcePackage || prev.isPlaying != next.isPlaying ||
+            prev.durationMs != next.durationMs ||
+            prev.albumArt !== next.albumArt || prev.appIcon !== next.appIcon
+        ) return true
+        val expected = prev.positionMs +
+            if (prev.isPlaying) (next.lastUpdateElapsedMs - prev.lastUpdateElapsedMs).coerceAtLeast(0L) else 0L
+        return kotlin.math.abs(next.positionMs - expected) > 1_500L
+    }
+
+    private fun appLabel(packageName: String): String = labelCache.getOrPut(packageName) {
+        runCatching {
             val info = context.packageManager.getApplicationInfo(packageName, 0)
             context.packageManager.getApplicationLabel(info).toString()
         }.getOrDefault(packageName.substringAfterLast('.'))
@@ -178,17 +206,20 @@ class MediaSessionSource(private val context: Context) {
     }
 
     private fun appIconBitmap(packageName: String): Bitmap? {
-        return runCatching {
+        if (iconCache.containsKey(packageName)) return iconCache[packageName]
+        val bitmap = runCatching {
             val drawable = context.packageManager.getApplicationIcon(packageName)
             if (drawable is BitmapDrawable) return@runCatching drawable.bitmap
             val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: 96
             val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: 96
-            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bitmap ->
-                val canvas = Canvas(bitmap)
+            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { bmp ->
+                val canvas = Canvas(bmp)
                 drawable.setBounds(0, 0, canvas.width, canvas.height)
                 drawable.draw(canvas)
             }
         }.getOrNull()
+        iconCache[packageName] = bitmap
+        return bitmap
     }
 
     private companion object {
@@ -197,6 +228,14 @@ class MediaSessionSource(private val context: Context) {
             PlaybackState.STATE_PAUSED,
             PlaybackState.STATE_BUFFERING,
             PlaybackState.STATE_CONNECTING,
+            PlaybackState.STATE_SKIPPING_TO_NEXT,
+            PlaybackState.STATE_SKIPPING_TO_PREVIOUS
+        )
+
+        /** States that read as "music is going" for the isPlaying flag (see publish). */
+        private val playingLikeStates = setOf(
+            PlaybackState.STATE_PLAYING,
+            PlaybackState.STATE_BUFFERING,
             PlaybackState.STATE_SKIPPING_TO_NEXT,
             PlaybackState.STATE_SKIPPING_TO_PREVIOUS
         )
