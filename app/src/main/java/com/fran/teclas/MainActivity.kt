@@ -2126,7 +2126,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             append(widgetKeyboardHidden).append('|').append(widgetPaneUsesRootDock())
         }
         val oldHome = homeContentView
-        if (!unfolded && !phoneWidgetCanvas &&
+        // wallpaperCanvas homes take the full path unconditionally (on-device regression): reusing
+        // the retained wallpaper shell left a stale wallpaper layer after the user changed the
+        // device wallpaper (recents round-trips showed previous wallpapers), and the transparent
+        // shell surface wasn't repainted edge-to-edge on the light tier, smearing ghost copies of
+        // the floating widgets across the screen. The light tier stays for solid-background homes,
+        // where the window paints an opaque base and no shell is retained.
+        if (!unfolded && !phoneWidgetCanvas && !wallpaperCanvas &&
             scaffoldSignature == renderedScaffoldSignature &&
             ::contentFrame.isInitialized && contentFrame.isAttachedToWindow &&
             oldHome != null && oldHome.parent === contentFrame
