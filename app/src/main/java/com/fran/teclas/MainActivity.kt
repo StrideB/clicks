@@ -2184,6 +2184,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
             syncDockedSearchStatusBar()
+            syncWallpaperFrost()
             return
         }
         renderedScaffoldSignature = scaffoldSignature
@@ -2359,6 +2360,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
         syncDockedSearchStatusBar()
+        syncWallpaperFrost()
         root.post { captureKeyBounds() }
         // Key previews render inside our own window (one reused view) instead of a popup window.
         (findViewById<View>(android.R.id.content) as? FrameLayout)?.let { keyPreviewManager.attachHost(it) }
@@ -3793,6 +3795,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastWallpaperMatrixTx = Float.NaN
     private var lastWallpaperMatrixTy = Float.NaN
 
+    /**
+     * Frosted glass while widget-mode search is up: blur the launcher-drawn wallpaper layer so
+     * results read as floating on glass instead of fighting the image for contrast. Runs after
+     * every render (both tiers) so the effect always matches the current search state; clears to
+     * null when search ends. RenderEffect is minSdk-31-safe and costs nothing when null.
+     */
+    private fun syncWallpaperFrost() {
+        val image = innerWallpaperImageView ?: return
+        val frost = isWidgetUniversalSearchActive() && glassEffectsEnabled()
+        image.setRenderEffect(
+            if (frost) android.graphics.RenderEffect.createBlurEffect(48f, 48f, Shader.TileMode.CLAMP)
+            else null
+        )
+    }
+
     private fun applyInnerWallpaperMatrix(image: ImageView) {
         val drawable = image.drawable ?: return
         val viewW = image.width.toFloat()
@@ -4477,6 +4494,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     clipChildren = true
                     clipToPadding = true
                     setPadding(0, dp(4), 0, dp(8))
+                    // Frosted-glass backing for search results over a wallpaper: results used to
+                    // draw straight onto the image, and a bright wallpaper made the white result
+                    // text unreadable. The blur lives on the wallpaper layer (syncWallpaperFrost);
+                    // this scrim guarantees contrast even where blur isn't available.
+                    if (launcherWallpaperCanvasActive()) {
+                        background = GradientDrawable(
+                            GradientDrawable.Orientation.TOP_BOTTOM,
+                            intArrayOf(0xB3000000.toInt(), 0x99000000.toInt(), 0xB3000000.toInt())
+                        )
+                    }
                 }
                 widgetSearchContentArea = searchArea
                 searchResultsHost.refreshWidgetSearchContent()
