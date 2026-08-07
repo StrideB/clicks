@@ -1398,6 +1398,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // re-measure here — refreshSystemThemeIfNeeded below only renders on a system-theme change.
         refreshNavBarInset()
         refreshSystemThemeIfNeeded(animated = true, forceRender = true)
+        // Nothing above is GUARANTEED to re-render: refreshSystemThemeIfNeeded no-ops on a fixed
+        // theme, and refreshNavBarInset only re-renders when the inset moved — which gesture nav
+        // doesn't across orientations. The window then resizes with no rebuild, and the wallpaper
+        // layer keeps the MATRIX computed for the previous size: after a rotate round-trip the
+        // wallpaper came back zoomed/cropped with the dark base showing through. Rebuild once the
+        // resized layout lands.
+        if (::rootView.isInitialized && openPane == null) {
+            rootView.post { render() }
+        }
     }
 
     // The local LLM holds gigabytes once loaded, and this process is shared with the IME so it
@@ -2048,10 +2057,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     /** Set when a render was suppressed because an overlay owned the screen; replayed on close. */
     private var pendingRenderAfterOverlay = false
 
-    // Two-tier render state: the home content region currently mounted in contentFrame, and the
-    // structural signature the current scaffold was built for (see render()).
-    private var homeContentView: View? = null
+    // Two-tier render state: the dedicated slot the home content is mounted in (light renders
+    // empty and refill it — nothing else ever lives inside it), the structural signature the
+    // current scaffold was built for, and the reentrancy latch (see render()).
+    private var homeSlotView: FrameLayout? = null
     private var renderedScaffoldSignature: String? = null
+    private var renderInProgress = false
+    private var renderReentered = false
 
     /**
      * Run a render that was deferred while a full-window overlay was up. Called when one closes.
@@ -2076,6 +2088,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             android.util.Log.d("TeclasRender", "render() DEFERRED (overlay open)", Throwable("render trace"))
             return
         }
+        // Reentrancy latch: building views fires view-tree callbacks (insets, layout) that can call
+        // render() again mid-build. Letting the nested call run corrupted the tree — it rebuilt
+        // contentFrame under the outer call, which then mounted a SECOND home copy into the new
+        // frame (the on-device ghost-widgets bug). Nested requests coalesce into one clean render
+        // that runs after the current one finishes.
+        if (renderInProgress) {
+            renderReentered = true
+            return
+        }
+        renderInProgress = true
+        try {
+            renderBody()
+        } finally {
+            renderInProgress = false
+            if (renderReentered) {
+                renderReentered = false
+                handler.post { render() }
+            }
+        }
+    }
+
+    private fun renderBody() {
         android.util.Log.d("TeclasRender", "render()")
         stopDeleteRepeat(clearFired = true)
         weatherWidgetDragging = false   // the widget is rebuilt below; never carry a stuck drag lock
@@ -2125,19 +2159,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             append(innerWallpaperEditMode).append('|')
             append(widgetKeyboardHidden).append('|').append(widgetPaneUsesRootDock())
         }
-        val oldHome = homeContentView
+        val slot = homeSlotView
         if (!unfolded && !phoneWidgetCanvas &&
             scaffoldSignature == renderedScaffoldSignature &&
             ::contentFrame.isInitialized && contentFrame.isAttachedToWindow &&
-            oldHome != null && oldHome.parent === contentFrame
+            slot != null && slot.parent === contentFrame
         ) {
             android.util.Log.d("TeclasRender", "render() light (scaffold reused)")
-            val idx = contentFrame.indexOfChild(oldHome)
-            contentFrame.removeViewAt(idx)
-            val fresh = home()
-            homeContentView = fresh
-            contentFrame.addView(
-                fresh, idx,
+            // The home content lives in its own dedicated slot, so replacing it is removeAllViews +
+            // one addView — stacked copies of the home surface (the on-device ghost-widgets bug,
+            // caused by a reentrant render slipping a second copy in next to the first) are
+            // structurally impossible: whatever is in the slot, it is emptied first.
+            slot.removeAllViews()
+            slot.addView(
+                home(),
                 FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             )
             contentFrame.post { applyLibraryEdgeGestureExclusion() }
@@ -2145,10 +2180,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             renderHub()
             renderFavoritesDock()
             renderRibbon()
-            // Panes/library stay attached above the home region on this tier — no re-show needed.
+            // Panes/library stay attached above the home slot on this tier — no re-show needed.
             syncNowPlayingCardVisibility()
             refreshNowPlayingCard()
             syncDockedSearchStatusBar()
+            syncWallpaperFrost()
             return
         }
         renderedScaffoldSignature = scaffoldSignature
@@ -2184,15 +2220,23 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshNavBarInset()
             insets
         }
-        val homeChild = when {
-            unfolded -> unfoldedHome()
-            phoneWidgetCanvas -> phoneWidgetHome()
-            else -> home()
+        val slotView = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(
+                when {
+                    unfolded -> unfoldedHome()
+                    phoneWidgetCanvas -> phoneWidgetHome()
+                    else -> home()
+                },
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
         }
-        homeContentView = homeChild
+        homeSlotView = slotView
         contentFrame = FrameLayout(this).apply {
             addView(
-                homeChild,
+                slotView,
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
@@ -2316,6 +2360,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         syncNowPlayingCardVisibility()
         refreshNowPlayingCard()
         syncDockedSearchStatusBar()
+        syncWallpaperFrost()
         root.post { captureKeyBounds() }
         // Key previews render inside our own window (one reused view) instead of a popup window.
         (findViewById<View>(android.R.id.content) as? FrameLayout)?.let { keyPreviewManager.attachHost(it) }
@@ -3701,7 +3746,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
         }.apply {
             if (wallpaper != null) {
-                addView(ImageView(context).apply {
+                addView(object : ImageView(context) {
+                    // The MATRIX scale is computed for a concrete view size; rotation resizes the
+                    // window without rebuilding this layer, which left the wallpaper zoomed/cropped
+                    // with the base color showing through. Track the size, not the build moment.
+                    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                        super.onSizeChanged(w, h, oldw, oldh)
+                        if (w > 0 && h > 0) applyInnerWallpaperMatrix(this)
+                    }
+                }.apply {
                     setImageDrawable(wallpaper.constantState?.newDrawable(resources)?.mutate() ?: wallpaper)
                     scaleType = ImageView.ScaleType.MATRIX
                     alpha = 1f
@@ -3741,6 +3794,21 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var lastWallpaperMatrixScale = 0f
     private var lastWallpaperMatrixTx = Float.NaN
     private var lastWallpaperMatrixTy = Float.NaN
+
+    /**
+     * Frosted glass while widget-mode search is up: blur the launcher-drawn wallpaper layer so
+     * results read as floating on glass instead of fighting the image for contrast. Runs after
+     * every render (both tiers) so the effect always matches the current search state; clears to
+     * null when search ends. RenderEffect is minSdk-31-safe and costs nothing when null.
+     */
+    private fun syncWallpaperFrost() {
+        val image = innerWallpaperImageView ?: return
+        val frost = isWidgetUniversalSearchActive() && glassEffectsEnabled()
+        image.setRenderEffect(
+            if (frost) android.graphics.RenderEffect.createBlurEffect(48f, 48f, Shader.TileMode.CLAMP)
+            else null
+        )
+    }
 
     private fun applyInnerWallpaperMatrix(image: ImageView) {
         val drawable = image.drawable ?: return
@@ -4426,6 +4494,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     clipChildren = true
                     clipToPadding = true
                     setPadding(0, dp(4), 0, dp(8))
+                    // Frosted-glass backing for search results over a wallpaper: results used to
+                    // draw straight onto the image, and a bright wallpaper made the white result
+                    // text unreadable. The blur lives on the wallpaper layer (syncWallpaperFrost);
+                    // this scrim guarantees contrast even where blur isn't available.
+                    if (launcherWallpaperCanvasActive()) {
+                        background = GradientDrawable(
+                            GradientDrawable.Orientation.TOP_BOTTOM,
+                            intArrayOf(0xB3000000.toInt(), 0x99000000.toInt(), 0xB3000000.toInt())
+                        )
+                    }
                 }
                 widgetSearchContentArea = searchArea
                 searchResultsHost.refreshWidgetSearchContent()
