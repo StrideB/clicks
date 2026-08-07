@@ -1398,6 +1398,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // re-measure here — refreshSystemThemeIfNeeded below only renders on a system-theme change.
         refreshNavBarInset()
         refreshSystemThemeIfNeeded(animated = true, forceRender = true)
+        // Nothing above is GUARANTEED to re-render: refreshSystemThemeIfNeeded no-ops on a fixed
+        // theme, and refreshNavBarInset only re-renders when the inset moved — which gesture nav
+        // doesn't across orientations. The window then resizes with no rebuild, and the wallpaper
+        // layer keeps the MATRIX computed for the previous size: after a rotate round-trip the
+        // wallpaper came back zoomed/cropped with the dark base showing through. Rebuild once the
+        // resized layout lands.
+        if (::rootView.isInitialized && openPane == null) {
+            rootView.post { render() }
+        }
     }
 
     // The local LLM holds gigabytes once loaded, and this process is shared with the IME so it
