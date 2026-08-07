@@ -803,6 +803,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private lateinit var suggestionBarView: LinearLayout
     // Notification-driven refreshes owed from while the launcher was backgrounded; consumed once
     // in onResume. See the onBriefChanged / prefsListener foreground gates.
+    private var notificationAccessWarned = false
     private var pendingBriefRefresh = false
     private var pendingHubRefresh = false
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -1236,6 +1237,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         dockedForegroundDraft.clear()
         // Live-dock signals (charging, hour tint) only listen while we're the visible screen.
         registerDockLiveReceivers()
+        // Badge dots, live slots, the media ring and now-playing detection ALL ride on
+        // notification access, and MIUI silently drops the grant on reinstall — every one of
+        // those features then dies at once with no explanation. Say so, once per process.
+        if (!notificationAccessWarned &&
+            !androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
+        ) {
+            notificationAccessWarned = true
+            Toast.makeText(
+                this,
+                "Notification access is off — live dock, badges and music detection are disabled. Re-enable it in Settings → Notification access.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
         if (::rootView.isInitialized) syncDockedSearchStatusBar()   // restore the wallpaper behind the status bar
         // Feature is default-on: arm freeform automatically once the WRITE_SECURE_SETTINGS grant lands.
         DockedFreeform.ensureArmedIfEnabled(this)
