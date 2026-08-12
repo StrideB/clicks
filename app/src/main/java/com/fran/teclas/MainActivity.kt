@@ -19381,10 +19381,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     if (glideBlockedByTypingStrip) return false
                     if (trackpadActive) return true
                     if (!tracking) {
+                        // Key-width-scaled slop (see IME twin): fixed dp under-read big-key panels.
+                        val keyScaledSlop = maxOf(glideStart.toFloat(), (keyBounds["f"]?.width() ?: 0) * 0.65f)
                         if (downOnLetterKey && !glideMultiTouch && ev.pointerCount == 1 &&
                             com.fran.teclas.keyboard.GlideGate.shouldActivate(
                                 ev.rawX - startRawX, ev.rawY - startRawY,
-                                ev.eventTime - ev.downTime, glideStart.toFloat())) {
+                                ev.eventTime - ev.downTime, keyScaledSlop)) {
                             tracking = true
                             glideGestureActive = true
                             if (hapticsEnabled) hapticEngine.glideStart()   // firm click on glide activation
