@@ -206,8 +206,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessionListener,
@@ -400,6 +402,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var widgetPickerListHost: FrameLayout? = null
     private var widgetPickerQuery = ""
     private val widgetPickerExpandedApps = mutableSetOf<String>()
+    private var widgetPickerOnPick: ((AppWidgetProviderInfo) -> Unit)? = null
+    private var widgetPickerDragEnabled = false
+    private var widgetPickerUsageRank: Map<String, Int> = emptyMap()
+    private var widgetPickerDragProvider: AppWidgetProviderInfo? = null
+    private var widgetPickerDragSpec: WidgetSpec? = null
+    private var widgetPickerDragGhost: View? = null
+    private var widgetBoardCanvas: WidgetCellCanvas? = null
+    private var pendingWidgetPlacement: WidgetSpec? = null
     private lateinit var appWidgetManager: AppWidgetManager
     private lateinit var appWidgetHost: AppWidgetHost
     private lateinit var spaceBoardController: com.fran.teclas.grid.SpaceBoardController
@@ -12385,6 +12395,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         closeWidgetPicker()
         val closing = widgetBoardView ?: return
         widgetBoardView = null
+        widgetBoardCanvas = null
         val startY = closing.translationY.coerceAtLeast(0f)
         val endY = (closing.height.takeIf { it > 0 } ?: contentFrame.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
         ValueAnimator.ofFloat(1f, 0f).apply {
@@ -12684,7 +12695,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return ScrollView(this).apply {
             clipToPadding = false
             isFillViewport = true
-            addView(WidgetCellCanvas(context).apply {
+            addView(WidgetCellCanvas(context).also { widgetBoardCanvas = it }.apply {
                 clipChildren = false
                 clipToPadding = false
                 setPadding(0, dp(14), 0, dp(30))
@@ -12758,13 +12769,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             appWidgetHost.createView(this, widgetId, info).apply {
                 setAppWidget(widgetId, info)
                 optimizeWidgetHostView(this)
-                updateAppWidgetSize(null, widgetMinWidthDp(spec), widgetMinHeightDp(spec), widgetMaxWidthDp(spec), widgetMaxHeightDp(spec))
+                val metrics = widgetBoardMetrics()
+                WidgetFit.reportSize(this, metrics.widthForSpan(spec.spanX), metrics.heightForSpan(spec.spanY))
             }
         } else null
         return ResizableWidgetContainer(this, spec).apply {
             if (hostView != null) {
                 addView(RoundedWidgetHostFrame(context).apply {
-                    addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    addView(WidgetScaleFrame(context).apply {
+                        addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             } else {
                 addView(mono("WIDGET UNAVAILABLE", 9f, InkDim).apply { gravity = Gravity.CENTER },
@@ -13179,15 +13193,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
         private fun updateHostedWidgetSize() {
             val hostView = findHostedWidgetView() ?: return
-            hostView.updateAppWidgetSize(null, widgetMinWidthDp(spec), widgetMinHeightDp(spec), widgetMaxWidthDp(spec), widgetMaxHeightDp(spec))
+            val metrics = widgetBoardMetrics()
+            WidgetFit.reportSize(hostView, metrics.widthForSpan(spec.spanX), metrics.heightForSpan(spec.spanY))
             trackWidgetInteractionSafe(hostView, spec, if (resizing) "resize" else "move")
         }
     }
 
-    private fun showWidgetPicker() {
-        val board = widgetBoardView as? ViewGroup ?: return
+    private fun showWidgetPicker(
+        parent: ViewGroup? = null,
+        onPick: ((AppWidgetProviderInfo) -> Unit)? = null
+    ) {
+        val board = parent ?: (widgetBoardView as? ViewGroup) ?: return
         closeWidgetPicker()
         widgetPickerQuery = ""
+        widgetPickerOnPick = onPick
+        // Dragging a card straight onto the grid only makes sense over the widget board itself.
+        widgetPickerDragEnabled = board === widgetBoardView
+        widgetPickerUsageRank = runCatching {
+            val packages = appWidgetManager.installedProviders.map { it.provider.packageName }.distinct()
+            com.fran.teclas.predict.Predictor.topApps(this, packages.size, packages)
+                .withIndex().associate { (index, pkg) -> pkg to index }
+        }.getOrDefault(emptyMap())
         val picker = FrameLayout(this).apply {
             setBackgroundColor(0x66000000)
             isClickable = true
@@ -13234,6 +13260,11 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     }
 
     private fun closeWidgetPicker() {
+        cancelWidgetCardDragVisuals()
+        widgetPickerDragProvider = null
+        widgetPickerDragSpec = null
+        widgetPickerOnPick = null
+        widgetPickerDragEnabled = false
         val picker = widgetPickerView ?: return
         widgetPickerView = null
         widgetPickerListHost = null
@@ -13272,6 +13303,42 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         ))
     }
 
+    private data class WidgetPickerGroup(
+        val packageName: String,
+        val appLabel: String,
+        val providers: List<AppWidgetProviderInfo>
+    )
+
+    /**
+     * Installed widget providers grouped per app, filtered by [filter] (matched against both the
+     * app name and each widget's own label — an app-name hit keeps the whole group), ordered by
+     * how much the user actually reaches for each app, alphabetical as the tie-break.
+     */
+    private fun widgetPickerGroups(filter: String): List<WidgetPickerGroup> {
+        val clean = filter.trim().lowercase(Locale.US)
+        val groups = appWidgetManager.installedProviders.groupBy { it.provider.packageName }.map { (pkg, providers) ->
+            val appLabel = runCatching {
+                packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+            }.getOrDefault(pkg)
+            WidgetPickerGroup(pkg, appLabel, providers.sortedWith { left, right ->
+                collator.compare(left.loadLabel(packageManager), right.loadLabel(packageManager))
+            })
+        }
+        val filtered = if (clean.isBlank()) groups else groups.mapNotNull { group ->
+            if (group.appLabel.lowercase(Locale.US).contains(clean)) return@mapNotNull group
+            val matching = group.providers.filter {
+                it.loadLabel(packageManager).lowercase(Locale.US).contains(clean)
+            }
+            if (matching.isEmpty()) null else group.copy(providers = matching)
+        }
+        return filtered.sortedWith(Comparator { left, right ->
+            val leftRank = widgetPickerUsageRank[left.packageName] ?: Int.MAX_VALUE
+            val rightRank = widgetPickerUsageRank[right.packageName] ?: Int.MAX_VALUE
+            if (leftRank != rightRank) leftRank.compareTo(rightRank)
+            else collator.compare(left.appLabel, right.appLabel)
+        })
+    }
+
     private fun widgetProviderList(filter: String = ""): View {
         return ScrollView(this).apply {
             clipToPadding = false
@@ -13279,40 +13346,18 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, dp(6), 0, dp(20))
                 val cleanFilter = filter.trim().lowercase(Locale.US)
-                val providersByApp = installedWidgetProviders().groupBy { provider ->
-                    runCatching {
-                        val appInfo = packageManager.getApplicationInfo(provider.provider.packageName, 0)
-                        packageManager.getApplicationLabel(appInfo).toString()
-                    }.getOrDefault(provider.provider.packageName)
-                }.mapValues { (_, providers) ->
-                    if (cleanFilter.isBlank()) providers else providers.filter { provider ->
-                        provider.loadLabel(packageManager).lowercase(Locale.US).contains(cleanFilter)
-                    }
-                }.filter { (appLabel, providers) ->
-                    providers.isNotEmpty() || appLabel.lowercase(Locale.US).contains(cleanFilter)
-                }.toSortedMap(collator)
+                val groups = widgetPickerGroups(filter)
                 if (widgetPickerExpandedApps.isEmpty() && cleanFilter.isBlank()) {
-                    providersByApp.keys.firstOrNull()?.let { widgetPickerExpandedApps.add(it) }
+                    groups.firstOrNull()?.let { widgetPickerExpandedApps.add(it.packageName) }
                 }
-                providersByApp.forEach { (appLabel, providers) ->
-                    val expanded = cleanFilter.isNotBlank() || appLabel in widgetPickerExpandedApps
-                    addView(widgetProviderGroupHeader(appLabel, providers, expanded), LinearLayout.LayoutParams.MATCH_PARENT, dp(58))
+                groups.forEach { group ->
+                    val expanded = cleanFilter.isNotBlank() || group.packageName in widgetPickerExpandedApps
+                    addView(widgetProviderGroupHeader(group, expanded), LinearLayout.LayoutParams.MATCH_PARENT, dp(58))
                     if (expanded) {
-                        addView(GridLayout(context).apply {
-                            columnCount = 2
-                            setPadding(0, 0, 0, dp(7))
-                            providers.forEach { provider ->
-                                addView(widgetProviderCard(provider, appLabel), GridLayout.LayoutParams().apply {
-                                    width = (resources.displayMetrics.widthPixels - dp(64)) / 2
-                                    height = dp(126)
-                                    columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1)
-                                    setMargins(dp(4), dp(4), dp(4), dp(7))
-                                })
-                            }
-                        }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                        addView(widgetProviderRail(group), LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                     }
                 }
-                if (providersByApp.isEmpty()) {
+                if (groups.isEmpty()) {
                     addView(mono("NO WIDGETS AVAILABLE ON THIS DEVICE", 10f, InkDim).apply {
                         gravity = Gravity.CENTER
                         letterSpacing = 0.12f
@@ -13322,9 +13367,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun widgetProviderGroupHeader(appLabel: String, providers: List<AppWidgetProviderInfo>, expanded: Boolean): View {
-        val packageName = providers.firstOrNull()?.provider?.packageName
-        val icon = packageName?.let { runCatching { packageManager.getApplicationIcon(it) }.getOrNull() }
+    /** One expanded app: its widgets as a horizontal rail of preview cards. */
+    private fun widgetProviderRail(group: WidgetPickerGroup): View {
+        return HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            clipToPadding = false
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(dp(2), dp(3), dp(2), dp(9))
+                group.providers.forEach { provider ->
+                    addView(widgetProviderCard(provider), LinearLayout.LayoutParams(dp(152), dp(172)).apply {
+                        setMargins(dp(4), 0, dp(4), 0)
+                    })
+                }
+            })
+        }
+    }
+
+    private fun widgetProviderGroupHeader(group: WidgetPickerGroup, expanded: Boolean): View {
+        val appLabel = group.appLabel
+        val providers = group.providers
+        val icon = runCatching { packageManager.getApplicationIcon(group.packageName) }.getOrNull()
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -13362,50 +13425,175 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams(dp(32), ViewGroup.LayoutParams.MATCH_PARENT))
             setOnClickListener {
                 haptic(this)
-                if (expanded) widgetPickerExpandedApps.remove(appLabel) else widgetPickerExpandedApps.add(appLabel)
+                if (expanded) widgetPickerExpandedApps.remove(group.packageName) else widgetPickerExpandedApps.add(group.packageName)
                 rebuildWidgetProviderList()
             }
         }
     }
 
-    private fun widgetProviderCard(provider: AppWidgetProviderInfo, appLabel: String): View {
+    /** The board cell footprint a provider asks for, clamped to this board's grid. */
+    private fun providerCellSpans(provider: AppWidgetProviderInfo): Pair<Int, Int> {
+        if (provider.targetCellWidth > 0 && provider.targetCellHeight > 0) {
+            return provider.targetCellWidth.coerceIn(1, WIDGET_BOARD_COLUMNS) to
+                provider.targetCellHeight.coerceIn(1, WIDGET_BOARD_MAX_ROWS)
+        }
+        val metrics = widgetBoardMetrics()
+        val spanX = ceil(provider.minWidth.toFloat() / (metrics.cellWidth + metrics.gutter)).toInt()
+        val spanY = ceil(provider.minHeight.toFloat() / (metrics.cellHeight + metrics.gutter)).toInt()
+        return spanX.coerceIn(1, WIDGET_BOARD_COLUMNS) to spanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS)
+    }
+
+    private fun widgetProviderCard(provider: AppWidgetProviderInfo): View {
         val label = provider.loadLabel(packageManager).ifBlank { "Widget" }
-        val icon = runCatching { provider.loadIcon(this, resources.displayMetrics.densityDpi) }.getOrNull()
+        val spans = providerCellSpans(provider)
+        val preview = runCatching { provider.loadPreviewImage(this, resources.displayMetrics.densityDpi) }.getOrNull()
+        val fallbackIcon = if (preview == null) {
+            runCatching { provider.loadIcon(this, resources.displayMetrics.densityDpi) }.getOrNull()
+                ?: runCatching { packageManager.getApplicationIcon(provider.provider.packageName) }.getOrNull()
+        } else null
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(12), dp(11), dp(12), dp(10))
+            setPadding(dp(10), dp(10), dp(10), dp(8))
             background = widgetProviderRowBackground(activeNeuTokens)
             isClickable = true
+            isLongClickable = widgetPickerDragEnabled
             addView(FrameLayout(context).apply {
-                background = dockIconButtonBackground(activeNeuTokens)
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                addView(ImageView(context).apply {
-                    setImageDrawable(icon ?: packageManager.getApplicationIcon(provider.provider.packageName))
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }, LinearLayout.LayoutParams(dp(44), dp(44)))
+                background = Neu.drawable(activeNeuTokens, dp(14).toFloat(), NeuLevel.PRESSED_SM)
+                if (preview != null) {
+                    addView(ImageView(context).apply {
+                        setImageDrawable(preview)
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                        setPadding(dp(6), dp(6), dp(6), dp(6))
+                    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                } else {
+                    addView(ImageView(context).apply {
+                        setImageDrawable(fallbackIcon)
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                    }, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+                }
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
             addView(TextView(context).apply {
                 text = label
-                textSize = 13.2f
+                textSize = 12.6f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(Ink)
-                gravity = Gravity.CENTER
                 includeFontPadding = false
-                maxLines = 2
+                maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(0, dp(9), 0, 0)
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(mono("ADD", 8.4f, Accent2).apply {
-                gravity = Gravity.CENTER
-                letterSpacing = 0.14f
+                setPadding(dp(2), dp(8), dp(2), dp(3))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(mono("${spans.first}×${spans.second}", 8.4f, InkDim).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    letterSpacing = 0.10f
+                    setPadding(dp(2), 0, 0, 0)
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+                addView(mono("ADD", 8.4f, Accent2).apply {
+                    gravity = Gravity.CENTER_VERTICAL or Gravity.RIGHT
+                    letterSpacing = 0.14f
+                    setPadding(0, 0, dp(2), 0)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(18)))
             setOnClickListener {
                 haptic(this)
+                val pick = widgetPickerOnPick
                 closeWidgetPicker()
-                addWidgetProvider(provider)
+                if (pick != null) pick(provider) else addWidgetProvider(provider)
+            }
+            if (widgetPickerDragEnabled) {
+                setOnLongClickListener {
+                    startWidgetCardDrag(provider, spans.first, spans.second, this)
+                    true
+                }
+                setOnTouchListener { _, event -> handleWidgetCardDragTouch(event) }
             }
         }
+    }
+
+    // ---- drag a picker card straight onto the board --------------------------------------
+
+    private fun startWidgetCardDrag(provider: AppWidgetProviderInfo, spanX: Int, spanY: Int, card: View) {
+        val board = widgetBoardView as? ViewGroup ?: return
+        haptic(card)
+        card.parent?.requestDisallowInterceptTouchEvent(true)
+        widgetPickerDragProvider = provider
+        widgetPickerDragSpec = WidgetSpec(AppWidgetManager.INVALID_APPWIDGET_ID, 0, 0, spanX, spanY)
+        widgetPickerView?.visibility = View.GONE
+        val metrics = widgetBoardMetrics()
+        val preview = runCatching { provider.loadPreviewImage(this, resources.displayMetrics.densityDpi) }.getOrNull()
+            ?: runCatching { packageManager.getApplicationIcon(provider.provider.packageName) }.getOrNull()
+        widgetPickerDragGhost = FrameLayout(this).apply {
+            background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED)
+            alpha = 0.88f
+            elevation = dp(20).toFloat()
+            addView(ImageView(context).apply {
+                setImageDrawable(preview)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setPadding(dp(10), dp(10), dp(10), dp(10))
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            visibility = View.INVISIBLE  // positioned on the first move
+        }.also {
+            board.addView(it, FrameLayout.LayoutParams(metrics.widthForSpan(spanX), metrics.heightForSpan(spanY)))
+        }
+    }
+
+    private fun handleWidgetCardDragTouch(event: MotionEvent): Boolean {
+        if (widgetPickerDragProvider == null) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> updateWidgetCardDrag(event.rawX, event.rawY)
+            MotionEvent.ACTION_UP -> finishWidgetCardDrag()
+            MotionEvent.ACTION_CANCEL -> cancelWidgetCardDrag()
+        }
+        return true
+    }
+
+    private fun updateWidgetCardDrag(rawX: Float, rawY: Float) {
+        val ghost = widgetPickerDragGhost ?: return
+        val board = widgetBoardView ?: return
+        val spec = widgetPickerDragSpec ?: return
+        val ghostW = ghost.layoutParams.width
+        val ghostH = ghost.layoutParams.height
+        val boardLocation = IntArray(2).also { board.getLocationOnScreen(it) }
+        ghost.translationX = rawX - boardLocation[0] - ghostW / 2f
+        ghost.translationY = rawY - boardLocation[1] - ghostH / 2f
+        ghost.visibility = View.VISIBLE
+        val canvas = widgetBoardCanvas ?: return
+        val metrics = widgetBoardMetrics()
+        val canvasLocation = IntArray(2).also { canvas.getLocationOnScreen(it) }
+        val relX = rawX - canvasLocation[0] - canvas.paddingLeft - ghostW / 2f
+        val relY = rawY - canvasLocation[1] - canvas.paddingTop - ghostH / 2f
+        val cellX = (relX / (metrics.cellWidth + metrics.gutter)).roundToInt()
+            .coerceIn(0, WIDGET_BOARD_COLUMNS - spec.spanX)
+        val cellY = (relY / (metrics.cellHeight + metrics.gutter)).roundToInt()
+            .coerceIn(0, WIDGET_BOARD_MAX_ROWS - spec.spanY)
+        val next = spec.copy(cellX = cellX, cellY = cellY)
+        widgetPickerDragSpec = next
+        canvas.showSnapAnchor(next, isWidgetDropValid(next, savedWidgetSpecs()))
+    }
+
+    private fun finishWidgetCardDrag() {
+        val provider = widgetPickerDragProvider ?: return
+        val spec = widgetPickerDragSpec
+        cancelWidgetCardDragVisuals()
+        widgetPickerDragProvider = null
+        widgetPickerDragSpec = null
+        closeWidgetPicker()
+        val placement = spec?.let { resolveWidgetPlacement(it, savedWidgetSpecs()) }
+        addWidgetProvider(provider, placement)
+    }
+
+    private fun cancelWidgetCardDrag() {
+        cancelWidgetCardDragVisuals()
+        widgetPickerDragProvider = null
+        widgetPickerDragSpec = null
+        widgetPickerView?.visibility = View.VISIBLE
+    }
+
+    private fun cancelWidgetCardDragVisuals() {
+        widgetPickerDragGhost?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        widgetPickerDragGhost = null
+        widgetBoardCanvas?.clearSnapAnchor()
     }
 
     private fun installedWidgetProviders(): List<AppWidgetProviderInfo> {
@@ -13414,7 +13602,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
     }
 
-    private fun addWidgetProvider(provider: AppWidgetProviderInfo) {
+    private fun addWidgetProvider(provider: AppWidgetProviderInfo, placement: WidgetSpec? = null) {
+        pendingWidgetPlacement = placement
         val widgetId = appWidgetHost.allocateAppWidgetId()
         pendingWidgetId = widgetId
         pendingWidgetProvider = provider
@@ -13432,6 +13621,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             runCatching { startActivityForResult(intent, WIDGET_BIND_REQUEST_CODE) }
                 .onFailure {
                     appWidgetHost.deleteAppWidgetId(widgetId)
+                    pendingWidgetPlacement = null
                     Toast.makeText(this, "Widget permission is needed.", Toast.LENGTH_SHORT).show()
                 }
         }
@@ -13542,8 +13732,17 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun saveWidgetId(widgetId: Int) {
         val current = savedWidgetSpecs().filterNot { it.id == widgetId }
-        val next = current + nextWidgetSpec(widgetId, current, 4, 3)
-        saveWidgetSpecs(next)
+        val placement = pendingWidgetPlacement
+        pendingWidgetPlacement = null
+        val spec = if (placement != null) {
+            // Dropped from the picker: land exactly where the snap anchor showed (or nearest free).
+            resolveWidgetPlacement(placement.copy(id = widgetId), current)
+        } else {
+            // Plain ADD: open at the provider's own preferred footprint instead of a fixed 4×3.
+            val spans = pendingWidgetProvider?.let { providerCellSpans(it) } ?: (4 to 3)
+            nextWidgetSpec(widgetId, current, spans.first, spans.second)
+        }
+        saveWidgetSpecs(current + spec)
     }
 
     private fun savedWidgetSpecs(): List<WidgetSpec> {
@@ -13786,14 +13985,6 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         val rows = match?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 3
         return WidgetGridSize(columns.coerceIn(1, WIDGET_BOARD_COLUMNS), rows.coerceIn(1, WIDGET_BOARD_MAX_ROWS))
     }
-
-    private fun widgetMinWidthDp(spec: WidgetSpec): Int = spec.spanX.coerceIn(1, WIDGET_BOARD_COLUMNS) * 78
-
-    private fun widgetMaxWidthDp(spec: WidgetSpec): Int = spec.spanX.coerceIn(1, WIDGET_BOARD_COLUMNS) * 132
-
-    private fun widgetMinHeightDp(spec: WidgetSpec): Int = spec.spanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS) * 72
-
-    private fun widgetMaxHeightDp(spec: WidgetSpec): Int = spec.spanY.coerceIn(1, WIDGET_BOARD_MAX_ROWS) * 112
 
     private fun optimizeWidgetHostView(hostView: AppWidgetHostView) {
         if (Build.VERSION.SDK_INT < 36) return
@@ -14404,14 +14595,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         override fun bindWidgetIfAllowed(widgetId: Int, provider: AppWidgetProviderInfo): Boolean =
             runCatching { appWidgetManager.bindAppWidgetIdIfAllowed(widgetId, provider.provider) }.getOrDefault(false)
         override fun deleteWidgetId(widgetId: Int) { runCatching { appWidgetHost.deleteAppWidgetId(widgetId) } }
-        override fun updateWidgetSize(widgetId: Int, widthDp: Int, heightDp: Int) {
-            val options = Bundle().apply {
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
-                putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
-            }
-            runCatching { appWidgetManager.updateAppWidgetOptions(widgetId, options) }
+        override fun updateWidgetSize(widgetId: Int, widthPx: Int, heightPx: Int) {
+            WidgetFit.reportSize(this@MainActivity, appWidgetManager, widgetId, widthPx, heightPx)
         }
         @Suppress("DEPRECATION")
         override fun startWidgetResultIntent(intent: Intent, requestCode: Int) {
@@ -14423,13 +14608,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 .show()
         }
         override fun showWidgetPicker(onPick: (AppWidgetProviderInfo) -> Unit) {
-            val providers = appWidgetManager.installedProviders
-                .sortedBy { it.loadLabel(packageManager).lowercase(Locale.US) }
-            val labels = providers.map { it.loadLabel(packageManager).toString() }.toTypedArray()
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle("Add widget")
-                .setItems(labels) { _, which -> onPick(providers[which]) }
-                .show()
+            val parent = (spaceBoardOverlay as? ViewGroup)
+                ?: (window.decorView as? ViewGroup)
+                ?: return
+            this@MainActivity.showWidgetPicker(parent = parent, onPick = onPick)
         }
         override fun showAppPicker(onPick: (String, String?, String?) -> Unit) {
             val choices = apps.filter { it.packageName != packageName }
@@ -24486,12 +24668,13 @@ Question: $prompt"""
                 appWidgetHost.createView(this, existingWidgetId, info).apply {
                     setAppWidget(existingWidgetId, info)
                     optimizeWidgetHostView(this)
-                    updateAppWidgetSize(null, 240, 96, 320, 160)
                 }
             }.getOrNull() else null
             if (hostView != null) {
                 menu.addView(RoundedWidgetHostFrame(this).apply {
-                    addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    addView(WidgetScaleFrame(context).apply {
+                        addView(hostView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                    }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(150)).apply {
                     topMargin = dp(8)
                     bottomMargin = dp(8)

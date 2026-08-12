@@ -24,14 +24,15 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         isFakeBoldText = true
     }
 
-    // Swipe-down symbol shown small at the bottom of the key (so users see where to flick down).
+    // Swipe-down symbol, drawn small in the top-right corner of the keycap (Gboard-style) so the
+    // letter stays centered; the brushed theme instead stacks it engraved above the letter.
     private var symbolHint: String? = null
     private val symbolPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private var primaryLabel: String? = null
     private var primaryColor: Int = currentTextColor
     private var primaryTextSizePx: Float = 0f
     private var primaryTypeface: Typeface? = null
-    private var labelVerticalBias = 0.52f
+    private var labelVerticalBias = 0.50f
     private var symbolVerticalBias = 0.24f
     private var primaryMaxFaceScale = 0.62f
     private var symbolFaceScale = 0.16f
@@ -108,15 +109,16 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
         val faceTop = faceInsetY
         val faceBottom = keyH - faceInsetY - extraBottomFaceInset
         val faceHeight = (faceBottom - faceTop).coerceAtLeast(1f)
-        // Swipe-down symbol at the bottom edge.
         symbolHint?.let { s ->
             if (keyH > 0) {
                 symbolPaint.textSize = faceHeight * symbolFaceScale
                 symbolPaint.alpha = 230
                 val symbolMetrics = symbolPaint.fontMetrics
-                val symbolCenterY = faceTop + faceHeight * symbolVerticalBias
-                val symbolBaseline = symbolCenterY - (symbolMetrics.ascent + symbolMetrics.descent) / 2f
                 if (engraveSymbolHint) {
+                    // Brushed keeps its stacked, engraved hint above the letter.
+                    symbolPaint.textAlign = Paint.Align.CENTER
+                    val symbolCenterY = faceTop + faceHeight * symbolVerticalBias
+                    val symbolBaseline = symbolCenterY - (symbolMetrics.ascent + symbolMetrics.descent) / 2f
                     val originalColor = symbolPaint.color
                     symbolPaint.color = 0x99000000.toInt()
                     symbolPaint.alpha = 150
@@ -126,8 +128,16 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
                     canvas.drawText(s, keyW / 2f, symbolBaseline - 0.8f, symbolPaint)
                     symbolPaint.color = originalColor
                     symbolPaint.alpha = 215
+                    canvas.drawText(s, keyW / 2f, symbolBaseline, symbolPaint)
+                } else {
+                    // Corner hint: the symbol lives in the top-right of the keycap so the
+                    // letter keeps the whole face to itself and can sit dead-center.
+                    symbolPaint.textAlign = Paint.Align.RIGHT
+                    val symbolX = keyW - faceInsetX - faceHeight * 0.12f
+                    val symbolCenterY = faceTop + faceHeight * 0.20f
+                    val symbolBaseline = symbolCenterY - (symbolMetrics.ascent + symbolMetrics.descent) / 2f
+                    canvas.drawText(s, symbolX, symbolBaseline, symbolPaint)
                 }
-                canvas.drawText(s, keyW / 2f, symbolBaseline, symbolPaint)
                 symbolPaint.alpha = 255
             }
         }
