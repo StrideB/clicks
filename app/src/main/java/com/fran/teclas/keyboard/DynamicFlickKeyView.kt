@@ -90,6 +90,7 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
     private var keyH = 0
     private var faceInsetX = 0f
     private var faceInsetY = 0f
+    private val glyphBounds = android.graphics.Rect()
 
     fun setKeyFaceInsets(horizontalInsetPx: Int, verticalInsetPx: Int) {
         faceInsetX = horizontalInsetPx.toFloat().coerceAtLeast(0f)
@@ -148,9 +149,17 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
                 hintPaint.isFakeBoldText = false
                 val requestedSize = primaryTextSizePx.takeIf { it > 0f } ?: faceHeight * 0.48f
                 hintPaint.textSize = min(requestedSize, faceHeight * primaryMaxFaceScale)
-                val metrics = hintPaint.fontMetrics
                 val centerY = faceTop + faceHeight * labelVerticalBias
-                val baseline = centerY - (metrics.ascent + metrics.descent) / 2f
+                // Center the actual glyph box, not the font's em box: metrics centering reserves
+                // descender space every lowercase letter without a descender doesn't use, which is
+                // exactly the "letters sit low in the key" look.
+                hintPaint.getTextBounds(label, 0, label.length, glyphBounds)
+                val baseline = if (glyphBounds.height() > 0) {
+                    centerY - (glyphBounds.top + glyphBounds.bottom) / 2f
+                } else {
+                    val metrics = hintPaint.fontMetrics
+                    centerY - (metrics.ascent + metrics.descent) / 2f
+                }
                 canvas.drawText(label, keyW / 2f, baseline, hintPaint)
                 hintPaint.typeface = null
                 hintPaint.color = 0xFF4ADE80.toInt()

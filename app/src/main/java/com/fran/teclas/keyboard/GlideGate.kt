@@ -21,6 +21,15 @@ import kotlin.math.abs
  */
 object GlideGate {
 
+    /**
+     * No glide before this much finger contact, no matter how far the travel. A fast tap — even a
+     * rolling one that lands already moving, the "hahahaha" case — is on the glass for well under
+     * 100ms; a real glide keeps contact for several times that just to draw its path. Distance
+     * cannot separate a rolling tap from a glide's first frames, but contact age can: the tap
+     * lifts before this floor and so never activates, while a glide sails through it unaffected.
+     */
+    const val MIN_CONTACT_MS = 110L
+
     /** Movement within this long of touch-down reads as intent to glide rather than tap drift. */
     const val FAST_WINDOW_MS = 220L
 
@@ -37,6 +46,7 @@ object GlideGate {
      * hardest to start.
      */
     fun shouldActivate(dxPx: Float, dyPx: Float, elapsedMs: Long, slopPx: Float): Boolean {
+        if (elapsedMs < MIN_CONTACT_MS) return false
         val travel = maxOf(abs(dxPx), abs(dyPx))
         val needed = if (elapsedMs <= FAST_WINDOW_MS) slopPx else slopPx * SLOW_TRAVEL_MULTIPLIER
         return travel > needed
