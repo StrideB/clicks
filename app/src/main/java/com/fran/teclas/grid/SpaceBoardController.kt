@@ -29,7 +29,7 @@ class SpaceBoardController(
         fun allocateWidgetId(): Int
         fun bindWidgetIfAllowed(widgetId: Int, provider: AppWidgetProviderInfo): Boolean
         fun deleteWidgetId(widgetId: Int)
-        fun updateWidgetSize(widgetId: Int, widthDp: Int, heightDp: Int)
+        fun updateWidgetSize(widgetId: Int, widthPx: Int, heightPx: Int)
         /** Ask the launcher to run the bind/configure Intent under its result codes. */
         fun startWidgetResultIntent(intent: Intent, requestCode: Int)
         /** Show the app/widget add chooser. */
@@ -81,10 +81,7 @@ class SpaceBoardController(
     override fun widgetRemoved(widgetId: Int) = callbacks.deleteWidgetId(widgetId)
 
     override fun widgetResized(item: GridItem, widthPx: Int, heightPx: Int) {
-        val density = activity.resources.displayMetrics.density
-        val wDp = (widthPx / density).roundToInt()
-        val hDp = (heightPx / density).roundToInt()
-        widgetIdsOf(item).forEach { callbacks.updateWidgetSize(it, wDp, hDp) }
+        widgetIdsOf(item).forEach { callbacks.updateWidgetSize(it, widthPx, heightPx) }
         // Persist the new span here too. Layout persistence otherwise rides only on commitResize's
         // itemsChanged, which its collision/no-change guard can skip — so a resize that reaches this
         // hook without itemsChanged (e.g. on a crowded grid) silently lost its size across reload.

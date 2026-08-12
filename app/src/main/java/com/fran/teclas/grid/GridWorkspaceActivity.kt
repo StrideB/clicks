@@ -485,17 +485,8 @@ class GridWorkspaceActivity : Activity(), GridWorkspaceView.Host {
     }
 
     override fun widgetResized(item: GridItem, widthPx: Int, heightPx: Int) {
-        val dm = resources.displayMetrics
-        val wDp = (widthPx / dm.density).roundToInt()
-        val hDp = (heightPx / dm.density).roundToInt()
-        val options = Bundle().apply {
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, wDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, wDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, hDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, hDp)
-        }
         widgetIdsOf(item).forEach { id ->
-            runCatching { appWidgetManager.updateAppWidgetOptions(id, options) }
+            com.fran.teclas.WidgetFit.reportSize(this, appWidgetManager, id, widthPx, heightPx)
         }
     }
 

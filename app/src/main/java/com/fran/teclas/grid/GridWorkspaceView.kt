@@ -234,7 +234,9 @@ class GridWorkspaceView(context: Context, private val host: Host) : FrameLayout(
                     applyWidgetFrame(this)
                     val inner = obtainWidgetView(item.widgetId)
                     if (inner != null) {
-                        addView(inner, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+                        addView(com.fran.teclas.WidgetScaleFrame(context).apply {
+                            addView(inner, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+                        }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
                     } else {
                         addView(AppItemView(context, item, false), LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
                     }
