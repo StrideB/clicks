@@ -3475,7 +3475,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return (screenHeight - posture.hinge.top - dockReserved).coerceIn(0, screenHeight / 2)
     }
 
-    private fun innerPagesEnabled(): Boolean = prefs().getBoolean(INNER_PAGES_PREF, true)
+    // Default OFF: the Fold 8's inner screen is a small tablet, and the default experience is the
+    // freeform tablet canvas (wallpaper + addable widgets + dock + slide-away keyboard). The book
+    // pages layout below survives as an opt-in experiment ("fold pages" in type-to-customize).
+    private fun innerPagesEnabled(): Boolean = prefs().getBoolean(INNER_PAGES_PREF, false)
 
     private fun innerPagesSwapped(): Boolean = prefs().getBoolean(INNER_PAGES_SWAP_PREF, false)
 
@@ -4007,6 +4010,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rawY >= loc[1] && rawY <= loc[1] + target.height
         }
         if (::favoritesDockFrameView.isInitialized && inside(favoritesDockFrameView)) return true
+        if (inside(unfoldedFocusDockView)) return true
         return inside(clockWidgetFrameView) ||
             inside(weatherWidgetFrameView) ||
             inside(agendaWidgetFrameView) ||
@@ -4863,6 +4867,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return object : FrameLayout(this) {
             override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
                 if (handleUnfoldedWeatherHold(ev)) return true
+                // Tablet canvas only: long-press empty wallpaper opens the add-widget menu, same
+                // as the phone home. The opt-in pages layout owns its canvas, so it skips this.
+                if (pages == null && handleHomeAddLongPress(this, ev)) return true
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
@@ -4874,11 +4881,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh(playMoment = false)
-            if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
-            // Book pages host the clock inside the continuity page and the day's agenda inside
-            // the Today page, so the movable clock/agenda frames stand down to avoid doubling.
-            if (pages == null && clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
-            if (pages == null && agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
+            if (pages == null) {
+                // Tablet canvas: the same freeform, addable widget set as the phone home
+                // (weather / clock / agenda / brief). Long-press the wallpaper to add more.
+                addFloatingHomeWidgets(widgetSearchActive = false)
+            } else {
+                // Book pages (opt-in) host clock/agenda content inside the pages themselves;
+                // only the weather frame floats, in its top-bar slot.
+                if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            }
             post { refreshUnfoldedFocusContent() }
         }
     }
@@ -26375,8 +26386,8 @@ Question: $prompt"""
         entries.add(SettingSearchEntry(
             "Fold pages",
             if (innerPagesEnabled()) "On · unfolded home is Today + your home page"
-            else "Off · unfolded home is a single focus canvas",
-            listOf("fold", "pages", "fold pages", "book", "inner", "inner screen", "unfolded", "foldable")
+            else "Off · unfolded home is the freeform tablet canvas",
+            listOf("fold", "pages", "fold pages", "book", "inner", "inner screen", "unfolded", "foldable", "tablet")
         ) {
             prefs().edit().putBoolean(INNER_PAGES_PREF, !innerPagesEnabled()).apply()
             render()
