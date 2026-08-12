@@ -4570,12 +4570,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.22f))
                 favoritesDockFrameView = favoritesDockFlipSurface(context)
-                addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
+                // Google-search-bar footprint: 52dp pill, 16dp side margins — the dock and the
+                // search bar below it read as two rows of the same bottom system.
+                addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply {
                     topMargin = dp(6)
-                    if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) {
-                        leftMargin = dp(16)
-                        rightMargin = dp(16)
-                    }
+                    leftMargin = dp(16)
+                    rightMargin = dp(16)
                     // Small gap above the docked keyboard deck (its height now accounts for the
                     // suggestion strip, so it no longer bleeds up — see activeRootDockHeight()).
                     bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else dp(6)
@@ -4655,7 +4655,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     addView(homeHeader().apply { visibility = View.INVISIBLE }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                     addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
                     favoritesDockFrameView = favoritesDockFlipSurface(context)
-                    addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(62)).apply {
+                    addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply {
                         topMargin = dp(6)
                         bottomMargin = dp(4)
                         leftMargin = dp(16)
@@ -4728,8 +4728,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // over a sharp wallpaper with nothing blurred behind it. Widget/unfolded are left untouched.
         val dockGlass: View =
             if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive())
-                NativeFoldGlassPanel(context, radiusDp = 19, compactDockGlass = true)
-            else foldAwareGlassPlate(context, radiusDp = 19)
+                NativeFoldGlassPanel(context, radiusDp = 26, compactDockGlass = true)
+            else foldAwareGlassPlate(context, radiusDp = 26)
         frame.addView(dockGlass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         favoritesDockAccentChromeView = SpaceDockAccentChrome(context).apply {
             setAccent(currentCleanSpacesAccent(), cleanSpacesBriefActive(), animate = false)
@@ -6794,7 +6794,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }
             // The keyboard host bleeds horizontally so the expanded deck can reach the edges.
             // Pull the collapsed search back in so it aligns with the favorites dock.
-            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(48), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            addView(widgetKeyboardSliderHandleView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(52), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
                 leftMargin = widgetKeyboardHorizontalBleed() + dp(16)
                 rightMargin = widgetKeyboardHorizontalBleed() + dp(16)
                 bottomMargin = dp(8)
@@ -23545,7 +23545,7 @@ Question: $prompt"""
             if (!active || alpha <= 0f) return
             val inset = dp(2).toFloat()
             rect.set(inset, inset, width - inset, height - inset)
-            val radius = dp(19).toFloat()
+            val radius = dp(24).toFloat()
             paint.shader = null
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(2).toFloat()
@@ -29510,15 +29510,14 @@ Question: $prompt"""
             clipChildren = false
             clipToPadding = false
             background = ColorDrawable(Color.TRANSPARENT)
+            // Full-height pill (radius = height/2 at 52dp): the Google-search-bar silhouette. The
+            // glass IS the whole bar — no inset panel floating inside a larger backdrop.
             addView(
-                NativeFoldGlassPanel(context, radiusDp = 19, compactDockGlass = true),
+                NativeFoldGlassPanel(context, radiusDp = 26, compactDockGlass = true),
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
-                ).apply {
-                    topMargin = dp(3)
-                    bottomMargin = dp(3)
-                }
+                )
             )
             addView(SearchHandleContentView(context), FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         }
@@ -29535,7 +29534,7 @@ Question: $prompt"""
             super.onDraw(canvas)
             val tokens = selectedNeuTokens()
             val light = tokens.mode == NeuMode.LIGHT
-            rect.set(0f, dp(3).toFloat(), width.toFloat(), height - dp(3).toFloat())
+            rect.set(0f, 0f, width.toFloat(), height.toFloat())
             // Magnifier in the accent color.
             val cx = rect.left + dp(22).toFloat()
             val cy = rect.centerY() - dp(1).toFloat()
@@ -30423,8 +30422,14 @@ Question: $prompt"""
                 !isUnfoldedInnerLayoutActive() &&
                 !widgetPaneUsesRootDock() &&
                 !(keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET && widgetKeyboardHidden)
+        // Keyboard collapsed to the floating search bar on home: nothing owns the bottom edge, so
+        // the nav area must be glass-clear — a black band behind a floating pill reads as a backdrop
+        // panel the bar is sitting on instead of wallpaper all the way down.
+        val collapsedSearchOnHome = keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET &&
+            widgetKeyboardHidden && openPane == null && !isUnfoldedInnerLayoutActive() && !mediaDock
         window.navigationBarColor = when {
             dockedKeyboardOwnsBottom -> keyboardDeckBottomEdgeColor()
+            collapsedSearchOnHome -> Color.TRANSPARENT
             darkBars -> Color.BLACK
             else -> activeNeuTokens.base
         }

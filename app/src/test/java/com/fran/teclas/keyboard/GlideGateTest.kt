@@ -18,16 +18,16 @@ class GlideGateTest {
     // ---------------------------------------------------------------- real glides still start
 
     @Test fun `a quick sideways flick starts a glide`() {
-        assertTrue(GlideGate.shouldActivate(dxPx = 90f, dyPx = 4f, elapsedMs = 40, slopPx = slop))
+        assertTrue(GlideGate.shouldActivate(dxPx = 90f, dyPx = 4f, elapsedMs = 130, slopPx = slop))
     }
 
     @Test fun `a vertical glide starts too`() {
-        assertTrue(GlideGate.shouldActivate(dxPx = 3f, dyPx = -95f, elapsedMs = 60, slopPx = slop))
+        assertTrue(GlideGate.shouldActivate(dxPx = 3f, dyPx = -95f, elapsedMs = 150, slopPx = slop))
     }
 
     @Test fun `travel is per-axis, so a glide along a key row is not penalised`() {
         // Requiring diagonal distance would make the commonest gesture the hardest to begin.
-        assertTrue(GlideGate.shouldActivate(dxPx = 80f, dyPx = 0f, elapsedMs = 50, slopPx = slop))
+        assertTrue(GlideGate.shouldActivate(dxPx = 80f, dyPx = 0f, elapsedMs = 140, slopPx = slop))
     }
 
     @Test fun `a deliberate slow glide still starts once it travels far enough`() {
@@ -39,6 +39,19 @@ class GlideGateTest {
 
     @Test fun `a fast tap that slid slightly is not a glide`() {
         assertFalse(GlideGate.shouldActivate(dxPx = 40f, dyPx = 8f, elapsedMs = 45, slopPx = slop))
+    }
+
+    @Test fun `a rolling tap is not a glide no matter how far it travels`() {
+        // Fast alternating typing ("hahahaha") lands each press already moving sideways, so raw
+        // travel blows past any distance slop within a frame or two. Contact age is what gives it
+        // away: the finger lifts long before a real glide would still be drawing its path.
+        assertFalse(GlideGate.shouldActivate(dxPx = 300f, dyPx = 20f, elapsedMs = 45, slopPx = slop))
+        assertFalse(GlideGate.shouldActivate(dxPx = 500f, dyPx = 0f, elapsedMs = 90, slopPx = slop))
+        assertFalse(GlideGate.shouldActivate(dxPx = 200f, dyPx = 40f, elapsedMs = GlideGate.MIN_CONTACT_MS - 1, slopPx = slop))
+    }
+
+    @Test fun `the same travel activates once contact outlives the floor`() {
+        assertTrue(GlideGate.shouldActivate(dxPx = 300f, dyPx = 20f, elapsedMs = GlideGate.MIN_CONTACT_MS, slopPx = slop))
     }
 
     @Test fun `a press that drifts gradually is not a glide`() {
@@ -59,8 +72,8 @@ class GlideGateTest {
     // ---------------------------------------------------------------- the boundaries
 
     @Test fun `the fast threshold is exclusive`() {
-        assertFalse(GlideGate.shouldActivate(slop, 0f, 10, slop))
-        assertTrue(GlideGate.shouldActivate(slop + 0.1f, 0f, 10, slop))
+        assertFalse(GlideGate.shouldActivate(slop, 0f, 130, slop))
+        assertTrue(GlideGate.shouldActivate(slop + 0.1f, 0f, 130, slop))
     }
 
     @Test fun `the window edge switches which threshold applies`() {
