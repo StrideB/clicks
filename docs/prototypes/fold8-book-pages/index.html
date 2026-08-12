@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fold 8 Book Pages</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --base: #101216;
+      --panel: rgba(255,255,255,.045);
+      --panel-line: rgba(255,255,255,.075);
+      --ink: #f0eee7;
+      --dim: #9aa0aa;
+      --faint: #5f6672;
+      --accent: #c9a7ff;           /* Cursor Violet — Teclas brand default */
+      --green: #8fd694;
+      --amber: #f5c451;
+      --blue: #7db7ff;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: #08090b; color: var(--ink);
+      display: grid; place-items: center; padding: 18px;
+    }
+    .wrap { width: min(96vw, 1240px); }
+
+    .bar {
+      display: flex; align-items: center; gap: 10px; margin: 0 4px 12px;
+      font-size: 12px; color: var(--dim);
+    }
+    .bar b { color: var(--ink); font-size: 13px; letter-spacing: .02em; }
+    .bar .sp { flex: 1; }
+    .chip {
+      border: 1px solid var(--panel-line); background: var(--panel); color: var(--dim);
+      border-radius: 999px; padding: 7px 14px; font: 700 11px/1 inherit; letter-spacing: .08em;
+      cursor: pointer; transition: color .2s, background .2s;
+    }
+    .chip:hover { color: var(--ink); }
+    .chip.on { color: #15121c; background: var(--accent); border-color: transparent; }
+
+    /* ── The device: 2448×1848 px ≈ 933×704dp, 4:3 landscape ── */
+    .device {
+      aspect-ratio: 2448 / 1848;
+      border-radius: 26px;
+      padding: 10px;
+      background: linear-gradient(145deg, #1b1e24, #0a0b0e);
+      box-shadow: 0 40px 90px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,255,255,.09);
+    }
+    .screen {
+      position: relative; height: 100%; border-radius: 18px; overflow: hidden;
+      background:
+        radial-gradient(120% 90% at 18% 8%, rgba(201,167,255,.14), transparent 42%),
+        radial-gradient(100% 80% at 85% 18%, rgba(125,183,255,.10), transparent 40%),
+        radial-gradient(120% 100% at 55% 110%, rgba(143,214,148,.08), transparent 46%),
+        linear-gradient(160deg, #171a20 0%, #101216 52%, #0a0c10 100%);
+      display: grid;
+      /* weather bar / pages / dock band / keyboard deck — the real column order */
+      grid-template-rows: 9% 1fr 11.5% 33%;
+      padding: 1.4% 3.2% 0;   /* unfoldedFocusHorizontalInset ≈ 30dp each side */
+    }
+
+    /* Weather top bar (centered chip, as unfoldedFocusTopBar renders it) */
+    .weather { display: flex; align-items: center; justify-content: center; gap: 12px; }
+    .weather .t { font-size: clamp(16px, 2.4vw, 26px); font-weight: 700; }
+    .weather .c { color: var(--dim); font-size: clamp(9px, 1.15vw, 12px); font-weight: 600; }
+
+    /* Pages row: page / gutter / page */
+    .pages { display: grid; grid-template-columns: 1fr 3.1% 1fr; min-height: 0; }
+    .pages.swapped .day { order: 3; }
+    .pages.swapped .gutter { order: 2; }
+    .pages.swapped .cont { order: 1; }
+
+    .page {
+      min-height: 0; border-radius: 16px; padding: 3.4%;
+      background: linear-gradient(150deg, rgba(255,255,255,.055), rgba(255,255,255,.02));
+      border: 1px solid var(--panel-line);
+      box-shadow: 10px 14px 30px rgba(0,0,0,.36), inset 0 1px 0 rgba(255,255,255,.08);
+      display: flex; flex-direction: column; gap: 4.5%;
+      overflow: hidden;
+    }
+    .gutter { /* the fold line — crease is invisible, the gutter is rhythm, not apology */ }
+
+    .eyebrow { color: var(--faint); font: 800 clamp(7px,.9vw,10px)/1 inherit; letter-spacing: .22em; }
+
+    /* Day page — Today timeline */
+    .hero {
+      position: relative; border-radius: 12px; padding: 4.5% 5% 4.5% 7%;
+      background: linear-gradient(145deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
+    }
+    .hero::before {
+      content: ""; position: absolute; left: 3%; top: 14%; bottom: 14%; width: 3px; border-radius: 99px;
+      background: linear-gradient(180deg, var(--accent), var(--blue));
+    }
+    .hero .when { color: var(--green); font: 700 clamp(8px,1vw,11px)/1.1 inherit; }
+    .hero .what { font: 650 clamp(11px,1.5vw,17px)/1.22 inherit; margin-top: 3%; }
+    .hero .sub { color: var(--dim); font-size: clamp(8px,1vw,11px); margin-top: 2.5%; }
+
+    .row {
+      display: flex; align-items: center; gap: 4%; border-radius: 11px; padding: 3.2% 4.5%;
+      background: rgba(255,255,255,.028); box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    .dot { width: 9%; aspect-ratio: 1; border-radius: 30%; flex: none;
+      background: linear-gradient(145deg, var(--d, var(--blue)), rgba(255,255,255,.25)); }
+    .row .tx { min-width: 0; }
+    .row .tt { font: 650 clamp(9px,1.15vw,13px)/1.2 inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .ts { color: var(--dim); font-size: clamp(8px,.95vw,10px); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Continuity page — clock + widget stack */
+    .clock { text-align: center; margin-top: 1%; }
+    .clock .hm { font: 250 clamp(26px,5.2vw,58px)/0.95 inherit; letter-spacing: .01em; }
+    .clock .meta { color: var(--dim); font-size: clamp(8px,1vw,12px); font-weight: 600; margin-top: 1.5%; }
+    .clock .meta b { color: var(--accent); font-weight: 700; }
+
+    .music {
+      display: flex; align-items: center; gap: 4.5%; border-radius: 12px; padding: 3.4% 4.5%;
+      background: linear-gradient(145deg, rgba(255,255,255,.05), rgba(255,255,255,.018));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.07);
+    }
+    .art { width: 15%; aspect-ratio: 1; border-radius: 22%; flex: none;
+      background:
+        radial-gradient(circle at 32% 28%, rgba(255,255,255,.5), transparent 34%),
+        linear-gradient(145deg, #57c98a, #1d5c3c); }
+    .eq { margin-left: auto; display: flex; align-items: flex-end; gap: 2px; height: 38%; }
+    .eq i { width: 3px; border-radius: 2px; background: var(--green); animation: eq 1s infinite ease-in-out; }
+    .eq i:nth-child(2) { height: 100%; animation-delay: .18s; }
+    .eq i:nth-child(1) { height: 55%; }
+    .eq i:nth-child(3) { height: 70%; animation-delay: .32s; }
+    @keyframes eq { 50% { transform: scaleY(.45); } }
+
+    .people { display: flex; gap: 4%; align-items: center; padding: 0 1%; }
+    .ava { width: 11.5%; aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center;
+      font: 800 clamp(8px,1.1vw,12px)/1 inherit; color: #14161b;
+      background: radial-gradient(circle at 35% 28%, rgba(255,255,255,.65), transparent 40%),
+                  linear-gradient(145deg, var(--a, var(--amber)), rgba(0,0,0,.35)); }
+    .people .lbl { color: var(--faint); font-size: clamp(8px,.9vw,10px); font-weight: 700; letter-spacing: .12em; }
+
+    /* Dock band — page-width, under the continuity page */
+    .dockband { display: grid; grid-template-columns: 1fr 3.1% 1fr; align-items: center; }
+    .dockband.swapped .dock { grid-column: 1; }
+    .dock {
+      grid-column: 3; height: 84%; border-radius: 14px; padding: 0 2.5%;
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 2.5%; align-items: center;
+      background: linear-gradient(145deg, rgba(0,0,0,.35), rgba(255,255,255,.04));
+      box-shadow: inset 6px 8px 18px rgba(0,0,0,.42), inset -2px -2px 8px rgba(255,255,255,.05);
+    }
+    .app { height: 68%; border-radius: 26%; justify-self: center; aspect-ratio: 1;
+      background: radial-gradient(circle at 34% 26%, rgba(255,255,255,.45), transparent 30%),
+                  linear-gradient(145deg, var(--a1), var(--a2));
+      box-shadow: 0 8px 14px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.25); }
+
+    /* Keyboard deck — Phase 1 keeps the centered wide deck (Phase 2 splits it under the thumbs) */
+    .deck {
+      margin: 0 -3.6% 0; padding: 1.2% 8% 1.6%;
+      background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(0,0,0,.28)), #0d0f13;
+      border-top: 1px solid rgba(255,255,255,.06);
+      display: flex; flex-direction: column; gap: 2.2%;
+    }
+    .strip { height: 13%; border-radius: 8px; display: grid; place-items: center; cursor: pointer;
+      color: var(--faint); font: 700 clamp(7px,.9vw,10px)/1 ui-monospace, Menlo, monospace; letter-spacing: .2em;
+      background: linear-gradient(145deg, rgba(0,0,0,.4), rgba(255,255,255,.03));
+      box-shadow: inset 3px 4px 10px rgba(0,0,0,.5); }
+    .strip:hover { color: var(--accent); }
+    .krow { flex: 1; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 1.1%; }
+    .krow.r2 { padding: 0 5%; } .krow.r4 { grid-template-columns: 1.1fr 1.1fr 4.4fr .9fr 1.1fr; padding: 0 3%; }
+    .key { border-radius: 7px; display: grid; place-items: center;
+      color: #e6e9ef; font: 650 clamp(8px,1.05vw,13px)/1 inherit;
+      background: linear-gradient(180deg, #262a32, #14171d 46%, #0a0c10);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.14), inset 0 -3px 6px rgba(0,0,0,.55), 0 3px 0 #05060a; cursor: pointer; }
+    .key:active { transform: translateY(2px); box-shadow: inset 0 1px 0 rgba(255,255,255,.1), 0 1px 0 #05060a; }
+    .key.fn { color: var(--amber); } .key.go { color: #191021; background: linear-gradient(180deg, #e2ccff, var(--accent) 55%, #8f68d4); }
+
+    /* Search takeover — typing collapses pages into one spanning canvas */
+    .takeover {
+      position: absolute; inset: 0; padding: 2% 3.2% 46%; display: none;
+      background: rgba(10, 11, 14, .55); backdrop-filter: blur(6px);
+    }
+    .screen.searching .takeover { display: block; }
+    .screen.searching .pages, .screen.searching .weather, .screen.searching .dockband { visibility: hidden; }
+    .tk {
+      height: 100%; border-radius: 16px; padding: 2.4% 3%;
+      background: linear-gradient(150deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+      border: 1px solid var(--panel-line); display: flex; flex-direction: column; gap: 3%;
+    }
+    .tk .q { display: flex; align-items: baseline; gap: 12px; }
+    .tk .q b { font-size: clamp(13px,1.7vw,20px); }
+    .tk .q span { color: var(--accent); font: 600 clamp(10px,1.2vw,14px)/1 ui-monospace, Menlo, monospace; }
+    .tk .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2.4%; }
+    .tk .grid .app { height: auto; width: 74%; }
+    .tk .hint { margin-top: auto; color: var(--faint); font-size: clamp(8px,1vw,11px); }
+
+    .foot { margin: 12px 6px 0; color: var(--faint); font-size: 11px; line-height: 1.5; }
+    .foot b { color: var(--dim); }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="bar">
+      <b>Fold 8 · book pages</b>
+      <span>933×704dp inner canvas — two ~420dp pages around the fold line</span>
+      <span class="sp"></span>
+      <button class="chip on" id="modePages">PAGES</button>
+      <button class="chip" id="modeSwap">SWAP</button>
+      <button class="chip" id="modeSearch">TYPE-TO-SEARCH</button>
+    </div>
+
+    <section class="device">
+      <div class="screen" id="screen">
+        <header class="weather"><span class="t">72°</span><span class="c">Clear · feels 75° · Gaitan</span></header>
+
+        <div class="pages" id="pages">
+          <!-- Day page: the Today timeline, ambient -->
+          <article class="page day">
+            <div class="eyebrow">TODAY</div>
+            <div class="hero">
+              <div class="when">IN 42 MIN · 10:30</div>
+              <div class="what">Quarterly review with the platform team</div>
+              <div class="sub">Meet · your Work space is active while unfolded</div>
+            </div>
+            <div class="row"><i class="dot" style="--d:var(--blue)"></i>
+              <div class="tx"><div class="tt">Sarah — re: Q3 deck</div><div class="ts">"Can you reply before the review?"</div></div>
+            </div>
+            <div class="row"><i class="dot" style="--d:var(--amber)"></i>
+              <div class="tx"><div class="tt">Leave by 5:40 for the airport</div><div class="ts">38 min via I-280 · on time</div></div>
+            </div>
+          </article>
+
+          <div class="gutter"></div>
+
+          <!-- Continuity page: the phone home's essence, on the half that was the cover -->
+          <article class="page cont">
+            <div class="clock">
+              <div class="hm">9:48</div>
+              <div class="meta">TUE AUG 12 · <b>72°</b> GAITAN</div>
+            </div>
+            <div class="music">
+              <div class="art"></div>
+              <div class="tx"><div class="tt">Nightbirde — Levitate</div><div class="ts">Spotify</div></div>
+              <div class="eq"><i></i><i></i><i></i></div>
+            </div>
+            <div class="people">
+              <span class="ava" style="--a:#f2a3b3">K</span>
+              <span class="ava" style="--a:#8fd694">M</span>
+              <span class="ava" style="--a:#7db7ff">G</span>
+              <span class="lbl">RECENT</span>
+            </div>
+          </article>
+        </div>
+
+        <!-- Favorites dock: page width, under the continuity page -->
+        <div class="dockband" id="dockband">
+          <div class="dock">
+            <span class="app" style="--a1:#ff6b6b;--a2:#9c1f1f"></span>
+            <span class="app" style="--a1:#7db7ff;--a2:#2156a7"></span>
+            <span class="app" style="--a1:#36d17b;--a2:#0a6c37"></span>
+            <span class="app" style="--a1:#f5c451;--a2:#a66b12"></span>
+            <span class="app" style="--a1:#c9a7ff;--a2:#5941b7"></span>
+          </div>
+        </div>
+
+        <!-- Keyboard deck (Phase 1: centered wide deck; Phase 2 splits it under the thumbs) -->
+        <footer class="deck" id="deck">
+          <div class="strip" id="strip">TYPE TO SEARCH</div>
+          <div class="krow"><span class="key">q</span><span class="key">w</span><span class="key">e</span><span class="key">r</span><span class="key">t</span><span class="key">y</span><span class="key">u</span><span class="key">i</span><span class="key">o</span><span class="key">p</span></div>
+          <div class="krow r2"><span class="key">a</span><span class="key">s</span><span class="key">d</span><span class="key">f</span><span class="key">g</span><span class="key">h</span><span class="key">j</span><span class="key">k</span><span class="key">l</span></div>
+          <div class="krow"><span class="key fn">⇧</span><span class="key">z</span><span class="key">x</span><span class="key">c</span><span class="key">v</span><span class="key">b</span><span class="key">n</span><span class="key">m</span><span class="key fn">⌫</span></div>
+          <div class="krow r4"><span class="key fn">123</span><span class="key fn">teclas</span><span class="key">space</span><span class="key fn">.</span><span class="key go">GO</span></div>
+        </footer>
+
+        <!-- Search takeover -->
+        <div class="takeover">
+          <div class="tk">
+            <div class="q"><b>Search</b><span id="typed">slack…</span></div>
+            <div class="eyebrow">APPS</div>
+            <div class="grid">
+              <span class="app" style="--a1:#7db7ff;--a2:#2156a7"></span>
+              <span class="app" style="--a1:#ff6b6b;--a2:#9c1f1f"></span>
+              <span class="app" style="--a1:#36d17b;--a2:#0a6c37"></span>
+              <span class="app" style="--a1:#f5c451;--a2:#a66b12"></span>
+              <span class="app" style="--a1:#c9a7ff;--a2:#5941b7"></span>
+              <span class="app" style="--a1:#9aa0aa;--a2:#3a4048"></span>
+            </div>
+            <div class="hint">Typing collapses the pages into one spanning canvas — clear the query and the pages settle back. (Phase 3 turns this into real two-column zones.)</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot">
+      <b>What this mocks:</b> PR #144's calm unfolded home. Left — the Today timeline (day page). Right — clock,
+      contextual widget stack, and the favorites dock aligned beneath (continuity page: the half that was the cover,
+      so unfolding adds a page instead of rearranging the one you were on). The gutter is the fold line — Flex Titanium
+      killed the crease, so it's rhythm, not apology. <b>SWAP</b> mirrors the pages (<code>inner_pages_swap</code>);
+      <b>TYPE-TO-SEARCH</b> (or the typing strip / any key) shows the takeover. Phase 2 replaces the wide deck with
+      split half-decks under the thumbs.
+    </div>
+  </main>
+
+  <script>
+    const screen = document.getElementById("screen");
+    const pages = document.getElementById("pages");
+    const dockband = document.getElementById("dockband");
+    const modePages = document.getElementById("modePages");
+    const modeSwap = document.getElementById("modeSwap");
+    const modeSearch = document.getElementById("modeSearch");
+    const typed = document.getElementById("typed");
+
+    let searching = false, buffer = "";
+    function setSearching(on) {
+      searching = on;
+      screen.classList.toggle("searching", on);
+      modeSearch.classList.toggle("on", on);
+      modePages.classList.toggle("on", !on);
+      if (!on) { buffer = ""; typed.textContent = "slack…"; }
+    }
+    modePages.addEventListener("click", () => setSearching(false));
+    modeSearch.addEventListener("click", () => setSearching(true));
+    modeSwap.addEventListener("click", () => {
+      pages.classList.toggle("swapped");
+      dockband.classList.toggle("swapped");
+      modeSwap.classList.toggle("on");
+    });
+    document.getElementById("strip").addEventListener("click", () => setSearching(true));
+    document.querySelectorAll(".key").forEach(k => k.addEventListener("click", () => {
+      const label = k.textContent;
+      if (label === "⌫") {
+        buffer = buffer.slice(0, -1);
+        if (!buffer) return setSearching(false);
+      } else if (label.length === 1 && /[a-z]/.test(label)) {
+        buffer += label;
+      } else if (label === "GO" || label === "teclas") {
+        return setSearching(false);
+      } else if (label === "space") {
+        buffer += " ";
+      } else { return; }
+      setSearching(true);
+      typed.textContent = buffer || "slack…";
+    }));
+  </script>
+</body>
+</html>
