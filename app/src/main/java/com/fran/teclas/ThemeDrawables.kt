@@ -387,17 +387,19 @@ internal fun Context.widgetChromeBackground(tokens: NeuTokens): Drawable {
 
 internal fun Context.widgetPickerSheetBackground(tokens: NeuTokens): Drawable {
     val light = tokens.mode == NeuMode.LIGHT
+    // Near-opaque: the sheet is a reading surface — widget previews and labels have to sit on a
+    // solid ground, not on whatever board content happens to be behind the sheet.
     val base = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (light) {
         intArrayOf(
-            adjustAlpha(Color.WHITE, 0.30f),
-            adjustAlpha(tokens.baseHi, 0.22f),
-            adjustAlpha(tokens.baseLo, 0.20f)
+            adjustAlpha(Color.WHITE, 0.97f),
+            adjustAlpha(tokens.baseHi, 0.97f),
+            adjustAlpha(tokens.baseLo, 0.97f)
         )
     } else {
         intArrayOf(
-            adjustAlpha(tokens.baseHi, 0.42f),
-            adjustAlpha(tokens.base, 0.34f),
-            adjustAlpha(tokens.baseLo, 0.48f)
+            adjustAlpha(tokens.baseHi, 0.97f),
+            adjustAlpha(tokens.base, 0.97f),
+            adjustAlpha(tokens.baseLo, 0.98f)
         )
     }).apply {
         cornerRadius = dp(28).toFloat()
