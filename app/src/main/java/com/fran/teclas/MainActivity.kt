@@ -5228,6 +5228,16 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         }
 
         private fun drawFallback(canvas: Canvas) {
+            if (compactDockGlass) {
+                // No wallpaper bitmap to blur (system-wallpaper mode leaves homeWallpaperDrawable
+                // null). The opaque gradient below is what turned the floating dock and collapsed
+                // search pills into black backdrop slabs — the live wallpaper sits directly behind
+                // this transparent window, so a translucent smoke keeps the pill legible while the
+                // wallpaper's color reads through, matching how the blurred-bitmap path looks.
+                paint.color = if (glassLightMode()) 0x66F4F7FA else 0x4A10141A
+                canvas.drawRoundRect(RectF(0f, 0f, width.toFloat(), height.toFloat()), radius, radius, paint)
+                return
+            }
             paint.shader = android.graphics.LinearGradient(
                 0f, 0f, width.toFloat(), height.toFloat(),
                 if (honorGlass && glassLightMode()) {
