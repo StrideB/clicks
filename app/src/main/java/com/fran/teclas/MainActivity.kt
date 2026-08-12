@@ -115,6 +115,8 @@ import com.fran.teclas.keyboard.PredictionEngine
 import com.fran.teclas.keyboard.PredictionOverlayManager
 import com.fran.teclas.predict.ContextSnapshot
 import com.fran.teclas.fold.FoldPosture
+import com.fran.teclas.fold.InnerPageGeometry
+import com.fran.teclas.fold.innerPageGeometry
 import com.fran.teclas.fold.observeFoldPosture
 import com.fran.teclas.galaxy.NowBarLiveUpdate
 import com.fran.teclas.predict.AppCategory
@@ -3473,6 +3475,38 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return (screenHeight - posture.hinge.top - dockReserved).coerceIn(0, screenHeight / 2)
     }
 
+    private fun innerPagesEnabled(): Boolean = prefs().getBoolean(INNER_PAGES_PREF, true)
+
+    private fun innerPagesSwapped(): Boolean = prefs().getBoolean(INNER_PAGES_SWAP_PREF, false)
+
+    /** Book-page geometry for the unfolded content column, or null when the canvas should stay a
+     *  single focus column. Pages need a landscape inner display whose halves are each a real
+     *  phone-width canvas (Fold 8 class: ~933×704dp → two ~420dp pages); squarish inners and
+     *  portrait rotations keep the focus layout, and tabletop Flex Mode keeps the single column
+     *  because the keyboard owns the flat lower panel. Fold 8-class panels report no
+     *  FoldingFeature once fully flat, so the split defaults to the physical center; a reported
+     *  vertical hinge (book half-open) overrides it with real bounds. */
+    private fun innerPageGeometryOrNull(): InnerPageGeometry? {
+        if (!isUnfoldedInnerLayoutActive() || !innerPagesEnabled()) return null
+        if (tabletopLowerPanelInset() > 0) return null
+        val metrics = resources.displayMetrics
+        val inset = unfoldedFocusHorizontalInset()
+        val hinge = when (val posture = foldPosture) {
+            is FoldPosture.Inner -> posture.hingeGutter
+            is FoldPosture.HalfOpen -> if (posture.vertical) posture.hinge else null
+            else -> null
+        }
+        return innerPageGeometry(
+            width = metrics.widthPixels - inset * 2,
+            height = metrics.heightPixels,
+            // Hinge bounds are window-space; the content column is inset symmetrically.
+            hingeCenterX = hinge?.let { it.centerX() - inset },
+            hingeWidth = hinge?.width() ?: 0,
+            minPageWidth = dp(400),
+            fallbackGutterWidth = dp(28),
+        )
+    }
+
     private fun innerKeyboardWidthPercent(): Int =
         prefs().getInt(INNER_KEYBOARD_WIDTH_PREF, 68).coerceIn(48, 100)
 
@@ -4781,6 +4815,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipToPadding = true
         }
         unfoldedFocusContentArea = focusArea
+        val pages = innerPageGeometryOrNull()
         val panelWidth = unfoldedKeyboardPanelWidth()
         val panelOffsetX = unfoldedKeyboardPanelOffsetX(panelWidth).toFloat()
         val content = LinearLayout(this).apply {
@@ -4809,11 +4844,20 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val dockStage = FrameLayout(context).apply {
                 clipChildren = false
                 clipToPadding = false
-                translationX = panelOffsetX
+                // Book pages: the dock belongs to the continuity page — page width, page edge —
+                // not centered across the whole canvas at keyboard-panel width.
+                translationX = if (pages != null) 0f else panelOffsetX
                 addView(dock, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
             unfoldedFocusDockView = dockStage
-            addView(dockStage, LinearLayout.LayoutParams(panelWidth, dp(82)))
+            addView(dockStage, if (pages != null) {
+                LinearLayout.LayoutParams(
+                    if (innerPagesSwapped()) pages.leftPageWidth else pages.rightPageWidth,
+                    dp(82)
+                ).apply { gravity = if (innerPagesSwapped()) Gravity.LEFT else Gravity.RIGHT }
+            } else {
+                LinearLayout.LayoutParams(panelWidth, dp(82))
+            })
         }
 
         return object : FrameLayout(this) {
@@ -4831,17 +4875,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh(playMoment = false)
             if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
-            if (clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
-            if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
+            // Book pages host the clock inside the continuity page and the day's agenda inside
+            // the Today page, so the movable clock/agenda frames stand down to avoid doubling.
+            if (pages == null && clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
+            if (pages == null && agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
             post { refreshUnfoldedFocusContent() }
         }
     }
 
     internal fun refreshUnfoldedFocusContent() {
         val area = unfoldedFocusContentArea ?: return
+        val pages = innerPageGeometryOrNull()
         val searching = query.isNotBlank()
         val showLibrary = libraryOpen || innerLibraryLocked()
-        val showToday = todayOpen
+        // With book pages the Today surface is ambient on the day page, so the swipe-open
+        // takeover only applies to the single-column focus layout.
+        val showToday = todayOpen && pages == null
         val dockVisible = !searching && !showToday && (!libraryOpen || innerLibraryLocked())
         setUnfoldedFocusDockVisible(dockVisible)
         setUnfoldedWeatherSlotVisible(!searching)
@@ -4850,16 +4899,74 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             searching -> unfoldedSearchCanvas()
             showToday -> unfoldedTodayCanvas()
             showLibrary -> unfoldedAppLibraryCanvas()
+            pages != null -> unfoldedPagesCanvas(pages)
             else -> null
         }
+        val fillsArea = searching || (!showToday && !showLibrary && pages != null)
         child?.let {
-            val lp = if (searching) {
+            val lp = if (fillsArea) {
                 FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             } else {
                 FrameLayout.LayoutParams(unfoldedKeyboardPanelWidth(), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL)
             }
             area.addView(it, lp)
         }
+    }
+
+    /** The calm unfolded home for book-class inner displays: two real pages around the fold line.
+     *  Day page — the Today timeline, "the one thing that deserves attention". Continuity page —
+     *  the phone home's essence (clock + contextual widget stack), on the half that was the cover
+     *  so unfolding adds a page instead of rearranging the one you were looking at. The favorites
+     *  dock is a column sibling below, aligned under the continuity page (see unfoldedHome). */
+    private fun unfoldedPagesCanvas(pages: InnerPageGeometry): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        clipChildren = false
+        clipToPadding = false
+        val swap = innerPagesSwapped()
+        val dayPage = unfoldedTodayCanvas()
+        val continuityPage = unfoldedContinuityPage(
+            if (swap) pages.leftPageWidth else pages.rightPageWidth
+        )
+        addView(
+            if (swap) continuityPage else dayPage,
+            LinearLayout.LayoutParams(pages.leftPageWidth, LinearLayout.LayoutParams.MATCH_PARENT)
+        )
+        addView(View(context), LinearLayout.LayoutParams(pages.gutterWidth, LinearLayout.LayoutParams.MATCH_PARENT))
+        addView(
+            if (swap) dayPage else continuityPage,
+            LinearLayout.LayoutParams(pages.rightPageWidth, LinearLayout.LayoutParams.MATCH_PARENT)
+        )
+    }
+
+    private fun unfoldedContinuityPage(pageWidth: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        clipChildren = false
+        clipToPadding = false
+        if (clockWidgetVisible()) {
+            val styleId = clockWidgetStyleId()
+            val data = weatherDataFromPrefs()
+            val clock = ClockWidgetView(context).apply {
+                themeId = styleId
+                weatherTempF = data.temp
+                city = data.place
+            }
+            applyClockWidgetCustomizations(clock)
+            clockWidgetView = clock
+            addView(clock, LinearLayout.LayoutParams(
+                clockWidgetWidth(styleId).coerceAtMost(pageWidth - dp(12)),
+                clockWidgetHeight(styleId)
+            ).apply { topMargin = dp(6) })
+            updateClockWidget()
+        }
+        addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.12f))
+        nowPlayingCardView = ComposeView(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setNowPlayingCardContent()
+            elevation = dp(8).toFloat()
+        }
+        addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()))
+        addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
     private fun setUnfoldedFocusDockVisible(visible: Boolean) {
@@ -26266,6 +26373,25 @@ Question: $prompt"""
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Fold pages",
+            if (innerPagesEnabled()) "On · unfolded home is Today + your home page"
+            else "Off · unfolded home is a single focus canvas",
+            listOf("fold", "pages", "fold pages", "book", "inner", "inner screen", "unfolded", "foldable")
+        ) {
+            prefs().edit().putBoolean(INNER_PAGES_PREF, !innerPagesEnabled()).apply()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Swap fold pages",
+            if (innerPagesSwapped()) "Home page left · Today right" else "Today left · home page right",
+            listOf("swap", "fold", "pages", "mirror", "left handed", "handed")
+        ) {
+            prefs().edit().putBoolean(INNER_PAGES_SWAP_PREF, !innerPagesSwapped()).apply()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Glass effects", toggleStateLabel(glassEffectsEnabled()),
             listOf("glass", "effects", "blur", "frosted")
         ) {
@@ -31432,6 +31558,8 @@ Question: $prompt"""
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
         private const val PEN_HANDWRITING_PREF = "pen_handwriting"
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
+        private const val INNER_PAGES_PREF = "inner_pages"
+        private const val INNER_PAGES_SWAP_PREF = "inner_pages_swap"
         private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"
         private const val INNER_KEYBOARD_OFFSET_X_PREF = "inner_keyboard_offset_x"
         private const val INNER_KEYBOARD_OFFSET_Y_PREF = "inner_keyboard_offset_y"

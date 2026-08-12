@@ -500,6 +500,17 @@ need "Install via USB" enabled in Developer options.
   the moment the hinge bent. In tabletop posture (horizontal hinge),
   `tabletopLowerPanelInset()` pads the unfolded content above the hinge line so widgets/dock
   keep to the upright panel and the bottom-anchored keyboard owns the flat half.
+- **Fold 8-class book pages** (`fold/InnerPages.kt`): on landscape inner displays whose halves
+  are each a real phone-width canvas (each page ≥ ~400dp — the Fold 8's ~933×704dp 4:3 inner
+  yields two ~420dp pages), the calm unfolded home renders as two pages around the fold line:
+  the Today timeline on one page and the phone home's essence (clock, contextual widget stack,
+  favorites dock) on the other, so unfolding adds a page instead of rearranging the one you were
+  on. The split is capability-gated by geometry (never model-sniffed), uses the reported hinge
+  when one exists, and defaults to the physical center because Fold 8-class panels report no
+  FoldingFeature once fully flat. Typing still takes over the full canvas for search; the app
+  library takeover, tabletop Flex Mode, portrait rotations, and squarish inners (Honor class)
+  keep the single focus column. Prefs: `inner_pages` (default on) and `inner_pages_swap`, both
+  searchable as "fold pages".
 - **DeX / desktop windowing**: the manifest declares
   `android.software.freeform_window_management` (not required), app-level
   `resizeableActivity`, and Samsung's `com.samsung.android.multidisplay.keep_process_alive`
