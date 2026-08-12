@@ -115,6 +115,8 @@ import com.fran.teclas.keyboard.PredictionEngine
 import com.fran.teclas.keyboard.PredictionOverlayManager
 import com.fran.teclas.predict.ContextSnapshot
 import com.fran.teclas.fold.FoldPosture
+import com.fran.teclas.fold.InnerPageGeometry
+import com.fran.teclas.fold.innerPageGeometry
 import com.fran.teclas.fold.observeFoldPosture
 import com.fran.teclas.galaxy.NowBarLiveUpdate
 import com.fran.teclas.predict.AppCategory
@@ -485,6 +487,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedWeatherHoldFired = false
     private var unfoldedWeatherHoldStartX = 0f
     private var unfoldedWeatherHoldStartY = 0f
+    private var musicWidgetFrameView: View? = null
+    private var musicWidgetArtView: ImageView? = null
+    private var musicWidgetTitleView: TextView? = null
+    private var musicWidgetSubtitleView: TextView? = null
     private var homeAddLongPressRunnable: Runnable? = null
     private var homeAddLongPressFired = false
     private var homeAddLongPressStartX = 0f
@@ -1011,6 +1017,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
                     // Informational notifications feed the widget stack — refresh it too.
                     if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                    refreshMusicWidgetFrame()
                 }
             }
         }
@@ -1303,6 +1310,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (todayEnabled && ::briefRepository.isInitialized) briefRepository.refreshDebounced()
             if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
             if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+            refreshMusicWidgetFrame()
         }
         if (demoModeEnabled()) {
             applyDemoShowcaseData(loadVisualStage = false)
@@ -3483,6 +3491,41 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         return (screenHeight - posture.hinge.top - dockReserved).coerceIn(0, screenHeight / 2)
     }
 
+    // Default OFF: the Fold 8's inner screen is a small tablet, and the default experience is the
+    // freeform tablet canvas (wallpaper + addable widgets + dock + slide-away keyboard). The book
+    // pages layout below survives as an opt-in experiment ("fold pages" in type-to-customize).
+    private fun innerPagesEnabled(): Boolean = prefs().getBoolean(INNER_PAGES_PREF, false)
+
+    private fun innerPagesSwapped(): Boolean = prefs().getBoolean(INNER_PAGES_SWAP_PREF, false)
+
+    /** Book-page geometry for the unfolded content column, or null when the canvas should stay a
+     *  single focus column. Pages need a landscape inner display whose halves are each a real
+     *  phone-width canvas (Fold 8 class: ~933×704dp → two ~420dp pages); squarish inners and
+     *  portrait rotations keep the focus layout, and tabletop Flex Mode keeps the single column
+     *  because the keyboard owns the flat lower panel. Fold 8-class panels report no
+     *  FoldingFeature once fully flat, so the split defaults to the physical center; a reported
+     *  vertical hinge (book half-open) overrides it with real bounds. */
+    private fun innerPageGeometryOrNull(): InnerPageGeometry? {
+        if (!isUnfoldedInnerLayoutActive() || !innerPagesEnabled()) return null
+        if (tabletopLowerPanelInset() > 0) return null
+        val metrics = resources.displayMetrics
+        val inset = unfoldedFocusHorizontalInset()
+        val hinge = when (val posture = foldPosture) {
+            is FoldPosture.Inner -> posture.hingeGutter
+            is FoldPosture.HalfOpen -> if (posture.vertical) posture.hinge else null
+            else -> null
+        }
+        return innerPageGeometry(
+            width = metrics.widthPixels - inset * 2,
+            height = metrics.heightPixels,
+            // Hinge bounds are window-space; the content column is inset symmetrically.
+            hingeCenterX = hinge?.let { it.centerX() - inset },
+            hingeWidth = hinge?.width() ?: 0,
+            minPageWidth = dp(400),
+            fallbackGutterWidth = dp(28),
+        )
+    }
+
     private fun innerKeyboardWidthPercent(): Int =
         prefs().getInt(INNER_KEYBOARD_WIDTH_PREF, 68).coerceIn(48, 100)
 
@@ -3983,10 +4026,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 rawY >= loc[1] && rawY <= loc[1] + target.height
         }
         if (::favoritesDockFrameView.isInitialized && inside(favoritesDockFrameView)) return true
+        if (inside(unfoldedFocusDockView)) return true
         return inside(clockWidgetFrameView) ||
             inside(weatherWidgetFrameView) ||
             inside(agendaWidgetFrameView) ||
             inside(briefWidgetFrameView) ||
+            inside(musicWidgetFrameView) ||
             inside(if (::nowPlayingCardView.isInitialized) nowPlayingCardView else null)
     }
 
@@ -4083,6 +4128,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(100)).apply {
                 bottomMargin = dp(12)
             })
+
+            // Music is an inner-canvas widget (the phone home's stack owns now-playing there).
+            if (isUnfoldedInnerLayoutActive()) {
+                addView(homeAddWidgetCard(
+                    glyph = "♪",
+                    title = "Music",
+                    subtitle = if (musicWidgetVisible()) "On canvas" else "Now playing card",
+                    accent = 0xFF57C98A.toInt(),
+                    tall = true
+                ) { addMusicWidgetFromHomeMenu() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(100)).apply {
+                    bottomMargin = dp(12)
+                })
+            }
 
             addView(homeAddAndroidWidgetsButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         }
@@ -4230,6 +4288,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             })
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         addView(mono("›", 20f, activeNeuTokens.inkDim).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(22), LinearLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun addMusicWidgetFromHomeMenu() {
+        prefs().edit().putBoolean(homeScopedKey(MUSIC_WIDGET_VISIBLE_PREF), true).apply()
+        closeHomeAddMenu()
+        render()
     }
 
     private fun addClockWidgetFromHomeMenu() {
@@ -4497,6 +4561,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!widgetSearchActive && clockWidgetVisible()) widgets += Floating(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams(), "clock")
         if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { widgets += Floating(it, agendaWidgetFrameLayoutParams(), "agenda") }
         if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { widgets += Floating(it, briefWidgetFrameLayoutParams(), "brief") }
+        // Inner tablet canvas only: the phone home's widget stack already owns now-playing.
+        if (!widgetSearchActive && isUnfoldedInnerLayoutActive() && musicWidgetVisible()) {
+            widgets += Floating(buildMusicWidgetFrame(context), musicWidgetFrameLayoutParams(), "music")
+        }
 
         widgets.forEach { addView(it.view, it.params) }
     }
@@ -4791,6 +4859,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipToPadding = true
         }
         unfoldedFocusContentArea = focusArea
+        val pages = innerPageGeometryOrNull()
         val panelWidth = unfoldedKeyboardPanelWidth()
         val panelOffsetX = unfoldedKeyboardPanelOffsetX(panelWidth).toFloat()
         val content = LinearLayout(this).apply {
@@ -4819,16 +4888,28 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             val dockStage = FrameLayout(context).apply {
                 clipChildren = false
                 clipToPadding = false
-                translationX = panelOffsetX
+                // Book pages: the dock belongs to the continuity page — page width, page edge —
+                // not centered across the whole canvas at keyboard-panel width.
+                translationX = if (pages != null) 0f else panelOffsetX
                 addView(dock, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
             unfoldedFocusDockView = dockStage
-            addView(dockStage, LinearLayout.LayoutParams(panelWidth, dp(82)))
+            addView(dockStage, if (pages != null) {
+                LinearLayout.LayoutParams(
+                    if (innerPagesSwapped()) pages.leftPageWidth else pages.rightPageWidth,
+                    dp(82)
+                ).apply { gravity = if (innerPagesSwapped()) Gravity.LEFT else Gravity.RIGHT }
+            } else {
+                LinearLayout.LayoutParams(panelWidth, dp(82))
+            })
         }
 
         return object : FrameLayout(this) {
             override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
                 if (handleUnfoldedWeatherHold(ev)) return true
+                // Tablet canvas only: long-press empty wallpaper opens the add-widget menu, same
+                // as the phone home. The opt-in pages layout owns its canvas, so it skips this.
+                if (pages == null && handleHomeAddLongPress(this, ev)) return true
                 return super.dispatchTouchEvent(ev)
             }
         }.apply {
@@ -4840,18 +4921,27 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             weatherDripView = WeatherDripView(context)
             addView(weatherDripView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             weatherDripView?.refresh(playMoment = false)
-            if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
-            if (clockWidgetVisible()) addView(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams())
-            if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { addView(it, agendaWidgetFrameLayoutParams()) }
+            if (pages == null) {
+                // Tablet canvas: the same freeform, addable widget set as the phone home
+                // (weather / clock / agenda / brief). Long-press the wallpaper to add more.
+                addFloatingHomeWidgets(widgetSearchActive = false)
+            } else {
+                // Book pages (opt-in) host clock/agenda content inside the pages themselves;
+                // only the weather frame floats, in its top-bar slot.
+                if (weatherWidgetVisible()) addView(buildWeatherWidgetFrame(context), weatherWidgetFrameLayoutParams())
+            }
             post { refreshUnfoldedFocusContent() }
         }
     }
 
     internal fun refreshUnfoldedFocusContent() {
         val area = unfoldedFocusContentArea ?: return
+        val pages = innerPageGeometryOrNull()
         val searching = query.isNotBlank()
         val showLibrary = libraryOpen || innerLibraryLocked()
-        val showToday = todayOpen
+        // With book pages the Today surface is ambient on the day page, so the swipe-open
+        // takeover only applies to the single-column focus layout.
+        val showToday = todayOpen && pages == null
         val dockVisible = !searching && !showToday && (!libraryOpen || innerLibraryLocked())
         setUnfoldedFocusDockVisible(dockVisible)
         setUnfoldedWeatherSlotVisible(!searching)
@@ -4860,16 +4950,74 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             searching -> unfoldedSearchCanvas()
             showToday -> unfoldedTodayCanvas()
             showLibrary -> unfoldedAppLibraryCanvas()
+            pages != null -> unfoldedPagesCanvas(pages)
             else -> null
         }
+        val fillsArea = searching || (!showToday && !showLibrary && pages != null)
         child?.let {
-            val lp = if (searching) {
+            val lp = if (fillsArea) {
                 FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
             } else {
                 FrameLayout.LayoutParams(unfoldedKeyboardPanelWidth(), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL)
             }
             area.addView(it, lp)
         }
+    }
+
+    /** The calm unfolded home for book-class inner displays: two real pages around the fold line.
+     *  Day page — the Today timeline, "the one thing that deserves attention". Continuity page —
+     *  the phone home's essence (clock + contextual widget stack), on the half that was the cover
+     *  so unfolding adds a page instead of rearranging the one you were looking at. The favorites
+     *  dock is a column sibling below, aligned under the continuity page (see unfoldedHome). */
+    private fun unfoldedPagesCanvas(pages: InnerPageGeometry): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        clipChildren = false
+        clipToPadding = false
+        val swap = innerPagesSwapped()
+        val dayPage = unfoldedTodayCanvas()
+        val continuityPage = unfoldedContinuityPage(
+            if (swap) pages.leftPageWidth else pages.rightPageWidth
+        )
+        addView(
+            if (swap) continuityPage else dayPage,
+            LinearLayout.LayoutParams(pages.leftPageWidth, LinearLayout.LayoutParams.MATCH_PARENT)
+        )
+        addView(View(context), LinearLayout.LayoutParams(pages.gutterWidth, LinearLayout.LayoutParams.MATCH_PARENT))
+        addView(
+            if (swap) dayPage else continuityPage,
+            LinearLayout.LayoutParams(pages.rightPageWidth, LinearLayout.LayoutParams.MATCH_PARENT)
+        )
+    }
+
+    private fun unfoldedContinuityPage(pageWidth: Int): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        clipChildren = false
+        clipToPadding = false
+        if (clockWidgetVisible()) {
+            val styleId = clockWidgetStyleId()
+            val data = weatherDataFromPrefs()
+            val clock = ClockWidgetView(context).apply {
+                themeId = styleId
+                weatherTempF = data.temp
+                city = data.place
+            }
+            applyClockWidgetCustomizations(clock)
+            clockWidgetView = clock
+            addView(clock, LinearLayout.LayoutParams(
+                clockWidgetWidth(styleId).coerceAtMost(pageWidth - dp(12)),
+                clockWidgetHeight(styleId)
+            ).apply { topMargin = dp(6) })
+            updateClockWidget()
+        }
+        addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.12f))
+        nowPlayingCardView = ComposeView(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setNowPlayingCardContent()
+            elevation = dp(8).toFloat()
+        }
+        addView(nowPlayingCardView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, nowPlayingCardHeight()))
+        addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
     }
 
     private fun setUnfoldedFocusDockVisible(visible: Boolean) {
@@ -11050,6 +11198,172 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lp.leftMargin = fallbackLeft; lp.topMargin = fallbackTop
                 layoutParams = lp
             }
+        }
+    }
+
+    // ── Music freeform widget ────────────────────────────────────────────────
+    // A standalone now-playing card for the unfolded tablet canvas. The phone home's contextual
+    // widget stack already owns now-playing there, so this widget renders on the inner display
+    // only (see addFloatingHomeWidgets) and is added from the inner "Add to Home" menu.
+
+    private fun musicWidgetVisible(): Boolean =
+        prefs().getBoolean(homeScopedKey(MUSIC_WIDGET_VISIBLE_PREF), false)
+
+    private fun saveMusicWidgetPos(x: Int, y: Int) {
+        prefs().edit().putInt(homeScopedKey(MUSIC_WIDGET_POS_X_PREF), x)
+            .putInt(homeScopedKey(MUSIC_WIDGET_POS_Y_PREF), y).apply()
+    }
+
+    private fun applyPersistedMusicWidgetPos(frame: View) {
+        if (!prefs().contains(homeScopedKey(MUSIC_WIDGET_POS_X_PREF))) return
+        val parent = frame.parent as? View ?: return
+        if (parent.width <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == FrameLayout.LayoutParams.MATCH_PARENT) { lp.width = frame.width; lp.rightMargin = 0 }
+        val x = prefs().getInt(homeScopedKey(MUSIC_WIDGET_POS_X_PREF), lp.leftMargin)
+        val y = prefs().getInt(homeScopedKey(MUSIC_WIDGET_POS_Y_PREF), lp.topMargin)
+        val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
+        lp.leftMargin = cx; lp.topMargin = cy
+        frame.layoutParams = lp
+    }
+
+    private inner class MusicWidgetFrame(context: Context) : MovableWidgetFrame(context) {
+        private var persistedPosApplied = false
+
+        init { clipChildren = false; clipToPadding = false; isClickable = true }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!persistedPosApplied && width > 0 && ((parent as? View)?.width ?: 0) > 0) {
+                persistedPosApplied = true
+                post { applyPersistedMusicWidgetPos(this) }
+            }
+        }
+
+        override fun handlesLockedSingleTap(): Boolean = true
+        override fun onLockedSingleTap() {
+            haptic(this)
+            if (::mediaSessionSource.isInitialized && mediaSessionSource.nowPlaying.value != null) {
+                mediaSessionSource.openSourceApp()
+            } else {
+                openHere(musicTarget())
+            }
+        }
+
+        override fun onLongPress() = showMusicWidgetManageMenu(this)
+        override fun lockedLongPressDelayMs(): Long = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        override fun lockedLongPressCancelSlopPx(): Int = maxOf(dp(18), android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop * 2)
+
+        override fun onSettle(fallbackLeft: Int, fallbackTop: Int) {
+            val parentView = parent as? View ?: return
+            val lp = layoutParams as FrameLayout.LayoutParams
+            val (cx, cy) = clampWeatherWidgetPos(parentView, width, height, lp.leftMargin, lp.topMargin)
+            val (sx, sy) = softSnapWeatherWidgetPos(parentView, cx, cy)
+            val (bx, by) = clampWeatherWidgetPos(parentView, width, height, sx, sy)
+            lp.leftMargin = bx; lp.topMargin = by
+            layoutParams = lp
+            saveMusicWidgetPos(bx, by)
+            haptic(this)
+        }
+    }
+
+    private fun showMusicWidgetManageMenu(anchor: View) {
+        showNativeWidgetManageMenu(
+            anchor = anchor,
+            title = "Music",
+            accent = 0xFF57C98A.toInt(),
+            styleLabel = "Open Teclas player",
+            onStyle = { openHere(musicTarget()) },
+            onRemove = { removeMusicWidget() }
+        )
+    }
+
+    private fun removeMusicWidget() {
+        prefs().edit().putBoolean(homeScopedKey(MUSIC_WIDGET_VISIBLE_PREF), false).apply()
+        musicWidgetFrameView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        musicWidgetFrameView = null
+        Toast.makeText(this, "Music removed.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun musicWidgetFrameLayoutParams(): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(weatherWidgetFreeformWidth(), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = defaultFreeformWidgetLeft(width) + dp(44)
+            topMargin = dp(330)
+        }
+
+    private fun buildMusicWidgetFrame(context: Context): View {
+        val frame = MusicWidgetFrame(context)
+        musicWidgetFrameView = frame
+        frame.background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED_SM)
+        frame.elevation = dp(8).toFloat()
+        val art = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
+                }
+            }
+        }
+        musicWidgetArtView = art
+        val title = TextView(context).apply {
+            textSize = 13.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(activeNeuTokens.ink)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        musicWidgetTitleView = title
+        val subtitle = TextView(context).apply {
+            textSize = 10.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(activeNeuTokens.inkDim)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            includeFontPadding = false
+            setPadding(0, dp(3), 0, 0)
+        }
+        musicWidgetSubtitleView = subtitle
+        frame.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            addView(art, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginEnd = dp(12) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(title)
+                addView(subtitle)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        refreshMusicWidgetFrame()
+        return frame
+    }
+
+    /** Rebind the music widget from the current media session. Self-guarded: a no-op when the
+     *  widget was never built, so callers don't need their own gates. The fields always point at
+     *  the most recently built frame; a bind against a frame a render just orphaned is harmless. */
+    internal fun refreshMusicWidgetFrame() {
+        if (musicWidgetFrameView == null) return
+        val title = musicWidgetTitleView ?: return
+        val subtitle = musicWidgetSubtitleView ?: return
+        val art = musicWidgetArtView ?: return
+        val media = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+        if (media == null) {
+            title.text = "Nothing playing"
+            subtitle.text = "Tap to open music"
+            art.setImageDrawable(null)
+            art.setBackgroundColor(adjustAlpha(activeNeuTokens.inkFaint, 0.25f))
+            return
+        }
+        title.text = media.title.ifBlank { "Now playing" }
+        subtitle.text = listOf(media.artist, media.sourceApp).filter { it.isNotBlank() }.joinToString(" · ")
+        if (media.albumArt != null) {
+            art.setBackgroundColor(Color.TRANSPARENT)
+            art.setImageBitmap(media.albumArt)
+        } else {
+            art.setImageDrawable(null)
+            art.setBackgroundColor(adjustAlpha(media.appIconColor, 0.6f))
         }
     }
 
@@ -26474,6 +26788,25 @@ Question: $prompt"""
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Fold pages",
+            if (innerPagesEnabled()) "On · unfolded home is Today + your home page"
+            else "Off · unfolded home is the freeform tablet canvas",
+            listOf("fold", "pages", "fold pages", "book", "inner", "inner screen", "unfolded", "foldable", "tablet")
+        ) {
+            prefs().edit().putBoolean(INNER_PAGES_PREF, !innerPagesEnabled()).apply()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
+            "Swap fold pages",
+            if (innerPagesSwapped()) "Home page left · Today right" else "Today left · home page right",
+            listOf("swap", "fold", "pages", "mirror", "left handed", "handed")
+        ) {
+            prefs().edit().putBoolean(INNER_PAGES_SWAP_PREF, !innerPagesSwapped()).apply()
+            render()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Glass effects", toggleStateLabel(glassEffectsEnabled()),
             listOf("glass", "effects", "blur", "frosted")
         ) {
@@ -31650,6 +31983,11 @@ Question: $prompt"""
         private const val KEYBOARD_SIZE_PREF = "keyboard_size"
         private const val PEN_HANDWRITING_PREF = "pen_handwriting"
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
+        private const val INNER_PAGES_PREF = "inner_pages"
+        private const val INNER_PAGES_SWAP_PREF = "inner_pages_swap"
+        private const val MUSIC_WIDGET_VISIBLE_PREF = "music_widget_visible"
+        private const val MUSIC_WIDGET_POS_X_PREF = "music_widget_pos_x"
+        private const val MUSIC_WIDGET_POS_Y_PREF = "music_widget_pos_y"
         private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"
         private const val INNER_KEYBOARD_OFFSET_X_PREF = "inner_keyboard_offset_x"
         private const val INNER_KEYBOARD_OFFSET_Y_PREF = "inner_keyboard_offset_y"
