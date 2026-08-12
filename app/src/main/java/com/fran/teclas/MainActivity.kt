@@ -1107,6 +1107,15 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 // render() self-defers under full-window overlays; skip panes/library/search where
                 // the home dock isn't on screen anyway.
                 if ((playChanged || sourceChanged) && openPane == null && !libraryOpen && query.isBlank()) render()
+                // The now-playing pip mirrors the session: song changes update it in place, the
+                // session ending takes it down. (Play/pause flips go through render() above, whose
+                // overlay clear re-anchors the pip over the rebuilt dock.)
+                if (nowPlayingPipShowing) {
+                    when {
+                        info == null -> dismissNowPlayingPip(animate = true)
+                        nowPlayingPipView?.isAttachedToWindow == true -> updateNowPlayingPipContent(info)
+                    }
+                }
                 maybeScrobble(info)
                 if (openPane?.kind == PaneKind.MUSIC) {
                     // Source change can flip wheel↔simple; play-state change updates the
@@ -1416,6 +1425,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         unregisterDockLiveReceivers()
         // Backgrounded → the pip (and its device-ticking chronometer, if any) must not outlive us.
         dismissLiveActivityPip(animate = false)
+        dismissNowPlayingPip(animate = false)
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
@@ -2401,6 +2411,13 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private fun clearTransientHomeOverlaysForRender() {
         // render() rebuilds contentFrame, which would orphan the pip's views and stale its refs.
         dismissLiveActivityPip(animate = false)
+        // The now-playing pip's views go down with the frame, but its "showing" intent survives:
+        // a play/pause tap re-renders home (dock composition is play-state-derived), and the pip
+        // must outlive its own button press — it re-anchors over the rebuilt dock.
+        teardownNowPlayingPipViews()
+        if (nowPlayingPipShowing) {
+            handler.post { if (nowPlayingPipShowing && nowPlayingPipView == null) showNowPlayingPip() }
+        }
         homeAddMenuView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         homeAddMenuView = null
         homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
@@ -24435,10 +24452,10 @@ Question: $prompt"""
             setOnClickListener {
                 haptic(this)
                 when {
-                    // Session-backed playback outranks the notification pip: the now-playing pane
-                    // has full transport + a deep link into the app, so a playing app's icon goes
-                    // there. The pip stays the path when only a media notification exists.
-                    item.mediaLive -> openHere(musicTarget())
+                    // A playing app's icon summons the now-playing pip — song line + transport
+                    // floating over the dock — instead of yanking the user into a full player.
+                    // The pip's own app icon is the door into the player app itself.
+                    item.mediaLive -> toggleNowPlayingPip()
                     item.liveKey != null -> toggleLiveActivityPip(item)
                     target.kind == PaneKind.MUSIC || target.packageName == null -> openHere(target)
                     else -> { pendingLaunchSource = LaunchSource.DOCK; openExternal(target) }
@@ -24786,6 +24803,7 @@ Question: $prompt"""
 
     private fun showLiveActivityPip(item: HomeDockItem, key: String) {
         dismissLiveActivityPip(animate = false)
+        dismissNowPlayingPip(animate = false)
         val snap = TeclasNotificationListener.liveActivitySnapshot(key) ?: return
         if (!::contentFrame.isInitialized || !::favoritesDockFrameView.isInitialized) return
         val root = contentFrame
@@ -24939,6 +24957,180 @@ Question: $prompt"""
         liveActivityPipTitle = null
         liveActivityPipLine = null
         liveActivityPipProgress = null
+        scrim?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        if (pip == null) return
+        if (!animate) {
+            (pip.parent as? ViewGroup)?.removeView(pip)
+            return
+        }
+        pip.animate().alpha(0f).translationY(dp(14).toFloat()).setDuration(160L)
+            .withEndAction { (pip.parent as? ViewGroup)?.removeView(pip) }
+            .start()
+    }
+
+    // ── Now-playing pip ──────────────────────────────────────────────────────
+    // The session-backed twin of the live-activity pip: tapping a playing app's ringed dock icon
+    // floats song + transport above the dock instead of opening a player. Unlike the notification
+    // pip it must survive its own buttons — a play/pause tap re-renders home (the Music tile and
+    // media ring are play-state-derived), so the views are torn down with the frame while the
+    // "showing" intent persists and re-anchors the pip over the rebuilt dock.
+
+    private var nowPlayingPipView: View? = null
+    private var nowPlayingPipScrim: View? = null
+    private var nowPlayingPipTitle: TextView? = null
+    private var nowPlayingPipLine: TextView? = null
+    private var nowPlayingPipPlayPause: TextView? = null
+    private var nowPlayingPipShowing = false
+
+    private fun toggleNowPlayingPip() {
+        if (nowPlayingPipShowing) dismissNowPlayingPip(animate = true) else showNowPlayingPip()
+    }
+
+    private fun showNowPlayingPip() {
+        teardownNowPlayingPipViews()
+        dismissLiveActivityPip(animate = false)
+        val info = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+        if (info == null || !::contentFrame.isInitialized || !::favoritesDockFrameView.isInitialized ||
+            openPane != null || libraryOpen
+        ) {
+            nowPlayingPipShowing = false
+            return
+        }
+        nowPlayingPipShowing = true
+        val root = contentFrame
+        val dock = favoritesDockFrameView
+        if (dock.width <= 0) {
+            // Freshly rebuilt dock hasn't been laid out yet — anchor on its first frame.
+            dock.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    dock.viewTreeObserver.removeOnPreDrawListener(this)
+                    if (nowPlayingPipShowing && nowPlayingPipView == null) showNowPlayingPip()
+                    return true
+                }
+            })
+            return
+        }
+        val accent = info.appIconColor
+
+        val scrim = View(this).apply {
+            isClickable = true
+            setOnClickListener { dismissNowPlayingPip(animate = true) }
+        }
+        root.addView(scrim, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+        val pip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = Neu.drawable(activeNeuTokens, dp(20).toFloat(), NeuLevel.RAISED)
+            elevation = dp(14).toFloat()
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            // The pip body is the surface, not a button: only the icon and transport act. Clickable
+            // keeps body taps from falling through to the scrim and closing it mid-reach.
+            isClickable = true
+            val app = apps.firstOrNull { sameMusicSourcePackage(it.packageName, info.sourcePackage) }
+            addView(ImageView(context).apply {
+                val lib = app?.toLibraryApp()
+                if (lib != null) setImageDrawable(iconFor(lib)) else setImageBitmap(info.appIcon)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                isClickable = true
+                setOnClickListener { haptic(this); openNowPlayingSourceApp(info.sourcePackage) }
+            }, LinearLayout.LayoutParams(dp(34), dp(34)).apply { marginEnd = dp(10) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(TextView(context).apply {
+                    nowPlayingPipTitle = this
+                    text = info.title
+                    textSize = 12.5f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(activeNeuTokens.ink)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+                addView(TextView(context).apply {
+                    nowPlayingPipLine = this
+                    text = info.artist
+                    textSize = 10.5f
+                    setTextColor(activeNeuTokens.inkDim)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            fun transportButton(label: String, primary: Boolean, size: Int, onTap: () -> Unit) = TextView(context).apply {
+                text = label
+                textSize = if (primary) 13f else 11f
+                typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+                setTextColor(if (primary) accent else activeNeuTokens.ink)
+                gravity = Gravity.CENTER
+                includeFontPadding = false
+                background = Neu.drawable(activeNeuTokens, dp(12).toFloat(), NeuLevel.PRESSED_SM)
+                isClickable = true
+                setOnClickListener { haptic(this); onTap() }
+            }.also { addView(it, LinearLayout.LayoutParams(dp(size), dp(size)).apply { marginStart = dp(6) }) }
+            transportButton("◀", primary = false, size = 34) { mediaSessionSource.skipToPrevious() }
+            nowPlayingPipPlayPause = transportButton(if (info.isPlaying) "Ⅱ" else "▶", primary = true, size = 38) {
+                mediaSessionSource.togglePlayPause()
+            }
+            transportButton("▶", primary = false, size = 34) { mediaSessionSource.skipToNext() }
+        }
+
+        // Same footprint as the dock, floating just above it (the live pip's placement).
+        val rootLoc = IntArray(2); root.getLocationOnScreen(rootLoc)
+        val dockLoc = IntArray(2); dock.getLocationOnScreen(dockLoc)
+        val pipHeight = dock.height.coerceAtLeast(dp(56))
+        root.addView(pip, FrameLayout.LayoutParams(dock.width, pipHeight).apply {
+            leftMargin = dockLoc[0] - rootLoc[0]
+            topMargin = (dockLoc[1] - rootLoc[1]) - pipHeight - dp(10)
+        })
+        nowPlayingPipView = pip
+        nowPlayingPipScrim = scrim
+        pip.alpha = 0f
+        pip.translationY = dp(14).toFloat()
+        pip.animate().alpha(1f).translationY(0f).setDuration(200L).setInterpolator(DecelerateInterpolator(1.4f)).start()
+    }
+
+    /**
+     * Open the playing app itself, from the pip's app icon. The media notification's contentIntent
+     * is the app's own "open my player screen" deep link — the same target a shade tap opens — so
+     * the user lands on the screen playing this music, not the app's cold-start home. Plain launch
+     * when no media notification is up.
+     */
+    private fun openNowPlayingSourceApp(pkg: String) {
+        dismissNowPlayingPip(animate = false)
+        pendingLaunchSource = LaunchSource.DOCK
+        val snap = TeclasNotificationListener.liveActivitySnapshots()
+            .firstOrNull { it.isMedia && sameMusicSourcePackage(it.pkg, pkg) }
+        val sent = snap?.contentIntent?.let { pi -> runCatching { pi.send() }.isSuccess } == true
+        if (!sent) {
+            packageManager.getLaunchIntentForPackage(pkg)?.let { runCatching { startActivity(it) } }
+        }
+    }
+
+    private fun updateNowPlayingPipContent(info: NowPlayingInfo) {
+        nowPlayingPipTitle?.text = info.title
+        nowPlayingPipLine?.text = info.artist
+        nowPlayingPipPlayPause?.text = if (info.isPlaying) "Ⅱ" else "▶"
+    }
+
+    /** Views only — the "showing" intent survives so a home re-render can re-anchor the pip. */
+    private fun teardownNowPlayingPipViews() {
+        nowPlayingPipScrim?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        nowPlayingPipView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        nowPlayingPipView = null
+        nowPlayingPipScrim = null
+        nowPlayingPipTitle = null
+        nowPlayingPipLine = null
+        nowPlayingPipPlayPause = null
+    }
+
+    private fun dismissNowPlayingPip(animate: Boolean) {
+        nowPlayingPipShowing = false
+        val pip = nowPlayingPipView
+        val scrim = nowPlayingPipScrim
+        nowPlayingPipView = null
+        nowPlayingPipScrim = null
+        nowPlayingPipTitle = null
+        nowPlayingPipLine = null
+        nowPlayingPipPlayPause = null
         scrim?.let { (it.parent as? ViewGroup)?.removeView(it) }
         if (pip == null) return
         if (!animate) {
