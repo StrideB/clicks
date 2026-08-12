@@ -969,6 +969,7 @@ class DockedKeyboardService : Service() {
             "back" -> "⌫"
             "enter" -> "GO"
             "space" -> "space"
+            "123" -> "#"
             else -> if (shifted && label.length == 1) label.uppercase() else label
         }
     }
@@ -1121,6 +1122,7 @@ class DockedKeyboardService : Service() {
     private fun keyboardBottomPadding() = dp(2)
     private fun keyTextSize(label: String): Float {
         val size = KeyboardSettings.keyboardSize(this)
+        if (label == "123") return 24f + size * 2f / 100f
         if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
             val base = when (label) {
                 "shift" -> 23f

@@ -769,6 +769,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             return
         }
         shifted = shouldStartShifted(attribute)
+        // Numeric editors always win over a previously selected alphabet layout, including when
+        // Android reports the focus transition as a restart instead of a fresh input session.
+        if (desiredSymbolsModeFor(attribute) && !symbolsMode) symbolsMode = true
         refreshChromeOrRebuild()
     }
 
@@ -4784,6 +4787,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             "back" -> "⌫"
             "enter" -> "GO"
             "space" -> "space"
+            "123" -> "#"
             else -> if ((shifted || capsLock) && label.length == 1) label.uppercase() else label
         }
     }
@@ -5051,6 +5055,7 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
 
     private fun keyTextSize(label: String): Float {
         val size = effectiveKeyboardSize()
+        if (label == "123") return 24f + size * 2f / 100f
         if (KeyboardThemeDrawables.isAddedTheme(keyboardVisualTheme())) {
             val base = when (label) {
                 "shift" -> 23f

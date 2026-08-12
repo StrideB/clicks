@@ -32,6 +32,8 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
     private var primaryColor: Int = currentTextColor
     private var primaryTextSizePx: Float = 0f
     private var primaryTypeface: Typeface? = null
+    // Center every letter in the visible key face. The face geometry—not per-letter offsets—owns
+    // the optical correction, matching the predictable alignment of a system keyboard.
     private var labelVerticalBias = 0.50f
     private var symbolVerticalBias = 0.24f
     private var primaryMaxFaceScale = 0.62f
@@ -150,17 +152,21 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
                 val requestedSize = primaryTextSizePx.takeIf { it > 0f } ?: faceHeight * 0.48f
                 hintPaint.textSize = min(requestedSize, faceHeight * primaryMaxFaceScale)
                 val centerY = faceTop + faceHeight * labelVerticalBias
+                val singleLetter = label.length == 1 && label[0].isLetter()
+                // All letters intentionally retain this exact text size and typeface. Never scale
+                // individual glyphs: doing so makes b/d/f small and w/r/u/o/m look heavier.
                 // One shared baseline per case, not per-glyph centering. Centering each letter's
                 // own box shoves descenders (y p g) up and ascenders (t d h) down, so letter
                 // bodies wander from key to key and the descender letters read oversized. Anchor
                 // every lowercase letter to the x-height band (measured off "x") and every capital
                 // to the cap box ("X"): bodies align across the row, tails hang below, stems rise
                 // above — a type line, which is what reads as symmetric.
-                val singleLetter = label.length == 1 && label[0].isLetter()
                 val baseline = if (singleLetter) {
-                    val ref = if (label[0].isLowerCase()) "x" else "X"
-                    hintPaint.getTextBounds(ref, 0, 1, glyphBounds)
-                    centerY - (glyphBounds.top + glyphBounds.bottom) / 2f
+                    // Center the visible ink inside every key. This uses the same rule for all 26
+                    // letters while allowing descenders (q/y/p/g) and ascenders (d/f/h/t) to use
+                    // the available face space instead of looking bottom- or top-heavy.
+                    val metrics = hintPaint.fontMetrics
+                    centerY - (metrics.ascent + metrics.descent) / 2f
                 } else {
                     // Multi-char / symbol labels have no case line to share — their own glyph box
                     // (not the font's em box, which reserves unused descender space) is the center.

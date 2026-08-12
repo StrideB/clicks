@@ -497,7 +497,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private val dockedForegroundDraft = StringBuilder()
     private val chatLinesById = mutableMapOf<String, MutableList<ChatLine>>()
 
-    private var shiftState = ShiftState.ONCE
+    private var shiftState = ShiftState.OFF
     private var lastSpaceMs = 0L
     private var lastShiftTapMs = 0L
     private var suggestions: List<String> = emptyList()
@@ -17595,6 +17595,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
 
     private fun LinearLayout.addKeyRow(labels: List<String>, horizontalInset: Int = 0) {
         val hasPriorKeyRow = (0 until childCount).any { getChildAt(it).tag == "key_row" }
+        val isHomeLetterRow = labels == "asdfghjkl".map { it.toString() }
+        val isBottomLetterRow = labels.firstOrNull() == "shift" && labels.lastOrNull() == "back"
         val row = LinearLayout(context).apply {
             tag = "key_row"
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
@@ -17604,14 +17606,22 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             clipChildren = false
             clipToPadding = false
             setPadding(horizontalInset, 0, horizontalInset, 0)
+            // Keep every alphabetic key on the same ten-column pitch. The home row has nine
+            // letters, so half a key of flexible space on each side centers it beneath QWERTY
+            // without making A/L wider than the other letters.
+            if (isHomeLetterRow) {
+                addView(View(context), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.5f))
+            }
             labels.forEach { label ->
                 val weight = when (label) {
                     "space" -> 3.65f
                     "enter" -> if (numberPadOpen) 1f else 0.82f
                     "period" -> 0.86f
-                    "teclas" -> 0.86f
+                    // The bottom row has a different weight pool from the alphabet rows. 0.68 here
+                    // resolves to the same physical width as one QWERTY key on a phone canvas.
+                    "teclas" -> 0.68f
                     "123" -> 1.02f
-                    "back", "shift" -> 1.02f
+                    "back", "shift" -> if (isBottomLetterRow) 1.5f else 1.02f
                     "abc" -> 1.02f
                     else -> 1f
                 }
@@ -17626,6 +17636,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     // dead gaps between keys. The visual gap is drawn by the InsetDrawable in key().
                     addView(key(label), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, weight))
                 }
+            }
+            if (isHomeLetterRow) {
+                addView(View(context), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.5f))
             }
         }
         val rowParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, keyRowHeight()).apply {
@@ -17932,7 +17945,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         "shift" -> "↑"
         "teclas" -> if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) "DOCK" else "teclas"
         "abc" -> "ABC"
-        "123" -> "123"
+        "123" -> "#"
         else -> if (label.length == 1) {
             if (keyboardTheme == KEYBOARD_THEME_GOKEYS && label[0].isLetter()) label.lowercase(Locale.US)
             else
@@ -19164,7 +19177,9 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     private fun updateAutoCapState() {
         if (shiftState == ShiftState.LOCK) return
         val t = composeText.trimEnd()
-        val cap = t.isEmpty() || t.endsWith('.') || t.endsWith('!') || t.endsWith('?')
+        // Launcher search and a freshly opened composer default to lowercase. Keep automatic
+        // capitalization only after an actual sentence terminator; Shift remains user-controlled.
+        val cap = t.isNotEmpty() && (t.endsWith('.') || t.endsWith('!') || t.endsWith('?'))
         shiftState = if (cap) ShiftState.ONCE else ShiftState.OFF
     }
 
@@ -21667,7 +21682,7 @@ Question: $prompt"""
         libraryOpen = false
         libraryView?.let { contentFrame.removeView(it) }
         keyboardSettingsOpen = false; query = ""; composeText = ""
-        shiftState = ShiftState.ONCE; suggestions = emptyList()
+        shiftState = ShiftState.OFF; suggestions = emptyList()
         updateKeyLabels(); updateSuggestionBar()
         openPane = target
         if (target.kind == PaneKind.SETTINGS) {
@@ -23218,7 +23233,7 @@ Question: $prompt"""
     private fun postComposeBubble(target: PaneTarget) {
         val text = composeText.trim(); if (text.isEmpty()) return
         chatLines(target).add(ChatLine(text, true))
-        composeText = ""; cursorPos = null; shiftState = ShiftState.ONCE
+        composeText = ""; cursorPos = null; shiftState = ShiftState.OFF
         suggestions = emptyList(); updateSuggestionBar(); updateKeyLabels()
         // In a notification reply pane, actually deliver the message via the app's RemoteInput.
         val key = replyingToKey
@@ -29277,13 +29292,15 @@ Question: $prompt"""
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val phase = (android.os.SystemClock.uptimeMillis() % 1600L) / 1600f
+            val docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED
+            val undockedLift = if (docked) 0f else dp(4).toFloat()
             KeyboardDockGlyph.draw(
                 canvas,
                 dp(4).toFloat(),
-                dp(5).toFloat(),
+                dp(5).toFloat() - undockedLift,
                 width - dp(4).toFloat(),
-                height - dp(5).toFloat(),
-                docked = keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED,
+                height - dp(5).toFloat() - undockedLift,
+                docked = docked,
                 ink = keyTextColor("teclas"),
                 accent = goKeyColor,
                 phase = phase
@@ -29943,7 +29960,9 @@ Question: $prompt"""
 
     private fun keyVerticalInset(): Int {
         val size = effectiveKeyboardSize()
-        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return dp(7 + size * 4 / 100)
+        // A taller face reads like a system keyboard and gives the centered glyph enough room.
+        // The touch row is unchanged; only the drawable inset shrinks.
+        if (keyboardTheme == KEYBOARD_THEME_DEFAULT) return dp(4 + size * 2 / 100)
         if (keyboardTheme != KEYBOARD_THEME_TECLAS) return dp(10 + size * 5 / 100)
         if (keyboardTheme == KEYBOARD_THEME_TECLAS || keyboardTheme == KEYBOARD_THEME_GOKEYS || keyboardTheme == KEYBOARD_THEME_BRUSHED || isHyper3dTheme()) return dp(10 + size * 5 / 100)
         return dp(7 + size * 4 / 100)
@@ -30237,6 +30256,7 @@ Question: $prompt"""
 
     private fun keyTextSize(label: String): Float {
         val size = effectiveKeyboardSize()
+        if (label == "123") return 24f + size * 2f / 100f
         if (numberPadOpen && label.length == 1 && label[0].isDigit()) return 26f + size * 2f / 100f
         if (KeyboardThemeDrawables.isAddedTheme(keyboardTheme)) {
             val base = when (label) { "shift" -> 23f; "space" -> 18f; "123", "teclas", "enter", "back", "period", "abc" -> 13.5f; else -> 20f }
