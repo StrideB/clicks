@@ -150,15 +150,27 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
                 val requestedSize = primaryTextSizePx.takeIf { it > 0f } ?: faceHeight * 0.48f
                 hintPaint.textSize = min(requestedSize, faceHeight * primaryMaxFaceScale)
                 val centerY = faceTop + faceHeight * labelVerticalBias
-                // Center the actual glyph box, not the font's em box: metrics centering reserves
-                // descender space every lowercase letter without a descender doesn't use, which is
-                // exactly the "letters sit low in the key" look.
-                hintPaint.getTextBounds(label, 0, label.length, glyphBounds)
-                val baseline = if (glyphBounds.height() > 0) {
+                // One shared baseline per case, not per-glyph centering. Centering each letter's
+                // own box shoves descenders (y p g) up and ascenders (t d h) down, so letter
+                // bodies wander from key to key and the descender letters read oversized. Anchor
+                // every lowercase letter to the x-height band (measured off "x") and every capital
+                // to the cap box ("X"): bodies align across the row, tails hang below, stems rise
+                // above — a type line, which is what reads as symmetric.
+                val singleLetter = label.length == 1 && label[0].isLetter()
+                val baseline = if (singleLetter) {
+                    val ref = if (label[0].isLowerCase()) "x" else "X"
+                    hintPaint.getTextBounds(ref, 0, 1, glyphBounds)
                     centerY - (glyphBounds.top + glyphBounds.bottom) / 2f
                 } else {
-                    val metrics = hintPaint.fontMetrics
-                    centerY - (metrics.ascent + metrics.descent) / 2f
+                    // Multi-char / symbol labels have no case line to share — their own glyph box
+                    // (not the font's em box, which reserves unused descender space) is the center.
+                    hintPaint.getTextBounds(label, 0, label.length, glyphBounds)
+                    if (glyphBounds.height() > 0) {
+                        centerY - (glyphBounds.top + glyphBounds.bottom) / 2f
+                    } else {
+                        val metrics = hintPaint.fontMetrics
+                        centerY - (metrics.ascent + metrics.descent) / 2f
+                    }
                 }
                 canvas.drawText(label, keyW / 2f, baseline, hintPaint)
                 hintPaint.typeface = null
