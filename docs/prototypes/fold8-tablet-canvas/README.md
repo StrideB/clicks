@@ -10,8 +10,10 @@ launcher stops rebuilding a phone on it. This mock shows the default unfolded ex
   owning ~40% of a tablet.
 - **Everything else is freeform, addable widgets** sized for this canvas: drag them
   anywhere, add from + WIDGETS (long-press the wallpaper on device for the "Add to Home"
-  menu), remove in EDIT mode. Clock, weather, agenda, and brief carry over from the phone
-  home; Agenda XL, Music, and People mock the next tablet-sized additions.
+  menu), remove in EDIT mode (long-press a widget on device for its manage menu). Clock,
+  weather, agenda, brief, and the inner-only Music now-playing card are real; the People
+  card mocks the next tablet-sized addition. (Agenda already renders its wide two-event
+  card layout on the inner display.)
 
 Open `index.html` in a browser. An earlier iteration of this prototype showed the
 two-page "book" layout, which survives in the app as an off-by-default experiment

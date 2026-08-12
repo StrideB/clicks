@@ -477,6 +477,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
     private var unfoldedWeatherHoldFired = false
     private var unfoldedWeatherHoldStartX = 0f
     private var unfoldedWeatherHoldStartY = 0f
+    private var musicWidgetFrameView: View? = null
+    private var musicWidgetArtView: ImageView? = null
+    private var musicWidgetTitleView: TextView? = null
+    private var musicWidgetSubtitleView: TextView? = null
     private var homeAddLongPressRunnable: Runnable? = null
     private var homeAddLongPressFired = false
     private var homeAddLongPressStartX = 0f
@@ -1003,6 +1007,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
                     // Informational notifications feed the widget stack — refresh it too.
                     if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+                    refreshMusicWidgetFrame()
                 }
             }
         }
@@ -1295,6 +1300,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             if (todayEnabled && ::briefRepository.isInitialized) briefRepository.refreshDebounced()
             if (::spaceTodayHost.isInitialized) spaceTodayHost.refreshDebounced()
             if (::nowPlayingCardView.isInitialized) refreshNowPlayingCard()
+            refreshMusicWidgetFrame()
         }
         if (demoModeEnabled()) {
             applyDemoShowcaseData(loadVisualStage = false)
@@ -4015,6 +4021,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             inside(weatherWidgetFrameView) ||
             inside(agendaWidgetFrameView) ||
             inside(briefWidgetFrameView) ||
+            inside(musicWidgetFrameView) ||
             inside(if (::nowPlayingCardView.isInitialized) nowPlayingCardView else null)
     }
 
@@ -4111,6 +4118,19 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(100)).apply {
                 bottomMargin = dp(12)
             })
+
+            // Music is an inner-canvas widget (the phone home's stack owns now-playing there).
+            if (isUnfoldedInnerLayoutActive()) {
+                addView(homeAddWidgetCard(
+                    glyph = "♪",
+                    title = "Music",
+                    subtitle = if (musicWidgetVisible()) "On canvas" else "Now playing card",
+                    accent = 0xFF57C98A.toInt(),
+                    tall = true
+                ) { addMusicWidgetFromHomeMenu() }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(100)).apply {
+                    bottomMargin = dp(12)
+                })
+            }
 
             addView(homeAddAndroidWidgetsButton(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(60)))
         }
@@ -4258,6 +4278,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             })
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         addView(mono("›", 20f, activeNeuTokens.inkDim).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(22), LinearLayout.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun addMusicWidgetFromHomeMenu() {
+        prefs().edit().putBoolean(homeScopedKey(MUSIC_WIDGET_VISIBLE_PREF), true).apply()
+        closeHomeAddMenu()
+        render()
     }
 
     private fun addClockWidgetFromHomeMenu() {
@@ -4525,6 +4551,10 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (!widgetSearchActive && clockWidgetVisible()) widgets += Floating(buildClockWidgetFrame(context), clockWidgetFrameLayoutParams(), "clock")
         if (agendaStripVisible()) buildAgendaWidgetFrame(context)?.let { widgets += Floating(it, agendaWidgetFrameLayoutParams(), "agenda") }
         if (!widgetSearchActive && briefWidgetVisible()) buildBriefWidgetFrame(context)?.let { widgets += Floating(it, briefWidgetFrameLayoutParams(), "brief") }
+        // Inner tablet canvas only: the phone home's widget stack already owns now-playing.
+        if (!widgetSearchActive && isUnfoldedInnerLayoutActive() && musicWidgetVisible()) {
+            widgets += Floating(buildMusicWidgetFrame(context), musicWidgetFrameLayoutParams(), "music")
+        }
 
         widgets.forEach { addView(it.view, it.params) }
     }
@@ -11148,6 +11178,172 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 lp.leftMargin = fallbackLeft; lp.topMargin = fallbackTop
                 layoutParams = lp
             }
+        }
+    }
+
+    // ── Music freeform widget ────────────────────────────────────────────────
+    // A standalone now-playing card for the unfolded tablet canvas. The phone home's contextual
+    // widget stack already owns now-playing there, so this widget renders on the inner display
+    // only (see addFloatingHomeWidgets) and is added from the inner "Add to Home" menu.
+
+    private fun musicWidgetVisible(): Boolean =
+        prefs().getBoolean(homeScopedKey(MUSIC_WIDGET_VISIBLE_PREF), false)
+
+    private fun saveMusicWidgetPos(x: Int, y: Int) {
+        prefs().edit().putInt(homeScopedKey(MUSIC_WIDGET_POS_X_PREF), x)
+            .putInt(homeScopedKey(MUSIC_WIDGET_POS_Y_PREF), y).apply()
+    }
+
+    private fun applyPersistedMusicWidgetPos(frame: View) {
+        if (!prefs().contains(homeScopedKey(MUSIC_WIDGET_POS_X_PREF))) return
+        val parent = frame.parent as? View ?: return
+        if (parent.width <= 0 || frame.width <= 0 || frame.height <= 0) return
+        val lp = frame.layoutParams as FrameLayout.LayoutParams
+        if (lp.width == FrameLayout.LayoutParams.MATCH_PARENT) { lp.width = frame.width; lp.rightMargin = 0 }
+        val x = prefs().getInt(homeScopedKey(MUSIC_WIDGET_POS_X_PREF), lp.leftMargin)
+        val y = prefs().getInt(homeScopedKey(MUSIC_WIDGET_POS_Y_PREF), lp.topMargin)
+        val (cx, cy) = clampWeatherWidgetPos(parent, frame.width, frame.height, x, y)
+        lp.leftMargin = cx; lp.topMargin = cy
+        frame.layoutParams = lp
+    }
+
+    private inner class MusicWidgetFrame(context: Context) : MovableWidgetFrame(context) {
+        private var persistedPosApplied = false
+
+        init { clipChildren = false; clipToPadding = false; isClickable = true }
+
+        override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+            super.onLayout(changed, l, t, r, b)
+            if (!persistedPosApplied && width > 0 && ((parent as? View)?.width ?: 0) > 0) {
+                persistedPosApplied = true
+                post { applyPersistedMusicWidgetPos(this) }
+            }
+        }
+
+        override fun handlesLockedSingleTap(): Boolean = true
+        override fun onLockedSingleTap() {
+            haptic(this)
+            if (::mediaSessionSource.isInitialized && mediaSessionSource.nowPlaying.value != null) {
+                mediaSessionSource.openSourceApp()
+            } else {
+                openHere(musicTarget())
+            }
+        }
+
+        override fun onLongPress() = showMusicWidgetManageMenu(this)
+        override fun lockedLongPressDelayMs(): Long = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+        override fun lockedLongPressCancelSlopPx(): Int = maxOf(dp(18), android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop * 2)
+
+        override fun onSettle(fallbackLeft: Int, fallbackTop: Int) {
+            val parentView = parent as? View ?: return
+            val lp = layoutParams as FrameLayout.LayoutParams
+            val (cx, cy) = clampWeatherWidgetPos(parentView, width, height, lp.leftMargin, lp.topMargin)
+            val (sx, sy) = softSnapWeatherWidgetPos(parentView, cx, cy)
+            val (bx, by) = clampWeatherWidgetPos(parentView, width, height, sx, sy)
+            lp.leftMargin = bx; lp.topMargin = by
+            layoutParams = lp
+            saveMusicWidgetPos(bx, by)
+            haptic(this)
+        }
+    }
+
+    private fun showMusicWidgetManageMenu(anchor: View) {
+        showNativeWidgetManageMenu(
+            anchor = anchor,
+            title = "Music",
+            accent = 0xFF57C98A.toInt(),
+            styleLabel = "Open Teclas player",
+            onStyle = { openHere(musicTarget()) },
+            onRemove = { removeMusicWidget() }
+        )
+    }
+
+    private fun removeMusicWidget() {
+        prefs().edit().putBoolean(homeScopedKey(MUSIC_WIDGET_VISIBLE_PREF), false).apply()
+        musicWidgetFrameView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        musicWidgetFrameView = null
+        Toast.makeText(this, "Music removed.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun musicWidgetFrameLayoutParams(): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(weatherWidgetFreeformWidth(), FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = defaultFreeformWidgetLeft(width) + dp(44)
+            topMargin = dp(330)
+        }
+
+    private fun buildMusicWidgetFrame(context: Context): View {
+        val frame = MusicWidgetFrame(context)
+        musicWidgetFrameView = frame
+        frame.background = Neu.drawable(activeNeuTokens, dp(22).toFloat(), NeuLevel.RAISED_SM)
+        frame.elevation = dp(8).toFloat()
+        val art = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(12).toFloat())
+                }
+            }
+        }
+        musicWidgetArtView = art
+        val title = TextView(context).apply {
+            textSize = 13.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(activeNeuTokens.ink)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            includeFontPadding = false
+        }
+        musicWidgetTitleView = title
+        val subtitle = TextView(context).apply {
+            textSize = 10.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(activeNeuTokens.inkDim)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            includeFontPadding = false
+            setPadding(0, dp(3), 0, 0)
+        }
+        musicWidgetSubtitleView = subtitle
+        frame.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            addView(art, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginEnd = dp(12) })
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(title)
+                addView(subtitle)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        refreshMusicWidgetFrame()
+        return frame
+    }
+
+    /** Rebind the music widget from the current media session. Self-guarded: a no-op when the
+     *  widget was never built, so callers don't need their own gates. The fields always point at
+     *  the most recently built frame; a bind against a frame a render just orphaned is harmless. */
+    internal fun refreshMusicWidgetFrame() {
+        if (musicWidgetFrameView == null) return
+        val title = musicWidgetTitleView ?: return
+        val subtitle = musicWidgetSubtitleView ?: return
+        val art = musicWidgetArtView ?: return
+        val media = if (::mediaSessionSource.isInitialized) mediaSessionSource.nowPlaying.value else null
+        if (media == null) {
+            title.text = "Nothing playing"
+            subtitle.text = "Tap to open music"
+            art.setImageDrawable(null)
+            art.setBackgroundColor(adjustAlpha(activeNeuTokens.inkFaint, 0.25f))
+            return
+        }
+        title.text = media.title.ifBlank { "Now playing" }
+        subtitle.text = listOf(media.artist, media.sourceApp).filter { it.isNotBlank() }.joinToString(" · ")
+        if (media.albumArt != null) {
+            art.setBackgroundColor(Color.TRANSPARENT)
+            art.setImageBitmap(media.albumArt)
+        } else {
+            art.setImageDrawable(null)
+            art.setBackgroundColor(adjustAlpha(media.appIconColor, 0.6f))
         }
     }
 
@@ -31571,6 +31767,9 @@ Question: $prompt"""
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
         private const val INNER_PAGES_PREF = "inner_pages"
         private const val INNER_PAGES_SWAP_PREF = "inner_pages_swap"
+        private const val MUSIC_WIDGET_VISIBLE_PREF = "music_widget_visible"
+        private const val MUSIC_WIDGET_POS_X_PREF = "music_widget_pos_x"
+        private const val MUSIC_WIDGET_POS_Y_PREF = "music_widget_pos_y"
         private const val INNER_KEYBOARD_SIZE_BOOST_PREF = "inner_keyboard_size_boost"
         private const val INNER_KEYBOARD_OFFSET_X_PREF = "inner_keyboard_offset_x"
         private const val INNER_KEYBOARD_OFFSET_Y_PREF = "inner_keyboard_offset_y"
