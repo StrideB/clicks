@@ -4604,10 +4604,14 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    // Slop scales with the real key width: the fixed-dp slop was smaller than a
+                    // sloppy fast tap's slide on large-key panels (Fold inner display), so taps
+                    // kept reading as glides. A glide must travel a meaningful fraction of a key.
+                    val keyScaledSlop = maxOf(glideActivationSlop, (keyBounds["f"]?.width() ?: 0) * 0.65f)
                     if (!tracking && downOnLetterKey && !glideMultiTouch && ev.pointerCount == 1 &&
                         com.fran.teclas.keyboard.GlideGate.shouldActivate(
                             ev.rawX - startRawX, ev.rawY - startRawY,
-                            ev.eventTime - ev.downTime, glideActivationSlop)) {
+                            ev.eventTime - ev.downTime, keyScaledSlop)) {
                         tracking = true
                         glideStoleDownCommit = true
                         if (hapticsOn()) haptics().glideStart()   // firm click on glide activation
