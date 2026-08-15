@@ -94,7 +94,10 @@ object DictionaryLoader {
         val langs = enabledLanguages(context)
         cachedLoaded?.let { (key, value) -> if (key == langs) return value }
         val freqs = merge(context, langs)
-        return Loaded(capWords(freqs), freqs, langs).also { cachedLoaded = langs to it }
+        // Never cache an empty load: a transient asset failure would otherwise poison every
+        // later call for the life of the process, and both hosts' retry paths can't help
+        // because the empty result looks like a successful load.
+        return Loaded(capWords(freqs), freqs, langs).also { if (freqs.isNotEmpty()) cachedLoaded = langs to it }
     }
 
     /**
@@ -145,8 +148,10 @@ object DictionaryLoader {
         val primaryFreqs = merge(context, active)
         // Only pay for per-language membership when the user is actually multilingual.
         val perLang = if (active.size > 1) perLanguageWords(context, active) else emptyMap()
+        // Same empty-load guard as load(): cache only real dictionaries so a failed asset read
+        // is retried on the next call instead of leaving autocorrect wordless forever.
         return Adaptive(primaryFreqs, primaryFreqs, capWords(primaryFreqs), active, emptyList(), perLang)
-            .also { cachedAdaptive = active to it }
+            .also { if (primaryFreqs.isNotEmpty()) cachedAdaptive = active to it }
     }
 
     /** Every bundled language present in the phone's locale list, primary first. */
@@ -186,6 +191,9 @@ object DictionaryLoader {
                         }
                     }
                 }
+            }.onFailure {
+                // A wordless keyboard is a support mystery — make the cause findable.
+                android.util.Log.w("DictionaryLoader", "failed to load dictionary asset $path", it)
             }
             for ((w, c) in counts) {
                 val f = c.toFloat() / maxC

@@ -116,7 +116,11 @@ class UnifiedRanker(
         // these encode how English typos actually happen, and they're immune to the frequency
         // trap (e.g. "thier"→"their" even if some closer-by-distance word is more common).
         PhoneticPatterns.fix(t)?.let { fix ->
-            if (eng.isDictWord(fix) && !isRejectedPair(t, fix)) return fix
+            // The typo table's targets are real words by construction — gating them on dictionary
+            // membership silently killed a third of the table (its targets past the 20k wordlist,
+            // e.g. "mispelled"→"misspelled", could never fire). The membership check stays for
+            // morphology below, whose generated repairs are guesses rather than curated fixes.
+            if (!isRejectedPair(t, fix)) return fix
         }
         Morphology.repairs(t).firstOrNull { eng.isDictWord(it) && !isRejectedPair(t, it) }?.let { return it }
         // Scored tier: composite over the candidate set.

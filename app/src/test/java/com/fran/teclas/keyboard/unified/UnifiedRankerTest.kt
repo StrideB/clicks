@@ -64,10 +64,11 @@ class UnifiedRankerTest {
         assertEquals("receive", ranker().bestCorrection("recieve"))
     }
 
-    @Test fun phoneticFix_skippedWhenTargetNotInDictionary() {
-        // "tommorow"→"tomorrow" is in the table but not in this test dictionary; the ranker must
-        // not introduce a word the active language doesn't have.
-        assertNull(ranker().bestCorrection("tommorow"))
+    @Test fun phoneticFix_trustedEvenWhenTargetOutsideDictionary() {
+        // The typo table's targets are real words by construction. Requiring dictionary
+        // membership silently killed every entry whose target sat outside the bundled 20k
+        // list ("mispelled"→"misspelled" among ~1300 others), so the table is trusted as-is.
+        assertEquals("tomorrow", ranker().bestCorrection("tommorow"))
     }
 
     @Test fun morphology_repairsDoubledConsonant() {
