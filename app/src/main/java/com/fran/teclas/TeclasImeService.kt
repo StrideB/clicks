@@ -1472,13 +1472,29 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
             // Keys are centered, not baseline-aligned; skipping the baseline pass trims the measure
             // cost of every key row — paid at keyboard-open (buildKeyboard) and on each layout swap.
             isBaselineAligned = false
-            val inset = when (rowIndex) {
-                1 -> dp(4)
-                2 -> dp(2)
-                3 -> dp(6)
+            // Letter rows run edge to edge like the ten-key top row — hard row indents left
+            // dead gutters at the screen sides ("keyboard doesn't take the full width").
+            // Symbols keep their original indents.
+            val inset = when {
+                symbolsMode -> when (rowIndex) {
+                    1 -> dp(4)
+                    2 -> dp(2)
+                    3 -> dp(6)
+                    else -> 0
+                }
+                rowIndex == 3 -> dp(2)
                 else -> 0
             }
             setPadding(inset, 0, inset, 0)
+            // The 9-letter home row centers Gboard-style: half-key spacers at each end keep its
+            // caps the same width as the ten-key top row. (The old approach faked matching caps
+            // with a wider per-key inset, which read as oversized gaps instead.)
+            val homeRowSpacerWeight = if (!symbolsMode && rowIndex == 1 && labels.size == 9 &&
+                labels.all { it.length == 1 && it[0].isLetter() }
+            ) (10f - labels.size) / 2f else 0f
+            if (homeRowSpacerWeight > 0f) {
+                addView(View(context), LinearLayout.LayoutParams(0, 1, homeRowSpacerWeight))
+            }
             labels.forEach { label ->
                 if (isRoundKeyboardKey(label)) {
                     addView(keyView(label, rowIndex), LinearLayout.LayoutParams(themedGoKeySize(), themedGoKeySize()).apply {
@@ -1488,6 +1504,9 @@ class TeclasImeService : InputMethodService(), com.fran.teclas.keyboard.Keyboard
                 } else {
                     addView(keyView(label, rowIndex), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, keyWeight(label)))
                 }
+            }
+            if (homeRowSpacerWeight > 0f) {
+                addView(View(context), LinearLayout.LayoutParams(0, 1, homeRowSpacerWeight))
             }
         }
     }
@@ -5032,20 +5051,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
         // Visible face gap only: touch cells stay edge-to-edge. Default/Teclas/Skeuo get a wider
         // drawn keycap while the rest of the theme set keeps the current spacing.
         val theme = keyboardVisualTheme()
-        val base = dp(if (theme == KEYBOARD_THEME_DEFAULT ||
+        // One inset for every key: the home row is centered by half-key spacers now, so its caps
+        // already match the ten-key top row — the old per-row bonus inset only widened the gaps.
+        return dp(if (theme == KEYBOARD_THEME_DEFAULT ||
             theme == KEYBOARD_THEME_TECLAS ||
             theme == KEYBOARD_THEME_SKEUO
         ) 1 else 2)
-        val isLetterRowKey = label?.let { it.length == 1 && it[0].isLetter() && !symbolsMode } == true
-        if (!isLetterRowKey) return base
-
-        // Touch cells keep the existing weighted layout; rows with fewer letters draw a slightly
-        // narrower face so their visible caps match the ten-key top row.
-        return base + when (rowIndex) {
-            1 -> dp(3)
-            2 -> dp(3)
-            else -> 0
-        }
     }
 
     private fun themedGoKeySize(): Int {

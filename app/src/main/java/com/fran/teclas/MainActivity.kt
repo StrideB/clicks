@@ -1426,6 +1426,7 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // Backgrounded → the pip (and its device-ticking chronometer, if any) must not outlive us.
         dismissLiveActivityPip(animate = false)
         dismissNowPlayingPip(animate = false)
+        dismissSpaceDockLayer()
         if (::spaceTodayHost.isInitialized) spaceTodayHost.onPause()
         if (::briefRepository.isInitialized) briefRepository.stopPeriodic()
         if (::spatialScorer.isInitialized) {
@@ -2418,6 +2419,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         if (nowPlayingPipShowing) {
             handler.post { if (nowPlayingPipShowing && nowPlayingPipView == null) showNowPlayingPip() }
         }
+        // Same survive-the-render contract for the dock's Space layer.
+        teardownSpaceDockLayerViews()
+        if (spaceDockLayerOpen) handler.post { reanchorSpaceDockLayerAfterRender() }
         homeAddMenuView?.let { (it.parent as? ViewGroup)?.removeView(it) }
         homeAddMenuView = null
         homeAddLongPressRunnable?.let { handler.removeCallbacks(it) }
@@ -4655,12 +4659,14 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                 }
                 addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) 0.14f else 0.22f))
                 favoritesDockFrameView = favoritesDockFlipSurface(context)
-                // Google-search-bar footprint: 52dp pill, 16dp side margins — the dock and the
-                // search bar below it read as two rows of the same bottom system.
-                addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply {
+                // Pixel-hotseat footprint: a 66dp band with 10dp side margins, so icons breathe
+                // inside the pill instead of overflowing a squeezed bar. The 52dp Google-bar
+                // proportion stays on the search bar below — dock row above, search pill under it,
+                // like a stock Pixel home.
+                addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
                     topMargin = dp(6)
-                    leftMargin = dp(16)
-                    rightMargin = dp(16)
+                    leftMargin = dp(10)
+                    rightMargin = dp(10)
                     // Small gap above the docked keyboard deck (its height now accounts for the
                     // suggestion strip, so it no longer bleeds up — see activeRootDockHeight()).
                     bottomMargin = if (keyboardPlacement == KEYBOARD_PLACEMENT_WIDGET) dp(4) else dp(6)
@@ -4740,11 +4746,12 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
                     addView(homeHeader().apply { visibility = View.INVISIBLE }, LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                     addView(View(context), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
                     favoritesDockFrameView = favoritesDockFlipSurface(context)
-                    addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)).apply {
+                    // Pixel-hotseat footprint, matching home(): 66dp band, 10dp side margins.
+                    addView(favoritesDockFrameView, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(66)).apply {
                         topMargin = dp(6)
                         bottomMargin = dp(4)
-                        leftMargin = dp(16)
-                        rightMargin = dp(16)
+                        leftMargin = dp(10)
+                        rightMargin = dp(10)
                     })
                 }
 
@@ -4813,8 +4820,8 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         // over a sharp wallpaper with nothing blurred behind it. Widget/unfolded are left untouched.
         val dockGlass: View =
             if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive())
-                NativeFoldGlassPanel(context, radiusDp = 26, compactDockGlass = true)
-            else foldAwareGlassPlate(context, radiusDp = 26)
+                NativeFoldGlassPanel(context, radiusDp = 33, compactDockGlass = true)
+            else foldAwareGlassPlate(context, radiusDp = 33)
         frame.addView(dockGlass, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         favoritesDockAccentChromeView = SpaceDockAccentChrome(context).apply {
             setAccent(currentCleanSpacesAccent(), cleanSpacesBriefActive(), animate = false)
@@ -20763,7 +20770,12 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             "space" -> {
                 autocorrectCore.clearPending()
                 if (libraryOpen) {
-                    if (query.isNotBlank()) query += " "
+                    // This branch IS phone launcher search: docked placement auto-opens the
+                    // library on the first letter, so skipping correction here meant search
+                    // never autocorrected on phones at all.
+                    tryAutocorrect()
+                    if (query.isNotBlank() && !query.endsWith(" ")) query += " "
+                    applyLauncherPhraseFix()
                 } else {
                     cursorPos?.let { pos ->
                         query = query.substring(0, pos) + " " + query.substring(pos)
@@ -20796,7 +20808,10 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
             }
             "period" -> {
                 autocorrectCore.clearPending()
-                if (libraryOpen) { if (query.isNotBlank()) query += "." }
+                if (libraryOpen) {
+                    tryAutocorrect()
+                    if (query.isNotBlank()) query = query.trimEnd() + "."
+                }
                 else {
                     cursorPos?.let { pos ->
                         query = query.substring(0, pos) + "." + query.substring(pos)
@@ -23901,7 +23916,8 @@ Question: $prompt"""
             if (!active || alpha <= 0f) return
             val inset = dp(2).toFloat()
             rect.set(inset, inset, width - inset, height - inset)
-            val radius = dp(24).toFloat()
+            // Full-pill glow: track the dock glass radius (33dp on a 66dp pill) minus the inset.
+            val radius = dp(31).toFloat()
             paint.shader = null
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = dp(2).toFloat()
@@ -23957,6 +23973,8 @@ Question: $prompt"""
         private var startY = 0f
         private var interceptingFlip = false
         private var flipTriggered = false
+        private var draggingLayer = false
+        private var layerStartProgress = 0f
 
         override fun dispatchTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
@@ -23973,12 +23991,25 @@ Question: $prompt"""
                     startY = event.y
                     interceptingFlip = false
                     flipTriggered = false
+                    draggingLayer = false
                     return false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.x - startX
                     val dy = event.y - startY
                     if (abs(dy) > dp(18) && abs(dy) > abs(dx) * 1.25f) {
+                        // Pulling UP (or any vertical pull while the layer is already out)
+                        // drags the Space layer 1:1 — the second storey of the dock rides the
+                        // finger like a real drawer. A DOWN pull with the layer away keeps the
+                        // established face flip.
+                        if (dy < 0f || spaceDockLayerOpen) {
+                            if (beginSpaceDockLayerDrag()) {
+                                draggingLayer = true
+                                layerStartProgress = spaceDockLayerProgress
+                                parent?.requestDisallowInterceptTouchEvent(true)
+                                return true
+                            }
+                        }
                         interceptingFlip = true
                         parent?.requestDisallowInterceptTouchEvent(true)
                         return true
@@ -23987,6 +24018,7 @@ Question: $prompt"""
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     interceptingFlip = false
                     flipTriggered = false
+                    draggingLayer = false
                 }
             }
             return false
@@ -23995,6 +24027,10 @@ Question: $prompt"""
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
                 MotionEvent.ACTION_MOVE -> {
+                    if (draggingLayer) {
+                        driveSpaceDockLayer(layerStartProgress + (startY - event.y) / spaceDockLayerTravelPx())
+                        return true
+                    }
                     if (interceptingFlip && !flipTriggered && abs(event.y - startY) > dp(28)) {
                         flipTriggered = true
                         toggleFavoritesDockContext()
@@ -24003,7 +24039,10 @@ Question: $prompt"""
                     }
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (interceptingFlip && !flipTriggered && abs(event.y - startY) > dp(28)) {
+                    if (draggingLayer) {
+                        settleSpaceDockLayer()
+                        draggingLayer = false
+                    } else if (interceptingFlip && !flipTriggered && abs(event.y - startY) > dp(28)) {
                         toggleFavoritesDockContext()
                     }
                     interceptingFlip = false
@@ -24012,6 +24051,10 @@ Question: $prompt"""
                     return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
+                    if (draggingLayer) {
+                        settleSpaceDockLayer()
+                        draggingLayer = false
+                    }
                     interceptingFlip = false
                     flipTriggered = false
                     parent?.requestDisallowInterceptTouchEvent(false)
@@ -24019,6 +24062,162 @@ Question: $prompt"""
             }
             return true
         }
+    }
+
+    // ── Space layer: the dock's second storey ────────────────────────────────
+    // Pulling the favorites dock upward slides the active Space's predicted-apps row out from
+    // behind it, turning the bottom of the screen into a two-layer dock. The layer rides the
+    // finger 1:1 inside a clipping slot (an object being slid, not a canned transition), settles
+    // open or closed on release, and survives home re-renders while open. Distinct from the face
+    // flip (swipe down), which swaps the pill's face in place.
+
+    private var spaceDockLayerContainer: FrameLayout? = null
+    private var spaceDockLayerSlider: FrameLayout? = null
+    private var spaceDockLayerProgress = 0f
+    private var spaceDockLayerOpen = false
+    private var spaceDockLayerSettleAnimator: ValueAnimator? = null
+    private var spaceDockLayerTravel = 0
+
+    // Fixed at build time — container.height reads 0 until the first layout pass, which would
+    // turn the opening frames of a drag into a jump instead of a track.
+    private fun spaceDockLayerTravelPx(): Float =
+        (if (spaceDockLayerTravel > 0) spaceDockLayerTravel else dp(104)).toFloat().coerceAtLeast(1f)
+
+    private fun beginSpaceDockLayerDrag(): Boolean {
+        spaceDockLayerSettleAnimator?.cancel()
+        spaceDockLayerSettleAnimator = null
+        return ensureSpaceDockLayer()
+    }
+
+    private fun ensureSpaceDockLayer(): Boolean {
+        if (spaceDockLayerContainer?.isAttachedToWindow == true) return true
+        spaceDockLayerContainer = null
+        if (!::contentFrame.isInitialized || !::favoritesDockFrameView.isInitialized) return false
+        val dock = favoritesDockFrameView
+        if (dock.width <= 0 || dock.height <= 0) return false
+        val layerApps = currentContextDockApps().take(DOCK_APP_LIMIT)
+        if (layerApps.isEmpty()) return false
+        val layerH = dock.height
+        val containerH = layerH + dp(6) + dp(34)   // pill + gap + stamp headroom
+
+        val slider = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(FrameLayout(context).apply {
+                clipChildren = false
+                clipToPadding = false
+                addView(
+                    if (keyboardPlacement == KEYBOARD_PLACEMENT_DOCKED && !isUnfoldedInnerLayoutActive())
+                        NativeFoldGlassPanel(context, radiusDp = 33, compactDockGlass = true)
+                    else foldAwareGlassPlate(context, radiusDp = 33),
+                    FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+                )
+                addView(LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    clipChildren = false
+                    clipToPadding = false
+                    setPadding(dp(8), dp(9), dp(8), dp(9))
+                    layerApps.forEachIndexed { index, app ->
+                        addView(contextDockAppButton(app, index), LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                            if (index > 0) marginStart = dp(6)
+                        })
+                    }
+                }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, layerH, Gravity.BOTTOM))
+            // The Space's name rides on the layer, same stamp styling the flip uses.
+            addView(contextDockStampView(context).apply {
+                val accent = currentContextDockAccent()
+                text = "●  ${currentContextDockLabel()}"
+                setTextColor(accent)
+                background = contextDockStampBackground(accent)
+            }, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, dp(28), Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = dp(2)
+            })
+        }
+        // The container is the drawer slot: it clips, so the layer genuinely emerges from
+        // behind the dock's top edge instead of fading in over the wallpaper.
+        val container = FrameLayout(this)
+        container.addView(slider, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        val rootLoc = IntArray(2); contentFrame.getLocationOnScreen(rootLoc)
+        val dockLoc = IntArray(2); dock.getLocationOnScreen(dockLoc)
+        contentFrame.addView(container, FrameLayout.LayoutParams(dock.width, containerH).apply {
+            leftMargin = dockLoc[0] - rootLoc[0]
+            topMargin = (dockLoc[1] - rootLoc[1]) - containerH
+        })
+        spaceDockLayerContainer = container
+        spaceDockLayerSlider = slider
+        spaceDockLayerTravel = containerH
+        slider.translationY = containerH * (1f - spaceDockLayerProgress)
+        return true
+    }
+
+    private fun driveSpaceDockLayer(p0: Float) {
+        val p = p0.coerceIn(0f, 1f)
+        spaceDockLayerProgress = p
+        spaceDockLayerSlider?.translationY = spaceDockLayerTravelPx() * (1f - p)
+    }
+
+    private fun settleSpaceDockLayer() {
+        val from = spaceDockLayerProgress
+        // Opening is eager (a third of the pull commits); closing needs a deliberate push back.
+        val toOpen = if (spaceDockLayerOpen) from > 0.65f else from > 0.35f
+        val to = if (toOpen) 1f else 0f
+        spaceDockLayerSettleAnimator?.cancel()
+        if (from == to) {
+            finishSpaceDockLayerSettle(toOpen)
+            return
+        }
+        spaceDockLayerSettleAnimator = ValueAnimator.ofFloat(from, to).apply {
+            duration = (140f + abs(to - from) * 160f).toLong()
+            interpolator = DecelerateInterpolator(1.6f)
+            addUpdateListener { driveSpaceDockLayer(it.animatedValue as Float) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    driveSpaceDockLayer(to)
+                    finishSpaceDockLayerSettle(toOpen)
+                }
+            })
+            start()
+        }
+    }
+
+    private fun finishSpaceDockLayerSettle(open: Boolean) {
+        spaceDockLayerSettleAnimator = null
+        spaceDockLayerOpen = open
+        if (hapticsEnabled && ::favoritesDockFrameView.isInitialized) haptic(favoritesDockFrameView)
+        if (!open) teardownSpaceDockLayerViews()
+    }
+
+    /** Views only — the open flag survives so a home re-render can re-anchor the layer. */
+    private fun teardownSpaceDockLayerViews() {
+        spaceDockLayerContainer?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        spaceDockLayerContainer = null
+        spaceDockLayerSlider = null
+        if (!spaceDockLayerOpen) spaceDockLayerProgress = 0f
+    }
+
+    private fun dismissSpaceDockLayer() {
+        spaceDockLayerSettleAnimator?.cancel()
+        spaceDockLayerSettleAnimator = null
+        spaceDockLayerOpen = false
+        spaceDockLayerProgress = 0f
+        teardownSpaceDockLayerViews()
+    }
+
+    private fun reanchorSpaceDockLayerAfterRender() {
+        if (!spaceDockLayerOpen || spaceDockLayerContainer != null) return
+        if (!::favoritesDockFrameView.isInitialized) return
+        spaceDockLayerProgress = 1f
+        if (ensureSpaceDockLayer()) return
+        val dock = favoritesDockFrameView
+        dock.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                dock.viewTreeObserver.removeOnPreDrawListener(this)
+                if (spaceDockLayerOpen && spaceDockLayerContainer == null) ensureSpaceDockLayer()
+                return true
+            }
+        })
     }
 
     private fun toggleFavoritesDockContext() {

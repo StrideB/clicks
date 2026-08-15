@@ -163,12 +163,14 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
         val lenMax = t.length + 2
         val out = ArrayList<Triple<String, Double, Double>>()
         val firstChars = adj[fc]?.let { "$fc$it" } ?: fc.toString()
-        // Buckets are frequency-sorted, so the exact first-letter bucket (the common case) yields the
-        // best candidates first. Budget the number of edit-distance evaluations so a huge bucket
-        // can't blow the frame budget; the frequent words a correction actually resolves to are all
-        // near the front.
-        var budget = MAX_RANK_EVAL
+        // Buckets are frequency-sorted, so the exact first-letter bucket (the common case) yields
+        // the best candidates first. The eval budget is PER BUCKET, not shared: one shared budget
+        // let the typed letter's bucket exhaust it for common letters, so adjacent-first-letter
+        // buckets were never scanned at all — a fat-fingered first letter was uncorrectable — and
+        // nearly half the same-letter candidates sat past the cutoff, where a typo whose true fix
+        // lived deep in the bucket got a confidently wrong nearer neighbor instead.
         for (c in firstChars) {
+            var budget = MAX_RANK_EVAL
             for (e in byFirstChar[c].orEmpty()) {
                 val w = e.word
                 if (w.length !in lenMin..lenMax) continue
@@ -177,7 +179,6 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
                 if (d > maxDist) continue
                 out.add(Triple(w, d, d - 0.18 * e.freq))   // frequency only nudges near-ties
             }
-            if (budget <= 0) break
         }
         out.sortBy { it.third }
         return out.map { it.first to it.second }
@@ -220,9 +221,13 @@ class PredictionEngine(private val wordFrequencies: Map<String, Float>) {
     private companion object {
         // Max multiplicative boost a fully-dominant next-letter can add in an ambiguous tie-break.
         private const val NEXT_CHAR_BOOST = 1.5
-        // Cap on edit-distance evaluations per rank(). Buckets are frequency-sorted, so the first
-        // few hundred candidates are the ones a correction/completion actually lands on; this bounds
-        // rank() to single-digit ms even on a huge dictionary / slow CPU.
-        private const val MAX_RANK_EVAL = 400
+        // Cap on edit-distance evaluations per first-letter bucket in rank(). Buckets are
+        // frequency-sorted, so the first several hundred candidates are the ones a correction
+        // actually lands on; the per-bucket cap bounds rank() to a few ms even on a huge
+        // dictionary while guaranteeing adjacent-letter buckets always get their scan. 400 was
+        // too tight even for the typed letter's own bucket (e.g. "tighten" sits at index ~408
+        // of the t-bucket's length-window, so "tughteb" corrected to the nearer-indexed but
+        // worse "tighter").
+        private const val MAX_RANK_EVAL = 900
     }
 }

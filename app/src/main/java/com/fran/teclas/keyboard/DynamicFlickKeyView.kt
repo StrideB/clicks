@@ -155,18 +155,25 @@ class DynamicFlickKeyView(context: Context) : TextView(context) {
                 val singleLetter = label.length == 1 && label[0].isLetter()
                 // All letters intentionally retain this exact text size and typeface. Never scale
                 // individual glyphs: doing so makes b/d/f small and w/r/u/o/m look heavier.
-                // One shared baseline per case, not per-glyph centering. Centering each letter's
-                // own box shoves descenders (y p g) up and ascenders (t d h) down, so letter
-                // bodies wander from key to key and the descender letters read oversized. Anchor
-                // every lowercase letter to the x-height band (measured off "x") and every capital
-                // to the cap box ("X"): bodies align across the row, tails hang below, stems rise
-                // above — a type line, which is what reads as symmetric.
+                // One shared baseline per case, not per-glyph centering (per-glyph makes q/y/p read
+                // oversized) and not the font's em box (its accent headroom sinks every letter).
                 val baseline = if (singleLetter) {
-                    // Center the visible ink inside every key. This uses the same rule for all 26
-                    // letters while allowing descenders (q/y/p/g) and ascenders (d/f/h/t) to use
-                    // the available face space instead of looking bottom- or top-heavy.
-                    val metrics = hintPaint.fontMetrics
-                    centerY - (metrics.ascent + metrics.descent) / 2f
+                    if (label[0].isLowerCase()) {
+                        // Lowercase optical center: split the difference between centering the
+                        // x-height band (the bodies) and the ascender band (the stems). Pure
+                        // x-height anchoring rides t/d/h/l high; pure ascender/cap anchoring
+                        // sinks the bodies — halfway is where a mixed row reads level, with
+                        // descender tails hanging below the line as on any system keyboard.
+                        hintPaint.getTextBounds("x", 0, 1, glyphBounds)
+                        val xBand = glyphBounds.height().toFloat()
+                        hintPaint.getTextBounds("h", 0, 1, glyphBounds)
+                        val ascBand = glyphBounds.height().toFloat()
+                        centerY + (xBand + ascBand) / 4f
+                    } else {
+                        // Capitals all share the cap box — flat bottoms on one baseline.
+                        hintPaint.getTextBounds("H", 0, 1, glyphBounds)
+                        centerY + glyphBounds.height() / 2f
+                    }
                 } else {
                     // Multi-char / symbol labels have no case line to share — their own glyph box
                     // (not the font's em box, which reserves unused descender space) is the center.

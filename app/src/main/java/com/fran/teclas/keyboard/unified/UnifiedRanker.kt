@@ -116,7 +116,11 @@ class UnifiedRanker(
         // these encode how English typos actually happen, and they're immune to the frequency
         // trap (e.g. "thier"→"their" even if some closer-by-distance word is more common).
         PhoneticPatterns.fix(t)?.let { fix ->
-            if (eng.isDictWord(fix) && !isRejectedPair(t, fix)) return fix
+            // The typo table's targets are real words by construction — gating them on dictionary
+            // membership silently killed a third of the table (its targets past the 20k wordlist,
+            // e.g. "mispelled"→"misspelled", could never fire). The membership check stays for
+            // morphology below, whose generated repairs are guesses rather than curated fixes.
+            if (!isRejectedPair(t, fix)) return fix
         }
         Morphology.repairs(t).firstOrNull { eng.isDictWord(it) && !isRejectedPair(t, it) }?.let { return it }
         // Scored tier: composite over the candidate set.
@@ -134,9 +138,15 @@ class UnifiedRanker(
         val best = scored.first()
         if (best.first.word == t) return null
         // Ambiguity guard (engine parity): when the top two are effectively tied but the runner-up
-        // is the more common word, refuse to guess rather than risk a wrong rewrite.
+        // is the more common word, refuse to guess rather than risk a wrong rewrite. "Tied" must
+        // mean tied in DISTANCE too: the frequency leg alone can lift a far word (distance 2.2)
+        // to within epsilon of a near one (0.8) — that's not ambiguity, the near word is simply
+        // right ("tughteb"→"tighten" was vetoed by "rights" this way). The their/there class the
+        // guard exists for has both candidates at the same distance, so it still fires there.
         val runnerUp = scored.getOrNull(1)
-        if (runnerUp != null && best.second - runnerUp.second < TIE_EPSILON && runnerUp.third > best.third) return null
+        if (runnerUp != null && best.second - runnerUp.second < TIE_EPSILON && runnerUp.third > best.third &&
+            runnerUp.first.distance - best.first.distance < DISTANCE_TIE_WINDOW
+        ) return null
         return best.first.word
     }
 
@@ -198,6 +208,9 @@ class UnifiedRanker(
     private companion object {
         // Composite-score gap under which two candidates count as "tied" for the ambiguity guard.
         private const val TIE_EPSILON = 0.05
+        // ...and the edit-distance gap they must ALSO be within: a runner-up meaningfully farther
+        // from what was typed isn't an ambiguous alternative, however common it is.
+        private const val DISTANCE_TIE_WINDOW = 0.35
     }
 }
 
