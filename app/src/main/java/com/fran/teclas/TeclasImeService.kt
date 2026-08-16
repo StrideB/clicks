@@ -4917,15 +4917,18 @@ Use "Find place" for restaurants, venues or things nearby; "Navigate" for direct
     }
 
     /**
-     * The size the key metrics scale from. On a wide canvas we add the SAME inner-screen boost the
-     * launcher keyboard applies (shared `inner_keyboard_size_boost` pref, +12) so the IME keys grow
-     * taller to match — otherwise the keyboard reads short and wide on the fold's inner screen.
+     * The size the key metrics scale from. On a wide canvas (fold inner display / tablet) the IME
+     * matches the PHONE key metrics — Gboard parity. The old flat +boost(52)+28 grew rows to
+     * ~82dp and the deck to nearly half the inner screen ("too big when unfolded"). The shared
+     * `inner_keyboard_size_boost` slider still moves the inner IME, but relative to its default:
+     * at the default the IME is exactly phone-sized, and a user who raised or lowered the
+     * launcher's inner-keys slider shifts the IME with it.
      */
     private fun effectiveKeyboardSize(): Int {
         val base = KeyboardSettings.keyboardSize(this)
         if (!imeIsWideCanvas()) return base
         val boost = imePrefs().getInt("inner_keyboard_size_boost", 52).coerceIn(-20, 150)
-        return (base + boost + 28).coerceIn(0, 210)
+        return (base + (boost - 52)).coerceIn(0, 210)
     }
 
     /**
