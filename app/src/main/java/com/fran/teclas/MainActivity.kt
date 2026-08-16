@@ -1255,6 +1255,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         MockLocationInjector.sync(this)
         // The deck only owns typing while the launcher itself is the screen in front.
         launcherInForeground = true
+        // Cover-screen-only mode: a HOME press while unfolded lands here first (teclas holds the
+        // HOME role — Android has no per-display launcher), so forward to the stock launcher.
+        maybeHandOffToStockLauncher()
         // Buttons ↔ gestures is toggled in Settings, i.e. while we're in the background; pick up the
         // new bottom band before anything below re-measures against it.
         refreshNavBarInset()
@@ -3613,6 +3616,9 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
         widgetKeyboardHidden = loadWidgetKeyboardHiddenForCurrentPosture()
         widgetKeyboardSliderAnimating = false
         if (!wasInner && isInner) {
+            // Cover-screen-only mode: the unfold itself is the trigger — the stock launcher
+            // takes the inner display before the user ever sees the teclas tablet canvas.
+            maybeHandOffToStockLauncher()
             forceFoldableWidgetPlacement()
             applyUnfoldedContextSwitch()
         } else if (wasInner && !isInner) {
@@ -3633,6 +3639,49 @@ class MainActivity : ComponentActivity(), SpellCheckerSession.SpellCheckerSessio
             refreshUnfoldedFocusContent()
             renderFavoritesDock()
         }
+    }
+
+    // ── Cover-screen-only mode (foldables) ───────────────────────────────────
+    // Android has exactly one default HOME app for the whole device — there is no per-display
+    // launcher role — so "teclas on the cover screen, stock launcher when unfolded" is a
+    // hand-off: teclas keeps the HOME role, and whenever the inner display is active it
+    // forwards to the device's own launcher (One UI Home on Galaxy folds). Folding back makes
+    // the next HOME press land in teclas again. While unfolded teclas ALWAYS forwards, so the
+    // toggle is managed from the cover screen (type-to-customize: "cover screen only").
+
+    private var lastCoverHandOffMs = 0L
+
+    private fun coverOnlyLauncherEnabled(): Boolean =
+        prefs().getBoolean(COVER_ONLY_LAUNCHER_PREF, false)
+
+    private fun maybeHandOffToStockLauncher(): Boolean {
+        if (!coverOnlyLauncherEnabled() || !isUnfoldedInnerLayoutActive()) return false
+        // Debounced: if the stock launcher bounces focus back mid-transition, don't ping-pong.
+        val now = System.currentTimeMillis()
+        if (now - lastCoverHandOffMs < 1_200L) return false
+        val intent = stockLauncherIntent() ?: return false
+        lastCoverHandOffMs = now
+        return runCatching { startActivity(intent) }.isSuccess
+    }
+
+    /**
+     * The device's own home app, resolved fresh each time (launcher updates can rename
+     * activities). Prefers Samsung's One UI Home by package, then any system home app, then
+     * whatever third-party home is installed — never ourselves, and never Settings' FallbackHome.
+     */
+    private fun stockLauncherIntent(): Intent? {
+        val probe = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val candidates = packageManager.queryIntentActivities(probe, 0)
+            .mapNotNull { it.activityInfo }
+            .filter { it.packageName != packageName && it.packageName != "com.android.settings" }
+        val pick = candidates.firstOrNull { it.packageName == "com.sec.android.app.launcher" }
+            ?: candidates.firstOrNull { (it.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0 }
+            ?: candidates.firstOrNull()
+            ?: return null
+        return Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_HOME)
+            .setClassName(pick.packageName, pick.name)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
     }
 
     private fun applyUnfoldedContextSwitch() {
@@ -27189,6 +27238,15 @@ Question: $prompt"""
             refreshSearchSurfaces()
         })
         entries.add(SettingSearchEntry(
+            "Cover screen only",
+            if (coverOnlyLauncherEnabled()) "On · unfolding hands off to the stock launcher"
+            else "Off · teclas is the launcher on both screens",
+            listOf("cover", "cover screen", "outer", "outer screen", "stock launcher", "one ui", "samsung", "hand off", "handoff", "fold", "unfold", "foldable")
+        ) {
+            prefs().edit().putBoolean(COVER_ONLY_LAUNCHER_PREF, !coverOnlyLauncherEnabled()).apply()
+            refreshSearchSurfaces()
+        })
+        entries.add(SettingSearchEntry(
             "Swap fold pages",
             if (innerPagesSwapped()) "Home page left · Today right" else "Today left · home page right",
             listOf("swap", "fold", "pages", "mirror", "left handed", "handed")
@@ -32375,6 +32433,7 @@ Question: $prompt"""
         private const val PEN_HANDWRITING_PREF = "pen_handwriting"
         private const val INNER_KEYBOARD_WIDTH_PREF = "inner_keyboard_width_percent"
         private const val INNER_PAGES_PREF = "inner_pages"
+        private const val COVER_ONLY_LAUNCHER_PREF = "cover_only_launcher"
         private const val INNER_PAGES_SWAP_PREF = "inner_pages_swap"
         private const val MUSIC_WIDGET_VISIBLE_PREF = "music_widget_visible"
         private const val MUSIC_WIDGET_POS_X_PREF = "music_widget_pos_x"
