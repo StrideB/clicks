@@ -440,19 +440,24 @@ class ThemeStudioActivity : ComponentActivity() {
 
     @Composable
     private fun HomePreview(theme: LauncherTheme) {
-        Box(
+        // A vertical stack, never absolute offsets: the old fixed offsets (weather at top,
+        // brief pinned 58dp down, dock+keyboard bottom-anchored) summed taller than the
+        // preview box on most phones, so the layers drew through each other — brief title
+        // over the weather, dock icons over the brief's notification row. Each layer now
+        // owns a band; the brief flexes and clips instead of colliding.
+        Column(
             Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (theme.weatherVisible) {
                 Box(
                     Modifier
-                        .align(Alignment.TopCenter)
                         .fillMaxWidth()
-                        .height(128.dp)
+                        .height(72.dp)
                         .clipToBounds(),
-                    contentAlignment = Alignment.TopCenter
+                    contentAlignment = Alignment.Center
                 ) {
                     WeatherPreview(theme)
                 }
@@ -460,31 +465,24 @@ class ThemeStudioActivity : ComponentActivity() {
             if (theme.briefVisible) {
                 Box(
                     Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 58.dp)
                         .fillMaxWidth()
-                        .height(176.dp)
-                        .padding(horizontal = 0.dp),
+                        .weight(1f)
+                        .clipToBounds(),
                     contentAlignment = Alignment.Center
                 ) {
                     BriefPreview(theme)
                 }
+            } else {
+                Spacer(Modifier.weight(1f))
             }
-            Column(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                DockPreview(theme)
-                KeyboardPreview(theme)
-            }
+            DockPreview(theme)
+            KeyboardPreview(theme)
         }
     }
 
     @Composable
     private fun WeatherPreview(theme: LauncherTheme) {
-        Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.TopCenter) {
+        Box(Modifier.fillMaxSize().clipToBounds(), contentAlignment = Alignment.Center) {
             if (theme.weatherStyleId == WEATHER_STYLE_CLASSIC_ID) {
                 ClassicWeatherPreview(sampleWeather(), theme.accentColor)
             } else {
